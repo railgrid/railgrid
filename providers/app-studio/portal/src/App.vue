@@ -89,8 +89,6 @@ import {
 import AssistantActionLog from './AssistantActionLog.vue'
 import ReviewRequest from './ReviewRequest.vue'
 import {
-  activeAssistantPlanMessage,
-  assistantPlanProgress,
   parseAssistantPlan,
   type AssistantPlan,
 } from './assistantPlan'
@@ -149,8 +147,6 @@ import {
   assistantComposerDraftMatches,
   shouldHydrateAssistantComposerDraftForThread,
 } from './assistantComposerDraftPolicy'
-import AssistantPlanPopover from './AssistantPlanPopover.vue'
-import AssistantPlanDisclosure from './AssistantPlanDisclosure.vue'
 import { isValidTimestamp } from './agentkit/timestamp'
 import type { AIWorkbenchLauncherItemView, AIWorkbenchTabView } from './agentkit/ai'
 import { useUserLabels } from './portalkit/useUserLabels'
@@ -210,7 +206,6 @@ import {
 } from './projectThumbnailViews'
 import { withRequestTimeout } from './requestTimeout'
 import NewProjectWizard from './NewProjectWizard.vue'
-import FirstTimeSetup from './FirstTimeSetup.vue'
 // Repository settings are optional; keep their form out of the initial page bundle.
 const GitConnectionSettings = defineAsyncComponent({
   loader: () => import('./GitConnectionSettings.vue'),
@@ -224,9 +219,7 @@ const ProjectAuthentication = defineAsyncComponent({
   loadingComponent: { render: () => h('div', { role: 'status', class: 'text-[12px] text-text-muted' }, 'Loading authentication settings…') },
   errorComponent: { render: () => h('div', { role: 'alert', class: 'text-[12px] text-danger' }, 'Could not load authentication settings. Reload this page to retry.') },
 })
-import { useGitOnboarding } from './useGitOnboarding'
 import { useProjectCreationSubmit } from './useProjectCreationSubmit'
-import GitRecommendationBanner from './GitRecommendationBanner.vue'
 import ProjectIntegrations from './ProjectIntegrations.vue'
 import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
 import AIWorkbenchSection from './agentkit/AIWorkbenchSection.vue'
@@ -616,7 +609,6 @@ const appStudioSectionTabs = [
 ] as const
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = portalHref('/ui/providers/code/connections')
-const CODE_PROVIDER_CATALOG_URL = portalHref('/providers')
 const PUBLISHING_DOMAIN_SUFFIX = '.railgrid.app'
 const PROJECT_THUMBNAIL_REFRESH_INITIAL_DELAY_MS = 3_000
 const PROJECT_THUMBNAIL_REFRESH_MAX_DELAY_MS = 30_000
@@ -1086,15 +1078,19 @@ const authCompatibleCreationChecking = ref(false)
 let authCompatibleCreationGeneration = 0
 const projectCreationSubmit = useProjectCreationSubmit()
 const projectCreationPending = projectCreationSubmit.pending
-const setupSessionActive = ref(false)
-const { skipped: gitSetupSkipped, skip: skipGitSetup, reset: resetGitSetup } = useGitOnboarding(() => props.ctx)
+const createModelSetup = ref(false)
+const awaitingCreatedModel = ref(false)
+const showProjectSetupJourney = ref(false)
+const projectSetupSteps = [
+  { label: 'Connect a provider' },
+  { label: 'Choose a model' },
+  { label: 'Describe your project' },
+  { label: 'Review project' },
+]
 const createWithGit = ref(false)
 const reviewedGitConnection = ref('')
 const createGitError = ref('')
-const setupCompletionVisible = ref(false)
 const messagesRef = ref<HTMLDivElement | null>(null)
-const assistantProgressDisclosureChoices = ref<Map<string, { closed: boolean; expanded: boolean }>>(new Map())
-const assistantPlanAnnouncement = ref('')
 const promptRef = ref<{ focus: () => void; setSelectionRange: (start: number, end: number) => void } | null>(null)
 const workspaceRef = ref<HTMLDivElement | null>(null)
 const splitRegionRef = ref<HTMLDivElement | null>(null)
@@ -1636,8 +1632,6 @@ function invalidateProjectContextState() {
   historyLoadSerial += 1
   invalidateLLMModelMutationState()
   invalidateLLMConnectionTest()
-  setupSessionActive.value = false
-  setupCompletionVisible.value = false
   createWithGit.value = false
   reviewedGitConnection.value = ''
   createGitError.value = ''
@@ -1730,6 +1724,9 @@ function invalidateProjectContextState() {
   developmentTemplateStatus.value = null
   developmentTemplateError.value = null
   llmSaving.value = false
+  createModelSetup.value = false
+  showProjectSetupJourney.value = false
+  awaitingCreatedModel.value = false
   llmEditorOpen.value = false
   llmEditingModelID.value = null
   llmEditorBaseline.value = null
@@ -2444,7 +2441,7 @@ const landingReasoningEffortResetRequired = computed(() => Boolean(
   reasoningEffortError(landingReasoningEffort.value, selectedReasoningEffortOptions.value),
 ))
 const createPromptContent = computed(() => projectCreationPrompt(prompt.value, preProjectAttachments.value.length))
-const canStartProjectFromPrompt = computed(() => !createSetupLoading.value && canSubmitCreatePrompt(createPromptContent.value, createReadiness.value) && llmConfigured.value && !landingReasoningEffortError.value)
+const canStartProjectFromPrompt = computed(() => !createSetupLoading.value && canSubmitCreatePrompt(createPromptContent.value, createReadiness.value) && !landingReasoningEffortError.value)
 const assistantComposerHasChipContent = computed(() => assistantComposerParts.value.some((part) => part.type !== 'text'))
 const canSendPrompt = computed(() =>
   llmConfigured.value &&
@@ -2474,36 +2471,11 @@ const settingsDescription = computed(() => {
   if (settingsProject.value) return 'Update this project and manage its development preview access.'
   return 'Configure the model credentials App Studio uses when creating and chatting in projects.'
 })
-const activePlanMessage = computed(() =>
-  activeAssistantPlanMessage(
-    messages.value,
-    activeAssistantRun?.activeMessageID,
-    messageStreaming.value,
-    Boolean(activeAssistantRun && assistantRunTerminal(activeAssistantRun.status)),
-  ),
-)
-let lastPlanAnnouncementKey = ''
-watch(activePlanMessage, (current, previous) => {
-  if (current) {
-    const progress = assistantPlanProgress(current.plan)
-    const key = `${current.id}:${progress.completed}:${progress.activeLabel}`
-    if (key === lastPlanAnnouncementKey) return
-    lastPlanAnnouncementKey = key
-    assistantPlanAnnouncement.value = progress.activeLabel
-      ? `${progress.completed} of ${progress.total} steps. In progress: ${progress.activeLabel}`
-      : `${progress.completed} of ${progress.total} steps.`
-    return
-  }
-  if (!previous || !lastPlanAnnouncementKey) return
-  assistantPlanAnnouncement.value = ''
-  lastPlanAnnouncementKey = ''
-})
 const conversationWorkingLabel = computed(() => {
   if (assistantStopRequested.value || activeAssistantRun?.status === 'stopping') return 'Stopping…'
   if (conversationConnectionState.value === 'reconnecting') return 'Reconnecting'
   if (activeAssistantRun?.status === 'pending_permission') return 'Waiting for approval'
   if (activeAssistantRun?.status === 'pending_input') return 'Waiting for your answer'
-  if (activePlanMessage.value) return 'Running'
   if (conversationStatus.value) {
     const status = conversationStatus.value.trim().toLowerCase()
     if (status === 'running' || status === 'working') return 'Running'
@@ -2523,37 +2495,8 @@ const llmSettingsChecking = computed(() => llmSettingsLoading.value || (hasProje
 const createSetupLoading = computed(() => llmSettingsChecking.value)
 const createPromptSubmitTitle = computed(() => {
   if (createSetupLoading.value) return 'Checking workspace setup'
-  if (createSetupItemsForPrompt.value.length > 0) return 'Complete setup before preparing a project'
-  return prompt.value.trim() ? 'Prepare project for review' : 'Describe what you want to build'
+  return createPromptContent.value ? 'Review project' : 'Describe what you want to build'
 })
-const createSetupVisible = computed(() => createSetupItemsForPrompt.value.length > 0 || !!llmSettingsError.value)
-const gitSetupVisible = computed(() => !gitSetupSkipped.value && !gitConnectionCreateReady.value)
-const createSetupErrorMessage = computed(() => llmSettingsError.value || '')
-const firstTimeSetupVisible = computed(() => isCreateRoute.value && !wizardOpen.value && (createSetupLoading.value || createSetupVisible.value || gitSetupVisible.value || setupCompletionVisible.value))
-const setupModelName = computed(() => selectedLLMModel.value?.model || llmSettings.value?.model || '')
-
-watch([isCreateRoute, createSetupLoading, () => createSetupVisible.value || gitSetupVisible.value], ([onCreateRoute, loadingSetup, setupVisible]) => {
-  if (!onCreateRoute || loadingSetup) return
-  if (setupVisible) {
-    setupSessionActive.value = true
-    setupCompletionVisible.value = false
-  } else if (setupSessionActive.value) {
-    setupCompletionVisible.value = true
-  }
-}, { immediate: true })
-
-async function finishFirstTimeSetup() {
-  setupSessionActive.value = false
-  setupCompletionVisible.value = false
-  await nextTick()
-  promptRef.value?.focus()
-}
-
-function leaveFirstTimeSetup() {
-  setupSessionActive.value = false
-  setupCompletionVisible.value = false
-  props.navigate('')
-}
 function deleteProjectMessage(project: Project): string {
   const projectName = project.displayName || project.name
   if (!project.repository?.ref) return `Delete ${projectName}? This removes the project and its conversation history. There is no Git repository containing an external copy of its source.`
@@ -2994,8 +2937,9 @@ const settingsInWorkbench = computed(() => !!settingsProject.value && activeWork
 const publishingInWorkbench = computed(() => activeWorkbenchTab.value?.kind === 'publishing')
 const historyInWorkbench = computed(() => activeWorkbenchTab.value?.kind === 'history')
 const projectControlSurfaceInWorkbench = computed(() => settingsInWorkbench.value || publishingInWorkbench.value || historyInWorkbench.value)
-const settingsSurfaceInline = computed(() => projectControlSurfaceInWorkbench.value || isModelsRoute.value || isCreateModelRoute.value)
+const settingsSurfaceInline = computed(() => createModelSetup.value || projectControlSurfaceInWorkbench.value || isModelsRoute.value || isCreateModelRoute.value)
 const projectControlSurfaceTarget = computed(() => {
+  if (createModelSetup.value) return '#app-studio-create-model-host'
   if (publishingInWorkbench.value) return '#app-studio-publishing-host'
   if (historyInWorkbench.value) return '#app-studio-history-host'
   if (settingsInWorkbench.value) return '#app-studio-project-settings-host'
@@ -3315,7 +3259,7 @@ const developmentPreviewUnavailableMessage = computed(() => {
 
 function handleCreateSetupWake() {
   if (!isCreateRoute.value || createSetupLoading.value) return
-  void Promise.all([loadCreateReadiness(), loadLLMSettings()])
+  void Promise.all([loadCreateReadiness(), loadLLMSettings(awaitingCreatedModel.value)])
 }
 
 onMounted(() => {
@@ -3762,8 +3706,7 @@ async function load() {
       return
     }
     if (visibleProjectList.length === 0) {
-      // Let the settled index show its first-run guide. Creation starts from
-      // the guide's action; a stale project URL still recovers to creation.
+      // Use the creation route for an empty index or a stale project URL.
       activeProjectContextFingerprint = ''
       resetProjectOpenLatch()
       resetThreadHistoryLatch()
@@ -3774,7 +3717,7 @@ async function load() {
       selected.value = null
       messages.value = []
       resetWorkbench()
-      if (!isProjectIndexRoute.value) props.navigate(CREATE_PROJECT_ROUTE, { replace: true })
+      props.navigate(CREATE_PROJECT_ROUTE, { replace: true })
       return
     }
     const pathName = selectedNameFromPath.value
@@ -3943,6 +3886,7 @@ async function loadModelProviderConnections() {
   if (!hasProjectRequestTransport(props.ctx)) {
     llmConnections.value = []
     llmConnectionsLoading.value = false
+  llmConnectionsLoaded.value = false
     llmConnectionsError.value = null
     llmConnectionsLoaded.value = false
     return
@@ -4058,7 +4002,7 @@ function invalidateLLMSettingsLoad() {
   llmSettingsLoading.value = false
 }
 
-async function loadLLMSettings() {
+async function loadLLMSettings(waitForConfiguredModel = false) {
   const serial = ++llmSettingsLoadSerial
   const projectName = llmSettingsLoadProject = selectedNameFromPath.value
   const isCurrent = () => serial === llmSettingsLoadSerial && (!projectName || selectedNameFromPath.value === projectName)
@@ -4078,7 +4022,9 @@ async function loadLLMSettings() {
       applyLLMSettings(settings)
       // A newly saved binding can precede the Studio controller's status.
       // Give project chat a bounded chance to see the ready model.
-      if (!projectName || settings.models.every(model => model.configured) || attempt >= 6) return
+      const waitingForNewModel = waitForConfiguredModel && !llmConfigured.value
+      const waitingForProjectModels = projectName && settings.models.some(model => !model.configured)
+      if ((!waitingForNewModel && !waitingForProjectModels) || attempt >= 6) return
       llmSettingsLoading.value = !llmConfigured.value
       await new Promise(resolve => setTimeout(resolve, 500))
       if (!isCurrent()) return
@@ -5118,7 +5064,7 @@ function clearLLMDiscovery() {
 }
 
 const llmDiscoveryConnection = computed(() => {
-  if (!isModelEditorPage.value || !hasProjectRequestTransport(props.ctx)) return
+  if ((!isModelEditorPage.value && !createModelSetup.value) || !hasProjectRequestTransport(props.ctx)) return
   const connection = llmConnections.value.find(item => item.name === llmBindingConnectionRef.value)
   if (connection?.connectionFingerprint && !connection.deleting && connection.credentialMode !== 'service-account-json'
     && connection.observedGeneration === connection.generation) return connection
@@ -5192,7 +5138,9 @@ async function discoverLLMModels() {
   const serial = ++llmDiscoverySerial
   const requestRoute = routePath.value
   const requestFingerprint = connection.connectionFingerprint
+  const requestContext = appContextFingerprint(props.ctx)
   const isCurrent = () => serial === llmDiscoverySerial && requestRoute === routePath.value
+    && requestContext === appContextFingerprint(props.ctx)
     && requestFingerprint === llmDiscoveryConnection.value?.connectionFingerprint
   llmDiscoveryLoading.value = true
   llmDiscoveryError.value = null
@@ -5285,7 +5233,7 @@ function cancelLLMProviderDetour() {
 }
 
 function continueModelWithProvider(connection: ProjectModelProviderConnection) {
-  if (!llmProviderDetourActive.value || !connection.name) return
+  if ((!llmProviderDetourActive.value && !createModelSetup.value) || !connection.name) return
   llmBindingConnectionRef.value = connection.name
   llmBindingConnectionInfo.value = connection
   llmProvider.value = connection.provider
@@ -5295,6 +5243,11 @@ function continueModelWithProvider(connection: ProjectModelProviderConnection) {
   invalidateLLMConnectionTest()
   clearLLMDiscovery()
   llmConnectionStatusPollRequested.value = true
+  if (createModelSetup.value) {
+    llmDiscoveredModels.value = connection.models ?? []
+    llmDiscoveryComplete.value = llmDiscoveredModels.value.length > 0
+    return
+  }
   handleModelConnectionsChanged(connection)
   finishLLMProviderDetour(llmProviderDetourReturnRoute.value)
 }
@@ -5435,7 +5388,11 @@ async function applyLandingStarterPrompt(starter: LandingStarterPrompt) {
   promptRef.value?.setSelectionRange(prompt.value.length, prompt.value.length)
 }
 
-async function openNewProjectComposer() {
+watch(promptRef, (composer) => {
+  if (isCreateRoute.value && !wizardOpen.value && !createModelSetup.value) composer?.focus()
+}, { flush: 'post' })
+
+function openNewProjectComposer() {
   authCompatibleCreationGeneration += 1
   authCompatibleCreation.value = false
   authCompatibleCreationError.value = ''
@@ -5445,8 +5402,6 @@ async function openNewProjectComposer() {
   closeLandingImportPopover()
   wizardOpen.value = false
   props.navigate(CREATE_PROJECT_ROUTE)
-  await nextTick()
-  promptRef.value?.focus()
 }
 
 function projectToSlug(value: string): string {
@@ -5597,8 +5552,11 @@ async function saveLLMSettings() {
     llmConnectionStatusPollRequested.value = false
     llmEditorBaseline.value = null
     llmValidationAttempted.value = false
-    if (returnRoute) {
-      if (returnRoute === CREATE_PROJECT_ROUTE && setupSessionActive.value && !gitSetupVisible.value) setupCompletionVisible.value = true
+    if (createModelSetup.value) {
+      awaitingCreatedModel.value = !llmConfigured.value
+      createModelSetup.value = false
+      if (awaitingCreatedModel.value) void loadLLMSettings(true)
+    } else if (returnRoute) {
       modelsReturnRoute.value = ''
       props.navigate(returnRoute, { replace: true })
     }
@@ -5798,10 +5756,52 @@ async function setDefaultLLMModel(modelID: string) {
   }
 }
 
-async function createProjectFromPrompt() {
-  authCompatibleCreation.value = false
-  const content = projectCreationPrompt(prompt.value, preProjectAttachments.value.length)
-  if (!content) return
+function beginCreateModelSetup() {
+  if (createModelSetup.value) return
+  if (!llmConnectionsLoaded.value && !llmConnectionsLoading.value && !llmConnectionsError.value) {
+    void loadModelProviderConnections()
+  }
+  openLLMEditor()
+  showProjectSetupJourney.value = true
+  createModelSetup.value = true
+}
+
+function clearCreateModelSetup() {
+  createModelSetup.value = false
+  llmEditorOpen.value = false
+  llmEditorBaseline.value = null
+  invalidateLLMConnectionTest()
+}
+
+function cancelCreateModelSetup() {
+  if (projects.value.length) backToProjectList()
+  else openModelsSection()
+}
+
+function backToProjectList() {
+  props.navigate('')
+}
+
+watch(
+  [isCreateRoute, llmSettingsChecking, llmConfigured, llmSettingsError, awaitingCreatedModel],
+  ([active, checking, configured, settingsError, awaitingModel]) => {
+    if (!active) {
+      if (createModelSetup.value) clearCreateModelSetup()
+      showProjectSetupJourney.value = false
+      awaitingCreatedModel.value = false
+      return
+    }
+    if (configured) awaitingCreatedModel.value = false
+    if (!wizardOpen.value && !awaitingModel && !checking && !configured && !settingsError && llmSettings.value) {
+      beginCreateModelSetup()
+    }
+  },
+  { immediate: true },
+)
+
+function createProjectFromPrompt() {
+  const content = createPromptContent.value
+  if (!content || !canStartProjectFromPrompt.value || !llmConfigured.value || createModelSetup.value || busy.value) return
   // Keep the derived planning input visible in the wizard. It is deliberately
   // neutral: the only claim made is that attachments were supplied as context.
   if (!prompt.value.trim()) prompt.value = content
@@ -5875,8 +5875,6 @@ async function onWizardCreate(payload: { prompt: string; templateName?: string; 
       if (!authModeIsCurrent()) return
     }
     prompt.value = payload.prompt
-    setupSessionActive.value = false
-    setupCompletionVisible.value = false
     wizardOpen.value = false
     await createProjectAndStartConversation(payload.prompt, {
       templateName: payload.templateName,
@@ -5955,7 +5953,7 @@ async function setupAuthInCurrentProjectDraft() {
 }
 
 function onWizardSetupAction(action: 'setup-llm') {
-  if (action === 'setup-llm') void openSettings()
+  if (action === 'setup-llm') beginCreateModelSetup()
 }
 
 async function onWizardSetupRetry() {
@@ -6109,7 +6107,6 @@ async function createProjectAndStartConversation(
         connectionRef: createWithGit.value ? reviewedGitConnection.value : undefined,
         templateName: createOverrides?.templateName,
         displayName: createOverrides?.displayName,
-        inferDevelopmentTemplate: !createOverrides?.templateName,
       }, (message) => {
         if (current()) conversationStatus.value = message
       })
@@ -10049,29 +10046,6 @@ function assistantProgressHeaderVisible(message: ProjectMessageView): boolean {
     (assistantMessageOwnsActiveRun(message) && !assistantProgressClosed(message)))
 }
 
-function assistantPlanDisclosureVisible(message: ProjectMessageView): boolean {
-  return Boolean(message.plan && !assistantProgressClosed(message) && activePlanMessage.value?.id !== message.id)
-}
-
-function assistantProgressExpanded(message: ProjectMessageView): boolean {
-  // Reveal streamed work immediately; an explicit reader choice survives updates.
-  return assistantProgressDisclosureChoices.value.get(message.id)?.expanded ?? !assistantProgressClosed(message)
-}
-
-function toggleAssistantProgress(message: ProjectMessageView): void {
-  const expanding = !assistantProgressExpanded(message)
-  const choices = new Map(assistantProgressDisclosureChoices.value)
-  choices.set(message.id, {
-    closed: assistantProgressClosed(message),
-    expanded: expanding,
-  })
-  assistantProgressDisclosureChoices.value = choices
-}
-
-function assistantProgressRegionID(messageID: string): string {
-  return `assistant-progress-${messageID}`
-}
-
 function assistantWorkedLabel(message: ProjectMessageView): string {
   const status = assistantTurnProgressStatus(message)
   if (status === 'pending' || status === 'waiting') return ''
@@ -10679,7 +10653,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     @save="commitAssistantThreadTitleRename"
     @close="cancelAssistantThreadTitleRename"
   />
-  <div class="sr-only" aria-live="polite" aria-atomic="true">{{ assistantPlanAnnouncement }}</div>
 
   <div v-if="initializing && !loading && !selectedNameFromPath" class="flex h-full min-h-0 items-center justify-center bg-surface px-6 text-text-primary" role="status" aria-live="polite" aria-busy="true">
     <div class="flex max-w-md items-start gap-3 rounded-lg border border-border-subtle bg-surface-raised/70 p-4 text-[13px] text-text-muted">
@@ -10708,7 +10681,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     <div class="flex min-h-full w-full flex-col gap-4">
       <Tabs
         v-if="!isCreateModelRoute"
-        v-show="!isModelEditorPage && !llmProviderDetourActive"
+        v-show="createModelSetup || (!isModelEditorPage && !llmProviderDetourActive)"
         :tabs="appStudioSectionTabs"
         :active="isModelsRoute || isCreateModelRoute ? 'setup' : 'projects'"
         aria-label="App Studio sections"
@@ -10783,23 +10756,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" :disabled="loading" @click="load">Retry</button>
         </div>
 
-        <FirstRunGuide
-          v-if="projectsLoaded && !loading && !error && projects.length === 0"
-          title="No projects yet."
-          description="Start with a project description and review the plan before anything is created."
-          primary-label="New project"
-          :primary-disabled="busy"
-          :steps="[
-            { label: 'Describe your project', description: 'Explain what you want to build.' },
-            { label: 'Review the plan', description: 'Check the proposed project before creating it.' },
-            { label: 'Start building', description: 'Work with the assistant and preview your app.' },
-          ]"
-          @primary="openNewProjectComposer"
-        >
-          <template #icon><Folder :stroke-width="1.75" /></template>
-        </FirstRunGuide>
-
-        <template v-else-if="projectLayout === 'grid'">
+        <template v-if="projectLayout === 'grid'">
           <div v-if="filteredProjects.length" class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,280px),360px))] justify-start gap-5 pb-8">
             <article
               v-for="project in filteredProjects"
@@ -10906,7 +10863,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           :row-aria-label="(row) => row.deleting
             ? `Deleting project ${String(row.displayName || row.name)}`
             : `Open project ${String(row.displayName || row.name)}`"
-          :empty-text="!projectsLoaded || loading ? 'Loading projects…' : error ? 'Projects are unavailable.' : projects.length === 0 ? 'No projects yet.' : 'No projects match this search.'"
+          :empty-text="!projectsLoaded || loading ? 'Loading projects…' : error ? 'Projects are unavailable.' : 'No projects match this search.'"
           @row-click="enterProjectTableRow"
         >
           <template #name="{ row }">
@@ -10937,32 +10894,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       <div v-else-if="showNewProjectComposer">
         <main
           class="flex min-h-0 flex-1 justify-center py-4"
-          :class="wizardOpen || firstTimeSetupVisible ? 'items-start' : 'items-center'"
         >
-          <section class="w-full max-w-[1060px]">
-            <template v-if="firstTimeSetupVisible">
-              <FirstTimeSetup
-                :readiness="createReadiness"
-                :llm-configured="llmConfigured"
-                :llm-model="setupModelName"
-                :loading="createSetupLoading"
-                :git-loading="createReadinessChecking"
-                :git-skipped="gitSetupSkipped"
-                :git-error="createReadinessError || ''"
-                :llm-error="llmSettingsError || ''"
-                :completion="setupCompletionVisible"
-                :code-connections-url="CODE_CONNECTIONS_URL"
-                :code-catalog-url="CODE_PROVIDER_CATALOG_URL"
-                @connect-model="openSettings"
-                @retry="onWizardSetupRetry"
-                @skip-git="skipGitSetup"
-                @revisit-git="resetGitSetup"
-                @finish="finishFirstTimeSetup"
-                @back="leaveFirstTimeSetup"
-              />
-            </template>
-
-            <template v-else-if="wizardOpen">
+          <section class="w-full" :class="llmConfigured && !wizardOpen && !createModelSetup ? 'max-w-[860px]' : 'max-w-[760px]'">
+            <button v-if="projects.length || error" type="button" class="k-btn k-btn--ghost k-back-action mb-4" :disabled="llmSaving || busy" @click="backToProjectList">
+              <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> Projects
+            </button>
+            <div v-if="createModelSetup" id="app-studio-create-model-host" />
+            <div v-if="wizardOpen" v-show="!createModelSetup && !awaitingCreatedModel">
               <NewProjectWizard
                 :ctx="props.ctx"
                 :initial-prompt="authCompatibleCreation ? undefined : prompt"
@@ -10970,10 +10908,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 :auth-compatible-only="authCompatibleCreation"
                 :creation-error="authCompatibleCreationError"
                 :creation-checking="authCompatibleCreationChecking"
-                :disabled="projectCreationPending || busy || !canStartProjectFromPrompt"
+                :disabled="projectCreationPending || busy || !canStartProjectFromPrompt || !llmConfigured"
                 :disabled-reason="projectCreationPending ? 'Checking project setup…' : createPromptSubmitTitle"
                 :setup-items="createSetupItemsForPrompt"
-                :setup-error="createSetupErrorMessage"
+                :setup-error="llmSettingsError || ''"
                 :setup-loading="createSetupLoading"
                 :code-connections-url="CODE_CONNECTIONS_URL"
                 :attachments="preProjectAttachments"
@@ -10986,14 +10924,16 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 @setup-action="onWizardSetupAction"
                 @retry-setup="onWizardSetupRetry"
               >
-                <template #repository-options>
+                <template v-if="showProjectSetupJourney" #review-progress>
+                  <FirstRunGuide embedded :steps="projectSetupSteps" :current-step="3" journey-label="New project steps" />
+                </template>
+                <template v-if="reviewedGitConnection || createGitError" #repository-options>
                   <div class="grid min-w-0 gap-2 text-[12px]">
                     <label class="k-checkbox-hit flex items-center gap-2 text-text-primary">
                       <input v-model="createWithGit" type="checkbox" class="k-checkbox" :disabled="projectCreationPending || !reviewedGitConnection" />
                       Create a private Git repository (recommended)
                     </label>
                     <p class="text-text-secondary">{{ createWithGit ? 'Project source will be saved to a new private repository.' : 'Start without Git. Connect a repository later in project settings.' }}</p>
-                    <a v-if="!reviewedGitConnection" :href="CODE_CONNECTIONS_URL" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target text-accent underline underline-offset-2">Connect GitHub</a>
                     <p v-if="createGitError" role="alert" class="text-danger">{{ createGitError }}</p>
                     <div v-if="createGitError || !reviewedGitConnection" class="flex flex-wrap gap-2">
                       <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="projectCreationPending" @click="onWizardSetupRetry">Check again</button>
@@ -11002,72 +10942,46 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   </div>
                 </template>
               </NewProjectWizard>
-            </template>
-
-            <template v-else>
-            <div class="mx-auto w-full max-w-[860px]">
-              <GitRecommendationBanner v-if="!gitConnectionCreateReady" class="mb-8" :readiness="createReadiness" :checking="createReadinessChecking" :error="createReadinessError || ''" @retry="loadCreateReadiness" />
-              <h2 class="text-left text-[28px] font-semibold leading-8 text-text-primary sm:text-[32px] sm:leading-9">
-                What are we building in Railgrid today?
-              </h2>
-              <p class="mt-2 max-w-[68ch] text-left text-[14px] leading-6 text-text-secondary">
-                Describe what you want to build. Railgrid turns your idea into a blueprint you can review before anything is created.
-              </p>
             </div>
 
-            <section class="mx-auto mt-5 w-full max-w-[860px]" aria-labelledby="landing-starting-points-title">
-              <div class="mb-2 flex items-center justify-between gap-3">
-                <h3 id="landing-starting-points-title" class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-secondary">Starting points</h3>
-                <span class="text-[11px] text-text-muted">Optional</span>
-              </div>
-              <div class="grid gap-1.5">
-                <button
-                  v-for="starter in landingStarterPrompts"
-                  :key="starter.id"
-                  type="button"
-                  class="app-studio-touch-target group flex min-h-11 w-full min-w-0 items-center gap-3 rounded-md border px-3 py-2 text-left transition hover:border-accent/30 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                  :class="prompt.trim() === starter.prompt ? 'border-accent/40 bg-accent/10' : 'border-border-subtle bg-surface'"
-                  :aria-label="`Use ${starter.label} starting point`"
-                  :aria-pressed="prompt.trim() === starter.prompt"
-                  @click="applyLandingStarterPrompt(starter)"
-                >
-                  <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-raised text-accent" aria-hidden="true">
-                    <component :is="starter.icon" class="h-4 w-4" :stroke-width="1.75" />
-                  </span>
-                  <span class="min-w-0 flex-1">
-                    <span class="block truncate text-[12px] font-semibold text-text-primary">{{ starter.label }}</span>
-                    <span class="block truncate text-[11px] leading-4 text-text-secondary">{{ starter.description }}</span>
-                  </span>
-                  <ArrowRight class="h-3.5 w-3.5 shrink-0 text-text-muted transition-transform group-hover:translate-x-0.5 group-focus-visible:translate-x-0.5" :stroke-width="1.75" aria-hidden="true" />
-                </button>
+            <section v-if="awaitingCreatedModel && !createModelSetup" class="k-create-surface k-create-surface--wide" aria-labelledby="create-model-activation-title">
+              <div class="k-create-body gap-5 p-5 sm:p-6">
+                <header>
+                  <h2 id="create-model-activation-title" class="k-create-title">Choose a model</h2>
+                  <FirstRunGuide embedded :steps="projectSetupSteps" :current-step="1" journey-label="New project steps" />
+                </header>
+                <p v-if="llmSettingsLoading" class="flex items-center gap-2 text-[13px] text-text-secondary" role="status">
+                  <Loader2 class="h-4 w-4 animate-spin text-accent motion-reduce:animate-none" /> Waiting for the saved model to become available…
+                </p>
+                <InlineNotification
+                  v-else
+                  :tone="llmSettingsError ? 'error' : 'warning'"
+                  :message="llmSettingsError || 'The model is saved and still becoming available.'"
+                  action-label="Check again"
+                  @action="loadLLMSettings(true)"
+                />
               </div>
             </section>
-
-            <form class="mx-auto mt-5 max-w-[860px]" @submit.prevent="createProjectFromPrompt">
-              <label for="landing-project-prompt" class="sr-only">
-                Describe what you want to build
-              </label>
-              <AssistantPreProjectComposer
-                v-if="!wizardOpen"
-                ref="promptRef"
-                v-model="prompt"
-                input-id="landing-project-prompt"
-                :attachments="preProjectAttachments"
-                :error="preProjectAttachmentError"
-                :disabled="busy"
-                @add-attachment="stagePreProjectAttachment"
-                @remove-attachment="removePreProjectAttachment"
-                @retry-attachment="retryPreProjectAttachment"
-                @close-menu="closeLandingImportPopover"
-                @submit="createProjectFromPrompt"
-              >
-                <template #menu>
+            <template v-else-if="!createModelSetup && !wizardOpen">
+              <InlineNotification v-if="llmSettingsError" class="mb-3" tone="error" :message="llmSettingsError" action-label="Retry" @action="loadLLMSettings" />
+              <p v-if="!llmConfigured && !llmSettingsError" class="k-inline-notification" role="status">
+                <Loader2 class="h-4 w-4 animate-spin text-accent motion-reduce:animate-none" /> Checking workspace setup…
+              </p>
+              <form v-else-if="llmConfigured" class="grid gap-5" @submit.prevent="createProjectFromPrompt">
+                <header class="flex flex-wrap items-start justify-between gap-3">
+                  <div class="min-w-0 flex-1 basis-72">
+                    <h2 class="text-[28px] font-semibold leading-8 text-text-primary sm:text-[32px] sm:leading-9">
+                      What are we building in Railgrid today?
+                    </h2>
+                    <p class="mt-2 max-w-[65ch] text-[14px] leading-6 text-text-secondary">
+                      Describe an app, dashboard, workflow, or API. You’ll review the plan before anything is created.
+                    </p>
+                  </div>
                   <div ref="landingImportPopoverRef" class="relative grid gap-1">
                     <button
                       ref="landingImportTriggerRef"
                       type="button"
-                      role="menuitem"
-                      class="app-studio-touch-target flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
+                      class="app-studio-touch-target k-btn k-btn--ghost"
                       :disabled="busy"
                       data-k-tip="Import an existing repository"
                       aria-label="Import an existing repository"
@@ -11086,11 +11000,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       role="dialog"
                       aria-label="Import an existing repository"
                       tabindex="-1"
-                      class="grid w-[min(360px,calc(100vw-2rem))] gap-2 border-t border-border-subtle px-2 pb-1 pt-2 text-left"
+                      class="k-menu absolute left-0 top-full z-20 mt-2 grid w-[min(360px,calc(100vw-5rem))] gap-3 p-3 text-left sm:left-auto sm:right-0"
                       aria-live="polite"
                     >
-                      <div class="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-text-secondary">
-                        <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      <div class="text-[13px] font-semibold">
                         Import repository
                       </div>
                       <div v-if="importRepositoriesLoading && importRepositories.length === 0" class="grid gap-2" role="status" aria-busy="true">
@@ -11141,94 +11054,76 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       </div>
                     </div>
                   </div>
-                </template>
-                <template #actions>
-                  <AIModelReasoningPicker
-                    compact
-                    :models="configuredLLMModels"
-                    :selected-i-d="selectedLLMModel?.id || ''"
-                    :effort="landingReasoningEffort"
-                    :effort-options="selectedReasoningEffortChoices"
-                    :default-effort-label="selectedModelDefaultEffortLabel"
-                    :disabled="busy || llmSettingsLoading"
-                    :reasoning-disabled="busy || llmSettingsLoading"
-                    :validation-error="landingReasoningEffortError"
-                    :reset-required="landingReasoningEffortResetRequired"
-                    :edit-model-required="selectedModelDefaultEffortUnsupported"
-                    @select="selectedLLMModelID = $event"
-                    @update:effort="selectLandingReasoningEffort"
-                    @edit-model-settings="editSelectedModelReasoningSettings"
-                  />
-                  <button
-                    type="submit"
-                    class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                    :disabled="busy || !canStartProjectFromPrompt"
-                    :title="createPromptSubmitTitle"
-                    aria-label="Prepare project for review"
-                  >
-                    <ArrowUp class="h-4 w-4" :stroke-width="1.75" />
-                  </button>
-                </template>
-              </AssistantPreProjectComposer>
-              <div v-if="createSetupLoading" class="mt-3 flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-raised/70 p-3 text-[12px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
-                <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" />
-                Checking workspace setup…
-              </div>
-              <div
-                v-else-if="createSetupVisible"
-                class="mt-3 rounded-lg border border-border-subtle bg-surface-raised/70 p-3 text-left"
-              >
-                <div class="mb-2 flex items-center gap-2 text-[12px] font-semibold text-text-primary">
-                  <Settings2 class="h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
-                  Complete setup before creating
-                </div>
-                <div v-if="createSetupErrorMessage" class="mb-2 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">{{ createSetupErrorMessage }}</div>
-                <div class="grid gap-2">
-                  <div
-                    v-for="item in createSetupItemsForPrompt"
-                    :key="item.id"
-                    class="flex min-h-10 flex-wrap items-center justify-between gap-2 rounded-lg border border-border-subtle bg-surface px-3 py-2"
-                  >
-                    <div class="flex min-w-0 items-center gap-2">
-                      <span
-                        class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border"
-                        :class="item.status === 'ready'
-                          ? 'border-success/30 bg-success-subtle text-success'
-                          : item.status === 'checking'
-                            ? 'border-warning/30 bg-warning-subtle text-warning'
-                            : 'border-border-subtle bg-surface-raised text-text-muted'"
-                      >
-                        <Check v-if="item.status === 'ready'" class="h-3.5 w-3.5" :stroke-width="2" />
-                        <Loader2 v-else-if="item.status === 'checking'" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                        <GitBranch v-else-if="item.id === 'git'" class="h-3.5 w-3.5" :stroke-width="1.75" />
-                        <Settings2 v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                      </span>
-                      <span class="truncate text-[13px] font-medium text-text-primary">{{ item.label }}</span>
-                    </div>
-                    <span v-if="item.status === 'ready'" class="text-[12px] font-medium text-success">Ready</span>
-                    <span v-else-if="item.status === 'checking'" class="text-[12px] font-medium text-warning">Checking</span>
-                    <a
-                      v-else-if="item.action === 'connect-git'"
-                      :href="CODE_CONNECTIONS_URL"
-                      class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
-                    >
-                      <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
-                      {{ item.actionLabel }}
-                    </a>
+                </header>
+                <label for="landing-project-prompt" class="sr-only">
+                  Describe what you want to build
+                </label>
+                <AssistantPreProjectComposer
+                  ref="promptRef"
+                  v-model="prompt"
+                  input-id="landing-project-prompt"
+                  :attachments="preProjectAttachments"
+                  :error="preProjectAttachmentError"
+                  :disabled="busy"
+                  @add-attachment="stagePreProjectAttachment"
+                  @remove-attachment="removePreProjectAttachment"
+                  @retry-attachment="retryPreProjectAttachment"
+                  @submit="createProjectFromPrompt"
+                >
+                  <template #actions>
+                    <AIModelReasoningPicker
+                      v-if="llmConfigured"
+                      compact
+                      class="min-w-[8rem] max-w-full"
+                      :models="configuredLLMModels"
+                      :selected-i-d="selectedLLMModel?.id || ''"
+                      :effort="landingReasoningEffort"
+                      :effort-options="selectedReasoningEffortChoices"
+                      :default-effort-label="selectedModelDefaultEffortLabel"
+                      :disabled="busy || llmSettingsLoading"
+                      :reasoning-disabled="busy || llmSettingsLoading"
+                      :validation-error="landingReasoningEffortError"
+                      :reset-required="landingReasoningEffortResetRequired"
+                      :edit-model-required="selectedModelDefaultEffortUnsupported"
+                      @select="selectedLLMModelID = $event"
+                      @update:effort="selectLandingReasoningEffort"
+                      @edit-model-settings="editSelectedModelReasoningSettings"
+                    />
                     <button
-                      v-else-if="item.action === 'setup-llm'"
-                      type="button"
-                      class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
-                      @click="openSettings"
+                      type="submit"
+                      class="app-studio-touch-target k-btn k-btn--primary shrink-0 whitespace-nowrap"
+                      :disabled="busy || !canStartProjectFromPrompt"
+                      :title="createPromptSubmitTitle"
                     >
-                      <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-                      {{ item.actionLabel }}
+                      Review project <ArrowRight class="h-4 w-4" :stroke-width="1.75" />
+                    </button>
+                  </template>
+                </AssistantPreProjectComposer>
+                <section aria-labelledby="landing-starting-points-title">
+                  <h3 id="landing-starting-points-title" class="mb-2 text-[13px] font-semibold">Starting points</h3>
+                  <div class="grid gap-2 sm:grid-cols-2">
+                    <button
+                      v-for="starter in landingStarterPrompts"
+                      :key="starter.id"
+                      type="button"
+                      class="app-studio-touch-target group flex min-h-11 w-full min-w-0 items-center gap-3 rounded-md border px-3 py-2 text-left transition hover:border-accent/30 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                      :class="prompt.trim() === starter.prompt ? 'border-accent/40 bg-accent/10' : 'border-border-subtle bg-surface'"
+                      :aria-label="`Use ${starter.label} starting point`"
+                      :aria-pressed="prompt.trim() === starter.prompt"
+                      @click="applyLandingStarterPrompt(starter)"
+                    >
+                      <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-raised text-accent" aria-hidden="true">
+                        <component :is="starter.icon" class="h-4 w-4" :stroke-width="1.75" />
+                      </span>
+                      <span class="min-w-0 flex-1">
+                        <span class="block text-[13px] font-semibold text-text-primary">{{ starter.label }}</span>
+                        <span class="block text-[12px] leading-4 text-text-secondary">{{ starter.description }}</span>
+                      </span>
+                      <ArrowRight class="h-3.5 w-3.5 shrink-0 text-text-muted transition-transform group-hover:translate-x-0.5 group-focus-visible:translate-x-0.5" :stroke-width="1.75" aria-hidden="true" />
                     </button>
                   </div>
-                </div>
-              </div>
-            </form>
-
+                </section>
+              </form>
             </template>
           </section>
         </main>
@@ -11313,11 +11208,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <div v-if="!selected" class="shimmer h-2.5 w-48 rounded bg-surface-overlay" aria-hidden="true" />
               <div v-else class="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-text-muted">
                 <span class="truncate">{{ selected.displayName || selected.name || 'Project' }}</span>
-                <span class="app-studio-titlebar-git flex min-w-0 items-center gap-1.5">
+                <span v-if="selected.repository?.ref" class="app-studio-titlebar-git flex min-w-0 items-center gap-1.5">
                   <span aria-hidden="true">·</span>
                   <GitBranch class="h-3 w-3 shrink-0" :stroke-width="2" />
                   <span v-if="selected.repository?.ref" class="truncate">{{ selected.repository.name || selected.repository.ref }}</span>
-                  <button v-else type="button" class="app-studio-touch-target text-accent underline underline-offset-2" @click="openGitSettings">Git recommended · Connect</button>
                 </span>
               </div>
             </template>
@@ -11440,7 +11334,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <div
             ref="messagesRef"
             class="k-ai-transcript-scroll h-full"
-            :class="activePlanMessage ? 'md:pb-16' : ''"
             :aria-busy="messageStreaming || conversationLoading || conversationRefreshing || assistantThreadOlderLoading"
             aria-label="Conversation transcript"
             role="region"
@@ -11492,7 +11385,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   </p>
                   <div v-if="llmSettingsError" class="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-danger" role="alert">
                     <span>{{ llmSettingsError }}</span>
-                    <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadLLMSettings">Retry</button>
+                    <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadLLMSettings()">Retry</button>
                   </div>
                   <div v-else-if="!llmSettingsLoading && !llmSettings?.configured" class="mt-3">
                     <button
@@ -11579,36 +11472,38 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <AITurnProgress
                   class="k-ai-turn-progress--divided"
                   :turn-id="message.id"
-                  :region-id="assistantProgressRegionID(message.id)"
                   :status="assistantTurnProgressStatus(message)"
                   :duration="assistantWorkedLabel(message)"
                   :interrupted="message.viewStatus === 'interrupted'"
-                  :expanded="assistantProgressExpanded(message)"
-                  @toggle="toggleAssistantProgress(message)"
+                />
+                <div
+                  v-if="!assistantProgressClosed(message) && assistantTraceBlocks(message).length"
+                  class="k-ai-turn-progress k-ai-turn-progress__content"
+                  role="log"
+                  aria-live="polite"
+                  aria-relevant="additions"
                 >
-                  <template v-if="assistantTraceBlocks(message).length" #details>
-                    <template
-                      v-for="(traceBlock, traceIndex) in assistantTraceBlocks(message)"
-                      :key="traceBlock.key"
-                    >
-                      <AssistantActionLog
-                        v-if="traceBlock.kind === 'actions'"
-                        :message-id="`${message.id}-trace-${traceIndex}`"
-                        :items="traceBlock.items"
-                        :stopping="assistantProgressStopping(message)"
-                      />
-                      <div
-                        v-else
-                        class="k-ai-prose"
-                        v-html="renderMessageContent(traceBlock.message, 'assistant')"
-                      />
-                    </template>
+                  <template
+                    v-for="(traceBlock, traceIndex) in assistantTraceBlocks(message)"
+                    :key="traceBlock.key"
+                  >
+                    <AssistantActionLog
+                      v-if="traceBlock.kind === 'actions'"
+                      :message-id="`${message.id}-trace-${traceIndex}`"
+                      :items="traceBlock.items"
+                      :stopping="assistantProgressStopping(message)"
+                    />
+                    <div
+                      v-else
+                      class="k-ai-prose"
+                      v-html="renderMessageContent(traceBlock.message, 'assistant')"
+                    />
                   </template>
-                </AITurnProgress>
+                </div>
 
               </template>
               <template
-                v-if="(message.role === 'user' && userMessageHasVisibleContent(message)) || (message.role === 'assistant' && (assistantPlanDisclosureVisible(message) || hasAssistantResponseContent(message) || assistantRunErrorForMessage(message.id) || canImplementPlan(message)))"
+                v-if="(message.role === 'user' && userMessageHasVisibleContent(message)) || (message.role === 'assistant' && (hasAssistantResponseContent(message) || assistantRunErrorForMessage(message.id) || canImplementPlan(message)))"
                 #default
               >
                 <div
@@ -11618,12 +11513,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <div
                   v-else-if="message.role === 'assistant'"
                 >
-                  <AssistantPlanDisclosure
-                    v-if="assistantPlanDisclosureVisible(message)"
-                    :message-id="message.id"
-                    :plan="message.plan!"
-                  />
-
                   <div
                     v-if="hasAssistantResponseContent(message)"
                     class="k-ai-prose"
@@ -11719,12 +11608,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </AITranscript>
           </div>
 
-          <AssistantPlanPopover
-            v-if="activePlanMessage"
-            :key="activePlanMessage.id"
-            :message-id="activePlanMessage.id"
-            :plan="activePlanMessage.plan"
-          />
         </div>
 
         <form class="k-ai-composer-dock" @submit.prevent="sendMessage(assistantActiveRunSubmitIntent())">
@@ -12361,7 +12244,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
   <Teleport defer :to="projectControlSurfaceTarget">
     <div
-      v-if="showSettings || publishingInWorkbench || historyInWorkbench || ((isModelsRoute || isCreateModelRoute) && !(initializing && !loading))"
+      v-if="createModelSetup || showSettings || publishingInWorkbench || historyInWorkbench || ((isModelsRoute || isCreateModelRoute) && !(initializing && !loading))"
       :class="settingsSurfaceInline
         ? 'h-full min-h-0'
         : 'fixed inset-0 [z-index:var(--app-studio-z-modal-backdrop)] flex items-center justify-center bg-surface/60 px-4 py-6 backdrop-blur-sm'"
@@ -12371,14 +12254,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         class="flex w-full flex-col"
         :class="projectControlSurfaceInWorkbench
           ? 'k-ai-workbench-canvas h-full min-h-0 overflow-hidden'
-          : isCreateModelRoute
+          : createModelSetup || isCreateModelRoute
             ? ''
           : isModelsRoute
             ? ''
           : 'max-h-[90vh] max-w-2xl rounded-xl border border-border-subtle shadow-2xl'"
       >
         <header
-          v-if="!settingsInWorkbench && !publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute"
+          v-if="!createModelSetup && !settingsInWorkbench && !publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute"
           class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3"
         >
           <div class="min-w-0">
@@ -12400,7 +12283,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </button>
         </header>
 
-        <div :class="isCreateModelRoute ? '' : isModelsRoute ? 'min-h-0' : publishingInWorkbench || historyInWorkbench ? 'min-h-0 overflow-auto' : settingsInWorkbench ? 'min-h-0 flex-1 overflow-hidden' : 'min-h-0 overflow-auto p-4'">
+        <div :class="createModelSetup || isCreateModelRoute ? '' : isModelsRoute ? 'min-h-0' : publishingInWorkbench || historyInWorkbench ? 'min-h-0 overflow-auto' : settingsInWorkbench ? 'min-h-0 flex-1 overflow-hidden' : 'min-h-0 overflow-auto p-4'">
           <div :class="settingsInWorkbench ? 'flex h-full min-h-0 flex-col' : 'grid gap-4'">
           <component
             v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"
@@ -12863,7 +12746,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </section>
 
           <ModelsSettings
-            v-if="!publishingInWorkbench && !historyInWorkbench && !settingsProject && (isModelsRoute || isCreateModelRoute)"
+            v-if="!publishingInWorkbench && !historyInWorkbench && (createModelSetup || (!settingsProject && (isModelsRoute || isCreateModelRoute)))"
+            :onboarding="createModelSetup"
             :ctx="props.ctx"
             :route-page="isModelsRoute"
             :provider-connections-route="isProviderConnectionsRoute"
@@ -12903,6 +12787,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :require-connection-test="llmConnectionTestRequired"
             :name-only-edit="llmNameOnlyEdit"
             @retry="loadLLMSettings"
+            @retry-connections="loadModelProviderConnections"
             @open-editor="openModelEditor"
             @navigate="navigateModelSettings"
             @begin-provider-detour="beginLLMProviderDetour"
@@ -12913,7 +12798,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             @connections-changed="handleModelConnectionsChanged"
             @retry-connection-status="retryLLMConnectionStatus"
             @delete-connection="deleteModelProviderConnection"
-            @cancel-editor="cancelLLMEditor"
+            @cancel-editor="createModelSetup ? cancelCreateModelSetup() : cancelLLMEditor()"
             @save="verifyAndSaveLLMSettings"
             @test-saved="testSavedLLMModel"
             @delete="deleteLLMModel"
@@ -12922,7 +12807,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             @update:name="updateLLMName"
             @update:model="updateLLMModel"
             @update:reasoning-effort="updateLLMReasoningEffort"
-          />
+          >
+            <template v-if="createModelSetup" #provider-progress>
+              <FirstRunGuide embedded :steps="projectSetupSteps" :current-step="0" journey-label="New project steps" />
+            </template>
+            <template v-if="createModelSetup" #model-progress>
+              <FirstRunGuide embedded :steps="projectSetupSteps" :current-step="1" journey-label="New project steps" />
+            </template>
+          </ModelsSettings>
 
           </div>
         </div>

@@ -14,6 +14,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -123,6 +124,45 @@ func TestSyncProjectDevelopmentTargetWhenReadyWaitsForInstance(t *testing.T) {
 	}
 	if got := f.agent.received["web"]; len(got) != 1 || got[0].Path != "index.html" {
 		t.Fatalf("web received %+v, want the scaffold", got)
+	}
+}
+
+func TestSyncProjectDevelopmentTargetWhenReadyWaitsForReplacement(t *testing.T) {
+	var gets, posts atomic.Int32
+	f := newDevelopmentSyncReadyFixture(t, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sync") {
+				posts.Add(1)
+				if gets.Load() < 3 {
+					http.NotFound(w, r)
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	f.target.templateName = "fullstack"
+	f.dyn.PrependReactor("get", "instances", func(k8stesting.Action) (bool, runtime.Object, error) {
+		metadata := map[string]any{"name": "demo-dev"}
+		templateName := "fullstack"
+		switch gets.Add(1) {
+		case 1:
+			metadata["deletionTimestamp"] = time.Now().UTC().Format(time.RFC3339)
+		case 2:
+			templateName = "static"
+		}
+		return true, &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
+			"kind":       "Instance",
+			"metadata":   metadata,
+			"spec":       map[string]any{"template": templateName},
+		}}, nil
+	})
+	if err := f.sync(); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if gets.Load() != 3 || posts.Load() != 1 {
+		t.Fatalf("instance reads = %d, sync posts = %d, want 3 reads and one post to the replacement", gets.Load(), posts.Load())
 	}
 }
 

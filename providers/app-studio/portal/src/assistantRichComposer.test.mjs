@@ -82,7 +82,7 @@ test('composer Add triggers and each compact menu action opt into coarse-pointer
   assert.match(rich, /class="k-agentkit-touch-target flex w-full[^\"]*"\s+role="menuitem"\s+@click="openPalette"/)
   assert.match(preProject, /ref="attachmentMenuTriggerRef"[\s\S]*?class="app-studio-touch-target flex h-7 w-7[^\"]*"/)
   assert.match(preProject, /class="app-studio-touch-target flex w-full[^\"]*"\s+role="menuitem"\s+@click="openAttachmentPicker"/)
-  assert.match(app, /ref="landingImportTriggerRef"[\s\S]*?role="menuitem"\s+class="app-studio-touch-target flex w-full[^\"]*"/)
+  assert.match(app, /ref="landingImportTriggerRef"[^>]*class="app-studio-touch-target k-btn k-btn--ghost"/)
 })
 
 test('rich composer renders image uploads through the lifecycle-safe thumbnail preview', async () => {
@@ -573,7 +573,7 @@ test('composer exposes permissions and keeps response modes in commands', async 
   assert.match(composer, /class="k-ai-composer__controls k-ai-composer__controls--flow"/)
   assert.match(composer, /class="k-ai-composer__actions"/)
   assert.match(composer, /<slot name="controls" \/>/)
-  assert.match(app, /rounded-md bg-accent text-on-accent/)
+  assert.match(app, /class="app-studio-touch-target k-btn k-btn--primary[^"]*"[^>]*>\s*Review project/)
   assert.match(app, /<AIPrimaryAction[\s\S]*:state="assistantComposerShowsStop \? assistantComposerStopDisabled \? 'stopping' : 'stop' : 'send'/)
 })
 

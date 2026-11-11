@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { ArrowLeft, ArrowRight, Check, ExternalLink, Layers, Loader2, Package, RefreshCw } from 'lucide-vue-next'
+import { ArrowRight, Box, Database, ExternalLink, FileCog, Loader2, Network, RefreshCw, Route, Server, Workflow } from 'lucide-vue-next'
 import type { DevelopmentTemplate, RailgridContext, ProjectPlan } from './types'
 import { api } from './api'
 import type { CreateSetupItem } from './createReadiness'
@@ -46,12 +46,6 @@ const emit = defineEmits<{
 
 type Step = 'describe' | 'prepare' | 'confirm'
 
-const wizardSteps: Array<{ id: Step; label: string }> = [
-  { id: 'describe', label: 'Describe' },
-  { id: 'prepare', label: 'Prepare' },
-  { id: 'confirm', label: 'Confirm' },
-]
-
 const step = ref<Step>('describe')
 const prompt = ref(props.initialDraft?.trim() ?? '')
 const planning = ref(false)
@@ -79,7 +73,6 @@ const selectedCompatibleTemplate = computed(() => compatibleTemplates.value.find
 const canPlan = computed(() => prompt.value.trim().length > 0 && !planning.value && (
   !props.authCompatibleOnly || (!compatibleCatalogLoading.value && !!selectedCompatibleTemplate.value)
 ))
-const activeStepIndex = computed(() => wizardSteps.findIndex((wizardStep) => wizardStep.id === step.value))
 
 const activeTemplate = computed(() =>
   selectableTemplates.value.find((template) => template.name === chosenTemplate.value) ?? null,
@@ -88,60 +81,23 @@ const activeTemplate = computed(() =>
 const allowEmptyTemplate = computed(() => !props.authCompatibleOnly && plan.value?.allowEmptyTemplate === true)
 const hasValidTemplateChoice = computed(() => !!activeTemplate.value || (allowEmptyTemplate.value && !chosenTemplate.value))
 
-const activeComponents = computed<Record<string, string>>(() => {
-  if (activeTemplate.value) return activeTemplate.value.components ?? {}
-  if (chosenTemplate.value && chosenTemplate.value === plan.value?.template) return plan.value?.components ?? {}
-  return {}
+const resourcePresentation = new Map([
+  ['ConfigMap', { icon: FileCog, description: 'Supplies app configuration' }],
+  ['Deployment', { icon: Box, description: 'Runs and manages app containers' }],
+  ['HTTPRoute', { icon: Route, description: 'Routes HTTP traffic to the app' }],
+  ['Service', { icon: Network, description: 'Provides a stable network endpoint' }],
+  ['StatefulSet', { icon: Database, description: 'Runs workloads with stable identities' }],
+  ['Job', { icon: Workflow, description: 'Runs a task to completion' }],
+])
+const templateResources = computed(() => (activeTemplate.value?.resourceKinds ?? []).map(resource => {
+  const presentation = resourcePresentation.get(resource.kind)
+  return { ...resource, icon: presentation?.icon ?? Box, description: presentation?.description }
+}))
+const developmentInstanceKind = computed(() => {
+  const kind = activeTemplate.value?.instanceKind
+  return kind === 'Instance' ? '' : kind
 })
 
-interface ComponentOutcome {
-  label: string
-  description: string
-  workspacePath: string
-}
-
-function humanizeIdentifier(value: string): string {
-  return value
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/[-_]+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, (character) => character.toUpperCase()) || 'Development component'
-}
-
-function componentOutcome(name: string, workspacePath: string): ComponentOutcome {
-  const searchable = `${name} ${workspacePath}`.toLowerCase()
-  if (/(front|web|ui|client)/.test(searchable)) {
-    return { label: 'Web interface', description: 'The user-facing app people interact with.', workspacePath }
-  }
-  if (/(back|api|server|service)/.test(searchable)) {
-    return { label: 'Service API', description: 'Server logic and endpoints for connected systems.', workspacePath }
-  }
-  if (/(worker|job|queue|task)/.test(searchable)) {
-    return { label: 'Background worker', description: 'Background processing that runs alongside the app.', workspacePath }
-  }
-  if (/(data|db|store|storage)/.test(searchable)) {
-    return { label: 'Data service', description: 'Persistence and data access for the project.', workspacePath }
-  }
-  return {
-    label: humanizeIdentifier(name),
-    description: 'A development component included by this template.',
-    workspacePath,
-  }
-}
-
-const componentOutcomes = computed<ComponentOutcome[]>(() => (
-  Object.entries(activeComponents.value).map(([name, workspacePath]) => componentOutcome(name, workspacePath))
-))
-
-const activeTemplateName = computed(() => (
-  activeTemplate.value?.displayName || activeTemplate.value?.name || chosenTemplate.value
-))
-
-const activeTemplateDescription = computed(() => (
-  activeTemplate.value?.description || ''
-))
-
-const progressSummary = computed(() => `Step ${activeStepIndex.value + 1} of ${wizardSteps.length}`)
 const setupBlocked = computed(() => Boolean(
   props.disabled && ((props.setupItems?.length ?? 0) > 0 || props.setupError),
 ))
@@ -154,12 +110,6 @@ const willAttachScaffold = computed(() => {
   }
   return !!activeTemplate.value?.hasScaffold
 })
-
-const starterRepository = computed(() =>
-  chosenTemplate.value === plan.value?.template && willAttachScaffold.value
-    ? plan.value?.scaffold?.repository ?? ''
-    : '',
-)
 
 function invalidatePlanRequest() {
   planRequestSerial += 1
@@ -345,48 +295,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section class="k-create-page flex w-full flex-col gap-6">
-    <nav
-      aria-label="Project creation steps"
-      class="rounded-lg border border-border-subtle bg-surface-raised px-4 py-3 shadow-sm sm:px-5"
-    >
-      <div class="mb-3 flex items-center justify-between gap-3">
-        <span class="font-mono text-[11px] font-semibold uppercase tracking-[0.1em] text-text-secondary" role="status" aria-live="polite">{{ progressSummary }}</span>
-        <span class="text-[11px] text-text-muted">Review before creation</span>
-      </div>
-      <ol class="m-0 grid list-none grid-cols-3 gap-1 p-0 sm:gap-4">
-        <li v-for="(wizardStep, index) in wizardSteps" :key="wizardStep.id" class="min-w-0">
-          <div
-            class="flex min-w-0 items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.08em] sm:gap-2 sm:tracking-[0.1em]"
-            :class="wizardStep.id === step
-              ? 'text-accent'
-              : index < activeStepIndex
-                ? 'text-text-primary'
-                : 'text-text-muted'"
-            :aria-current="wizardStep.id === step ? 'step' : undefined"
-            :aria-label="`${wizardStep.label}, ${wizardStep.id === step ? 'current' : index < activeStepIndex ? 'completed' : 'upcoming'}`"
-          >
-            <span
-              v-if="index < activeStepIndex"
-              class="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-success-subtle text-success"
-              aria-hidden="true"
-            >
-              <Check class="h-3 w-3" :stroke-width="2.25" />
-            </span>
-            <span
-              v-else
-              class="h-2 w-2 shrink-0 rounded-full"
-              :class="wizardStep.id === step
-                ? 'bg-accent shadow-[0_0_8px_var(--color-accent-glow)]'
-                : 'border border-border-default bg-transparent'"
-              aria-hidden="true"
-            />
-            <span class="whitespace-nowrap">{{ wizardStep.label }}</span>
-          </div>
-        </li>
-      </ol>
-    </nav>
-
+  <section>
     <!-- Manual intake remains available when this component is used without a
          landing prompt. A submitted landing idea starts at preparation instead. -->
     <section
@@ -480,156 +389,121 @@ onMounted(async () => {
       class="k-create-surface k-create-surface--wide flex w-full flex-col"
       aria-labelledby="new-project-details-title"
     >
-      <header class="k-create-header m-0 border-b border-border-subtle px-5 py-5 sm:px-7">
-        <div class="mt-1 flex flex-wrap items-baseline justify-between gap-2">
-          <div class="min-w-0">
-            <h2 id="new-project-details-title" ref="stepHeading" tabindex="-1" class="text-[20px] font-semibold text-text-primary outline-none">
-              {{ step === 'prepare' ? 'Prepare your project' : 'Confirm your project' }}
-            </h2>
-            <p v-if="step === 'prepare'" class="mt-1 max-w-[68ch] text-[13px] leading-5 text-text-secondary">Preparing one project plan from your request. Nothing is created yet.</p>
-            <p v-else class="mt-1 max-w-[68ch] text-[13px] leading-5 text-text-secondary">Review the suggested name and starting point before the project is created.</p>
-          </div>
-          <div
-            v-if="step === 'prepare' && planning"
-            class="flex items-center gap-2 text-[12px] font-medium text-text-secondary"
-            role="status"
-            aria-live="polite"
-            aria-busy="true"
-          >
-            <Loader2 class="h-3.5 w-3.5 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
-            Preparing project plan…
-          </div>
-        </div>
-      </header>
+      <div class="k-create-body gap-5 p-5 sm:p-6">
+        <header>
+          <h2 id="new-project-details-title" ref="stepHeading" tabindex="-1" class="k-create-title">
+            {{ step === 'confirm' ? `Review ${plan?.displayName || 'your project'}` : 'Preparing review' }}
+          </h2>
+          <slot name="review-progress" />
+        </header>
 
-      <div class="k-create-body grid flex-1 gap-5 p-5 sm:p-7 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-        <div class="min-w-0">
-          <div class="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-text-secondary">Your request</div>
-          <p class="mt-2 whitespace-pre-wrap break-words text-[14px] leading-6 text-text-primary">{{ prompt }}</p>
-          <div class="mt-5 grid gap-2">
-            <div class="text-[11px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Attachments</div>
+        <template v-if="step === 'prepare'">
+          <p v-if="planning" role="status" aria-live="polite" aria-busy="true" class="flex items-center gap-2 text-[13px] text-text-secondary">
+            <Loader2 class="h-4 w-4 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
+            Preparing project plan…
+          </p>
+          <div v-else-if="error" class="grid gap-2">
+            <div role="alert" class="text-[13px] text-danger">
+              <p class="font-semibold">Project details could not be prepared</p>
+              <p class="break-words">{{ error }}</p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" @click="back">Edit request</button>
+              <button type="button" class="app-studio-touch-target k-btn k-btn--primary" :disabled="!canPlan" @click="runPlan">Try again</button>
+            </div>
+          </div>
+        </template>
+
+        <template v-else>
+          <label class="k-model-form-field max-w-[31rem]">
+            <span>Project name</span>
+            <input v-model="displayName" type="text" class="app-studio-touch-target k-input min-w-0 text-[16px] md:text-[13px]" autocomplete="off" />
+          </label>
+
+          <section aria-labelledby="review-request-heading">
+            <h3 id="review-request-heading" class="text-[14px] font-semibold">Your request</h3>
+            <p class="mt-2 whitespace-pre-wrap break-words text-[13px] text-text-secondary [overflow-wrap:anywhere]">{{ initialPrompt || prompt }}</p>
+          </section>
+
+          <section v-if="attachments?.length || attachmentError" aria-labelledby="review-attachments-heading">
+            <h3 id="review-attachments-heading" class="mb-2 text-[14px] font-semibold">Attachments</h3>
             <AssistantPreProjectComposer
               :model-value="prompt"
               input-id="new-project-attachments"
               :attachments="attachments"
               :error="attachmentError"
+              :disabled="creationChecking"
               attachment-only
               @add-attachment="emit('add-attachment', $event)"
               @remove-attachment="emit('remove-attachment', $event)"
               @retry-attachment="emit('retry-attachment', $event)"
             />
-          </div>
-          <button
-            type="button"
-            class="app-studio-touch-target mt-4 inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-2.5 text-[12px] font-medium text-text-secondary outline-none transition hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40"
-            @click="back"
-          >
-            <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" />
-            Edit request
-          </button>
-        </div>
+          </section>
 
-        <div class="min-w-0 border-t border-border-subtle pt-5 md:border-l md:border-t-0 md:pl-5 md:pt-0">
-          <div v-if="step === 'prepare' && planning" class="grid gap-5" aria-hidden="true">
-            <div class="grid gap-2">
-              <div class="h-3 w-20 rounded-xs bg-surface-overlay" />
-              <div class="shimmer h-10 w-full rounded-md bg-surface-overlay" />
-            </div>
-            <div class="grid gap-2">
-              <div class="h-3 w-16 rounded-xs bg-surface-overlay" />
-              <div class="shimmer h-10 w-full rounded-md bg-surface-overlay" />
-            </div>
-            <div class="grid gap-2 border-t border-border-subtle pt-4">
-              <div class="h-3 w-24 rounded-xs bg-surface-overlay" />
-              <div class="h-3 w-4/5 rounded-xs bg-surface-overlay" />
-              <div class="h-3 w-3/5 rounded-xs bg-surface-overlay" />
-            </div>
-          </div>
+          <section v-if="$slots['repository-options']" class="grid min-w-0 gap-2 border-t border-border-subtle pt-4" aria-labelledby="review-source-control-heading">
+            <h3 id="review-source-control-heading" class="text-[14px] font-semibold">Source control</h3>
+            <slot name="repository-options" />
+          </section>
 
-          <div v-else-if="error" class="grid gap-4">
-            <div role="alert" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-3 text-[12px] leading-5 text-danger">
-              <div class="font-semibold">Project details could not be prepared</div>
-              <div class="mt-1">{{ error }}</div>
-            </div>
-            <button
-              type="button"
-              class="app-studio-touch-target inline-flex h-9 w-fit items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] outline-none transition hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
-              :disabled="!canPlan"
-              @click="runPlan"
-            >
-              Try again <ArrowRight class="h-4 w-4" :stroke-width="1.75" />
-            </button>
-          </div>
-
-          <div v-else class="grid gap-5">
-            <label class="grid min-w-0 gap-2">
-              <span class="text-[12px] font-medium text-text-secondary">Project name</span>
-              <input
-                v-model="displayName"
-                type="text"
-                class="app-studio-touch-target h-10 min-w-0 rounded-md border border-border-default bg-surface-overlay px-3 text-[16px] text-text-primary outline-none transition placeholder:text-text-secondary focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[13px]"
-                autocomplete="off"
-                aria-label="Project name"
-                aria-describedby="project-name-review"
-              />
-              <p id="project-name-review" class="min-w-0 break-words text-[12px] leading-5 text-text-secondary [overflow-wrap:anywhere]">
-                <span class="font-medium text-text-primary">Full project name:</span>
-                <span class="ml-1 font-mono text-[12px] text-text-primary">{{ displayName || 'No name suggested yet' }}</span>
-              </p>
-            </label>
-
-            <label class="grid min-w-0 gap-2">
-              <span class="text-[12px] font-medium text-text-secondary">Template</span>
+          <section class="grid min-w-0 gap-3 border-t border-border-subtle pt-4">
+            <div class="k-model-form-field">
+              <label for="review-development-template">Development template</label>
               <select
+                id="review-development-template"
                 v-model="chosenTemplate"
-                class="app-studio-touch-target k-input h-10 min-w-0 text-[16px] md:text-[13px]"
-                aria-label="Template"
-                aria-describedby="template-impact template-selection-review"
+                class="app-studio-touch-target k-input min-w-0 text-[16px] md:text-[13px]"
+                :disabled="creationChecking"
+                aria-describedby="template-impact"
               >
                 <option v-if="allowEmptyTemplate" value="">No template (start empty)</option>
+                <option v-else-if="!chosenTemplate" value="" disabled>Choose a development template</option>
                 <option v-for="template in selectableTemplates" :key="template.name" :value="template.name">
-                  {{ template.displayName || template.name }}{{ template.name === plan?.template ? ' — recommended' : '' }}{{ template.hasScaffold ? ' · starter code' : '' }}
+                  {{ template.displayName || template.name }}
                 </option>
               </select>
-              <div id="template-selection-review" class="min-w-0 break-words text-[12px] leading-5 text-text-secondary [overflow-wrap:anywhere]">
-                <span class="font-medium text-text-primary">Selected development template:</span>
-                <span class="ml-1 text-text-primary">{{ activeTemplateName || 'No template (start empty)' }}</span>
-                <span v-if="authCompatibleOnly" class="mt-0.5 block font-medium text-success">Verified for Railgrid Auth</span>
-                <span class="mt-0.5 block">{{ activeTemplateDescription }}</span>
-              </div>
-            </label>
-
-            <slot name="repository-options" />
-
-            <div id="template-impact" class="grid gap-3 border-t border-border-subtle pt-4">
-              <div class="flex items-start gap-3">
-                <span class="mt-0.5 text-accent"><Package class="h-4 w-4" :stroke-width="1.75" /></span>
-                <div class="min-w-0">
-                  <div class="text-[12px] font-semibold text-text-primary">Starter source</div>
-                  <p v-if="willAttachScaffold" class="mt-1 break-words text-[12px] leading-5 text-text-secondary [overflow-wrap:anywhere]">
-                    Attaches starter source<span v-if="starterRepository"> from <span class="font-mono text-[12px] text-text-secondary [overflow-wrap:anywhere]">{{ starterRepository }}</span></span> when it is available.
-                  </p>
-                  <p v-else class="mt-1 text-[12px] leading-5 text-text-secondary">Starts with an empty project. You can choose a development template later.</p>
-                </div>
-              </div>
-              <div v-if="componentOutcomes.length" class="flex min-w-0 items-start gap-3 border-t border-border-subtle pt-3">
-                <span class="mt-0.5 text-text-muted"><Layers class="h-4 w-4" :stroke-width="1.75" /></span>
-                <div class="min-w-0 flex-1 text-[12px] leading-5 text-text-secondary">
-                  <span class="font-medium text-text-primary">Development components</span>
-                  <ul class="mt-2 grid min-w-0 gap-2" aria-label="Development components included by this template">
-                    <li v-for="component in componentOutcomes" :key="`${component.label}-${component.workspacePath}`" class="min-w-0 break-words border-l border-border-subtle pl-2 [overflow-wrap:anywhere]">
-                      <span class="font-medium text-text-primary">{{ component.label }}</span>
-                      <span class="ml-1">— {{ component.description }}</span>
-                      <span class="mt-0.5 block font-mono text-[12px] text-text-muted">Workspace path: {{ component.workspacePath }}</span>
-                    </li>
-                  </ul>
-                </div>
-              </div>
             </div>
-          </div>
-        </div>
+            <p v-if="authCompatibleOnly" class="text-[12px] font-medium text-success">Verified for Railgrid Auth</p>
+
+            <div id="template-impact" aria-live="polite">
+              <template v-if="chosenTemplate">
+                <h3 class="text-[14px] font-semibold">Resources this template creates</h3>
+                <ul class="mt-2 divide-y divide-border-subtle rounded-md border border-border-subtle text-[13px]" aria-label="Template resources">
+                  <li class="flex items-center gap-3 rounded-t-md bg-surface px-3 py-2.5">
+                    <span class="flex size-7 shrink-0 items-center justify-center rounded-sm bg-accent/10 text-accent">
+                      <Server class="size-4" :stroke-width="1.75" aria-hidden="true" />
+                    </span>
+                    <div class="flex min-w-0 flex-1 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                      <span class="font-semibold">Development instance</span>
+                      <span v-if="developmentInstanceKind" class="font-mono text-[12px] text-text-secondary [overflow-wrap:anywhere]">{{ developmentInstanceKind }}</span>
+                    </div>
+                  </li>
+                  <li v-for="resource in templateResources" :key="resource.kind" class="flex items-start gap-3 px-3 py-2">
+                    <span class="flex size-7 shrink-0 items-center justify-center text-text-secondary">
+                      <component :is="resource.icon" class="size-4" :stroke-width="1.75" aria-hidden="true" />
+                    </span>
+                    <div class="flex min-w-0 flex-1 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                      <div class="min-w-0 [overflow-wrap:anywhere]">
+                        <div class="font-medium">{{ resource.kind }}</div>
+                        <p v-if="resource.description" class="text-[12px] text-text-secondary">{{ resource.description }}</p>
+                      </div>
+                      <span v-if="resource.conditional" class="k-badge k-badge--muted">If enabled</span>
+                    </div>
+                  </li>
+                </ul>
+                <p v-if="activeTemplate?.resourceKinds?.length" class="mt-2 text-[12px] text-text-secondary">Resources are grouped by kind. Railgrid also provisions supporting resources for the development runtime.</p>
+                <p v-else class="mt-2 text-[12px] text-text-secondary">This template does not provide a breakdown of its managed resources.</p>
+                <p v-if="willAttachScaffold" class="mt-1 text-[12px] text-text-secondary">App Studio attaches the template’s starter source when it is available.</p>
+              </template>
+              <p v-else-if="allowEmptyTemplate" class="text-[13px] text-text-secondary">The project starts without a development instance. You can choose a template later.</p>
+            </div>
+          </section>
+
+        </template>
       </div>
 
+      <footer v-if="step === 'prepare' && planning" class="k-create-actions">
+        <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" @click="back">Edit request</button>
+      </footer>
       <footer v-if="step === 'confirm'" class="k-create-actions flex flex-col items-stretch gap-3 border-t border-border-subtle px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">
         <div class="min-w-0 flex-1">
           <p v-if="creationError" role="alert" class="mb-2 break-words text-[12px] text-danger [overflow-wrap:anywhere]">{{ creationError }}</p>
@@ -679,15 +553,15 @@ onMounted(async () => {
           <p v-else-if="disabled && disabledReason" role="alert" class="break-words text-[12px] text-danger [overflow-wrap:anywhere]">{{ disabledReason }}</p>
           <span v-else class="text-[12px] text-text-secondary">Nothing is created until you confirm.</span>
         </div>
-        <button
-          type="button"
-          class="app-studio-touch-target inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] outline-none transition hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none sm:w-auto"
-          :disabled="disabled || creationChecking || !hasValidTemplateChoice"
-          @click="confirmCreate"
-        >
-          Create project
-          <ArrowRight class="h-4 w-4" :stroke-width="1.75" />
-        </button>
+        <div class="flex flex-wrap justify-end gap-2">
+          <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" @click="back">Edit request</button>
+          <button
+            type="button"
+            class="app-studio-touch-target k-btn k-btn--primary"
+            :disabled="disabled || creationChecking || !hasValidTemplateChoice"
+            @click="confirmCreate"
+          >Create project</button>
+        </div>
       </footer>
     </section>
   </section>

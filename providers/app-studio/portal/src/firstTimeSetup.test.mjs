@@ -1,198 +1,27 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { createServer } from 'vite'
-import vue from '@vitejs/plugin-vue'
-import { createSSRApp } from 'vue'
-import { renderToString } from 'vue/server-renderer'
 
-const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/railgrid-vite-first-time-setup', configFile: false, plugins: [vue()], server: { middlewareMode: true, hmr: false } })
-const { default: FirstTimeSetup } = await vite.ssrLoadModule('/src/FirstTimeSetup.vue')
-const { default: GitRecommendationBanner } = await vite.ssrLoadModule('/src/GitRecommendationBanner.vue')
-test.after(async () => vite.close())
+const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+const models = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
 
-const base = {
-  readiness: { gitConnection: { ready: false, status: 'connection-missing' } },
-  llmConfigured: false,
-  llmModel: '',
-  loading: false,
-  gitError: '',
-  llmError: '',
-  completion: false,
-  codeConnectionsUrl: '/ui/providers/code/connections',
-  codeCatalogUrl: '/providers',
-}
-const render = (props = {}) => renderToString(createSSRApp(FirstTimeSetup, { ...base, ...props }))
+test('checks required model setup before showing the project composer', () => {
+  assert.doesNotMatch(app, /<FirstTimeSetup|<GitRecommendationBanner/)
+  assert.match(app, /\[isCreateRoute, llmSettingsChecking, llmConfigured, llmSettingsError, awaitingCreatedModel\][\s\S]*!configured[\s\S]*beginCreateModelSetup\(\)/)
+  assert.match(app, /<form v-else-if="llmConfigured"[^>]+@submit\.prevent="createProjectFromPrompt"/)
+  assert.match(app, /watch\(promptRef, \(composer\) => \{[\s\S]*?composer\?\.focus\(\)/)
+  assert.match(app, /if \(createModelSetup\.value\) \{\s*awaitingCreatedModel\.value = !llmConfigured\.value\s*createModelSetup\.value = false/)
+  assert.doesNotMatch(app, /await createProjectFromPrompt\(\)/)
+})
 
-test('Git recovery links use the workspace of each mount, including after bundle reuse', async () => {
-  const previousWindow = globalThis.window
-  const org = '11111111-1111-4111-8111-111111111111'
-  try {
-    for (const workspace of ['22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333']) {
-      const prefix = `/ui/${org}/${workspace}`
-      globalThis.window = { location: { pathname: `${prefix}/providers/app-studio` } }
-      for (const status of ['provider-missing', 'connection-missing']) {
-        const html = await renderToString(createSSRApp(GitRecommendationBanner, {
-          readiness: { gitConnection: { status } }, checking: false,
-        }))
-        const path = status === 'provider-missing' ? '/providers' : '/providers/code/connections'
-        assert.ok(html.includes(`href="${prefix}${path}"`), html)
-      }
-    }
-  } finally {
-    if (previousWindow === undefined) delete globalThis.window
-    else globalThis.window = previousWindow
+test('shows the four-step journey during setup and review', () => {
+  assert.match(app, /const projectSetupSteps = \[\s*\{ label: 'Connect a provider' \},\s*\{ label: 'Choose a model' \},\s*\{ label: 'Describe your project' \},\s*\{ label: 'Review project' \},\s*\]/)
+  for (const index of [0, 1, 3]) {
+    assert.match(app, new RegExp(`<FirstRunGuide[^>]*embedded[^>]*:current-step="${index}"`))
   }
-})
-
-test('keeps first-time setup separate from the project prompt', async () => {
-  const html = await render()
-  assert.match(html, /aria-label="App Studio workspace setup"/)
-  assert.doesNotMatch(html, /aria-labelledby="app-studio-setup-title"/)
-  assert.doesNotMatch(html, /Connect an AI model/)
-  assert.match(html, /aria-current="step"/)
-  assert.match(html, /Skip for now/)
-  assert.match(html, /Git backs up your source and tracks changes/)
-  assert.doesNotMatch(html, /What are we building|Describe what you want to build|<textarea/)
-})
-
-test('requires the model even when Git is ready', async () => {
-  const html = await render({ readiness: { gitConnection: { ready: true, status: 'ready', connectionRef: 'github-workspace' } } })
-  assert.match(html, /Connected/)
-  assert.doesNotMatch(html, /Skip for now/)
-  assert.match(html, /Connect an AI model/)
-  assert.match(html, /tested before saving/)
-})
-
-test('surfaces terminal Git validation failures with a recovery action', async () => {
-  const html = await render({
-    llmConfigured: true,
-    readiness: {
-      gitConnection: {
-        ready: false,
-        status: 'failed',
-        connectionRef: 'github-workspace',
-        message: 'The git host rejected the credential.',
-      },
-    },
-  })
-  assert.match(html, /The git host rejected the credential\./)
-  assert.match(html, /Fix Git connection/)
-  assert.match(html, /role="alert"/)
-})
-
-test('completion hands off to normal project creation', async () => {
-  const html = await render({
-    readiness: { gitConnection: { ready: true, status: 'ready', connectionRef: 'github-workspace' } },
-    llmConfigured: true,
-    llmModel: 'gpt-5.4',
-    completion: true,
-  })
-  assert.match(html, /App Studio is ready/)
-  assert.match(html, /Create your first project/)
-  assert.match(html, /gpt-5\.4/)
-  assert.equal((html.match(/Completed step/g) || []).length, 2)
-  assert.doesNotMatch(html, /aria-current="step"/)
-})
-
-test('model loading keeps setup actions hidden until readiness has settled', async () => {
-  for (const completion of [false, true]) {
-    const html = await render({
-      readiness: { gitConnection: { ready: true, status: 'ready' } },
-      loading: true,
-      completion,
-    })
-    assert.match(html, /Checking AI model setup/)
-    assert.match(html, /role="status" aria-busy="true"/)
-    assert.doesNotMatch(html, /<button/)
-  }
-})
-
-test('App gates the new-project composer behind setup', async () => {
-  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  assert.match(app, /<template v-if="firstTimeSetupVisible">[\s\S]*<FirstTimeSetup[\s\S]*<template v-else-if="wizardOpen">/)
-  assert.match(app, /@connect-model="openSettings"/)
-  assert.match(app, /@finish="finishFirstTimeSetup"/)
-})
-
-test('optional Git step remains skippable while Git is missing, checking, or failed', async () => {
-  for (const status of ['provider-missing', 'connection-missing', 'validating', 'failed']) {
-    const html = await render({ llmConfigured: true, readiness: { gitConnection: { ready: false, status } }, gitLoading: status === 'validating' })
-    assert.match(html, /Skip for now/)
-    assert.match(html, /Connect Git/)
-    assert.doesNotMatch(html, /GitHub connected/)
-  }
-})
-test('completion without Git does not claim Git was connected', async () => {
-  const html = await render({ llmConfigured: true, completion: true, gitSkipped: true })
-  assert.match(html, /App Studio is ready/)
-  assert.doesNotMatch(html, /Git and an AI model are connected|GitHub<\/dt>/)
-})
-
-test('Git skip storage is scoped to a signed-in user and workspace', async () => {
-  const { gitOnboardingStorageKey } = await vite.ssrLoadModule('/src/useGitOnboarding.ts')
-  const context = { orgUUID: 'org-a', workspaceUUID: 'ws-a', user: { sub: 'alice' } }
-  const key = gitOnboardingStorageKey(context)
-  assert.ok(key)
-  assert.notEqual(key, gitOnboardingStorageKey({ ...context, workspaceUUID: 'ws-b' }))
-  assert.notEqual(key, gitOnboardingStorageKey({ ...context, user: { sub: 'bob' } }))
-  assert.equal(gitOnboardingStorageKey({ ...context, user: null }), null)
-})
-
-test('skipping Git before model setup keeps the required model action and acknowledges the choice', async () => {
-  const html = await render({ gitSkipped: true })
-  assert.match(html, /Connect AI model/)
-  assert.match(html, /Skipped for now/)
-  assert.doesNotMatch(html, /Skip for now|Create your first project/)
-  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  assert.match(app, /:git-skipped="gitSetupSkipped"/)
-  assert.match(app, /@skip-git="skipGitSetup"/)
-})
-
-test('Git choice precedes model setup even while model settings load', async () => {
-  const html = await render({ loading: true })
-  assert.match(html, /Skip for now/)
-  assert.doesNotMatch(html, /Checking AI model setup|Connect AI model/)
-  const model = await render({ gitSkipped: true })
-  assert.match(model, /Connect AI model/)
-  assert.match(model, /Required/)
-  assert.doesNotMatch(model, /Git backs up your source and tracks changes/)
-})
-
-test('revisiting Git clears only this user and workspace skip choice', async () => {
-  const { effectScope } = await import('vue')
-  const { useGitOnboarding, gitOnboardingStorageKey } = await vite.ssrLoadModule('/src/useGitOnboarding.ts')
-  const context = { orgUUID: 'org-a', workspaceUUID: 'ws-a', user: { sub: 'alice' } }
-  const key = gitOnboardingStorageKey(context)
-  const otherKey = gitOnboardingStorageKey({ ...context, workspaceUUID: 'ws-b' })
-  const data = new Map([[key, '1'], [otherKey, '1']])
-  const original = globalThis.localStorage
-  globalThis.localStorage = { getItem: key => data.get(key), setItem: (key, value) => data.set(key, value), removeItem: key => data.delete(key) }
-  const scope = effectScope()
-  try {
-    const onboarding = scope.run(() => useGitOnboarding(() => context))
-    assert.equal(onboarding.skipped.value, true)
-    onboarding.reset()
-    assert.equal(onboarding.skipped.value, false)
-    assert.equal(data.has(key), false)
-    assert.equal(data.get(otherKey), '1')
-    assert.equal(scope.run(() => useGitOnboarding(() => context)).skipped.value, false)
-    onboarding.skip()
-    assert.equal(data.get(key), '1')
-  } finally {
-    scope.stop()
-    if (original === undefined) delete globalThis.localStorage
-    else globalThis.localStorage = original
-  }
-  assert.match(await render({ gitSkipped: true }), /Back to Git/)
-  assert.doesNotMatch(await render(), /Back to Git/)
-})
-
-test('explains development without Git and production prerequisites before skipping', async () => {
-  for (const gitError of ['', 'Connection unavailable']) {
-    const html = await render({ gitError })
-    assert.match(html, /Development environments work without Git; publishing to production requires it/)
-    assert.match(html, /Skip for now/)
-  }
-  assert.match(await render(), /skip for now and connect it later/)
+  assert.match(models, /<form[^>]*aria-label="Provider connection form"[\s\S]*<slot name="provider-progress" \/>/)
+  assert.match(models, /<form[^>]*aria-label="Model binding form"[\s\S]*<slot name="model-progress" \/>/)
+  assert.match(models, /if \(!props\.onboarding\) emit\('beginProviderDetour'\)/)
+  assert.match(models, /Save provider and continue/)
+  assert.match(models, /Save model and continue/)
 })

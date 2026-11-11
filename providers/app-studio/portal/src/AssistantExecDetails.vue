@@ -72,6 +72,7 @@ const detail = computed(() => {
   const exec = disclosure.value
   if (!exec) return undefined
   const originalDetail = exec.detail?.trim()
+    || (assistantExecStatusPresentation(exec).state === 'blocked' ? exec.summary?.trim() : undefined)
   if (!exec.sourceStale) return originalDetail || undefined
 
   // A stale-source summary often carries the server's precise explanation.

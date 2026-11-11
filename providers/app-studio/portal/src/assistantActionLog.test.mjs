@@ -5,7 +5,6 @@ import vue from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
 import { createSSRApp, createRenderer, nextTick, reactive, ssrContextKey, unref } from 'vue'
 import { renderToString } from 'vue/server-renderer'
-import ts from 'typescript'
 
 let vite
 test.before(async () => {
@@ -363,23 +362,4 @@ test('preserves individual calls and projects refreshed authoritative execution 
     await nextTick()
     assert.equal(unref(state.rows).length, 2, 'repeated reads stay separate')
   } finally { app.unmount() }
-})
-
-test('Worked for opens while running, closes after completion, and preserves manual choices', () => {
-  const source = readFileSync(new URL('./App.vue', import.meta.url), 'utf8')
-  const implementation = source.match(/function assistantProgressExpanded\(message: ProjectMessageView\): boolean \{[\s\S]*?\n\}/)?.[0]
-  assert.ok(implementation)
-  const { outputText } = ts.transpileModule(implementation, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
-  const choices = { value: new Map() }
-  const isExpanded = new Function('assistantProgressDisclosureChoices', 'assistantProgressClosed', `${outputText}; return assistantProgressExpanded`)(choices, message => message.closed)
-  assert.equal(isExpanded({ id: 'turn', closed: false }), true)
-  for (const expanded of [false, true]) {
-    choices.value.set('turn', { closed: false, expanded })
-    assert.equal(isExpanded({ id: 'turn', closed: false }), expanded)
-    assert.equal(isExpanded({ id: 'turn', closed: true }), expanded)
-  }
-  choices.value.set('turn', { closed: true, expanded: true })
-  assert.equal(isExpanded({ id: 'turn', closed: true }), true)
-  assert.equal(isExpanded({ id: 'next-turn', closed: false }), true)
-  assert.equal(isExpanded({ id: 'old-turn', closed: true }), false)
 })

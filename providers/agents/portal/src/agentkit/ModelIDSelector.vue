@@ -153,11 +153,6 @@ function scrollActiveOption() {
 }
 
 function onSearchKeydown(event: KeyboardEvent) {
-  if (event.key === 'Tab') {
-    closeSelector()
-    trigger.value?.focus()
-    return
-  }
   if (event.key === 'ArrowDown') {
     event.preventDefault()
     moveActive(1)
@@ -187,10 +182,14 @@ function onSearchKeydown(event: KeyboardEvent) {
     if (option) chooseOption(option)
     return
   }
-  if (event.key === 'Escape') {
-    event.preventDefault()
-    closeSelector(true)
-  }
+}
+
+function onPanelTab(event: KeyboardEvent) {
+  const fromSearch = event.target === searchInput.value
+  const action = panel.value?.querySelector('button:not([disabled])')
+  if ((fromSearch && !event.shiftKey && action) || (event.target === action && event.shiftKey)) return
+  closeSelector()
+  trigger.value?.focus()
 }
 
 function onTriggerKeydown(event: KeyboardEvent) {
@@ -259,27 +258,32 @@ onBeforeUnmount(() => {
     <Teleport v-if="open" to="body">
       <div
         ref="panel"
-        class="k-menu k-table__filter-panel k-table__filter-panel--searchable"
+        class="k-menu k-table__filter-panel k-table__filter-panel--searchable k-model-id-picker"
         :style="panelStyle"
+        @keydown.esc.prevent="closeSelector(true)"
+        @keydown.tab="onPanelTab"
       >
-        <label class="k-table__filter-search">
-          <span class="sr-only">Search model IDs</span>
-          <Search :stroke-width="1.75" aria-hidden="true" />
-          <input
-            ref="searchInput"
-            v-model="query"
-            type="search"
-            role="combobox"
-            autocomplete="off"
-            aria-autocomplete="list"
-            :aria-activedescendant="activeDescendant"
-            :aria-controls="listboxID"
-            aria-expanded="true"
-            aria-label="Search model IDs"
-            placeholder="Find a model or enter an ID…"
-            @keydown="onSearchKeydown"
-          >
-        </label>
+        <div class="k-model-id-picker__search-row">
+          <label class="k-table__filter-search">
+            <Search :stroke-width="1.75" aria-hidden="true" />
+            <input
+              ref="searchInput"
+              v-model="query"
+              type="search"
+              role="combobox"
+              autocomplete="off"
+              aria-autocomplete="list"
+              :aria-activedescendant="activeDescendant"
+              :aria-controls="listboxID"
+              aria-expanded="true"
+              aria-label="Search model IDs"
+              placeholder="Find a model or enter an ID…"
+              @keydown="onSearchKeydown"
+            >
+          </label>
+          <slot name="search-action" />
+        </div>
+        <slot name="status" />
         <div class="k-table__filter-meta" aria-live="polite">{{ optionSummary }}</div>
         <ul :id="listboxID" class="k-table__filter-options" role="listbox" aria-label="Model IDs">
           <template v-for="(option, index) in optionList" :key="option.key">
@@ -305,8 +309,30 @@ onBeforeUnmount(() => {
             </li>
           </template>
         </ul>
-        <p v-if="models.length === 0 && !manualCandidate" class="k-table__filter-empty">Find models to load this provider’s catalog, or type a model ID above.</p>
+        <p v-if="models.length === 0 && !manualCandidate" class="k-table__filter-empty">
+          {{ $slots['search-action'] ? 'Refresh the list or type a model ID above.' : 'Find models to load this provider’s catalog, or type a model ID above.' }}
+        </p>
       </div>
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.k-model-id-picker {
+  display: flex;
+  flex-direction: column;
+}
+.k-model-id-picker__search-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+.k-model-id-picker__search-row .k-table__filter-search {
+  flex: 1;
+  min-width: 0;
+}
+.k-model-id-picker .k-table__filter-options {
+  min-height: 0;
+}
+</style>

@@ -1218,6 +1218,21 @@ func TestProjectAssistantExecPublicProjectionRedactsOutputAndMapsTimeout(t *test
 	}
 }
 
+func TestProjectAssistantExecPublicProjectionPreservesSafeBlocker(t *testing.T) {
+	metadata := projectAssistantExecMetadataForToolArguments(projectToolExecCommand, map[string]any{
+		"component": "api",
+		"argv":      []any{"npm", "view", "example"},
+	}, `{"status":"blocked","summary":"Workspace synchronization failed.","blockers":["component api sync returned 404: Not Found","token=blocker-secret"]}`, "failed")
+	want := "component api sync returned 404: Not Found token=[redacted]"
+	if metadata == nil || metadata.Detail != want {
+		t.Fatalf("blocked exec metadata = %#v, want detail %q", metadata, want)
+	}
+	merged := mergeProjectAssistantExecMetadata(metadata, &projectAssistantExecMetadata{Status: "blocked"})
+	if merged.Detail != want {
+		t.Fatalf("merged detail = %q, want %q", merged.Detail, want)
+	}
+}
+
 func TestProjectAssistantExecRequestUsesPersistentWorkspaceAuthority(t *testing.T) {
 	raw, err := json.Marshal(projectSandboxExecRequest{
 		Action:         "start",

@@ -27,6 +27,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 
@@ -61,6 +62,7 @@ type projectDevelopmentSyncTargetInfo struct {
 	BindingName     string
 	Provider        string
 	ResourceName    string
+	templateName    string
 
 	// Resource / Kind / APIVersion are the instance coordinates the data
 	// plane and tenant client address (the Project template's instanceCRD).
@@ -238,6 +240,7 @@ func (s *Server) projectDevelopmentTarget(ctx context.Context, c *asclient.Clien
 		Kind:               info.Kind,
 		APIVersion:         info.APIVersion,
 		ResourceName:       name,
+		templateName:       info.Name,
 		Components:         info.Components,
 		PreviewAccessModes: append([]string(nil), info.PreviewAccessModes...),
 	}, nil
@@ -290,7 +293,7 @@ func writeDevelopmentSyncError(w http.ResponseWriter, err error) {
 		writeProjectRuntimeOperationConflict(w)
 		return
 	}
-	if errors.Is(err, errProjectRuntimeOperationContention) || errors.Is(err, errProjectRuntimeOperationWaitTimeout) {
+	if errors.Is(err, errProjectRuntimeOperationContention) || errors.Is(err, errProjectRuntimeOperationWaitTimeout) || errors.Is(err, errProjectDevelopmentInstanceReplacing) {
 		writeStatus(w, http.StatusConflict, "Conflict", err.Error())
 		return
 	}
@@ -751,16 +754,32 @@ func validateProjectComponentSyncResponse(component string, status int, body []b
 	return nil
 }
 
-// validateDevelopmentInstance confirms the target instance exists in the
-// tenant workspace so a missing instance surfaces as a Kubernetes 404 rather
-// than a data-plane proxy error.
+var errProjectDevelopmentInstanceReplacing = errors.New("development instance is being replaced")
+
+// A template switch reuses the instance name. The old instance may still be
+// visible while its finalizers remove the old runtime services.
 func (s *Server) validateDevelopmentInstance(ctx context.Context, c *asclient.Client, target projectDevelopmentSyncTargetInfo) error {
 	res, err := target.instanceResource()
 	if err != nil {
 		return err
 	}
-	_, err = c.Resource(res, "").Get(ctx, target.ResourceName, metav1.GetOptions{})
-	return err
+	instance, err := c.Resource(res, "").Get(ctx, target.ResourceName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if instance.GetDeletionTimestamp() != nil {
+		return fmt.Errorf("%w: %q is still terminating", errProjectDevelopmentInstanceReplacing, target.ResourceName)
+	}
+	if target.templateName != "" {
+		templateName, _, err := unstructured.NestedString(instance.Object, "spec", "template")
+		if err != nil {
+			return fmt.Errorf("read development instance %q template: %w", target.ResourceName, err)
+		}
+		if templateName != "" && templateName != target.templateName {
+			return fmt.Errorf("%w: %q is waiting for template %q", errProjectDevelopmentInstanceReplacing, target.ResourceName, target.templateName)
+		}
+	}
+	return nil
 }
 
 // routeProjectSyncFiles groups workspace files by development component: a
@@ -1747,7 +1766,7 @@ func projectDevelopmentSyncProvisioning(err error) bool {
 	if errors.As(err, &partial) {
 		return false
 	}
-	return apierrors.IsNotFound(err) || projectAssistantRunSandboxSeedRetryable(err)
+	return apierrors.IsNotFound(err) || errors.Is(err, errProjectDevelopmentInstanceReplacing) || projectAssistantRunSandboxSeedRetryable(err)
 }
 
 // developmentSyncFailureKey scopes sync failures and worker tails to one

@@ -12,13 +12,13 @@ ensureRailgridUIStyles()
 
 export interface FirstRunStep {
   label: string
-  description: string
+  description?: string
 }
 
 const props = withDefaults(defineProps<{
-  title: string
-  description: string
-  primaryLabel: string
+  title?: string
+  description?: string
+  primaryLabel?: string
   primaryDisabled?: boolean
   secondaryLabel?: string
   steps: readonly FirstRunStep[]
@@ -26,6 +26,7 @@ const props = withDefaults(defineProps<{
   complete?: boolean
   actionsVisible?: boolean
   journeyLabel?: string
+  embedded?: boolean
 }>(), {
   secondaryLabel: '',
   primaryDisabled: false,
@@ -46,8 +47,8 @@ const boundedCurrentStep = computed(() => props.complete ? props.steps.length : 
 </script>
 
 <template>
-  <section class="k-first-run" :aria-labelledby="titleID">
-    <div class="k-first-run__lead">
+  <component :is="embedded ? 'div' : 'section'" :class="embedded ? 'k-first-run--embedded' : 'k-first-run'" :aria-labelledby="embedded ? undefined : titleID">
+    <div v-if="!embedded" class="k-first-run__lead">
       <span class="k-first-run__icon" aria-hidden="true"><slot name="icon" /></span>
       <div class="k-first-run__copy">
         <h3 :id="titleID">{{ title }}</h3>
@@ -86,9 +87,9 @@ const boundedCurrentStep = computed(() => props.complete ? props.steps.length : 
             {{ index < boundedCurrentStep ? 'Completed step' : index === boundedCurrentStep ? 'Current step' : 'Upcoming step' }}:
           </span>
           <strong>{{ step.label }}</strong>
-          <small>{{ step.description }}</small>
+          <small v-if="step.description">{{ step.description }}</small>
         </span>
       </li>
     </ol>
-  </section>
+  </component>
 </template>

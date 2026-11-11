@@ -441,7 +441,7 @@ func TestProjectEinoAssistantWriteTodosExposesStrictAppOwnedSchema(t *testing.T)
 	}
 }
 
-func TestProjectEinoAssistantWriteTodosIsVisibleOnlyInDefaultMode(t *testing.T) {
+func TestProjectEinoAssistantWriteTodosIsNotExposed(t *testing.T) {
 	h := newProjectAssistantV2ToolHarness(t, "run-write-todos-modes")
 	for _, mode := range []projectAssistantCollaborationMode{
 		projectAssistantCollaborationModeDefault,
@@ -470,12 +470,8 @@ func TestProjectEinoAssistantWriteTodosIsVisibleOnlyInDefaultMode(t *testing.T) 
 				count++
 			}
 		}
-		want := 0
-		if mode == projectAssistantCollaborationModeDefault {
-			want = 1
-		}
-		if count != want {
-			t.Fatalf("mode %s write_todos count = %d, want %d", mode, count, want)
+		if count != 0 {
+			t.Fatalf("mode %s write_todos count = %d, want 0", mode, count)
 		}
 	}
 }

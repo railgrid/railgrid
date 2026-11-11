@@ -710,35 +710,22 @@ func TestDefaultPromptKeepsApprovalPolicyIndependentOfRetiredTools(t *testing.T)
 	}
 }
 
-func TestDefaultPromptRequiresEvidenceGroundedChecklistUpdates(t *testing.T) {
+func TestDefaultPromptRequiresEvidenceGroundedProgress(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	prompt := projectSystemPromptForMode(project, &ProjectRepositoryView{Ref: "demo-repo", Status: projectRepositoryStatusReady, Ready: true}, projectAssistantCollaborationModeDefault, false)
+	if strings.Contains(prompt, "write_todos") {
+		t.Fatalf("default prompt retained retired checklist tool:\n%s", prompt)
+	}
 	for _, want := range []string{
 		"An obvious, narrowly scoped edit or answer with no design choices, external operation, or multi-phase verification is lightweight",
-		"skip preambles, write_todos, and report_progress for lightweight work",
-		"A checklist edit alone is not a progress event",
-		"sole checklist authority for non-lightweight Default-mode work",
-		"Before the first substantial or mutating tool call on such work, write a complete plan",
-		"lightweight work, trivial reads, routine calls, and simple answers need no checklist",
+		"skip preambles and report_progress for lightweight work",
 		"Plan and Review remain read-only and keep their mode-specific contracts",
-		"report_progress is only user-facing commentary; it never updates or replaces the checklist",
-		"Every model-authored checklist change must be a full-list write_todos update",
-		"Immediately after defining or receiving a plan, write the full list",
-		"Keep exactly one step in_progress at a time",
-		"all other unfinished or blocked work stays pending",
-		"Do not jump a pending step directly to completed; move it to in_progress first",
-		"Before moving to another phase, write the full list again",
-		"After verification changes completion evidence, immediately write the full list again",
-		"Immediately before the terminal response, write the full list one final time",
-		"mark a step completed only when current direct evidence supports it",
-		"For blocked or unfinished work, use pending (a non-complete status) and never invent a blocked status",
 		"Runtime readiness, HTTP 200, and preview reachability are evidence only for those narrow conditions",
 		"cannot alone complete implementation or application-behavior steps",
 		"Do not infer broader completion from them or any other indirect status",
-		"report_progress never substitutes for write_todos",
 	} {
 		if !strings.Contains(prompt, want) {
-			t.Fatalf("default prompt missing checklist instruction %q:\n%s", want, prompt)
+			t.Fatalf("default prompt missing progress instruction %q:\n%s", want, prompt)
 		}
 	}
 }
