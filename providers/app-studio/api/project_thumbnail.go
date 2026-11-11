@@ -31,6 +31,7 @@ import (
 	"image/png"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,55 +60,37 @@ const (
 var errProjectThumbnailClaimHeld = errors.New("project thumbnail capture is owned by another replica")
 
 type ProjectThumbnailView struct {
-	Available  bool   `json:"available"`
-	Refreshing bool   `json:"refreshing,omitempty"`
-	CommitSHA  string `json:"commitSHA,omitempty"`
-	Revision   string `json:"revision,omitempty"`
+	Available       bool   `json:"available"`
+	Refreshing      bool   `json:"refreshing,omitempty"`
+	CommitSHA       string `json:"commitSHA,omitempty"`
+	Revision        string `json:"revision,omitempty"`
+	PreviewRevision uint64 `json:"previewRevision,omitempty"`
 }
 
 type projectThumbnailCaptureRequest struct {
-	id              identity
-	project         *aiv1alpha1.Project
-	commitSHA       string
-	commitCreatedAt time.Time
-	commitOrder     string
-	sourceRevision  uint64
-}
-
-type projectThumbnailCommit struct {
-	SHA       string
-	CreatedAt time.Time
-	Order     string
+	id             identity
+	project        *aiv1alpha1.Project
+	sourceRevision uint64
 }
 
 type projectThumbnailFailure struct {
-	commitSHA       string
-	commitCreatedAt time.Time
-	commitOrder     string
-	sourceRevision  uint64
-	retryAfter      time.Time
+	sourceRevision uint64
+	retryAfter     time.Time
 }
 
 func newProjectThumbnailFailure(request *projectThumbnailCaptureRequest, retryAfter time.Time) projectThumbnailFailure {
 	return projectThumbnailFailure{
-		commitSHA: request.commitSHA, commitCreatedAt: request.commitCreatedAt,
-		commitOrder: request.commitOrder, sourceRevision: request.sourceRevision,
-		retryAfter: retryAfter,
+		sourceRevision: request.sourceRevision,
+		retryAfter:     retryAfter,
 	}
 }
 
 func (failure projectThumbnailFailure) matches(request *projectThumbnailCaptureRequest) bool {
-	return request != nil && failure.commitSHA == request.commitSHA &&
-		failure.commitCreatedAt.Equal(request.commitCreatedAt) &&
-		failure.commitOrder == request.commitOrder && failure.sourceRevision == request.sourceRevision
+	return request != nil && failure.sourceRevision == request.sourceRevision
 }
 
 func projectThumbnailRequestMatches(left, right *projectThumbnailCaptureRequest) bool {
-	return left != nil && right != nil &&
-		left.commitSHA == right.commitSHA &&
-		left.commitCreatedAt.Equal(right.commitCreatedAt) &&
-		left.commitOrder == right.commitOrder &&
-		left.sourceRevision == right.sourceRevision
+	return left != nil && right != nil && left.sourceRevision == right.sourceRevision
 }
 
 func projectThumbnailCaptureKey(id identity, project *aiv1alpha1.Project) string {
@@ -123,28 +106,9 @@ func (s *Server) projectThumbnailStore() (store.ProjectThumbnailStore, bool) {
 	return thumbnailStore, ok
 }
 
-func latestSuccessfulProjectCommit(repository *ProjectRepositoryView) projectThumbnailCommit {
-	if repository == nil {
-		return projectThumbnailCommit{}
-	}
-	var latest projectThumbnailCommit
-	for _, commit := range repository.Commits {
-		sha := strings.TrimSpace(commit.CommitSHA)
-		order := strings.TrimSpace(commit.Name)
-		if !strings.EqualFold(strings.TrimSpace(commit.Phase), "Succeeded") || sha == "" || commit.CreatedAt.IsZero() || order == "" {
-			continue
-		}
-		if latest.SHA == "" || commit.CreatedAt.After(latest.CreatedAt) || (commit.CreatedAt.Equal(latest.CreatedAt) && order > latest.Order) {
-			latest = projectThumbnailCommit{SHA: sha, CreatedAt: commit.CreatedAt, Order: order}
-		}
-	}
-	return latest
-}
-
-// projectViewWithThumbnail reads the current derived image and schedules a
-// refresh when repository history shows a newer successful commit. Scheduling
-// happens only inside an authenticated project request because private preview
-// capture needs the caller's one-use browser session handoff.
+// projectViewWithThumbnail keeps serving the stored image while capturing a
+// newer synchronized preview. Private previews need an authenticated project
+// request to schedule the browser handoff.
 func (s *Server) projectViewWithThumbnail(ctx context.Context, view ProjectView, id identity, project *aiv1alpha1.Project) ProjectView {
 	thumbnailStore, ok := s.projectThumbnailStore()
 	if !ok || project == nil {
@@ -154,23 +118,29 @@ func (s *Server) projectViewWithThumbnail(ctx context.Context, view ProjectView,
 	thumbnail, err := thumbnailStore.GetProjectThumbnailMetadata(ctx, scope)
 	if err == nil {
 		view.Thumbnail = &ProjectThumbnailView{
-			Available: true,
-			CommitSHA: thumbnail.CommitSHA,
-			Revision:  thumbnail.SHA256,
+			Available:       true,
+			CommitSHA:       thumbnail.CommitSHA,
+			Revision:        thumbnail.SHA256,
+			PreviewRevision: thumbnail.PreviewRevision,
 		}
 	} else if !errors.Is(err, store.ErrProjectThumbnailNotFound) {
 		klog.V(1).Infof("read project thumbnail for %s: %v", project.Name, err)
 		return view
 	}
-	latestCommit := latestSuccessfulProjectCommit(view.Repository)
-	if latestCommit.SHA == "" || (view.Thumbnail != nil && view.Thumbnail.CommitSHA == latestCommit.SHA && thumbnail.Variant == projectThumbnailVariant) {
+	checkpoint := view.LastPreviewCheckpoint
+	if checkpoint == nil || checkpoint.SourceRevision == 0 || projectThumbnailCoversRevision(thumbnail, checkpoint.SourceRevision) {
 		return view
 	}
 	if view.Thumbnail == nil {
 		view.Thumbnail = &ProjectThumbnailView{}
 	}
-	view.Thumbnail.Refreshing = s.scheduleProjectThumbnailCapture(id, project, latestCommit, view.SourceRevision)
+	view.Thumbnail.Refreshing = s.scheduleProjectThumbnailCapture(id, project, checkpoint.SourceRevision)
 	return view
+}
+
+func projectThumbnailCoversRevision(thumbnail store.ProjectThumbnailMetadata, revision uint64) bool {
+	return thumbnail.PreviewRevision > revision ||
+		(thumbnail.PreviewRevision == revision && thumbnail.Variant == projectThumbnailVariant)
 }
 
 // scheduleProjectThumbnailCapture reports whether the caller should keep the
@@ -178,15 +148,14 @@ func (s *Server) projectViewWithThumbnail(ctx context.Context, view ProjectView,
 // capture is queued or running, or is still cooling down after a failure. If
 // the bounded queue is full, the request is dropped and true asks the caller
 // to retry scheduling on a later project view; false means the request lacked
-// the identity or commit data required to schedule it.
-func (s *Server) scheduleProjectThumbnailCapture(id identity, project *aiv1alpha1.Project, commit projectThumbnailCommit, sourceRevision uint64) bool {
-	if s == nil || project == nil || strings.TrimSpace(commit.SHA) == "" || commit.CreatedAt.IsZero() || strings.TrimSpace(commit.Order) == "" || sourceRevision == 0 {
+// a project or preview revision.
+func (s *Server) scheduleProjectThumbnailCapture(id identity, project *aiv1alpha1.Project, sourceRevision uint64) bool {
+	if s == nil || project == nil || sourceRevision == 0 {
 		return false
 	}
 	keyString := projectThumbnailCaptureKey(id, project)
 	request := &projectThumbnailCaptureRequest{
-		id: id, project: project.DeepCopy(), commitSHA: strings.TrimSpace(commit.SHA),
-		commitCreatedAt: commit.CreatedAt, commitOrder: strings.TrimSpace(commit.Order),
+		id: id, project: project.DeepCopy(),
 		sourceRevision: sourceRevision,
 	}
 	s.mu.Lock()
@@ -194,24 +163,28 @@ func (s *Server) scheduleProjectThumbnailCapture(id identity, project *aiv1alpha
 		s.projectThumbnailCaptures = map[string]*projectThumbnailCaptureRequest{}
 	}
 	if failure, failed := s.projectThumbnailFailures[keyString]; failed {
-		if failure.matches(request) && failure.retryAfter.After(time.Now()) {
+		if failure.sourceRevision > request.sourceRevision || (failure.matches(request) && failure.retryAfter.After(time.Now())) {
 			s.mu.Unlock()
 			// Keep the gallery's refresh signal active while this exact capture
 			// is cooling down. A later view request can retry once retryAfter
 			// passes, while the cooldown itself prevents rapid retry loops.
 			return true
 		}
-		// A new commit or source revision is a distinct capture attempt. Do not
+		// A new preview revision is a distinct capture attempt. Do not
 		// let an earlier failure delay a thumbnail for the newer project state.
 		delete(s.projectThumbnailFailures, keyString)
 	}
-	_, running := s.projectThumbnailCaptures[keyString]
+	pending := s.projectThumbnailCaptures[keyString]
+	if pending != nil && pending.sourceRevision > request.sourceRevision {
+		s.mu.Unlock()
+		return true
+	}
 	s.projectThumbnailCaptures[keyString] = request
 	ctx := s.projectThumbnailContext
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if running {
+	if pending != nil {
 		s.mu.Unlock()
 		return true
 	}
@@ -306,7 +279,7 @@ func (s *Server) captureProjectThumbnail(parent context.Context, key string, req
 	claimCtx, claimCancel := context.WithTimeout(parent, 5*time.Second)
 	_, held, err := s.store.TryClaimReplica(claimCtx, store.ReplicaClaim{
 		Key: store.ThumbnailClaimKey(scope), Kind: store.ReplicaClaimKindThumbnail,
-		ScopeKey: store.ReplicaClaimScopeKey(scope), OwnerReplica: owner, Detail: request.commitSHA,
+		ScopeKey: store.ReplicaClaimScopeKey(scope), OwnerReplica: owner, Detail: strconv.FormatUint(request.sourceRevision, 10),
 	}, projectThumbnailClaimTTL)
 	claimCancel()
 	if err != nil {
@@ -325,6 +298,15 @@ func (s *Server) captureProjectThumbnail(parent context.Context, key string, req
 
 	ctx, cancel := context.WithTimeout(parent, projectThumbnailCaptureTimeout)
 	defer cancel()
+	// Another replica may have stored this revision between the view read and
+	// this worker acquiring the capture claim.
+	thumbnail, err := thumbnailStore.GetProjectThumbnailMetadata(ctx, scope)
+	if err == nil && projectThumbnailCoversRevision(thumbnail, request.sourceRevision) {
+		return nil
+	}
+	if err != nil && !errors.Is(err, store.ErrProjectThumbnailNotFound) {
+		return fmt.Errorf("recheck project thumbnail after claiming capture: %w", err)
+	}
 	// Capture workers outlive the authenticated view request that scheduled
 	// them. Reattach the Project-scoped ledger before any FileStore read: in a
 	// deployment the store requires this control-plane-backed ledger and has no
@@ -343,13 +325,16 @@ func (s *Server) captureProjectThumbnail(parent context.Context, key string, req
 			}
 			continue
 		}
-		result, inspectErr := s.inspectProjectDevelopmentPreviewResult(ctx, projectAssistantToolCallRequest{
+		result, inspectErr := s.inspectProjectDevelopmentPreviewResultWithFence(ctx, projectAssistantToolCallRequest{
 			Identity: request.id,
 			Project:  request.project,
 			Arguments: map[string]any{
 				"path": "/",
 			},
-		}, true)
+		}, true, &projectAssistantPreviewSourceFence{
+			server: s, scope: projectWorkspaceScope(request.id, request.project), revision: request.sourceRevision,
+			requiresSharedPreviewCheckpoint: true, previewCheckpointOnly: true,
+		})
 		if inspectErr == nil && result.Screenshot != nil && result.ScreenshotStatus == projectAssistantPreviewScreenshotCaptured {
 			if currentErr := s.requireProjectThumbnailCurrentRevision(ctx, request); currentErr != nil {
 				lastErr = currentErr
@@ -383,8 +368,8 @@ func (s *Server) captureProjectThumbnail(parent context.Context, key string, req
 				return nil
 			}
 			return thumbnailStore.PutProjectThumbnail(ctx, scope, store.ProjectThumbnail{
-				CommitSHA: request.commitSHA, CommitCreatedAt: request.commitCreatedAt, CommitOrder: request.commitOrder,
-				Variant: projectThumbnailVariant, ContentType: "image/png", SHA256: digest, Data: data, CapturedAt: time.Now().UTC(),
+				PreviewRevision: request.sourceRevision,
+				Variant:         projectThumbnailVariant, ContentType: "image/png", SHA256: digest, Data: data, CapturedAt: time.Now().UTC(),
 			})
 		}
 		if inspectErr != nil {
@@ -424,19 +409,12 @@ func (s *Server) requireProjectThumbnailCurrentRevision(ctx context.Context, req
 		return errors.New("project workspace store is unavailable")
 	}
 	scope := projectWorkspaceScope(request.id, request.project)
-	current, err := s.workspaces.SourceRevision(ctx, scope)
+	checkpoint, err := s.workspaces.LastPreviewCheckpoint(ctx, scope)
 	if err != nil {
-		return fmt.Errorf("read current workspace revision: %w", err)
+		return fmt.Errorf("read preview checkpoint: %w", err)
 	}
-	if current != request.sourceRevision {
-		return fmt.Errorf("workspace revision changed from %d to %d before thumbnail capture", request.sourceRevision, current)
-	}
-	dirty, err := s.workspaces.UncommittedPaths(ctx, scope)
-	if err != nil {
-		return fmt.Errorf("read workspace commit state: %w", err)
-	}
-	if len(dirty) > 0 {
-		return errors.New("workspace has uncommitted changes; preview does not exactly represent the latest successful commit")
+	if checkpoint == nil || checkpoint.SourceRevision != request.sourceRevision {
+		return fmt.Errorf("%w: preview checkpoint changed from revision %d", errProjectAssistantRunSandboxConflict, request.sourceRevision)
 	}
 	c, err := s.clientFor(request.id)
 	if err != nil {

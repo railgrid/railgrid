@@ -31,6 +31,7 @@ var ErrProjectThumbnailNotFound = errors.New("project thumbnail not found")
 // the Project API and repository so screenshot churn never mutates desired
 // state or source history.
 type ProjectThumbnail struct {
+	PreviewRevision uint64
 	CommitSHA       string
 	CommitCreatedAt time.Time
 	CommitOrder     string
@@ -47,6 +48,7 @@ type ProjectThumbnail struct {
 // image bytes and encryption details so project listings never read or decrypt
 // the binary payload that the browser fetches separately.
 type ProjectThumbnailMetadata struct {
+	PreviewRevision uint64
 	CommitSHA       string
 	CommitCreatedAt time.Time
 	CommitOrder     string
@@ -70,11 +72,14 @@ func validateProjectThumbnail(scope Scope, thumbnail ProjectThumbnail) error {
 	if err := scope.validate(); err != nil {
 		return err
 	}
-	if strings.TrimSpace(thumbnail.CommitSHA) == "" || strings.TrimSpace(thumbnail.CommitOrder) == "" || strings.TrimSpace(thumbnail.Variant) == "" || strings.TrimSpace(thumbnail.SHA256) == "" || len(thumbnail.Data) == 0 {
-		return fmt.Errorf("thumbnail commit, order, variant, digest, and image data are required")
+	if strings.TrimSpace(thumbnail.Variant) == "" || strings.TrimSpace(thumbnail.SHA256) == "" || len(thumbnail.Data) == 0 {
+		return fmt.Errorf("thumbnail variant, digest, and image data are required")
 	}
-	if thumbnail.CommitCreatedAt.IsZero() {
-		return fmt.Errorf("thumbnail commit creation time is required")
+	if thumbnail.PreviewRevision == 0 && (strings.TrimSpace(thumbnail.CommitSHA) == "" || strings.TrimSpace(thumbnail.CommitOrder) == "" || thumbnail.CommitCreatedAt.IsZero()) {
+		return fmt.Errorf("thumbnail preview revision or legacy commit metadata is required")
+	}
+	if thumbnail.PreviewRevision > 0 && thumbnail.CommitSHA != "" {
+		return fmt.Errorf("preview thumbnail cannot carry a legacy commit SHA")
 	}
 	if thumbnail.ContentType != "image/png" && thumbnail.ContentType != "image/jpeg" {
 		return fmt.Errorf("unsupported thumbnail content type %q", thumbnail.ContentType)
@@ -90,19 +95,19 @@ func validateProjectThumbnail(scope Scope, thumbnail ProjectThumbnail) error {
 
 func projectThumbnailMetadata(in ProjectThumbnail) ProjectThumbnailMetadata {
 	return ProjectThumbnailMetadata{
-		CommitSHA: in.CommitSHA, CommitCreatedAt: in.CommitCreatedAt, CommitOrder: in.CommitOrder,
+		PreviewRevision: in.PreviewRevision, CommitSHA: in.CommitSHA, CommitCreatedAt: in.CommitCreatedAt, CommitOrder: in.CommitOrder,
 		Variant: in.Variant, ContentType: in.ContentType, SHA256: in.SHA256, CapturedAt: in.CapturedAt,
 	}
 }
 
-func projectThumbnailNewer(leftCreatedAt time.Time, leftOrder string, rightCreatedAt time.Time, rightOrder string) bool {
-	if leftCreatedAt.After(rightCreatedAt) {
-		return true
+func projectThumbnailNewer(left, right ProjectThumbnail) bool {
+	if left.PreviewRevision != 0 || right.PreviewRevision != 0 {
+		return left.PreviewRevision > right.PreviewRevision
 	}
-	if leftCreatedAt.Before(rightCreatedAt) {
-		return false
+	if left.CommitCreatedAt.Equal(right.CommitCreatedAt) {
+		return strings.TrimSpace(left.CommitOrder) > strings.TrimSpace(right.CommitOrder)
 	}
-	return strings.TrimSpace(leftOrder) > strings.TrimSpace(rightOrder)
+	return left.CommitCreatedAt.After(right.CommitCreatedAt)
 }
 
 func (s *MemoryStore) GetProjectThumbnailMetadata(_ context.Context, scope Scope) (ProjectThumbnailMetadata, error) {
@@ -145,7 +150,7 @@ func (s *MemoryStore) PutProjectThumbnail(_ context.Context, scope Scope, thumbn
 	if s.projectThumbnails == nil {
 		s.projectThumbnails = map[Scope]ProjectThumbnail{}
 	}
-	if current, ok := s.projectThumbnails[scope]; ok && projectThumbnailNewer(current.CommitCreatedAt, current.CommitOrder, thumbnail.CommitCreatedAt, thumbnail.CommitOrder) {
+	if current, ok := s.projectThumbnails[scope]; ok && projectThumbnailNewer(current, thumbnail) {
 		return nil
 	}
 	s.projectThumbnails[scope] = cloneProjectThumbnail(thumbnail)
@@ -161,11 +166,12 @@ func (s *PostgresStore) GetProjectThumbnailMetadata(ctx context.Context, scope S
 	}
 	var metadata ProjectThumbnailMetadata
 	err := s.db.QueryRowContext(ctx, `
-		SELECT commit_sha, commit_created_at, commit_order, variant, content_type, sha256, captured_at
+		SELECT CASE WHEN commit_sha = '' THEN preview_revision ELSE 0 END,
+		       commit_sha, commit_created_at, commit_order, variant, content_type, sha256, captured_at
 		FROM app_studio_project_thumbnails
 		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND project_uid = $4
 	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID).Scan(
-		&metadata.CommitSHA, &metadata.CommitCreatedAt, &metadata.CommitOrder, &metadata.Variant,
+		&metadata.PreviewRevision, &metadata.CommitSHA, &metadata.CommitCreatedAt, &metadata.CommitOrder, &metadata.Variant,
 		&metadata.ContentType, &metadata.SHA256, &metadata.CapturedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -196,11 +202,12 @@ func (s *PostgresStore) GetProjectThumbnail(ctx context.Context, scope Scope) (P
 	}
 	var thumbnail ProjectThumbnail
 	err := s.db.QueryRowContext(ctx, `
-		SELECT commit_sha, commit_created_at, commit_order, variant, content_type, sha256, image_bytes, image_encrypted, image_key_id, captured_at
+		SELECT CASE WHEN commit_sha = '' THEN preview_revision ELSE 0 END,
+		       commit_sha, commit_created_at, commit_order, variant, content_type, sha256, image_bytes, image_encrypted, image_key_id, captured_at
 		FROM app_studio_project_thumbnails
 		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND project_uid = $4
 	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID).Scan(
-		&thumbnail.CommitSHA, &thumbnail.CommitCreatedAt, &thumbnail.CommitOrder, &thumbnail.Variant, &thumbnail.ContentType, &thumbnail.SHA256,
+		&thumbnail.PreviewRevision, &thumbnail.CommitSHA, &thumbnail.CommitCreatedAt, &thumbnail.CommitOrder, &thumbnail.Variant, &thumbnail.ContentType, &thumbnail.SHA256,
 		&thumbnail.Data, &thumbnail.DataEncrypted, &thumbnail.DataKeyID, &thumbnail.CapturedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -219,21 +226,35 @@ func (s *PostgresStore) PutProjectThumbnail(ctx context.Context, scope Scope, th
 	if err := validateProjectThumbnail(scope, thumbnail); err != nil {
 		return err
 	}
+	// Preserve the legacy columns and AAD during rollout. An older replica can
+	// write a commit thumbnail without touching preview_revision; commit_sha
+	// identifies those rows on reads and allows a fresh preview to replace them.
+	commitCreatedAt := thumbnail.CommitCreatedAt
+	if thumbnail.PreviewRevision > 0 {
+		commitCreatedAt = thumbnail.CapturedAt
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO app_studio_project_thumbnails (
 			org_uuid, workspace_uuid, project_name, project_uid, commit_sha, commit_created_at, commit_order, variant, content_type, sha256,
-			image_bytes, image_encrypted, image_key_id, captured_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			image_bytes, image_encrypted, image_key_id, captured_at, preview_revision
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		ON CONFLICT (org_uuid, workspace_uuid, project_name, project_uid) DO UPDATE SET
 			commit_sha = EXCLUDED.commit_sha, commit_created_at = EXCLUDED.commit_created_at, commit_order = EXCLUDED.commit_order,
 			variant = EXCLUDED.variant, content_type = EXCLUDED.content_type,
 			sha256 = EXCLUDED.sha256, image_bytes = EXCLUDED.image_bytes, image_encrypted = EXCLUDED.image_encrypted,
-			image_key_id = EXCLUDED.image_key_id, captured_at = EXCLUDED.captured_at
-		WHERE (app_studio_project_thumbnails.commit_created_at, app_studio_project_thumbnails.commit_order)
-			<= (EXCLUDED.commit_created_at, EXCLUDED.commit_order)
+			image_key_id = EXCLUDED.image_key_id, captured_at = EXCLUDED.captured_at,
+			preview_revision = EXCLUDED.preview_revision
+		WHERE CASE
+			WHEN EXCLUDED.preview_revision > 0 THEN
+				app_studio_project_thumbnails.commit_sha <> '' OR
+				app_studio_project_thumbnails.preview_revision <= EXCLUDED.preview_revision
+			ELSE app_studio_project_thumbnails.commit_sha <> '' AND
+				(app_studio_project_thumbnails.commit_created_at, app_studio_project_thumbnails.commit_order)
+				<= (EXCLUDED.commit_created_at, EXCLUDED.commit_order)
+		END
 	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
-		thumbnail.CommitSHA, thumbnail.CommitCreatedAt, thumbnail.CommitOrder, thumbnail.Variant, thumbnail.ContentType, thumbnail.SHA256,
-		thumbnail.Data, thumbnail.DataEncrypted, thumbnail.DataKeyID, thumbnail.CapturedAt)
+		thumbnail.CommitSHA, commitCreatedAt, thumbnail.CommitOrder, thumbnail.Variant, thumbnail.ContentType, thumbnail.SHA256,
+		thumbnail.Data, thumbnail.DataEncrypted, thumbnail.DataKeyID, thumbnail.CapturedAt, thumbnail.PreviewRevision)
 	if err != nil {
 		return fmt.Errorf("put project thumbnail: %w", err)
 	}
