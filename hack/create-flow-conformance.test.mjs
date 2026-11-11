@@ -144,7 +144,8 @@ test('App Studio removes collection tabs and nested settings chrome from model c
     source('providers/app-studio/portal/src/ModelsSettings.vue'),
   ])
   assert.match(app, /<Tabs[\s\S]*v-if="!isCreateModelRoute"/)
-  assert.match(app, /v-if="!settingsInWorkbench && !publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute && !isProviderConnectionsRoute"/)
+  assert.match(app, /const isModelsRoute = computed\(\(\) => routeSegment\.value === MODELS_ROUTE\)/)
+  assert.match(app, /v-if="!settingsInWorkbench && !publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute"/)
   assert.match(settings, /v-if="routePage && !creationRoute && !editorOpen && !connectionEditorOpen"/)
   for (const form of ['Provider connection form', 'Model binding form']) {
     assert.match(settings, new RegExp(`<form[^>]*class="[^"]*k-create-surface--wide[^\"]*k-model-form[^\"]*"[^>]*aria-label="${form}"`))
