@@ -300,6 +300,16 @@ func (h *Handler) enableProviderWithMode(w http.ResponseWriter, r *http.Request,
 			return
 		}
 	} else {
+		pending, err := h.mgr.bootstrapper.ProviderSetupPending(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if pending {
+			writeStatus(w, http.StatusConflict, "ProviderSetupPending", "Provider setup is unfinished. Resume it from Getting started.")
+			return
+		}
+
 		// The ordinary Enable path still records the caller's new decisions
 		// before writing or updating its binding.
 		claims, err := prepare()
@@ -343,13 +353,11 @@ func resolveAcceptedHubAccess(declared []providersv1alpha1.ProviderHubAccess, ac
 	return out, 0, ""
 }
 
-// mergeHubAccessDecisions combines this caller's choices with the stored
-// grant. For every declared capability the caller may decide, it is accepted
-// when ticked and declined when not. A capability the caller may not decide
-// keeps its previous decision — so a workspace admin enabling a provider never
-// overturns (or, by leaving it unticked, "declines") something only an org
-// admin can decide; it stays undecided until one does. Onboarding only fills
-// in undecided access.
+// mergeHubAccessDecisions combines a caller's choices with the stored grant.
+// Ordinary Enable records only the decisions the caller is authorized to make.
+// Onboarding preserves existing decisions and denies undecided organization
+// capabilities for both admin roles. This blocks the implicit platform default
+// until an organization admin explicitly reviews those capabilities.
 func mergeHubAccessDecisions(declared []providersv1alpha1.ProviderHubAccess, accepted map[string]bool, prev *tenancyv1alpha1.Grant, wsRole, orgRole string, setup bool) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
 	var outAccepted []tenancyv1alpha1.GrantedCapability
 	var outDeclined []tenancyv1alpha1.CapabilityRef

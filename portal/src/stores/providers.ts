@@ -925,11 +925,19 @@ export const useProvidersStore = defineStore('providers', () => {
         })
         if (res.ok) break
         const detail = await res.text().catch(() => '')
-        if (res.status === 409 && attempt < backoffMs.length) {
-          await new Promise((r) => setTimeout(r, backoffMs[attempt]))
-          continue
-        }
         if (!isCurrentEnable()) return
+        if (res.status === 409) {
+          let pendingMessage: string | undefined
+          try {
+            const status = JSON.parse(detail) as { reason?: string; message?: string } | null
+            if (status?.reason === 'ProviderSetupPending') pendingMessage = status.message || 'Resume provider setup from Getting started.'
+          } catch { /* Non-Status conflicts retain the ordinary retry behavior. */ }
+          if (pendingMessage) throw new Error(pendingMessage)
+          if (attempt < backoffMs.length) {
+            await new Promise((r) => setTimeout(r, backoffMs[attempt]))
+            continue
+          }
+        }
         if (setupReview && res.status === 412) {
           throw new Error('Requested access changed. Review the updated permissions and try again.')
         }

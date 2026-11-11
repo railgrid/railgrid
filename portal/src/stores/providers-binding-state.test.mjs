@@ -245,6 +245,24 @@ test('enable keeps the current projection until its post-write refresh completes
   assert.deepEqual(store.bindingNamesByProvider, { edges: 'binding-edges' })
 })
 
+test('ordinary enable directs the user to resume setup without retrying', async () => {
+  setSelection('org-a', 'workspace-a')
+  const store = storeModule.useProvidersStore()
+  const provider = { name: 'edges', export: { name: 'edges.export', path: 'root:railgrid:providers:edges' } }
+  const message = 'Provider setup is unfinished. Resume it from Getting started.'
+  let requests = 0
+  globalThis.__providerAuthFetch = async () => {
+    requests += 1
+    return {
+      ...response(null, { ok: false, status: 409 }),
+      text: async () => JSON.stringify({ reason: 'ProviderSetupPending', message }),
+    }
+  }
+
+  await assert.rejects(store.enable(provider, []), /Resume it from Getting started/)
+  assert.equal(requests, 1)
+})
+
 test('guided setup fails closed on a hub that does not support the setup endpoint', async () => {
   setSelection('org-a', 'workspace-a')
   const store = storeModule.useProvidersStore()

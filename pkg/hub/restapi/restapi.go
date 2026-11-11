@@ -140,6 +140,8 @@ type WorkspaceOps interface {
 	// non-default workspace, even with valid RBAC).
 	EnsureProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, claims []kcp.ProviderClaim) error
 
+	ProviderSetupPending(ctx context.Context, orgUUID, wsUUID, bindingName string) (bool, error)
+
 	// SetupProviderAPIBinding reserves the binding before calling prepare.
 	// An existing binding outside setup is left untouched.
 	SetupProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, prepare func() ([]kcp.ProviderClaim, error)) (bool, error)

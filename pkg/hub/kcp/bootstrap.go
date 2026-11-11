@@ -1946,6 +1946,22 @@ func ensureProviderAPIBinding(ctx context.Context, wsClient dynamic.Interface, b
 	return nil
 }
 
+// ProviderSetupPending reports whether onboarding has reserved the provider binding.
+func (b *Bootstrapper) ProviderSetupPending(ctx context.Context, orgUUID, wsUUID, bindingName string) (bool, error) {
+	wsClient, err := dynamic.NewForConfig(configForPath(b.config, childWorkspacePath(orgUUID, wsUUID)))
+	if err != nil {
+		return false, err
+	}
+	binding, err := wsClient.Resource(apiBindingGVR).Get(ctx, bindingName, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return binding.GetAnnotations()[providers.ProviderSetupAnnotation] == providers.ProviderSetupPending, nil
+}
+
 // SetupProviderAPIBinding reserves the binding before prepare records access.
 // An unfinished reservation can be resumed after a request fails or a hub restarts.
 // It returns false without calling prepare for a binding owned by another flow.

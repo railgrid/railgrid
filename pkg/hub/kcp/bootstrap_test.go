@@ -297,7 +297,7 @@ func TestEnsureProviderAPIBindingUpdatesTheClaimsOfAnExistingBinding(t *testing.
 func TestSetupProviderAPIBindingLeavesExistingBindingsAlone(t *testing.T) {
 	const name = "edges"
 	path := kcppaths.ProviderPath(name)
-	for _, scenario := range []string{"pending binding", "alternate name", "concurrent create"} {
+	for _, scenario := range []string{"ordinary binding still binding", "alternate name", "concurrent create", "pending setup for another export"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx := context.Background()
 			dyn := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{apiBindingGVR: "APIBindingList"})
@@ -305,8 +305,18 @@ func TestSetupProviderAPIBindingLeavesExistingBindingsAlone(t *testing.T) {
 			if scenario == "alternate name" {
 				bindingName = "my-edges-binding"
 			}
-			existing, err := newProviderAPIBinding(bindingName, path, name, nil, nil)
+			existingExport := name
+			wantConflict := scenario == "pending setup for another export"
+			var annotations map[string]string
+			if wantConflict {
+				existingExport = "previous-export"
+				annotations = map[string]string{providers.ProviderSetupAnnotation: providers.ProviderSetupPending}
+			}
+			existing, err := newProviderAPIBinding(bindingName, path, existingExport, nil, annotations)
 			if err != nil {
+				t.Fatal(err)
+			}
+			if err := unstructured.SetNestedField(existing.Object, "Binding", "status", "phase"); err != nil {
 				t.Fatal(err)
 			}
 			if scenario == "concurrent create" {
@@ -324,8 +334,15 @@ func TestSetupProviderAPIBindingLeavesExistingBindingsAlone(t *testing.T) {
 				t.Fatal("existing binding must not receive new grants")
 				return nil, nil
 			})
-			if err != nil || completed {
-				t.Fatalf("setup for existing binding: completed=%v, err=%v", completed, err)
+			if completed {
+				t.Fatal("setup reported that it changed an existing binding")
+			}
+			if wantConflict {
+				if !apierrors.IsConflict(err) {
+					t.Fatalf("setup for a different export: got %v, want a conflict", err)
+				}
+			} else if err != nil {
+				t.Fatalf("setup for existing binding: %v", err)
 			}
 		})
 	}
@@ -348,6 +365,13 @@ func TestSetupProviderAPIBindingResumesAfterGrantFailure(t *testing.T) {
 		t.Fatalf("setup error = %v, want %v", err, grantFailure)
 	}
 
+	changed, err := reacceptClaimsOnBinding(ctx, dyn, name, []ProviderClaim{
+		{Group: "authorization.k8s.io", Resource: "subjectaccessreviews", Accepted: true, Verbs: []string{"create"}},
+	})
+	if err != nil || changed {
+		t.Fatalf("re-accept modified the pending reservation: changed=%v, err=%v", changed, err)
+	}
+
 	// Stand in for kcp binding the provider's API. No claims are accepted here,
 	// so this retry only needs to complete the reservation.
 	reserved, err := bindings.Get(ctx, name, metav1.GetOptions{})
@@ -367,6 +391,45 @@ func TestSetupProviderAPIBindingResumesAfterGrantFailure(t *testing.T) {
 	finished, err := bindings.Get(ctx, name, metav1.GetOptions{})
 	if err != nil || finished.GetAnnotations()[providers.ProviderSetupAnnotation] != providers.ProviderSetupComplete {
 		t.Fatalf("setup reservation did not complete: %v", err)
+	}
+}
+
+func TestWaitForAPIBindingWaitsForAppliedClaims(t *testing.T) {
+	const name = "edges"
+	dyn := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{apiBindingGVR: "APIBindingList"})
+	claims := providerBindingSpecClaims([]ProviderClaim{{Group: "authorization.k8s.io", Resource: "subjectaccessreviews", Accepted: true, Verbs: []string{"create"}}})
+	bound, err := newProviderAPIBinding(name, kcppaths.ProviderPath(name), name, claims, map[string]string{
+		providers.ProviderSetupAnnotation: providers.ProviderSetupComplete,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedField(bound.Object, "Bound", "status", "phase"); err != nil {
+		t.Fatal(err)
+	}
+	applied := bound.DeepCopy()
+	if err := unstructured.SetNestedSlice(applied.Object, []any{map[string]any{"type": "PermissionClaimsApplied", "status": "True"}}, "status", "conditions"); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&claims[0].ScopedPermissionClaim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedSlice(applied.Object, []any{claim}, "status", "appliedPermissionClaims"); err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	dyn.PrependReactor("get", "apibindings", func(k8stesting.Action) (bool, runtime.Object, error) {
+		reads++
+		if reads == 1 {
+			return true, bound, nil
+		}
+		return true, applied, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := waitForAPIBinding(ctx, dyn, name, true); err != nil || reads < 2 {
+		t.Fatalf("wait returned before accepted claims applied: reads=%d, err=%v", reads, err)
 	}
 }
 
@@ -459,12 +522,20 @@ func TestListProviderAPIBindingsPreservesResolvedExportIdentity(t *testing.T) {
 			"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIBinding", "metadata": map[string]any{"name": "edges"},
 			"spec":   map[string]any{"reference": map[string]any{"export": map[string]any{"path": "root:railgrid:providers:edges", "name": "edges.providers.railgrid.ai"}}},
 			"status": map[string]any{"phase": "Bound", "apiExportClusterName": "actual-provider-cluster"},
+		}, map[string]any{
+			"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIBinding",
+			"metadata": map[string]any{"name": "agents", "annotations": map[string]string{providers.ProviderSetupAnnotation: providers.ProviderSetupPending}},
+			"spec":     map[string]any{"reference": map[string]any{"export": map[string]any{"path": kcppaths.ProviderPath("agents"), "name": "agents.providers.railgrid.ai"}}},
+			"status":   map[string]any{"phase": "Bound"},
 		}}})
 	}))
 	defer server.Close()
 	bindings, err := NewBootstrapper(&rest.Config{Host: server.URL}).ListProviderAPIBindings(context.Background(), "org-a", "ws-1")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, present := bindings["agents"]; present {
+		t.Fatal("a pending setup reservation was listed as enabled")
 	}
 	got, ok := bindings["edges"]
 	if !ok || !got.Ready || got.ExportPath != "root:railgrid:providers:edges" || got.ExportName != "edges.providers.railgrid.ai" || got.ExportCluster != "actual-provider-cluster" || got.SelfHosted {

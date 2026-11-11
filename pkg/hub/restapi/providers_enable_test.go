@@ -177,6 +177,34 @@ func TestEnableProvider_RecordsAcceptedCompositions(t *testing.T) {
 	}
 }
 
+func TestEnableProvider_LeavesPendingSetupGrantsAlone(t *testing.T) {
+	mgr, ops := compositionTestManager(t)
+	ops.providerSetupPending = true
+	admin := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer admin.Close()
+
+	key := hubaccess.GrantKey{OrgUUID: "org-a", WorkspaceUUID: "ws-1", Provider: "app-studio"}
+	original, err := mgr.hubAccess.Put(context.Background(), key, []tenancyv1alpha1.GrantedCapability{
+		hubaccess.GrantedComposition(hubaccess.DeclaredCompositions(appStudioComposes)[0]),
+	}, nil, "setup-admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, payload := postJSON(t, admin.URL+enableURL, EnableProviderRequest{})
+	if status != http.StatusConflict || !bytes.Contains(payload, []byte("ProviderSetupPending")) || !bytes.Contains(payload, []byte("Getting started")) {
+		t.Fatalf("ordinary enable during pending setup: %d %s", status, payload)
+	}
+	grant := appStudioGrant(t, mgr)
+	if grant == nil || grant.Spec.AcceptedBy != original.Spec.AcceptedBy || len(grant.Spec.Capabilities) != 1 {
+		t.Fatalf("ordinary enable changed the pending setup grant: %+v", grant)
+	}
+	ops.mu.Lock()
+	defer ops.mu.Unlock()
+	if ops.providerBindCalls[wsKey{"org-a", "ws-1"}] != 0 {
+		t.Fatal("ordinary enable wrote the pending binding")
+	}
+}
+
 func TestSetupProvider_RequiresCurrentReviewAndPreservesExistingBinding(t *testing.T) {
 	mgr, ops := compositionTestManager(t)
 	admin := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
