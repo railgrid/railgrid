@@ -339,6 +339,31 @@ func TestProviderConnectionOwnsDiscoveryAndReadiness(t *testing.T) {
 	}
 }
 
+func TestProviderConnectionClearsOlderCatalogWhenNewGenerationDiscoveryFails(t *testing.T) {
+	connection := &agentsv1alpha1.ModelProviderConnection{
+		ObjectMeta: metav1.ObjectMeta{Name: "account", UID: "account", Generation: 2, Finalizers: []string{agentsv1alpha1.ModelProviderConnectionFinalizer}},
+		Spec:       agentsv1alpha1.ModelProviderConnectionSpec{BaseURL: "https://provider.example/v1", SecretRef: agentsv1alpha1.ModelCredentialSecretRef{Name: testSecret}},
+		Status:     agentsv1alpha1.ModelCredentialStatus{ObservedGeneration: 1, Models: []string{"old-model"}},
+	}
+	c := migrationClient(connection, secret(true, map[string][]byte{"apiKey": []byte("new-key")}))
+	r := &ProviderConnectionReconciler{Reconciler: Reconciler{
+		Manager: fakeManager{c: c},
+		Probe: func(context.Context, llm.Profile) ([]string, time.Duration, error) {
+			return nil, 0, &llm.ProbeError{Status: 401}
+		},
+	}}
+	if _, err := r.Reconcile(t.Context(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Name: connection.Name}}, ClusterName: testCluster}); err != nil {
+		t.Fatal(err)
+	}
+	var got agentsv1alpha1.ModelProviderConnection
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(connection), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.ObservedGeneration != 2 || len(got.Status.Models) != 0 {
+		t.Fatalf("new generation inherited old catalog: %+v", got.Status)
+	}
+}
+
 func TestActiveConnectionCleanupKeepsCurrentAndReservedKeys(t *testing.T) {
 	connection := &agentsv1alpha1.ModelProviderConnection{
 		ObjectMeta: metav1.ObjectMeta{

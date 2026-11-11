@@ -1490,10 +1490,10 @@ export class Resources {
         const connection = connections.find(parent => parent.metadata?.name === view.connectionRef)
         if (!connection && unreadableConnections.has(view.connectionRef)) return view
         if (!connection || connection.metadata?.deletionTimestamp || connection.spec?.connectionRef || isHarnessProvider(connection.spec?.provider)) return { ...view, connectionUnavailable: true, ready: false, statusMessage: 'Provider connection is missing or invalid.' }
-        const parent = credentialView(connection)
+        const parent = credentialView(connection, true)
         return { ...view, ...(parent.secretResolved !== undefined ? { secretResolved: parent.secretResolved } : {}), provider: parent.provider, baseURL: parent.baseURL, anthropicWorkspaceID: parent.anthropicWorkspaceID, secretRef: parent.secretRef, secretKey: parent.secretKey, discovered: parent.discovered, connectionName: parent.displayName || parent.name }
       })
-      out.push(...connections.map(item => ({ ...credentialView(item), isConnection: true })))
+      out.push(...connections.map(item => credentialView(item, true)))
       out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
       return out
     })
@@ -1867,7 +1867,7 @@ export class Resources {
             ...(annotations ? { annotations } : {}),
           },
         }, { type: 'merge' })
-        return { ...credentialView(patched), ...(connectionWrite ? { isConnection: true } : {}) }
+        return credentialView(patched, connectionWrite)
       }
 
       const { id: secretID, name: secretName } = newCredentialSecretIdentity()
@@ -1923,7 +1923,7 @@ export class Resources {
         throw error
       }
       const activated = await activateSecret(originalSpec, stagedSpec, parentUID, secretName, secretID)
-      return { ...credentialView(activated), ...(connectionWrite ? { isConnection: true } : {}) }
+      return credentialView(activated, connectionWrite)
     })
 
   /**
@@ -1965,7 +1965,7 @@ export class Resources {
 
 /** KubeModelCredential is the object as kcp stores it. */
 interface KubeModelCredential {
-  metadata?: { name?: string; annotations?: Record<string, string> }
+  metadata?: { name?: string; uid?: string; generation?: number; annotations?: Record<string, string> }
   spec?: {
     connectionRef?: string
     provider?: string
@@ -1976,6 +1976,7 @@ interface KubeModelCredential {
     secretKey?: string
   }
   status?: {
+    observedGeneration?: number
     conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>
     models?: string[]
   }
@@ -1990,15 +1991,20 @@ interface KubeModelCredential {
  * `ready` is deliberately undefined until a condition says otherwise, so "not
  * checked yet" and "checked and broken" are distinguishable.
  */
-function credentialView(object: KubeModelCredential): Credential {
+function credentialView(object: KubeModelCredential, isConnection = false): Credential {
   const conditions = object.status?.conditions ?? []
   const find = (type: string) => conditions.find((c) => c.type === type)
   const ready = find(CONDITION_READY)
   const secretResolved = find(CONDITION_SECRET_RESOLVED)
   const reachable = find(CONDITION_REACHABLE)
   const firstProblem = [secretResolved, reachable, ready].find((c) => c && c.status !== 'True')
+  const currentStatus = !isConnection || object.metadata?.generation === undefined
+    || object.metadata.generation === object.status?.observedGeneration
   return {
     name: object.metadata?.name ?? '',
+    uid: object.metadata?.uid,
+    generation: object.metadata?.generation,
+    ...(isConnection ? { isConnection: true } : {}),
     ...(object.spec?.connectionRef ? { connectionRef: object.spec.connectionRef } : {}),
     ...(object.metadata?.annotations?.['agents.railgrid.ai/display-name'] ? { displayName: object.metadata.annotations['agents.railgrid.ai/display-name'] } : {}),
     provider: object.spec?.provider ?? '',
@@ -2008,9 +2014,9 @@ function credentialView(object: KubeModelCredential): Credential {
     secretRef: object.spec?.secretRef?.name ?? '',
     secretKey: object.spec?.secretKey ?? '',
     ready: ready ? ready.status === 'True' : undefined,
-    secretResolved: secretResolved ? secretResolved.status === 'True' : undefined,
+    secretResolved: currentStatus && secretResolved ? secretResolved.status === 'True' : undefined,
     statusMessage: firstProblem?.message ?? '',
-    discovered: object.status?.models ?? [],
+    discovered: currentStatus ? object.status?.models ?? [] : [],
   }
 }
 

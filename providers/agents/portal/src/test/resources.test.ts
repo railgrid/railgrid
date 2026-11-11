@@ -1492,6 +1492,24 @@ describe('shared provider connections', () => {
     expect(listed.find(item => item.isConnection && item.name === 'account')).toBeTruthy()
     expect(kcp.calls).toHaveLength(2)
   })
+
+  it('discards a saved provider catalog and key check from an older generation', async () => {
+    kcp.reply('GET /modelcredentials', { items: [] })
+    kcp.reply('GET /modelproviderconnections', { items: [
+      {
+        metadata: { name: 'rotated', generation: 2 },
+        spec: { baseURL: 'https://new.example/v1', secretRef: { name: 'new-key' } },
+        status: { observedGeneration: 1, models: ['old-model'], conditions: [{ type: 'SecretResolved', status: 'False' }] },
+      },
+      {
+        metadata: { name: 'current', generation: 2 },
+        status: { observedGeneration: 2, models: ['current-model'], conditions: [{ type: 'SecretResolved', status: 'False' }] },
+      },
+    ] })
+    const listed = await resources.listCredentials()
+    expect(listed.find(item => item.name === 'rotated')).toMatchObject({ isConnection: true, discovered: [], secretResolved: undefined })
+    expect(listed.find(item => item.name === 'current')).toMatchObject({ isConnection: true, discovered: ['current-model'], secretResolved: false })
+  })
 })
 
 describe('edges', () => {

@@ -7,7 +7,7 @@ export function presentModelProbeResult(result: CredentialTestResult, operation:
   return {
     ...result,
     error: operation === 'discover'
-      ? 'Could not load the model catalog. Review the endpoint and credential, then try Find models again. See technical details for the provider’s response.'
+      ? 'Could not load the model catalog. Check the provider endpoint and credential, then try again.'
       : 'The model connection did not pass verification. Review the endpoint, credential, and selected model before testing again.',
     technicalDiagnostic: sanitizeTechnicalDiagnostic(result.technicalDiagnostic || result.error),
   }

@@ -341,8 +341,9 @@ func modelCredentialDeleteOptions(cred *agentsv1alpha1.ModelCredential) metav1.D
 
 // credentialTestResult is the outcome of a live credential health probe.
 type credentialTestResult struct {
-	OK        bool     `json:"ok"`
-	LatencyMS int64    `json:"latencyMS"`
-	Error     string   `json:"error,omitempty"`
-	Models    []string `json:"models,omitempty"` // ids the endpoint serves (discovery)
+	OK                  bool     `json:"ok"`
+	LatencyMS           int64    `json:"latencyMS"`
+	Error               string   `json:"error,omitempty"`
+	TechnicalDiagnostic string   `json:"technicalDiagnostic,omitempty"`
+	Models              []string `json:"models,omitempty"` // ids the endpoint serves (discovery)
 }

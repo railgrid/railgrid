@@ -359,6 +359,8 @@ export function isJSONObject(text: string): boolean {
  * `discovered` is what that endpoint actually served.
  */
 export interface Credential {
+  uid?: string
+  generation?: number
   connectionRef?: string
   connectionName?: string
   displayName?: string

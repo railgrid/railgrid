@@ -485,7 +485,7 @@ function addAgentCredential(detail: {
 }
 
 function credentialMatchesFamily(credential: Credential | undefined, family: AgentCredentialFamily): boolean {
-  if (!credential) return false
+  if (!credential || credential.isConnection) return false
   return family === 'harness' ? isHarnessProvider(credential.provider) : !isHarnessProvider(credential.provider)
 }
 
@@ -805,7 +805,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :create-route="true"
         :initial-family="route.type === 'harness' ? 'harness' : 'chat'"
         :select-connection="route.type === 'from-connection'"
-        :continue-add-model-after-provider-connect="continueAddModelAfterProviderConnect"
+        :continue-add-model-after-provider-connect="continueAddModelAfterProviderConnect || agentCredentialSetup?.family === 'chat'"
         :authority-epoch="authorityEpoch"
         :create-session="createSession"
         @navigate="go"

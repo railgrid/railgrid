@@ -478,6 +478,22 @@ func (r *TypedResource[T, L]) PatchStatus(ctx context.Context, name string, stat
 	return r.scope.ApplyStatus(ctx, u)
 }
 
+// PatchStatusAtVersion fences a status merge patch to the resource snapshot it used.
+func (r *TypedResource[T, L]) PatchStatusAtVersion(ctx context.Context, name string, status any, resourceVersion string) error {
+	if resourceVersion == "" {
+		return fmt.Errorf("status patch for %q requires a resource version", name)
+	}
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]string{"resourceVersion": resourceVersion},
+		"status":   status,
+	})
+	if err != nil {
+		return fmt.Errorf("marshaling status patch: %w", err)
+	}
+	_, err = r.scope.Dynamic().Resource(r.res.GVR).Patch(ctx, name, k8stypes.MergePatchType, patch, metav1.PatchOptions{}, "status")
+	return err
+}
+
 // ClearStatusFields removes the named top-level status fields from the object.
 //
 // UpdateStatus and PatchStatus cannot do this: both merge-patch the status
