@@ -41,14 +41,14 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { authFetch } from '@/auth/session'
 
-// A single tile's grid placement. `i` is the provider name (the grid's
-// item id). x/y are column/row units; w/h are spans in those units.
+// A single tile's grid placement. x/y are column/row units and w/h are spans.
 export interface TileLayout {
   i: string
   x: number
   y: number
   w: number
   h: number
+  static?: boolean
 }
 
 interface PersistedLayout {
@@ -75,8 +75,10 @@ interface DashboardLayoutDTO {
 // normally hands sync() a responsive column count derived from viewport
 // width. DEFAULT_W/H size a freshly-placed tile.
 export const GRID_COLS = 3
-export const DEFAULT_W = 1
-export const DEFAULT_H = 2
+const DEFAULT_W = 1
+const DEFAULT_H = 2
+// A portal-owned tile ID outside the set of valid provider names.
+export const ADD_PROVIDER_TILE_ID = ':add-provider'
 
 const STORAGE_PREFIX = 'railgrid-dashboard-layout:'
 
@@ -198,6 +200,24 @@ export function reconcile(
   return { layout, addable: names.filter((n) => hiddenLive.has(n)) }
 }
 
+// Find the first standard-size opening in row order. Scan each column's
+// occupied intervals so large gaps in saved layouts do not cost extra work.
+export function firstFreeSlot(tiles: readonly TileLayout[], cols: number): { x: number; y: number } {
+  const columns = cols > 0 ? cols : GRID_COLS
+  const byRow = [...tiles].sort((a, b) => a.y - b.y)
+  let first = { x: 0, y: Infinity }
+  for (let x = 0; x + DEFAULT_W <= columns; x++) {
+    let y = 0
+    for (const tile of byRow) {
+      if (x + DEFAULT_W <= tile.x || x >= tile.x + tile.w) continue
+      if (y + DEFAULT_H <= tile.y) break
+      y = Math.max(y, tile.y + tile.h)
+    }
+    if (y < first.y) first = { x, y }
+  }
+  return first
+}
+
 export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   // Active tenant/workspace. '_' is the fallback bucket before a workspace
   // is selected, so the dashboard is still usable pre-tenant-load.
@@ -225,8 +245,11 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   // can recompute without the caller re-passing them.
   const lastNames = ref<string[]>([])
 
-  // addable drives the "add tile" menu: hidden providers still live.
-  const addable = computed(() => hidden.value.filter((n) => lastNames.value.includes(n)))
+  const hasCatalogTile = computed(() => ws.value !== '_' && lastNames.value.length > 0)
+  // The "Add tile" menu lists hidden tiles that are available in this workspace.
+  const addable = computed(() => hidden.value.filter(name => name === ADD_PROVIDER_TILE_ID
+    ? hasCatalogTile.value
+    : lastNames.value.includes(name)))
 
   // Every live provider is a candidate. Tileless ones keep their card and
   // render a launcher body, so nothing is filtered out here.
@@ -255,6 +278,10 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
       candidates(),
       columns.value,
     )
+    if (hasCatalogTile.value && !hidden.value.includes(ADD_PROVIDER_TILE_ID)) {
+      const slot = firstFreeSlot(next, columns.value)
+      next.push({ ...slot, i: ADD_PROVIDER_TILE_ID, w: DEFAULT_W, h: DEFAULT_H, static: true })
+    }
     layout.value = next
   }
 
@@ -338,7 +365,7 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
     }))
     const remoteEmpty =
       remoteTiles.length === 0 && strArray(dto.hidden).length === 0
-    if (remoteEmpty && geometry.value.length > 0) {
+    if (remoteEmpty && (geometry.value.length > 0 || hidden.value.length > 0)) {
       // Server has nothing but we do — seed it, keep local.
       pushRemote()
       return
@@ -404,7 +431,7 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   // already mutated `layout` in place. Adopt that as the new baseline.
   function persist() {
     ++editRevision
-    geometry.value = layout.value.map(strip)
+    geometry.value = layout.value.filter(tile => tile.i !== ADD_PROVIDER_TILE_ID).map(strip)
     saveCache()
     pushRemote()
   }
