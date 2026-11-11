@@ -21,18 +21,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-
-	"github.com/railgrid/provider-edges/internal/haclient"
-	"github.com/railgrid/provider-edges/internal/svccatalog"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
+
+	"github.com/railgrid/provider-edges/internal/haclient"
+	"github.com/railgrid/provider-edges/internal/svccatalog"
 )
 
 // rootMCPImpl is advertised on `initialize` for the provider aggregate endpoint.
@@ -43,10 +46,8 @@ var rootMCPImpl = &mcp.Implementation{
 }
 
 // RootMCPHandler serves the provider's aggregate MCP endpoint (mounted at /mcp,
-// federated by the hub MCP aggregate). It merges the kube toolset (across
-// connected KubernetesCluster edges) with the Home Assistant tools of every
-// Ready home-assistant Service in the caller's tenant, so an AI agent with
-// the edges tool family sees both without any agents-provider change.
+// federated by the hub MCP aggregate). It serves workspace edge inventory,
+// Kubernetes tools for connected clusters, and tools for Ready Services.
 func (p *Server) RootMCPHandler() http.Handler {
 	return p.buildRootMCPHandler()
 }
@@ -106,7 +107,8 @@ func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, 
 
 	instructions := fmt.Sprintf(
 		"You are connected to the railgrid edges provider MCP endpoint for tenant workspace %q. "+
-			"It exposes Kubernetes tools across connected KubernetesCluster edges and, for each Ready "+
+			"Use list_edges to discover connected Kubernetes, macOS, and Linux edges. "+
+			"The endpoint exposes Kubernetes tools across connected KubernetesCluster edges and, for each Ready "+
 			"Service, tools named \"<service>_*\" (e.g. a Home Assistant service \"ha\" gives ha_states/ha_call_service; a qBittorrent service \"qb\" gives qb_torrents/qb_add).",
 		cluster,
 	)
@@ -128,6 +130,7 @@ func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, 
 	}
 
 	srv := mcp.NewServer(rootMCPImpl, &mcp.ServerOptions{Instructions: instructions})
+	p.registerListEdges(srv, cluster, token)
 
 	// 2. Register each service's tools by type. The LIST above acts as the
 	//    caller (token) — the provider SA has no direct RBAC on Service
@@ -149,6 +152,51 @@ func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, 
 		logger.V(2).Info("kube tool federation failed (kube tools omitted)", "err", err.Error())
 	}
 	return srv
+}
+
+type connectedEdge struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+type listEdgesOutput struct {
+	Edges []connectedEdge `json:"edges"`
+}
+
+func (p *Server) registerListEdges(srv *mcp.Server, cluster, token string) {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_edges",
+		Title:       "List connected Edges",
+		Description: "List the name and kind of every connected Kubernetes cluster, macOS server, and Linux server in the current Railgrid workspace.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listEdgesOutput, error) {
+		if p.callers == nil {
+			return nil, listEdgesOutput{}, fmt.Errorf("edge inventory: caller client is unavailable")
+		}
+		client, err := p.callers.For(cluster, token)
+		if err != nil {
+			return nil, listEdgesOutput{}, fmt.Errorf("edge inventory: %w", err)
+		}
+
+		out := listEdgesOutput{Edges: []connectedEdge{}}
+		for _, resource := range slices.Sorted(maps.Keys(p.kinds)) {
+			kind := p.kinds[resource]
+			list, err := client.Resource(kind.GVR).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return nil, listEdgesOutput{}, fmt.Errorf("list %s: %w", resource, err)
+			}
+			for _, edge := range list.Items {
+				connected, _, err := unstructured.NestedBool(edge.Object, "status", "connected")
+				if err != nil {
+					return nil, listEdgesOutput{}, fmt.Errorf("read connection status of %s %q: %w", kind.Kind, edge.GetName(), err)
+				}
+				if connected {
+					out.Edges = append(out.Edges, connectedEdge{Name: edge.GetName(), Kind: kind.Kind})
+				}
+			}
+		}
+		return nil, out, nil
+	})
 }
 
 // readyHAService pairs a Service name with its decoded view.
