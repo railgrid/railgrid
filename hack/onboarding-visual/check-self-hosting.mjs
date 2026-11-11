@@ -24,16 +24,61 @@ async function stubPortalAPI(page) {
   })
 }
 
-try {
-  for (const [theme, width] of [['light', 1280], ['dark', 390]]) {
-    const page = await browser.newPage({ viewport: { width, height: 900 } })
-    const errors = []
-    page.on('pageerror', error => errors.push(error.message))
-    await stubPortalAPI(page)
+const viewports = [['light', 1280], ['dark', 390]]
 
-    await page.addInitScript(value => localStorage.setItem('railgrid-theme', value), theme)
-    await page.goto(`${fixtureURL}/?surface=self-hosting`)
-    await page.evaluate(themeName => { document.documentElement.className = themeName }, theme)
+async function openFixture(theme, width) {
+  const page = await browser.newPage({ viewport: { width, height: 900 } })
+  const errors = []
+  page.on('pageerror', error => errors.push(error.message))
+  await stubPortalAPI(page)
+
+  await page.addInitScript(value => localStorage.setItem('railgrid-theme', value), theme)
+  await page.goto(`${fixtureURL}/?surface=self-hosting`)
+  await page.evaluate(themeName => { document.documentElement.className = themeName }, theme)
+  return { page, errors }
+}
+
+try {
+  for (const [theme, width] of viewports) {
+    const { page, errors } = await openFixture(theme, width)
+    const catalogHint = page.getByRole('button', { name: 'Adding a custom provider?', exact: true })
+    const setupPanel = page.getByRole('region', { name: 'Add a custom Railgrid provider', exact: true })
+    const setupHeading = setupPanel.getByRole('heading')
+    await catalogHint.press('Enter')
+    await setupPanel.waitFor()
+    assert.equal(await catalogHint.getAttribute('aria-expanded'), 'true')
+    assert.match(await setupPanel.getByRole('link', { name: 'View setup guide' }).getAttribute('href'), /docs\/byo-providers\.md#manual-installation$/)
+    await catalogHint.click()
+    await setupPanel.waitFor({ state: 'hidden' })
+
+    const search = page.getByRole('searchbox', { name: 'Search providers' })
+    await search.fill('custom provider')
+    const noResults = page.getByRole('status').filter({ hasText: 'No providers match your search.' })
+    await noResults.waitFor()
+    const emptyHint = page.getByRole('button', { name: 'Learn how to add a custom provider', exact: true })
+    await emptyHint.press('Space')
+    await setupPanel.waitFor()
+    assert.equal(await emptyHint.getAttribute('aria-controls'), await catalogHint.getAttribute('aria-controls'))
+    assert.equal(await emptyHint.getAttribute('aria-expanded'), 'true')
+    assert.equal(await search.inputValue(), 'custom provider')
+    assert.equal(await setupHeading.evaluate(el => el === document.activeElement), true)
+    assert.equal(await page.locator('main').evaluate(el => el.scrollWidth > el.clientWidth), false)
+
+    await emptyHint.click()
+    assert.equal(await emptyHint.getAttribute('aria-expanded'), 'true', 'the no-results hint keeps the panel open')
+    assert.equal(await setupHeading.evaluate(el => el === document.activeElement), true, 'the no-results hint returns focus to the panel')
+
+    await catalogHint.click()
+    await setupPanel.waitFor({ state: 'hidden' })
+    await search.clear()
+    await noResults.waitFor({ state: 'hidden' })
+    assert.deepEqual(errors, [])
+    await page.close()
+  }
+  console.log('Custom provider setup links passed on desktop and mobile.')
+
+  for (const [theme, width] of viewports) {
+    const { page, errors } = await openFixture(theme, width)
     await page.getByRole('button', { name: 'Self-Hosting', exact: true }).click()
     await page.getByRole('button', { name: 'Self-host', exact: true }).click()
     await page.getByRole('heading', { name: 'Review installation' }).waitFor()
