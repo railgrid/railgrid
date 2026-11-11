@@ -114,7 +114,7 @@ const builtInTabs: Record<WorkbenchBuiltInTab, WorkbenchTabDescriptor> = {
 export function createDefaultWorkbenchState(): WorkbenchState {
   return {
     tabs: [cloneWorkbenchTab(builtInTabs.preview), cloneWorkbenchTab(builtInTabs.launcher)],
-    activeTabID: builtInTabs.launcher.id,
+    activeTabID: builtInTabs.preview.id,
   }
 }
 

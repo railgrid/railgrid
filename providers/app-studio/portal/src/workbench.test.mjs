@@ -41,7 +41,7 @@ test('keeps Code resource kinds and Infrastructure templates out of direct short
   assert.equal(isWorkbenchProviderShortcut({ providerName: 'other', path: 'repositories' }), true)
 })
 
-test('starts with preview plus an active launcher tab while review stays closed', () => {
+test('starts with preview active and the launcher available while review stays closed', () => {
   const state = createDefaultWorkbenchState()
 
   assert.deepEqual(
@@ -51,7 +51,7 @@ test('starts with preview plus an active launcher tab while review stays closed'
       { id: 'launcher', closeable: true },
     ],
   )
-  assert.equal(state.activeTabID, 'launcher')
+  assert.equal(state.activeTabID, 'preview')
 })
 
 test('opens the launcher from the plus nub without duplicating it', () => {
@@ -65,7 +65,7 @@ test('opens the launcher from the plus nub without duplicating it', () => {
 })
 
 test('replaces the active launcher with a selected built-in tab', () => {
-  const selected = selectWorkbenchLauncherBuiltInTab(createDefaultWorkbenchState(), 'providers')
+  const selected = selectWorkbenchLauncherBuiltInTab(openWorkbenchBuiltInTab(createDefaultWorkbenchState(), 'launcher'), 'providers')
 
   assert.deepEqual(selected.tabs.map((tab) => tab.id), ['preview', 'providers'])
   assert.equal(selected.activeTabID, 'providers')
@@ -73,7 +73,7 @@ test('replaces the active launcher with a selected built-in tab', () => {
 })
 
 test('replaces the active launcher with a selected provider tool', () => {
-  const selected = selectWorkbenchLauncherProviderTool(createDefaultWorkbenchState(), connectionsTool)
+  const selected = selectWorkbenchLauncherProviderTool(openWorkbenchBuiltInTab(createDefaultWorkbenchState(), 'launcher'), connectionsTool)
 
   assert.deepEqual(selected.tabs.map((tab) => tab.id), ['preview', 'provider:code/connections'])
   assert.equal(selected.activeTabID, 'provider:code/connections')
@@ -81,7 +81,7 @@ test('replaces the active launcher with a selected provider tool', () => {
 })
 
 test('consumes the active launcher when selecting an already-open tab', () => {
-  const selected = selectExistingWorkbenchTabFromLauncher(createDefaultWorkbenchState(), 'preview')
+  const selected = selectExistingWorkbenchTabFromLauncher(openWorkbenchBuiltInTab(createDefaultWorkbenchState(), 'launcher'), 'preview')
 
   assert.deepEqual(selected.tabs.map((tab) => tab.id), ['preview'])
   assert.equal(selected.activeTabID, 'preview')

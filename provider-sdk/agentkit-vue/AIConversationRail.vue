@@ -41,6 +41,8 @@ const props = withDefaults(defineProps<{
   labels?: AIConversationRailLabels
   /** Caller-owned scope for persisted width and anchored state. */
   storageScope?: string
+  /** Initial anchored state when the caller has no saved layout. */
+  defaultAnchored?: boolean
   /** The host overlay root used for the context menu. */
   overlayTarget?: string
   panelId?: string
@@ -57,6 +59,7 @@ const props = withDefaults(defineProps<{
   capabilities: () => ({}),
   labels: () => ({}),
   storageScope: '',
+  defaultAnchored: true,
   overlayTarget: 'body',
   panelId: 'k-ai-conversation-rail',
   ariaLabel: 'Conversation threads',
@@ -96,7 +99,7 @@ const root = ref<HTMLElement | null>(null)
 const railPanel = ref<HTMLElement | null>(null)
 const searchInput = ref<HTMLInputElement | null>(null)
 const actionMenu = ref<HTMLElement | null>(null)
-const anchored = ref(true)
+const anchored = ref(props.defaultAnchored)
 const interactionExpanded = ref(false)
 const mobileOpen = ref(false)
 const mobileViewport = ref(false)
@@ -205,11 +208,12 @@ function readStoredWidth(): number {
 }
 
 function restoreStoredLayout(): void {
+  anchored.value = props.defaultAnchored
   try {
     const stored = persistenceEnabled.value ? localStorage.getItem(anchoredStorageKey.value) : null
-    anchored.value = stored === null ? true : stored === '1'
+    if (stored !== null) anchored.value = stored === '1'
   } catch {
-    anchored.value = true
+    // Keep the caller's default when storage is unavailable.
   }
   railWidth.value = readStoredWidth()
 }
