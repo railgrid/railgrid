@@ -4,7 +4,12 @@ railgrid is an open-source control plane for platform teams.
 
 Providers publish Kubernetes-style APIs, versioned actions and MCP tools into isolated tenant workspaces. Users, teams and organizations reach them through one portal, one CLI, one API and one MCP endpoint, and every call is authorized as the caller by the same RBAC. Edges extend the control plane to clusters and servers behind NAT through outbound tunnels, so the same workspace that holds an application also reaches the cluster it runs on.
 
-> **Status: alpha.** railgrid is at v0.1.x, every API is `v1alpha1`, and it is developed by a small team. There is no hosted service; you run the hub yourself. Expect breaking changes between minor versions until the APIs stabilize.
+## Deployment and release status
+
+- **Railgrid Cloud** is the control plane operated by Railgrid. If you have access, sign in to the [hosted console](https://console.railgrid.ai). For availability, pricing, support options, and service commitments, [contact the Railgrid team](https://railgrid.ai/contact/).
+- **Self-hosted Railgrid** runs on your Kubernetes infrastructure. Start with the [Helm deployment guide](https://railgrid.github.io/railgrid/helm.html) or try it locally with `railgrid dev init`.
+
+Railgrid is pre-1.0, and `v1alpha1` APIs may change between releases. See [GitHub Releases](https://github.com/railgrid/railgrid/releases) for published versions and [the upgrade guidance](https://railgrid.ai/docs/resources/releases/) before upgrading. For a self-hosted hub, check with its operator about CLI compatibility. Hub and provider versions can differ by deployment.
 
 ## What railgrid gives you
 
@@ -52,7 +57,7 @@ The hub is the only component that needs to be reachable. Providers register wit
 
 ## Install
 
-### Hub
+### Self-hosted hub
 
 ```bash
 helm install railgrid-hub oci://ghcr.io/railgrid/charts/railgrid-hub \
@@ -70,15 +75,17 @@ railgrid dev init
 
 ### CLI
 
-Download a binary from the [releases page](https://github.com/railgrid/railgrid/releases), or:
+Download a binary from the [releases page](https://github.com/railgrid/railgrid/releases), or use the installer:
 
 ```bash
-# krew
+curl -fsSL https://downloads.railgrid.ai/install.sh | sh
+```
+
+To install the kubectl plugin with Krew:
+
+```bash
 kubectl krew index add railgrid https://github.com/railgrid/krew-index.git
 kubectl krew install railgrid/railgrid
-
-# from source
-go install github.com/railgrid/railgrid/cmd/railgrid@latest
 ```
 
 ## Quickstart
@@ -86,12 +93,11 @@ go install github.com/railgrid/railgrid/cmd/railgrid@latest
 ### 1. Log in and pick a workspace
 
 ```bash
-railgrid login --hub-url https://railgrid.example.com          # OIDC in the browser
-railgrid login --hub-url https://railgrid.example.com --token <static-token>
-railgrid use                                                 # choose organization and workspace
+railgrid login --hub-url https://console.railgrid.ai
+railgrid use
 ```
 
-`--hub-url` can also come from `RAILGRID_HUB_URL`.
+For a self-hosted deployment, use your hub's URL. If it uses static-token authentication, add `--token <static-token>`. You can also set the hub URL through `RAILGRID_HUB_URL`.
 
 ### 2. Connect a cluster
 
@@ -205,7 +211,7 @@ skips them with a warning. `exec` needs a prior sync.
 
 ## Documentation
 
-Published: [Getting started](https://railgrid.github.io/railgrid/getting-started.html) · [Helm deployment](https://railgrid.github.io/railgrid/helm.html) · [Security](https://railgrid.github.io/railgrid/security.html) · [Ingress](https://railgrid.github.io/railgrid/ingress/) · [MCP architecture](https://railgrid.github.io/railgrid/mcp-architecture.html) · [Developer guide](https://railgrid.github.io/railgrid/developers.html)
+Published: [Railgrid documentation](https://railgrid.ai/docs/) · [Local quickstart](https://railgrid.github.io/railgrid/getting-started.html) · [Helm deployment](https://railgrid.github.io/railgrid/helm.html) · [Security](https://railgrid.github.io/railgrid/security.html) · [Ingress](https://railgrid.github.io/railgrid/ingress/) · [MCP architecture](https://railgrid.github.io/railgrid/mcp-architecture.html) · [Developer guide](https://railgrid.github.io/railgrid/developers.html)
 
 Design documents in this repository: [providers](docs/providers.md), [organizations and the workspace tree](docs/organizations.md), [provider scoping](docs/provider-scoping.md), [provider actions](docs/provider-actions.md), [BYO providers](docs/byo-providers.md), [MCP architecture](docs/mcp-architecture.md).
 
