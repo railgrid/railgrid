@@ -2158,7 +2158,6 @@ test('App latches one stable theme-colored stop control until interruption settl
   assert.match(cancel, /if \(!runID\)[\s\S]*assistantPendingStartStopRequested\.value = true[\s\S]*return/)
   assert.match(appSource, /const assistantComposerShowsStop = computed\(\(\) => assistantComposerStopControl\.value\.visible\)/)
   assert.match(appSource, /assistantStopRequested\.value \|\| activeAssistantRun\?\.status === 'stopping'\) return 'Stopping…'/)
-  assert.match(appSource, /assistantMessageOwnsActiveRun\(message\) && assistantStopRequested\.value\) return 'stopping'/)
   assert.match(composerAction, /<AIPrimaryAction/)
   assert.match(composerAction, /:state="assistantComposerShowsStop \? assistantComposerStopDisabled \? 'stopping' : 'stop' : 'send'/)
   assert.match(composerAction, /:disabled="assistantComposerShowsStop \? assistantComposerStopDisabled/)
@@ -2170,6 +2169,27 @@ test('App latches one stable theme-colored stop control until interruption settl
   assert.match(primaryStyles, /\.k-ai-primary-action--stop,\s*\.k-ai-primary-action--stopping[\s\S]*?background: var\(--color-accent/)
   assert.match(primaryStyles, /\.k-ai-primary-action--stopping:disabled[\s\S]*?background: var\(--color-accent/)
   assert.doesNotMatch(primaryStyles, /\.k-ai-primary-action--(?:stop|stopping)[^{]*\{[^}]*danger/)
+})
+
+test('the stop latch applies to the active run while its message is being replaced', () => {
+  const names = ['assistantMessageOwnsActiveRun', 'assistantRunStatusForMessage', 'projectMessageAssistantStatus']
+  const statements = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text))
+  assert.equal(statements.length, names.length)
+  const run = { activeMessageID: 'a-1', status: 'running' }
+  const stopRequested = ref(false)
+  const statusForMessage = new Function('activeAssistantRun', 'assistantStopRequested', 'normalizeAssistantRunStatus', `
+    const activeAssistantRunRevision = { value: 0 };
+    ${compileStatements(statements)}
+    return assistantRunStatusForMessage;
+  `)(run, stopRequested, state.normalizeAssistantRunStatus)
+  const historical = { ...message('older', ''), metadata: { assistantStatus: 'completed' } }
+
+  assert.equal(statusForMessage(message('a-1', '')), 'running')
+  assert.equal(statusForMessage(undefined), 'running')
+  stopRequested.value = true
+  assert.equal(statusForMessage(message('a-1', '')), 'stopping')
+  assert.equal(statusForMessage(undefined), 'stopping')
+  assert.equal(statusForMessage(historical), 'completed')
 })
 
 function interruptResponseHarness(kind) {
