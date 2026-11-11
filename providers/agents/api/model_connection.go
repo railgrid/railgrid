@@ -80,7 +80,12 @@ func (s *Server) gatedModelCredential(w http.ResponseWriter, r *http.Request) (*
 			writeStatus(w, 409, "Conflict", "provider connection is deleting")
 			return nil, nil, false
 		}
-		return &agentsv1alpha1.ModelCredential{TypeMeta: metav1.TypeMeta{Kind: "ModelProviderConnection"}, ObjectMeta: connection.ObjectMeta, Spec: connection.CredentialSpec()}, c, true
+		return &agentsv1alpha1.ModelCredential{
+			TypeMeta:   metav1.TypeMeta{Kind: "ModelProviderConnection"},
+			ObjectMeta: connection.ObjectMeta,
+			Spec:       connection.CredentialSpec(),
+			Status:     connection.Status,
+		}, c, true
 	}
 	var cred agentsv1alpha1.ModelCredential
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(gate.object.Object, &cred); err != nil {
@@ -247,58 +252,46 @@ func (s *Server) discoverModelCredential(w http.ResponseWriter, r *http.Request)
 	result := credentialTestResult{OK: err == nil, Models: models, LatencyMS: latency.Milliseconds()}
 	if err != nil {
 		result.Error = "Could not find models. Check the endpoint and credential, or enter a model ID manually."
+		result.TechnicalDiagnostic = discoveryProbeSummary(err)
 	}
-	refreshDiscoveredModels(r.Context(), c, cred, models, err)
+	refreshDiscoveredModels(r.Context(), c, cred, result)
 	writeJSON(w, http.StatusOK, result)
 }
 
 // refreshDiscoveredModels writes what the probe just learned onto the object,
 // best effort.
 //
-// Best effort on purpose: the write runs as the CALLER, and a caller who may
-// probe a credential does not necessarily hold `update` on its status
-// subresource. The reconciler is the authority on this status and re-derives
-// all of it on its own cadence; this only shortens the window in which the
-// object disagrees with what the person is looking at.
-func refreshDiscoveredModels(ctx context.Context, c *agentsclient.Client, cred *agentsv1alpha1.ModelCredential, models []string, probeErr error) {
-	if len(models) > llm.MaxStatusModels {
-		models = models[:llm.MaxStatusModels]
+// The reconciler owns observedGeneration and the conditions. Publish a catalog
+// only into status for the generation it already reconciled. The resource
+// version precondition also prevents late probes from overwriting newer status
+// or updating a replacement object under the same name.
+func refreshDiscoveredModels(ctx context.Context, c *agentsclient.Client, cred *agentsv1alpha1.ModelCredential, result credentialTestResult) {
+	if cred.ResourceVersion == "" || cred.Status.ObservedGeneration != cred.Generation {
+		return
 	}
-	status := agentsv1alpha1.ModelCredentialStatus{
-		ObservedGeneration: cred.Generation,
-		LastProbeTime:      &metav1.Time{Time: time.Now().UTC()},
-	}
-	if probeErr != nil {
-		status.LastProbeError = boundedProbeError(probeErr)
-	} else {
-		status.Models = models
+	status := map[string]any{"lastProbeTime": metav1.Now(), "lastProbeError": result.TechnicalDiagnostic}
+	if result.OK && len(result.Models) > 0 {
+		status["models"] = result.Models[:min(len(result.Models), llm.MaxStatusModels)]
 	}
 	// A short context of its own: the caller's request may be finishing, and
 	// an abandoned status write is not worth failing the verb over.
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if cred.Kind == "ModelProviderConnection" {
-		_ = c.ModelProviderConnections().PatchStatus(writeCtx, cred.Name, status)
+		_ = c.ModelProviderConnections().PatchStatusAtVersion(writeCtx, cred.Name, status, cred.ResourceVersion)
 	} else {
-		_ = c.ModelCredentials().PatchStatus(writeCtx, cred.Name, status)
+		_ = c.ModelCredentials().PatchStatusAtVersion(writeCtx, cred.Name, status, cred.ResourceVersion)
 	}
 }
 
-// maxProbeErrorLength bounds status.lastProbeError, matching the kind's
-// MaxLength. An upstream body can be megabytes and can echo request headers,
-// so it is truncated here and never stored whole.
-const maxProbeErrorLength = 512
-
-// boundedProbeError renders a probe failure for status.lastProbeError.
-func boundedProbeError(err error) string {
-	if err == nil {
-		return ""
+// Discovery errors can contain upstream response data, including echoed
+// credentials. Only persist the HTTP status or a generic failure.
+func discoveryProbeSummary(err error) string {
+	var probeErr *llm.ProbeError
+	if errors.As(err, &probeErr) {
+		return probeErr.Summary()
 	}
-	msg := err.Error()
-	if len(msg) > maxProbeErrorLength {
-		msg = msg[:maxProbeErrorLength]
-	}
-	return msg
+	return "Model catalog request failed."
 }
 
 func verifyCredentialModel(ctx context.Context, profile llm.Profile) credentialTestResult {

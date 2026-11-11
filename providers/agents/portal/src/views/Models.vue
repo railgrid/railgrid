@@ -76,7 +76,7 @@ const editor = ref<{ cancel: () => Promise<void>; locked: boolean } | null>(null
 const editingCredential = ref<Credential>()
 const editorHeading = ref<HTMLHeadingElement | null>(null)
 const continueAddedProvider = ref(false)
-const savedProviderDiscovery = ref<{ connectionName: string; models: string[] } | null>(null)
+const savedProviderDiscovery = ref<Credential | null>(null)
 const editorFamily = ref<'chat' | 'harness'>(props.initialFamily)
 const saveError = ref<string | null>(null)
 const expandedModel = ref<string | null>(null)
@@ -384,7 +384,7 @@ async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): P
       if (!authorityIsCurrent(authority) || fence.createSession !== props.createSession) return
       toast('ok', 'Provider connected.')
       if (props.continueAddModelAfterProviderConnect || continueAddedProvider.value) {
-        if (probe?.models) savedProviderDiscovery.value = { connectionName: acknowledged.name, models: [...probe.models] }
+        if (probe?.models?.length) savedProviderDiscovery.value = acknowledged
         continueWithSavedProvider(acknowledged.name)
         void nextTick(() => editorHeading.value?.focus())
       } else {

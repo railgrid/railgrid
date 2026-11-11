@@ -330,6 +330,9 @@ func (r *ProviderConnectionReconciler) Reconcile(ctx context.Context, req mcreco
 		return ctrl.Result{}, err
 	}
 	status := connection.Status.DeepCopy()
+	if status.ObservedGeneration != connection.Generation {
+		status.Models = nil
+	}
 	status.ObservedGeneration = connection.Generation
 	now := r.now()
 	setCondition(status, agentsv1alpha1.ConditionSecretResolved, reason, message, "The provider API key is available.", connection.Generation, now)

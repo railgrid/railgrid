@@ -99,7 +99,9 @@ describe('provider-first BYOK flow', () => {
 
   it('refreshes inside the Model ID picker and retains cached options after a failure', async () => {
     const discoverProviderConnection = vi.fn()
-      .mockResolvedValueOnce({ ok: false, latencyMS: 0 })
+      .mockResolvedValueOnce({ ok: false, latencyMS: 0, technicalDiagnostic: 'endpoint returned HTTP 401' })
+      .mockResolvedValueOnce({ ok: true, latencyMS: 1 })
+      .mockResolvedValueOnce({ ok: true, latencyMS: 1, models: [] })
       .mockResolvedValueOnce({ ok: true, latencyMS: 1, models: ['fresh-model'] })
     const view = await mountEditor({ discoverProviderConnection }, { credentials: [account], initialConnection: 'account' })
     expect(discoverProviderConnection).not.toHaveBeenCalled()
@@ -109,12 +111,55 @@ describe('provider-first BYOK flow', () => {
     refresh.click()
     await settleVue()
     const picker = document.querySelector('.k-model-id-picker')!
-    expect(picker.textContent).toContain('You can still enter a model ID manually.')
+    expect(view.element.textContent).toContain('You can still enter a model ID manually.')
+    expect(view.element.querySelector('details')?.open).toBe(false)
+    expect(view.element.querySelector('details')?.textContent).toContain('endpoint returned HTTP 401')
     expect(picker.textContent).toContain('first-model')
 
+    for (let index = 0; index < 2; index++) {
+      refresh.click()
+      await settleVue()
+      expect(picker.textContent).toContain('first-model')
+      expect(view.element.querySelector('details')).toBeNull()
+    }
     refresh.click()
     await settleVue()
     expect(picker.textContent).toContain('fresh-model')
+    expect(picker.textContent).not.toContain('first-model')
+  })
+
+  it('allows manual refresh when the stored key check is unresolved', async () => {
+    const discoverProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1, models: ['recovered-model'] })
+    const connection = { ...account, secretResolved: false, discovered: [] }
+    const view = await mountEditor({ discoverProviderConnection }, { credentials: [connection], initialConnection: account.name })
+    expect(discoverProviderConnection).not.toHaveBeenCalled()
+    view.element.querySelector<HTMLButtonElement>('#model-id')!.click()
+    await settleVue()
+    const picker = document.querySelector('.k-model-id-picker')!
+    const refresh = picker.querySelector<HTMLButtonElement>('button[aria-label="Refresh models"]')!
+    expect(refresh.disabled).toBe(false)
+    refresh.click()
+    await settleVue()
+    await view.setProps({ credentials: [{ ...connection, secretResolved: true }] })
+    expect(discoverProviderConnection).toHaveBeenCalledExactlyOnceWith(account.name, expect.any(AbortSignal))
+    expect(picker.textContent).toContain('recovered-model')
+  })
+
+  it('drops the initial discovery fallback when the saved connection generation changes', async () => {
+    const discoverProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1, models: ['rotated-model'] })
+    const initial = { ...account, uid: 'account-uid', generation: 1 }
+    const view = await mountEditor({ discoverProviderConnection }, {
+      credentials: [{ ...initial, discovered: [] }],
+      discoveryFallback: initial,
+      initialConnection: initial.name,
+    })
+    expect(discoverProviderConnection).not.toHaveBeenCalled()
+    await view.setProps({ credentials: [{ ...initial, generation: 2, secretRef: 'rotated-key', discovered: [] }] })
+    expect(discoverProviderConnection).toHaveBeenCalledExactlyOnceWith(account.name, expect.any(AbortSignal))
+    view.element.querySelector<HTMLButtonElement>('#model-id')!.click()
+    await settleVue()
+    const picker = document.querySelector('.k-model-id-picker')!
+    expect(picker.textContent).toContain('rotated-model')
     expect(picker.textContent).not.toContain('first-model')
   })
 

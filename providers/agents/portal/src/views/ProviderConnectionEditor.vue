@@ -6,12 +6,13 @@ import { ensureAgentUIStyles } from '../agentkit/styles'
 import { PROVIDER_PRESETS, presetFor, providerPreset } from '../conn-defs'
 import { type Credential, type CredentialWrite, type CredentialTestResult } from '../types'
 import type { ApiClient } from '../api'
-import { presentModelProbeResult } from '../model-probe-result'
+import { errorTechnicalDiagnostic, presentModelProbeResult } from '../model-probe-result'
 import { confirmDialog } from '../portalkit/confirm'
 import InlineNotification from '../portalkit/InlineNotification.vue'
+import TechnicalDetails from '../components/TechnicalDetails.vue'
 
 ensureAgentUIStyles()
-const props = defineProps<{ api: ApiClient; credentials: Credential[]; credential?: Credential; selectConnection?: boolean; initialConnection?: string; discoveryFallback?: { connectionName: string; models: string[] } | null; busy: boolean; error?: string | null }>()
+const props = defineProps<{ api: ApiClient; credentials: Credential[]; credential?: Credential; selectConnection?: boolean; initialConnection?: string; discoveryFallback?: Credential | null; busy: boolean; error?: string | null }>()
 const emit = defineEmits<{ save: [body: CredentialWrite, result?: CredentialTestResult]; rename: [displayName: string]; cancel: []; 'connect-provider': [] }>()
 const newID = `connection-${crypto.randomUUID()}`
 const connections = computed(() => props.credentials.filter(item => item.isConnection))
@@ -41,14 +42,10 @@ const suggestedName = computed(() => {
   return brand + (count ? ` ${count + 1}` : '')
 })
 const model = ref(props.credential?.model || '')
-function connectionModelOptions(name: string, persisted: string[] | undefined): string[] {
-  if (props.discoveryFallback?.connectionName === name) return props.discoveryFallback.models
-  return persisted || []
-}
-const models = ref<string[]>(connectionModelOptions(originalConnection?.name || props.initialConnection || '', originalConnection?.discovered))
+const models = ref<string[]>(originalConnection?.discovered || [])
 const refreshedModels = ref<string[]>()
 const refreshingModels = ref(false)
-const refreshError = ref('')
+const refreshFailure = ref<CredentialTestResult>()
 let catalogRequest: AbortController | null = null
 const modelStage = ref(Boolean(props.credential || props.initialConnection))
 const alreadyConfigured = computed(() => !props.credential && Boolean(selectedConnection.value) && props.credentials.some(item => item.connectionRef === selectedConnection.value && item.model === model.value.trim()))
@@ -87,20 +84,28 @@ const isAnthropic = computed(() => { try { return new URL(effectiveURL.value).ho
 const canReuse = computed(() => Boolean(connection.value && (!editingDetails.value || (effectiveURL.value === connection.value.baseURL && effectiveProvider.value === (connection.value.provider || current.value.provider) && effectiveWorkspace.value === (connection.value.anthropicWorkspaceID || '')))))
 const canContinue = computed(() => Boolean(effectiveURL.value && (canReuse.value || apiKey.value.trim())))
 const savedBinding = computed(() => !standaloneConnection.value && !editingDetails.value)
-const cachedModels = computed(() => connection.value?.discovered?.length
-  ? connection.value.discovered
-  : connectionModelOptions(selectedConnection.value, connection.value?.discovered))
+const cachedModels = computed(() => {
+  const saved = connection.value
+  const fallback = props.discoveryFallback
+  if (saved?.discovered?.length) return saved.discovered
+  return saved && fallback && saved.name === fallback.name && saved.uid === fallback.uid && saved.generation === fallback.generation
+    ? fallback.discovered ?? []
+    : []
+})
 const modelOptions = computed(() => savedBinding.value ? refreshedModels.value ?? cachedModels.value : models.value)
 const catalogIdentity = computed(() => {
   const saved = connection.value
-  if (!savedBinding.value || !saved?.isConnection || !saved.baseURL || saved.secretResolved === false || saved.connectionUnavailable) return
+  if (!savedBinding.value || !saved?.isConnection || !saved.baseURL || saved.connectionUnavailable) return
   return JSON.stringify([saved.name, saved.uid, saved.generation, saved.provider, saved.baseURL, saved.anthropicWorkspaceID, saved.secretRef, saved.secretKey])
 })
-watch([() => props.api, catalogIdentity], () => {
-  cancelCatalogRefresh()
-  refreshedModels.value = undefined
-  refreshError.value = ''
-  if (catalogIdentity.value && !cachedModels.value.length) void refreshModels()
+const canAutoDiscover = computed(() => Boolean(catalogIdentity.value) && connection.value?.secretResolved !== false)
+watch([() => props.api, catalogIdentity, canAutoDiscover], ([api, identity, auto], [previousAPI, previousIdentity]) => {
+  if (api !== previousAPI || identity !== previousIdentity) {
+    cancelCatalogRefresh()
+    refreshedModels.value = undefined
+    refreshFailure.value = undefined
+  }
+  if (auto && refreshedModels.value === undefined && !cachedModels.value.length) void refreshModels()
 }, { immediate: true })
 const fingerprint = computed(() => JSON.stringify([selectedConnection.value, effectiveProvider.value, effectiveURL.value, effectiveWorkspace.value, apiKey.value, model.value]))
 watch(fingerprint, () => {
@@ -110,7 +115,7 @@ watch(fingerprint, () => {
   operationNotice.value = interrupted ? 'Connection details changed. Verify again before saving.' : ''
 })
 watch(selectedConnection, () => {
-  apiKey.value = ''; workspaceID.value = ''; model.value = ''; models.value = connectionModelOptions(selectedConnection.value, connection.value?.discovered)
+  apiKey.value = ''; workspaceID.value = ''; model.value = ''; models.value = connection.value?.discovered || []
   modelStage.value = Boolean(selectedConnection.value); discoveryError.value = ''
 })
 watch(preset, () => { apiKey.value = ''; workspaceID.value = ''; baseURL.value = current.value.baseURL; model.value = ''; models.value = []; modelStage.value = false; discoveryError.value = '' })
@@ -135,14 +140,21 @@ async function refreshModels(): Promise<void> {
   const isCurrent = () => catalogRequest === request && catalogIdentity.value === identity && props.api === api
   catalogRequest = request
   refreshingModels.value = true
-  refreshError.value = ''
+  refreshFailure.value = undefined
   try {
     const result = await api.discoverProviderConnection(selectedConnection.value, request.signal)
     if (!isCurrent()) return
-    if (!result?.ok) throw new Error('Could not refresh models. Check the provider connection and try again.')
-    refreshedModels.value = result.models ?? []
+    if (!result?.ok) {
+      refreshFailure.value = presentModelProbeResult(result ?? { ok: false, latencyMS: 0 }, 'discover')
+    } else if (result.models?.length) {
+      refreshedModels.value = result.models
+    }
   } catch (error) {
-    if (isCurrent()) refreshError.value = (error as Error).message
+    if (isCurrent()) {
+      refreshFailure.value = presentModelProbeResult({
+        ok: false, latencyMS: 0, error: String(error), technicalDiagnostic: errorTechnicalDiagnostic(error),
+      }, 'discover')
+    }
   } finally {
     if (catalogRequest === request) {
       catalogRequest = null
@@ -390,12 +402,15 @@ defineExpose({ cancel, locked })
               </button>
             </template>
             <template v-if="savedBinding" #status>
-              <span class="sr-only" role="status">{{ refreshingModels ? 'Refreshing models…' : refreshedModels && !refreshError ? `${refreshedModels.length} models found` : '' }}</span>
-              <InlineNotification v-if="refreshError" tone="warning" :message="`${refreshError} You can still enter a model ID manually.`" />
+              <span class="sr-only" role="status">{{ refreshingModels ? 'Refreshing models…' : refreshedModels && !refreshFailure ? `${refreshedModels.length} models found` : '' }}</span>
             </template>
           </ModelIDSelector>
         </label>
         <p id="provider-model-help" class="k-model-form-hint">{{ refreshingModels ? 'Loading models…' : editingProviderConnection ? 'Configured models are verified automatically. An optional test model is used only for verification; no models will be added or changed.' : standaloneConnection ? 'Model discovery checks provider access without adding a model. If listing is unavailable, enter one model ID to verify access; it will not be saved.' : 'Choose an available model or enter its exact ID.' }}</p>
+        <template v-if="refreshFailure">
+          <InlineNotification tone="warning" :message="`${refreshFailure.error} You can still enter a model ID manually.`" />
+          <TechnicalDetails compact :diagnostic="refreshFailure.technicalDiagnostic" />
+        </template>
         <p v-if="discoveryError" class="k-inline-notification k-inline-notification--warning" role="status">{{ discoveryError }}{{ standaloneConnection ? '' : ' You can still enter a model ID manually.' }}</p>
         <label v-if="editingModelCredential" for="model-display-name" class="k-model-form-field">Display name
           <input id="model-display-name" :value="modelLabel" class="k-input" name="modelLabel" :disabled="locked" maxlength="253" :aria-invalid="Boolean(modelLabelError)" :aria-describedby="modelLabelError ? 'model-label-error' : 'model-label-help'" @input="updateModelLabel(($event.target as HTMLInputElement).value)">
