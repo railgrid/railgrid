@@ -225,6 +225,21 @@ func (f *fakeOps) EnsureProviderAPIBinding(_ context.Context, orgUUID, wsUUID, b
 	return nil
 }
 
+func (f *fakeOps) SetupProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, prepare func() ([]kcp.ProviderClaim, error)) (bool, error) {
+	f.mu.Lock()
+	_, exists := f.providerBindings[wsKey{orgUUID, wsUUID}][bindingName]
+	f.mu.Unlock()
+	if exists {
+		return false, nil
+	}
+	claims, err := prepare()
+	if err != nil {
+		return false, err
+	}
+	err = f.EnsureProviderAPIBinding(ctx, orgUUID, wsUUID, bindingName, exportPath, exportName, claims)
+	return err == nil, err
+}
+
 // ListProviderAPIBindings is the test stub for the read-side provider-enable
 // handler. It returns a copy so handlers cannot mutate fake state by accident.
 func (f *fakeOps) ListProviderAPIBindings(_ context.Context, orgUUID, wsUUID string) (map[string]kcp.ProviderBinding, error) {

@@ -177,6 +177,89 @@ func TestEnableProvider_RecordsAcceptedCompositions(t *testing.T) {
 	}
 }
 
+func TestSetupProvider_RequiresCurrentReviewAndPreservesExistingBinding(t *testing.T) {
+	mgr, ops := compositionTestManager(t)
+	admin := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer admin.Close()
+	setupURL := strings.TrimSuffix(enableURL, "/enable") + "/setup"
+	req := EnableProviderRequest{
+		SetupReview: &ProviderSetupReview{
+			ExportPath: "root:providers:app-studio",
+			ExportName: "app-studio",
+		},
+		AcceptedCompositions: []AcceptedComposition{
+			{Provider: "infrastructure", Group: "infrastructure.railgrid.ai", Resource: "instances"},
+		},
+	}
+	if status, payload := postJSON(t, admin.URL+enableURL, req); status != http.StatusBadRequest {
+		t.Fatalf("review submitted to ordinary enable: %d %s", status, payload)
+	}
+	if status, payload := postJSON(t, admin.URL+setupURL, EnableProviderRequest{}); status != http.StatusBadRequest {
+		t.Fatalf("missing setup review: %d %s", status, payload)
+	}
+
+	if status, payload := postJSON(t, admin.URL+setupURL, req); status != http.StatusPreconditionFailed {
+		t.Fatalf("stale review: %d %s", status, payload)
+	}
+	if grant := appStudioGrant(t, mgr); grant != nil {
+		t.Fatalf("stale review wrote a grant: %+v", grant)
+	}
+
+	req.SetupReview.Requires = appStudioComposes
+	member := newTestServer(t, mgr, tcWithOrgRole("bob", "org-a", "ws-1", "member", "member"))
+	defer member.Close()
+	if status, payload := postJSON(t, member.URL+setupURL, req); status != http.StatusForbidden {
+		t.Fatalf("member setup: %d %s", status, payload)
+	}
+
+	req.AcceptedHubAccess = []AcceptedHubAccess{{Capability: "memberships.invite", Scope: "org"}}
+	if status, payload := postJSON(t, admin.URL+setupURL, req); status != http.StatusBadRequest {
+		t.Fatalf("organization access in setup: %d %s", status, payload)
+	}
+	req.AcceptedHubAccess = nil
+
+	if status, payload := postJSON(t, admin.URL+setupURL, req); status != http.StatusOK {
+		t.Fatalf("setup: %d %s", status, payload)
+	}
+	req.AcceptedCompositions = nil
+	if status, payload := postJSON(t, admin.URL+setupURL, req); status != http.StatusNoContent {
+		t.Fatalf("setup retry: %d %s", status, payload)
+	}
+	grant := appStudioGrant(t, mgr)
+	if grant == nil || len(grant.Spec.Capabilities) != 1 {
+		t.Fatalf("setup retry changed the original grant: %+v", grant)
+	}
+	ops.mu.Lock()
+	defer ops.mu.Unlock()
+	if !ops.enableClaims[wsKey{"org-a", "ws-1"}]["infrastructure.railgrid.ai/instances"] {
+		t.Fatal("setup retry changed the existing binding's claim")
+	}
+}
+
+func TestSetupProvider_DefersNewOrganizationAccessForBothAdminRoles(t *testing.T) {
+	workspace := providersv1alpha1.ProviderHubAccess{Capability: providersv1alpha1.HubCapabilityMembershipsRead, Scope: providersv1alpha1.HubAccessScopeWorkspace}
+	organization := providersv1alpha1.ProviderHubAccess{Capability: providersv1alpha1.HubCapabilityMembershipsInvite, Scope: providersv1alpha1.HubAccessScopeOrg}
+	for _, orgRole := range []string{"admin", "member"} {
+		t.Run(orgRole, func(t *testing.T) {
+			for _, previous := range []*tenancyv1alpha1.Grant{nil, {Spec: tenancyv1alpha1.GrantSpec{
+				Capabilities: []tenancyv1alpha1.GrantedCapability{hubaccess.FromDeclaration(organization)},
+			}}} {
+				accepted, declined := mergeHubAccessDecisions(
+					[]providersv1alpha1.ProviderHubAccess{workspace, organization},
+					map[string]bool{"memberships.read/workspace": true}, previous, "admin", orgRole, true,
+				)
+				grant := &tenancyv1alpha1.Grant{Spec: tenancyv1alpha1.GrantSpec{Capabilities: accepted, Declined: declined}}
+				if _, allowed, implicit := hubaccess.Allowed(grant, workspace, true, true); !allowed || implicit {
+					t.Fatal("reviewed workspace access must be granted explicitly")
+				}
+				if _, allowed, implicit := hubaccess.Allowed(grant, organization, true, true); allowed != (previous != nil) || implicit {
+					t.Fatalf("organization access allowed=%v implicit=%v with previous grant %v", allowed, implicit, previous)
+				}
+			}
+		})
+	}
+}
+
 // TestEnableProvider_CompositionAcceptanceRules covers who may decide and what
 // may be decided. Composition is a workspace decision, so a workspace admin is
 // enough and a plain member is not; and nothing undeclared can be accepted.

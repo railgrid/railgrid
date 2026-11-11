@@ -157,3 +157,29 @@ func TestBindingReadinessConditions(t *testing.T) {
 		})
 	}
 }
+
+func TestSetupBindingRequiresCurrentAppliedClaims(t *testing.T) {
+	claim := map[string]any{"resource": "secrets", "verbs": []any{"get"}, "selector": map[string]any{"matchAll": true}}
+	binding := &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"annotations": map[string]any{ProviderSetupAnnotation: ProviderSetupComplete}},
+		"spec": map[string]any{"permissionClaims": []any{map[string]any{
+			"resource": "secrets", "verbs": []any{"get"}, "selector": map[string]any{"matchAll": true}, "state": "Accepted",
+		}}},
+		"status": map[string]any{"phase": "Bound"},
+	}}
+	if ready, _ := BindingReadiness(binding); ready {
+		t.Fatal("Bound alone cannot establish readiness")
+	}
+	if err := unstructured.SetNestedSlice(binding.Object, []any{map[string]any{"type": "PermissionClaimsApplied", "status": "True"}}, "status", "conditions"); err != nil {
+		t.Fatal(err)
+	}
+	if ready, _ := BindingReadiness(binding); ready {
+		t.Fatal("a stale condition from before the claim update cannot establish readiness")
+	}
+	if err := unstructured.SetNestedSlice(binding.Object, []any{claim}, "status", "appliedPermissionClaims"); err != nil {
+		t.Fatal(err)
+	}
+	if ready, message := BindingReadiness(binding); !ready {
+		t.Fatalf("applied claims should establish readiness: %s", message)
+	}
+}

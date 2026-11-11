@@ -17,12 +17,14 @@ package kcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -30,7 +32,9 @@ import (
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/rest"
+	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
@@ -287,6 +291,82 @@ func TestEnsureProviderAPIBindingUpdatesTheClaimsOfAnExistingBinding(t *testing.
 	path, _, _ := unstructured.NestedString(got.Object, "spec", "reference", "export", "path")
 	if path != "root:providers:app-studio" {
 		t.Errorf("reference was disturbed: %q", path)
+	}
+}
+
+func TestSetupProviderAPIBindingLeavesExistingBindingsAlone(t *testing.T) {
+	const name = "edges"
+	path := kcppaths.ProviderPath(name)
+	for _, scenario := range []string{"pending binding", "alternate name", "concurrent create"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx := context.Background()
+			dyn := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{apiBindingGVR: "APIBindingList"})
+			bindingName := name
+			if scenario == "alternate name" {
+				bindingName = "my-edges-binding"
+			}
+			existing, err := newProviderAPIBinding(bindingName, path, name, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "concurrent create" {
+				dyn.PrependReactor("create", "apibindings", func(k8stesting.Action) (bool, runtime.Object, error) {
+					if err := dyn.Tracker().Create(apiBindingGVR, existing, ""); err != nil {
+						t.Fatal(err)
+					}
+					return true, nil, apierrors.NewAlreadyExists(apiBindingGVR.GroupResource(), name)
+				})
+			} else if _, err := dyn.Resource(apiBindingGVR).Create(ctx, existing, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+
+			completed, err := setupProviderAPIBinding(ctx, dyn, "org-a", name, path, name, func() ([]ProviderClaim, error) {
+				t.Fatal("existing binding must not receive new grants")
+				return nil, nil
+			})
+			if err != nil || completed {
+				t.Fatalf("setup for existing binding: completed=%v, err=%v", completed, err)
+			}
+		})
+	}
+}
+
+func TestSetupProviderAPIBindingResumesAfterGrantFailure(t *testing.T) {
+	ctx := context.Background()
+	const name = "edges"
+	path := kcppaths.ProviderPath(name)
+	dyn := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{apiBindingGVR: "APIBindingList"})
+	bindings := dyn.Resource(apiBindingGVR)
+	grantFailure := errors.New("grant store is unavailable")
+	if _, err := setupProviderAPIBinding(ctx, dyn, "org-a", name, path, name, func() ([]ProviderClaim, error) {
+		reserved, err := bindings.Get(ctx, name, metav1.GetOptions{})
+		if err != nil || reserved.GetAnnotations()[providers.ProviderSetupAnnotation] != providers.ProviderSetupPending {
+			t.Fatalf("grant attempt before reservation: %v", err)
+		}
+		return nil, grantFailure
+	}); !errors.Is(err, grantFailure) {
+		t.Fatalf("setup error = %v, want %v", err, grantFailure)
+	}
+
+	// Stand in for kcp binding the provider's API. No claims are accepted here,
+	// so this retry only needs to complete the reservation.
+	reserved, err := bindings.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedField(reserved.Object, "Bound", "status", "phase"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bindings.UpdateStatus(ctx, reserved, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := setupProviderAPIBinding(ctx, dyn, "org-a", name, path, name, func() ([]ProviderClaim, error) { return nil, nil })
+	if err != nil || !completed {
+		t.Fatalf("retry setup: completed=%v, err=%v", completed, err)
+	}
+	finished, err := bindings.Get(ctx, name, metav1.GetOptions{})
+	if err != nil || finished.GetAnnotations()[providers.ProviderSetupAnnotation] != providers.ProviderSetupComplete {
+		t.Fatalf("setup reservation did not complete: %v", err)
 	}
 }
 

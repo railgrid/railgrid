@@ -361,6 +361,13 @@ export interface HubAccessState {
   implicit?: boolean
 }
 
+export interface ProviderSetupReview {
+  exportPath: string
+  exportName: string
+  requires?: ProviderRequirement[]
+  hubAccess?: HubAccessRequest[]
+}
+
 export type ProviderBindingsLoadState = 'idle' | 'loading' | 'ready' | 'error'
 
 interface ProvidersResponse {
@@ -869,6 +876,7 @@ export const useProvidersStore = defineStore('providers', () => {
     accept: AcceptedClaim[],
     acceptHubAccess: AcceptedHubAccess[] = [],
     acceptCompositions: AcceptedComposition[] = [],
+    setupReview?: ProviderSetupReview,
   ): Promise<void> {
     if (!p.export?.path || !p.export?.name) {
       throw new Error(`${p.name}: provider declares no APIExport to bind`)
@@ -888,11 +896,13 @@ export const useProvidersStore = defineStore('providers', () => {
       sameTenantSelection(t, readTenantSelection())
 
     const body = {
+      setupReview,
       acceptedClaims: accept.map((c) => ({ group: c.group ?? '', resource: c.resource })),
       acceptedHubAccess: acceptHubAccess.map((h) => ({ capability: h.capability, scope: h.scope })),
       acceptedCompositions: acceptCompositions.map((c) => ({ provider: c.provider, group: c.group, resource: c.resource })),
     }
-    const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/enable`
+    const action = setupReview ? 'setup' : 'enable'
+    const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/${action}`
 
     try {
       // A provider that requests edge-proxy access can't be enabled until the
@@ -920,6 +930,9 @@ export const useProvidersStore = defineStore('providers', () => {
           continue
         }
         if (!isCurrentEnable()) return
+        if (setupReview && res.status === 412) {
+          throw new Error('Requested access changed. Review the updated permissions and try again.')
+        }
         throw new Error(`enable ${p.name} failed: ${res.status} ${res.statusText} ${detail}`)
       }
       if (!isCurrentEnable()) return

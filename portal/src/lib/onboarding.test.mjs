@@ -46,6 +46,8 @@ test('onboarding copy follows the audience defaults and provider purpose rules',
   assert.equal(copy.goalTitleForAudience('agents', true), 'Run AI agents')
   assert.equal(copy.goalBodyForAudience('agents', false), 'Create an AI agent with tools and memory.')
   assert.equal(copy.purposeForProvider('app-studio', 'code', 'original description'), 'Manage source repositories for your apps.')
+  assert.equal(copy.purposeForProvider('agents', 'infrastructure'), 'Run services that agents can use as tools.')
+  assert.equal(copy.purposeForProvider('agents', 'edges'), 'Connect agents to services and runners on your hosts.')
   assert.equal(copy.purposeForProvider('agents', 'custom-provider', 'Custom provider copy.'), 'Custom provider copy.')
 })
 

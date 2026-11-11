@@ -78,7 +78,7 @@ try {
           await summary.press('Enter')
           assert(Math.abs((await page.getByRole('link', { name: 'Browse all Providers', exact: true }).boundingBox()).y - (await summary.boundingBox()).y) < 12, 'catalog action stays beside the disclosure')
           assert.equal(await details.locator('h2').isVisible(), true, 'setup guidance is accessible')
-          assert.match(await details.locator('dl').innerText(), /Application Templates/)
+          assert.match(await details.locator('dl').innerText(), /App Studio/)
           await summary.press('Enter')
           assert.equal(await details.locator('h2').isVisible(), false)
           if (width >= 900) assert.equal((await geometry(page)).height, initial.height)
@@ -108,8 +108,8 @@ try {
     await page.getByRole('heading', { name: 'Set up your team’s Workspace', exact: true }).waitFor()
     await page.getByText('Manage source repositories for your apps.', { exact: true }).waitFor()
     assert.equal((await geometry(page)).height, initial.height, 'team setup keeps the same compact frame')
-    assert.equal(await page.getByRole('button', { name: 'Go to Workspace', exact: true }).isDisabled(), true)
-    await page.evaluate(() => { window.fixture.providers.bindingNamesByProvider = { infrastructure: 'infra', code: 'code', 'app-studio': 'app' } })
+    assert.equal(await page.getByRole('button', { name: 'Set up App Studio', exact: true }).isEnabled(), true)
+    await page.evaluate(() => { window.fixture.setEnabledProviders(['infrastructure', 'code', 'app-studio']) })
     await page.getByRole('button', { name: 'Go to Workspace', exact: true }).click()
     await page.getByRole('button', { name: 'Getting started', exact: true }).click()
     await page.getByRole('heading', { name: 'What should your team be able to do?', exact: true }).waitFor()
@@ -151,70 +151,56 @@ try {
     await page.close()
   }
 
-  // Exercise the production dialog and caller, with only the network mocked.
+  // One review applies the workspace permissions and resumes after a partial failure.
   {
     const { page, errors } = await openPage('dark', 1280, 720)
     await chooseGoal(page)
-    const card = name => page.locator('.onboarding-providers > li').filter({ has: page.locator('strong', { hasText: name }) })
-    for (const name of ['Application Templates', 'Code', 'App Studio']) {
-      await card(name).getByRole('button', { name: `Enable provider: ${name}`, exact: true }).click()
-      const dialog = page.getByRole('dialog')
-      await dialog.waitFor()
-      await dialog.getByRole('button', { name: /^Enable/ }).click()
-      await dialog.waitFor({ state: 'hidden' })
-    }
-    await page.getByRole('link', { name: 'Open App Studio' }).waitFor()
-    await page.evaluate(() => {
-      window.fixture.providers.bindingsStale = true
-      window.fixture.providers.bindingsLoadState = 'error'
-    })
-    assert.equal(await page.getByRole('link', { name: 'Open App Studio', exact: true }).count(), 0)
-    assert.equal(await page.getByRole('button', { name: 'Open App Studio', exact: true }).isDisabled(), true)
-    await page.getByRole('button', { name: 'Refresh Provider status', exact: true }).waitFor()
-    await page.evaluate(() => {
-      window.fixture.providers.bindingsStale = false
-      window.fixture.providers.bindingsLoadState = 'ready'
-    })
-    await page.getByRole('link', { name: 'Open App Studio', exact: true }).waitFor()
-    const calls = await page.evaluate(() => window.fixture.requests)
-    assert.equal(calls.length, 3)
-    assert.equal(calls[2][3].length, 2, 'composition consent must reach the enable action')
-    // This isolated fixture has no authenticated destination route. Exercise
-    // completion/dismissal while keeping the current Workspace selected.
-    await page.getByRole('link', { name: 'Open App Studio', exact: true }).evaluate(link => {
-      link.addEventListener('click', event => event.preventDefault(), { capture: true, once: true })
-    })
-    await page.getByRole('link', { name: 'Open App Studio', exact: true }).click()
-    await page.getByRole('button', { name: 'Getting started', exact: true }).click()
-    await page.getByRole('heading', { name: 'What would you like to do first?', exact: true }).waitFor()
-    assert.equal(await page.getByRole('radio', { name: 'Build an app', exact: true }).isChecked(), true)
-    await page.reload()
-    await page.getByRole('heading', { name: 'What would you like to do first?', exact: true }).waitFor()
+    await page.getByText('Review permissions', { exact: true }).click()
+    const details = page.locator('.onboarding-details')
+    assert.match(await details.innerText(), /instances.*create, get/)
+    assert.match(await details.innerText(), /Manage access to an app in this workspace/)
+    assert.doesNotMatch(await details.innerText(), /Invite people to the organization/)
+    assert.equal(await page.getByRole('button', { name: /^Enable provider:/ }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.fixture.requests), [])
 
+    await page.evaluate(() => window.fixture.failEnable('Code is temporarily unavailable', 'code'))
+    await page.getByRole('button', { name: 'Set up App Studio', exact: true }).click()
+    await page.getByRole('alert').filter({ hasText: 'Code is temporarily unavailable' }).waitFor()
+    await page.evaluate(() => window.fixture.failEnable(null))
+    await page.getByRole('button', { name: 'Retry App Studio setup', exact: true }).click()
+    await page.waitForURL('**/providers/app-studio')
+
+    const calls = await page.evaluate(() => window.fixture.requests.filter(([provider]) => provider.name))
+    assert.deepEqual(calls.map(([provider]) => provider.name), ['infrastructure', 'code', 'code', 'app-studio'])
+    assert.deepEqual(calls[3][2].map(access => access.scope), ['workspace'])
+    assert.equal(calls[3][3].length, 2, 'composition consent must reach the enable action')
+    assert.equal(calls[3][4].exportPath, 'root:providers:app-studio')
     assert.deepEqual(errors, [])
     await page.close()
   }
-  // Declining access is preserved in the admin setup flow.
-  for (const member of [false]) {
-    const { page, errors } = await openPage('light', 1280, 720)
-    await chooseGoal(page)
-    await page.evaluate(isMember => {
-      if (isMember) window.fixture.setRole('member')
-      window.fixture.providers.bindingNamesByProvider = { infrastructure: 'infra', code: 'code' }
-    }, member)
-    const row = page.locator('.onboarding-providers > li').filter({ hasText: 'App Studio' })
-    await row.getByRole('button', { name: 'Enable provider: App Studio', exact: true }).click()
-    const dialog = page.getByRole('dialog')
-    const checkboxes = dialog.getByRole('checkbox')
-    if (member) {
-      assert.equal(await checkboxes.count(), 2)
-      assert.equal(await checkboxes.first().isDisabled(), true)
+
+  // Agents setup grants its compositions and reuses an enabled dependency.
+  for (const infrastructureEnabled of [false, true]) {
+    const { page, errors } = await openPage('light', 390, 700, true)
+    if (infrastructureEnabled) {
+      await page.evaluate(() => window.fixture.setEnabledProviders(['infrastructure']))
+      await page.getByRole('button', { name: 'Continue', exact: true }).click()
+      await page.getByRole('radio', { name: 'Run AI agents', exact: true }).check()
+      await page.getByRole('button', { name: 'Review setup', exact: true }).click()
     } else {
-      await checkboxes.first().uncheck()
+      await chooseGoal(page, 'Run an AI agent')
     }
-    await dialog.getByRole('button', { name: 'Enable provider', exact: true }).click()
-    await dialog.waitFor({ state: 'hidden' })
-    assert.equal(await page.evaluate(() => window.fixture.requests[0][3].length), member ? 0 : 1)
+    await page.getByText('Review permissions', { exact: true }).click()
+    assert.match(await page.locator('.onboarding-details').innerText(), /instances.*get[\s\S]*services.*get/)
+    assert.equal(await page.getByRole('button', { name: /^Enable provider:/ }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.fixture.requests), [])
+
+    await page.getByRole('button', { name: 'Set up Agents', exact: true }).click()
+    await page.waitForURL('**/providers/agents')
+    const calls = await page.evaluate(() => window.fixture.requests)
+    assert.deepEqual(calls.map(([provider]) => provider.name), infrastructureEnabled ? ['edges', 'agents'] : ['infrastructure', 'edges', 'agents'])
+    assert.deepEqual(calls.at(-1)[3].map(({ provider, resource }) => [provider, resource]), [['infrastructure', 'instances'], ['edges', 'services']])
+    assert.equal(calls.at(-1)[4].exportName, 'agents.providers.railgrid.ai')
     assert.deepEqual(errors, [])
     await page.close()
   }
@@ -224,7 +210,7 @@ try {
     const { page, errors } = await openPage('light', 1280, 720)
     await page.evaluate(isMember => {
       if (isMember) window.fixture.setRole('member')
-      window.fixture.providers.bindingNamesByProvider = { infrastructure: 'infra' }
+      window.fixture.setEnabledProviders(['infrastructure'])
     }, member)
     await page.getByRole('radio', { name: 'Build and run projects', exact: true }).check()
     await page.getByRole('button', { name: 'Continue', exact: true }).click()
@@ -280,27 +266,30 @@ try {
     await page.evaluate(() => {
       window.fixture.providers.bindingsStale = false
       window.fixture.providers.bindingsLoadState = 'ready'
-      window.fixture.providers.bindingNamesByProvider = { infrastructure: 'infra', code: 'code', 'app-studio': 'app' }
+      window.fixture.setEnabledProviders(['infrastructure', 'code', 'app-studio'])
     })
     await page.getByRole('link', { name: 'Open App Studio', exact: true }).waitFor()
     assert.deepEqual(errors, [])
     await page.close()
   }
 
-  // Failure keeps the decision visible and supports a successful retry.
-  {
+  // Service and infrastructure setup each review and enable their single provider.
+  for (const { goal, label, name, claim, permission } of [
+    { goal: 'Deploy a service', label: 'Application Templates', name: 'infrastructure', claim: { group: '', resource: 'secrets' }, permission: /railgrid.ai\/owner=infrastructure/ },
+    { goal: 'Connect infrastructure', label: 'Edges', name: 'edges', claim: { group: 'authentication.k8s.io', resource: 'tokenreviews' }, permission: /tokenreviews.*create/ },
+  ]) {
     const { page, errors } = await openPage('light', 1280, 720)
-    await chooseGoal(page, 'Deploy a service')
-    await page.evaluate(() => window.fixture.failEnable('Permission denied. Ask your administrator to review access.'))
-    await page.getByRole('button', { name: 'Enable provider: Application Templates', exact: true }).click()
-    const dialog = page.getByRole('dialog')
-    await dialog.getByRole('button', { name: 'Enable provider', exact: true }).click()
-    await dialog.getByRole('alert').waitFor()
-    assert.match(await dialog.getByRole('alert').innerText(), /Permission denied/)
-    await page.evaluate(() => window.fixture.failEnable(null))
-    await dialog.getByRole('button', { name: 'Enable provider', exact: true }).click()
-    await dialog.waitFor({ state: 'hidden' })
-    await page.getByRole('link', { name: 'Open Application Templates', exact: true }).waitFor()
+    await chooseGoal(page, goal)
+    await page.getByText('Review permissions', { exact: true }).click()
+    assert.match(await page.locator('.onboarding-details').innerText(), permission)
+    assert.equal(await page.getByRole('button', { name: /^Enable provider:/ }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.fixture.requests), [])
+
+    await page.getByRole('button', { name: `Set up ${label}`, exact: true }).click()
+    await page.waitForURL(`**/providers/${name}`)
+    const calls = await page.evaluate(() => window.fixture.requests)
+    assert.deepEqual(calls.map(([provider]) => provider.name), [name])
+    assert.deepEqual(calls[0][1], [claim])
     assert.deepEqual(errors, [])
     await page.close()
   }

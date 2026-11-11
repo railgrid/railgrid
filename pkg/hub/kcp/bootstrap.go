@@ -41,6 +41,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 
 	"github.com/railgrid/railgrid/config/kcp"
@@ -658,7 +659,7 @@ func (b *Bootstrapper) EnsureChildWorkspaceRailgridBinding(ctx context.Context, 
 	case err != nil:
 		return fmt.Errorf("creating railgrid APIBinding in %s/%s: %w", orgUUID, wsUUID, err)
 	}
-	if err := waitForAPIBindingBound(ctx, wsClient, CoreBindingName); err != nil {
+	if err := waitForAPIBinding(ctx, wsClient, CoreBindingName, false); err != nil {
 		return err
 	}
 	// The `workspace` WorkspaceType deliberately does NOT extend
@@ -1925,6 +1926,114 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 // workspace. The reference is left alone; a binding pointing at another export
 // is not this binding.
 func ensureProviderAPIBinding(ctx context.Context, wsClient dynamic.Interface, bindingName, exportPath, exportName string, claims []ProviderClaim) error {
+	specClaims := providerBindingSpecClaims(claims)
+	binding, err := newProviderAPIBinding(bindingName, exportPath, exportName, specClaims, nil)
+	if err != nil {
+		return err
+	}
+	_, err = wsClient.Resource(apiBindingGVR).Create(ctx, binding, metav1.CreateOptions{})
+	switch {
+	case errors.IsAlreadyExists(err):
+		if _, err := updateAPIBindingClaims(ctx, wsClient, bindingName, specClaims); err != nil {
+			return err
+		}
+	case err != nil:
+		return fmt.Errorf("creating APIBinding %q: %w", bindingName, err)
+	}
+	if err := waitForAPIBinding(ctx, wsClient, bindingName, false); err != nil {
+		return fmt.Errorf("waiting for APIBinding %q to bind: %w", bindingName, err)
+	}
+	return nil
+}
+
+// SetupProviderAPIBinding reserves the binding before prepare records access.
+// An unfinished reservation can be resumed after a request fails or a hub restarts.
+// It returns false without calling prepare for a binding owned by another flow.
+func (b *Bootstrapper) SetupProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, prepare func() ([]ProviderClaim, error)) (bool, error) {
+	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
+	wsClient, err := dynamic.NewForConfig(wsConfig)
+	if err != nil {
+		return false, fmt.Errorf("creating child workspace client: %w", err)
+	}
+	return setupProviderAPIBinding(ctx, wsClient, orgUUID, bindingName, exportPath, exportName, prepare)
+}
+
+func setupProviderAPIBinding(ctx context.Context, wsClient dynamic.Interface, orgUUID, bindingName, exportPath, exportName string, prepare func() ([]ProviderClaim, error)) (bool, error) {
+	bindings := wsClient.Resource(apiBindingGVR)
+	// Include pending bindings and bindings created under a different name.
+	list, err := bindings.List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false, err
+	}
+	for _, item := range list.Items {
+		path, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "path")
+		if name, ok := providerNameFromExportPath(path, orgUUID); ok && name == bindingName && item.GetName() != bindingName {
+			return false, nil
+		}
+	}
+
+	binding, err := newProviderAPIBinding(bindingName, exportPath, exportName, nil, map[string]string{
+		providers.ProviderSetupAnnotation: providers.ProviderSetupPending,
+	})
+	if err != nil {
+		return false, err
+	}
+	reservation, err := bindings.Create(ctx, binding, metav1.CreateOptions{})
+	if errors.IsAlreadyExists(err) {
+		reservation, err = bindings.Get(ctx, bindingName, metav1.GetOptions{})
+	}
+	if err != nil {
+		return false, err
+	}
+	if reservation.GetAnnotations()[providers.ProviderSetupAnnotation] != providers.ProviderSetupPending {
+		return false, nil
+	}
+	path, _, _ := unstructured.NestedString(reservation.Object, "spec", "reference", "export", "path")
+	name, _, _ := unstructured.NestedString(reservation.Object, "spec", "reference", "export", "name")
+	if path != exportPath || name != exportName || reservation.GetDeletionTimestamp() != nil {
+		return false, errors.NewConflict(apiBindingGVR.GroupResource(), bindingName, fmt.Errorf("setup reservation is being deleted or references another export"))
+	}
+
+	claims, err := prepare()
+	if err != nil {
+		return false, err
+	}
+	items, err := decodeClaims(providerBindingSpecClaims(claims))
+	if err != nil {
+		return false, err
+	}
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current, err := bindings.Get(ctx, bindingName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		currentPath, _, _ := unstructured.NestedString(current.Object, "spec", "reference", "export", "path")
+		currentName, _, _ := unstructured.NestedString(current.Object, "spec", "reference", "export", "name")
+		if current.GetUID() != reservation.GetUID() || current.GetDeletionTimestamp() != nil || currentPath != exportPath || currentName != exportName {
+			return fmt.Errorf("setup binding %q was changed or deleted", bindingName)
+		}
+		annotations := current.GetAnnotations()
+		if annotations[providers.ProviderSetupAnnotation] != providers.ProviderSetupPending {
+			return nil
+		}
+		if err := unstructured.SetNestedSlice(current.Object, items, "spec", "permissionClaims"); err != nil {
+			return err
+		}
+		annotations[providers.ProviderSetupAnnotation] = providers.ProviderSetupComplete
+		current.SetAnnotations(annotations)
+		_, err = bindings.Update(ctx, current, metav1.UpdateOptions{})
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	if err := waitForAPIBinding(ctx, wsClient, bindingName, true); err != nil {
+		return false, fmt.Errorf("waiting for APIBinding %q to be ready: %w", bindingName, err)
+	}
+	return true, nil
+}
+
+func providerBindingSpecClaims(claims []ProviderClaim) []apisv1alpha2.AcceptablePermissionClaim {
 	specClaims := make([]apisv1alpha2.AcceptablePermissionClaim, 0, len(claims))
 	for _, c := range claims {
 		state := apisv1alpha2.ClaimRejected
@@ -1945,13 +2054,16 @@ func ensureProviderAPIBinding(ctx context.Context, wsClient dynamic.Interface, b
 			State: state,
 		})
 	}
+	return specClaims
+}
 
+func newProviderAPIBinding(bindingName, exportPath, exportName string, specClaims []apisv1alpha2.AcceptablePermissionClaim, annotations map[string]string) (*unstructured.Unstructured, error) {
 	binding := &apisv1alpha2.APIBinding{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
 			Kind:       "APIBinding",
 		},
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName},
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Annotations: annotations},
 		Spec: apisv1alpha2.APIBindingSpec{
 			Reference: apisv1alpha2.BindingReference{
 				Export: &apisv1alpha2.ExportBindingReference{
@@ -1962,23 +2074,7 @@ func ensureProviderAPIBinding(ctx context.Context, wsClient dynamic.Interface, b
 			PermissionClaims: specClaims,
 		},
 	}
-	u, err := toUnstructured(binding)
-	if err != nil {
-		return fmt.Errorf("converting APIBinding to unstructured: %w", err)
-	}
-	_, err = wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{})
-	switch {
-	case errors.IsAlreadyExists(err):
-		if _, err := updateAPIBindingClaims(ctx, wsClient, bindingName, specClaims); err != nil {
-			return err
-		}
-	case err != nil:
-		return fmt.Errorf("creating APIBinding %q: %w", bindingName, err)
-	}
-	if err := waitForAPIBindingBound(ctx, wsClient, bindingName); err != nil {
-		return fmt.Errorf("waiting for APIBinding %q to bind: %w", bindingName, err)
-	}
-	return nil
+	return toUnstructured(binding)
 }
 
 // updateAPIBindingClaims sets spec.permissionClaims of an existing binding to
@@ -1995,6 +2091,10 @@ func updateAPIBindingClaims(ctx context.Context, wsClient dynamic.Interface, bin
 		var current apisv1alpha2.APIBinding
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &current); err != nil {
 			return false, fmt.Errorf("decoding APIBinding %q: %w", bindingName, err)
+		}
+		pendingSetup := current.Annotations[providers.ProviderSetupAnnotation] == providers.ProviderSetupPending
+		if pendingSetup {
+			return false, errors.NewConflict(apiBindingGVR.GroupResource(), bindingName, fmt.Errorf("provider setup is still pending"))
 		}
 		if reflect.DeepEqual(current.Spec.PermissionClaims, desired) {
 			return false, nil
@@ -2077,6 +2177,9 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 		terminating := item.GetDeletionTimestamp() != nil
 		phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
 		if phase != "Bound" && !terminating {
+			continue
+		}
+		if !terminating && item.GetAnnotations()[providers.ProviderSetupAnnotation] == providers.ProviderSetupPending {
 			continue
 		}
 		ready, unavailable := providerBindingReadiness(&item)
@@ -2402,6 +2505,9 @@ func reacceptClaimsOnBinding(ctx context.Context, wsClient dynamic.Interface, bi
 		if err != nil {
 			return false, fmt.Errorf("getting: %w", err)
 		}
+		if u.GetAnnotations()[providers.ProviderSetupAnnotation] == providers.ProviderSetupPending {
+			return false, nil
+		}
 		var binding apisv1alpha2.APIBinding
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &binding); err != nil {
 			return false, fmt.Errorf("decoding: %w", err)
@@ -2616,8 +2722,8 @@ func AppendClusterPath(host, clusterPath string) string {
 	return apiurl.KCPClusterURL(host, clusterPath)
 }
 
-// waitForAPIBindingBound polls until an APIBinding has phase "Bound".
-func waitForAPIBindingBound(ctx context.Context, client dynamic.Interface, name string) error {
+// waitForAPIBinding waits for Bound, and optionally for provider readiness.
+func waitForAPIBinding(ctx context.Context, client dynamic.Interface, name string, requireReady bool) error {
 	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 60*time.Second, true, func(ctx context.Context) (bool, error) {
 		obj, err := client.Resource(apiBindingGVR).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
@@ -2626,6 +2732,11 @@ func waitForAPIBindingBound(ctx context.Context, client dynamic.Interface, name 
 			}
 			return false, nil
 		}
+		if requireReady {
+			ready, _ := providerBindingReadiness(obj)
+			return ready && obj.GetDeletionTimestamp() == nil, nil
+		}
+
 		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
 		return phase == "Bound", nil
 	})

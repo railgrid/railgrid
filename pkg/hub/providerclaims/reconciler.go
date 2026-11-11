@@ -171,6 +171,9 @@ func (r *Reconciler) reconcileBinding(ctx context.Context, clusterName string, b
 		// rewriting its claims now would only fight the deletion.
 		return ctrl.Result{}, nil
 	}
+	if binding.Annotations[providers.ProviderSetupAnnotation] == providers.ProviderSetupPending {
+		return ctrl.Result{}, nil
+	}
 	export := binding.Spec.Reference.Export
 	if export == nil || export.Name == "" {
 		return ctrl.Result{}, nil

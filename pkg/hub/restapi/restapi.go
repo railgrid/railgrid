@@ -140,6 +140,10 @@ type WorkspaceOps interface {
 	// non-default workspace, even with valid RBAC).
 	EnsureProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, claims []kcp.ProviderClaim) error
 
+	// SetupProviderAPIBinding reserves the binding before calling prepare.
+	// An existing binding outside setup is left untouched.
+	SetupProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, prepare func() ([]kcp.ProviderClaim, error)) (bool, error)
+
 	// ListProviderAPIBindings returns the set of provider APIBindings
 	// (those referencing root:railgrid:providers:*) in the target
 	// workspace, keyed by provider name. Used by the
@@ -569,6 +573,7 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	// via kcp-admin so the kcp user-proxy's defaultCluster pre-check
 	// doesn't block sibling-workspace operations). See providers_enable.go.
 	r.HandleFunc("/{org}/workspaces/{ws}/providers/{name}/enable", h.enableProvider).Methods(http.MethodPost)
+	r.HandleFunc("/{org}/workspaces/{ws}/providers/{name}/setup", h.setupProvider).Methods(http.MethodPost)
 	r.HandleFunc("/{org}/workspaces/{ws}/providers/{name}/disable", h.disableProvider).Methods(http.MethodPost)
 
 	// Read-side counterpart: list the provider APIBindings in this
