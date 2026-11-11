@@ -181,6 +181,15 @@ func TestReconcileBinding_LeavesAloneWhatItDoesNotOwn(t *testing.T) {
 		paths   map[string]string
 	}{
 		{
+			name: "pending provider setup",
+			binding: func() *apisv1alpha2.APIBinding {
+				b := binding("agents", prov.APIExportPath, prov.APIExportName)
+				b.Annotations = map[string]string{providers.ProviderSetupAnnotation: providers.ProviderSetupPending}
+				return b
+			}(),
+			paths: map[string]string{"c1": kcppaths.WorkspacePath("org-a", "ws-1")},
+		},
+		{
 			name: "terminating binding",
 			binding: func() *apisv1alpha2.APIBinding {
 				b := binding("agents", prov.APIExportPath, prov.APIExportName)

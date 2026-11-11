@@ -18,13 +18,20 @@ import '@fontsource/ibm-plex-mono/400.css'
 // Only this fixture supplies synthetic catalog data. Components, theme, shell,
 // consent dialog and stores are the production implementations.
 const catalog = [
-  { name: 'infrastructure', displayName: 'Application Templates', category: 'Infrastructure', description: 'Deploy applications from configurable templates on your infrastructure.' },
+  { name: 'infrastructure', displayName: 'Application Templates', category: 'Infrastructure', description: 'Deploy applications from configurable templates on your infrastructure.', requires: [
+    { resources: [{ name: 'secrets', verbs: ['get'], selector: { matchLabels: { 'railgrid.ai/owner': 'infrastructure' } } }] },
+  ] },
   { name: 'code', displayName: 'Code', category: 'Development', description: 'Connect Git hosting and manage repositories for your projects.' },
-  { name: 'edges', displayName: 'Edges', category: 'Infrastructure', description: 'Connect your servers and Kubernetes clusters.' },
+  { name: 'edges', displayName: 'Edges', category: 'Infrastructure', description: 'Connect your servers and Kubernetes clusters.', requires: [
+    { group: 'authentication.k8s.io', resources: [{ name: 'tokenreviews', verbs: ['create'] }] },
+  ] },
   { name: 'app-studio', displayName: 'App Studio', category: 'Development', description: 'Build applications with AI project workspaces, development sandboxes, and publishing.', requires: [
     { provider: 'infrastructure', group: 'infrastructure.railgrid.ai', resources: [{ name: 'instances', verbs: ['create', 'get'] }] },
     { provider: 'code', group: 'code.railgrid.ai', resources: [{ name: 'repositories', verbs: ['create', 'get'] }] },
-  ] },
+  ], hub: { access: [
+    { capability: 'app-access.grants.manage', scope: 'workspace', reason: 'Manage access to an app in this workspace.' },
+    { capability: 'memberships.invite', scope: 'org', reason: 'Invite people to the organization when sharing an app.' },
+  ] } },
   { name: 'agents', displayName: 'Agents', category: 'AI', description: 'Run agents with governed tools and model connections.', requires: [
     { provider: 'infrastructure', group: 'infrastructure.railgrid.ai', resources: [{ name: 'instances', verbs: ['create', 'get'] }] },
     { provider: 'edges', group: 'edges.railgrid.ai', resources: [{ name: 'services', verbs: ['get'] }] },
@@ -50,12 +57,20 @@ const app = createApp({
     const requests = []
     tenant.$patch({ orgUUID: 'demo', workspaceUUID: 'workspace', workspaceMode: 'workspace', orgs: [{ uuid: 'demo', displayName: 'Demo', role: 'admin' }], workspacesByOrg: { demo: [{ uuid: 'workspace', orgUUID: 'demo', displayName: 'My Workspace', role: 'admin', clusterName: 'workspace-cluster' }] } })
     providers.$patch({ loaded: true, bindingsWorkspace: 'workspace', bindingsOrgUUID: 'demo', bindingsRequestWorkspaceUUID: 'workspace', bindingsRequestOrgUUID: 'demo', bindingsLoadState: 'ready', catalogOrgUUID: 'demo', items: structuredClone(catalog), categories: [{ name: 'Infrastructure', icon: 'Server' }, { name: 'Development', icon: 'Layers' }, { name: 'AI', icon: 'Bot' }] })
+    function setEnabledProviders(names) {
+      providers.bindingsByProvider = Object.fromEntries(names.map(name => {
+        const boundProvider = providers.items.find(provider => provider.name === name)
+        return [name, { bindingName: name, ready: true, exportName: boundProvider.export.name, exportPath: boundProvider.export.path, boundProvider }]
+      }))
+      providers.bindingNamesByProvider = Object.fromEntries(names.map(name => [name, name]))
+    }
     // Replace only network actions. Tests can hold/fail a request explicitly.
     let failure = null
+    let failingProvider = null
     providers.enable = async (...args) => {
       requests.push(args)
-      if (failure) throw new Error(failure)
-      providers.bindingNamesByProvider = { ...providers.bindingNamesByProvider, [args[0].name]: `binding-${args[0].name}` }
+      if (failure && (!failingProvider || args[0].name === failingProvider)) throw new Error(failure)
+      setEnabledProviders([...new Set([...Object.keys(providers.bindingNamesByProvider), args[0].name])])
     }
     providers.load = async () => {
       requests.push(['catalog-load'])
@@ -129,7 +144,7 @@ const app = createApp({
       providers.disable = async provider => { requests.push(['disable', provider.name]) }
     }
     window.fixture = {
-      providers, tenant, open, requests, orgProviders, router,
+      providers, tenant, open, requests, orgProviders, router, setEnabledProviders,
       registerProvider() { inventory[0].registered = true },
       readyProvider() {
         inventory[0].registered = true
@@ -156,7 +171,7 @@ const app = createApp({
         if (index >= 0) inventory.splice(index, 1)
       },
       failInventory(value) { inventoryError = value },
-      failEnable(message) { failure = message },
+      failEnable(message, provider = null) { failure = message; failingProvider = provider },
       setRole(role) { tenant.orgs[0].role = role; tenant.workspacesByOrg.demo[0].role = role },
       setCreationPolicy(policy) { tenant.orgs[0].catalogEntryCreation = policy },
       setWorkspaceBinding(copy) {

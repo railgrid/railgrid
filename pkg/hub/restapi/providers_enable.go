@@ -29,6 +29,7 @@ import (
 	"sort"
 	"strings"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/klog/v2"
 
 	"github.com/gorilla/mux"
@@ -47,7 +48,9 @@ import (
 // kcp as state=Rejected, which prevents the binding from going Bound
 // and surfaces the mismatch to the user.
 type EnableProviderRequest struct {
-	AcceptedClaims []AcceptedClaim `json:"acceptedClaims"`
+	// SetupReview makes this a first-time setup using the catalog the admin reviewed.
+	SetupReview    *ProviderSetupReview `json:"setupReview,omitempty"`
+	AcceptedClaims []AcceptedClaim      `json:"acceptedClaims"`
 	// AcceptedHubAccess lists the hub capabilities (CatalogEntry.spec.hub.access)
 	// the user accepted. Each must be declared by the provider. Accepting an
 	// org-scoped capability requires an org admin; a workspace-scoped one, an
@@ -62,6 +65,14 @@ type EnableProviderRequest struct {
 	// it. Omitted compositions are declined, and the decision is recorded
 	// either way — the same rules hub access follows, in the same Grant.
 	AcceptedCompositions []AcceptedComposition `json:"acceptedCompositions,omitempty"`
+}
+
+// ProviderSetupReview pins the provider and permissions displayed by onboarding.
+type ProviderSetupReview struct {
+	ExportPath string                                  `json:"exportPath"`
+	ExportName string                                  `json:"exportName"`
+	Requires   []providersv1alpha1.ProviderRequirement `json:"requires,omitempty"`
+	HubAccess  []providersv1alpha1.ProviderHubAccess   `json:"hubAccess,omitempty"`
 }
 
 // AcceptedComposition identifies one accepted composition by the dependency
@@ -117,6 +128,14 @@ type EnableProviderResponse struct {
 // Idempotent: AlreadyExists is treated as success so the portal can
 // safely re-issue on retry.
 func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
+	h.enableProviderWithMode(w, r, false)
+}
+
+func (h *Handler) setupProvider(w http.ResponseWriter, r *http.Request) {
+	h.enableProviderWithMode(w, r, true)
+}
+
+func (h *Handler) enableProviderWithMode(w http.ResponseWriter, r *http.Request, setup bool) {
 	tc, ok := h.requireTenantContext(w, r, true /* workspace */, false /* admin not required */)
 	if !ok {
 		return
@@ -163,6 +182,29 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if setup != (req.SetupReview != nil) {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "the setup review is required on the provider setup endpoint only")
+		return
+	}
+	if setup {
+		if !hubaccess.MayDecideComposition(tc.Role, tc.OrgRole) {
+			writeStatus(w, http.StatusForbidden, "Forbidden", "provider setup requires a workspace or organization admin")
+			return
+		}
+		review := req.SetupReview
+		if review.ExportPath != prov.APIExportPath || review.ExportName != prov.APIExportName ||
+			!apiequality.Semantic.DeepEqual(review.Requires, prov.Requires) || !apiequality.Semantic.DeepEqual(review.HubAccess, prov.HubAccess) {
+			writeStatus(w, http.StatusPreconditionFailed, "PreconditionFailed", "provider or requested access changed. Refresh Providers and review setup again")
+			return
+		}
+		for _, access := range req.AcceptedHubAccess {
+			if access.Scope != string(providersv1alpha1.HubAccessScopeWorkspace) {
+				writeStatus(w, http.StatusBadRequest, "BadRequest", "onboarding can only grant workspace access")
+				return
+			}
+		}
+	}
+
 	// Set membership lookup: claim was accepted iff (group, resource)
 	// appears in req.AcceptedClaims. Verbs always come from the
 	// provider's declared claim so the user can't escalate by sending
@@ -192,84 +234,93 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Record the hub-access decisions this caller is entitled to make: each
-	// capability they may decide is accepted (ticked) or declined (not); the
-	// ones they may not decide keep whatever was decided before, or stay
-	// undecided. A provider that declares no hub access gets any stale grant
-	// removed.
-	//
-	// The compositions are settled here, BEFORE the binding is written, because
-	// they are permission claims on the provider's APIExport
-	// (provider-sdk/cmd/apiexportgen derives one per requires[] entry) and the
-	// tenant's decision has to reach the APIBinding: an accepted composition is
-	// an Accepted claim, a declined or undecided one a Rejected claim. Without
-	// the claim on the binding kcp does not serve the dependency's kind on the
-	// provider's virtual workspace for this workspace at all, so a reconciler
-	// holding a finalizer on such an object could never release it.
 	resp := EnableProviderResponse{BindingName: providerName}
-	composedAccepted := map[string]bool{}
-	if h.mgr.hubAccess != nil {
-		key := hubaccess.GrantKey{OrgUUID: tc.OrgUUID, WorkspaceUUID: tc.WorkspaceUUID, Provider: prov.Name, ProviderOrgUUID: prov.OrgUUID}
-		if len(prov.HubAccess) > 0 || len(declaredCompositions) > 0 {
-			grant, err := h.mgr.hubAccess.Record(r.Context(), key, func(prev *tenancyv1alpha1.Grant) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
-				accepted, declined := mergeHubAccessDecisions(prov.HubAccess, acceptedHubAccess, prev, tc.Role, tc.OrgRole)
-				composedAccepted, composedDeclined := mergeCompositionDecisions(declaredCompositions, acceptedCompositions, prev, tc.Role, tc.OrgRole)
-				return append(accepted, composedAccepted...), append(declined, composedDeclined...)
-			}, tc.User)
-			if err != nil {
-				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
-				return
-			}
-			if grant != nil {
-				for _, g := range grant.Spec.Capabilities {
-					if group, resource, ok := hubaccess.ParseComposeCapability(g.Capability); ok {
-						composedAccepted[acceptedKey(group, resource)] = true
-						resp.Compositions = append(resp.Compositions, AcceptedComposition{
-							Provider: dependencyFor(declaredCompositions, group, resource),
-							Group:    group, Resource: resource,
-						})
-						continue
+	prepare := func() ([]kcp.ProviderClaim, error) {
+		composedAccepted := map[string]bool{}
+		if h.mgr.hubAccess != nil {
+			key := hubaccess.GrantKey{OrgUUID: tc.OrgUUID, WorkspaceUUID: tc.WorkspaceUUID, Provider: prov.Name, ProviderOrgUUID: prov.OrgUUID}
+			if len(prov.HubAccess) > 0 || len(declaredCompositions) > 0 {
+				grant, err := h.mgr.hubAccess.Record(r.Context(), key, func(prev *tenancyv1alpha1.Grant) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
+					accepted, declined := mergeHubAccessDecisions(prov.HubAccess, acceptedHubAccess, prev, tc.Role, tc.OrgRole, setup)
+					composedAccepted, composedDeclined := mergeCompositionDecisions(declaredCompositions, acceptedCompositions, prev, tc.Role, tc.OrgRole, setup)
+					return append(accepted, composedAccepted...), append(declined, composedDeclined...)
+				}, tc.User)
+				if err != nil {
+					return nil, err
+				}
+				if grant != nil {
+					for _, g := range grant.Spec.Capabilities {
+						if group, resource, ok := hubaccess.ParseComposeCapability(g.Capability); ok {
+							composedAccepted[acceptedKey(group, resource)] = true
+							resp.Compositions = append(resp.Compositions, AcceptedComposition{
+								Provider: dependencyFor(declaredCompositions, group, resource),
+								Group:    group, Resource: resource,
+							})
+							continue
+						}
+						resp.HubAccess = append(resp.HubAccess, AcceptedHubAccess{Capability: g.Capability, Scope: g.Scope})
 					}
-					resp.HubAccess = append(resp.HubAccess, AcceptedHubAccess{Capability: g.Capability, Scope: g.Scope})
+				}
+			} else if !setup {
+				if err := h.mgr.hubAccess.Delete(r.Context(), key); err != nil {
+					return nil, err
 				}
 			}
-		} else if err := h.mgr.hubAccess.Delete(r.Context(), key); err != nil {
-			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		} else {
+			// No grant store: the decision is exactly what this request ticked.
+			for _, d := range declaredCompositions {
+				if acceptedCompositions[compositionKey(d.Dependency, d.Group, d.Resource)] {
+					composedAccepted[acceptedKey(d.Group, d.Resource)] = true
+				}
+			}
+		}
+
+		// One declaration, one claim list. spec.requires is the only place a
+		// provider states what it needs from a group it does not own, so there is
+		// nothing to merge: each entry becomes exactly one claim on the binding, and
+		// which of the two consent records answers for it is decided by whether the
+		// requirement names a provider.
+		return providerclaims.RequiredClaims(prov.Requires, func(coordinate providersv1alpha1.RequiredCoordinate) bool {
+			key := acceptedKey(coordinate.Group, coordinate.Resource)
+			if coordinate.Provider != "" {
+				return composedAccepted[key]
+			}
+			return accepted[key]
+		}), nil
+	}
+
+	if setup {
+		completed, err := h.mgr.bootstrapper.SetupProviderAPIBinding(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName, prov.APIExportPath, prov.APIExportName, prepare)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if !completed {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 	} else {
-		// No grant store: the decision is exactly what this request ticked.
-		for _, d := range declaredCompositions {
-			if acceptedCompositions[compositionKey(d.Dependency, d.Group, d.Resource)] {
-				composedAccepted[acceptedKey(d.Group, d.Resource)] = true
-			}
+		pending, err := h.mgr.bootstrapper.ProviderSetupPending(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName)
+		if err != nil {
+			writeError(w, err)
+			return
 		}
-	}
-
-	// One declaration, one claim list. spec.requires is the only place a
-	// provider states what it needs from a group it does not own, so there is
-	// nothing to merge: each entry becomes exactly one claim on the binding, and
-	// which of the two consent records answers for it is decided by whether the
-	// requirement names a provider.
-	claims := providerclaims.RequiredClaims(prov.Requires, func(coordinate providersv1alpha1.RequiredCoordinate) bool {
-		key := acceptedKey(coordinate.Group, coordinate.Resource)
-		if coordinate.Provider != "" {
-			return composedAccepted[key]
+		if pending {
+			writeStatus(w, http.StatusConflict, "ProviderSetupPending", "Provider setup is unfinished. Resume it from Getting started.")
+			return
 		}
-		return accepted[key]
-	})
 
-	if err := h.mgr.bootstrapper.EnsureProviderAPIBinding(
-		r.Context(),
-		tc.OrgUUID,
-		tc.WorkspaceUUID,
-		providerName, // binding name matches provider name (existing convention from portal/src/stores/providers.ts:283)
-		prov.APIExportPath,
-		prov.APIExportName,
-		claims,
-	); err != nil {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", "ensure APIBinding: "+err.Error())
-		return
+		// The ordinary Enable path still records the caller's new decisions
+		// before writing or updating its binding.
+		claims, err := prepare()
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := h.mgr.bootstrapper.EnsureProviderAPIBinding(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName, prov.APIExportPath, prov.APIExportName, claims); err != nil {
+			writeError(w, fmt.Errorf("ensure APIBinding: %w", err))
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -302,18 +353,25 @@ func resolveAcceptedHubAccess(declared []providersv1alpha1.ProviderHubAccess, ac
 	return out, 0, ""
 }
 
-// mergeHubAccessDecisions combines this caller's choices with the stored
-// grant. For every declared capability the caller may decide, it is accepted
-// when ticked and declined when not. A capability the caller may not decide
-// keeps its previous decision — so a workspace admin enabling a provider never
-// overturns (or, by leaving it unticked, "declines") something only an org
-// admin can decide; it stays undecided until one does.
-func mergeHubAccessDecisions(declared []providersv1alpha1.ProviderHubAccess, accepted map[string]bool, prev *tenancyv1alpha1.Grant, wsRole, orgRole string) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
+// mergeHubAccessDecisions combines a caller's choices with the stored grant.
+// Ordinary Enable records only the decisions the caller is authorized to make.
+// Onboarding preserves existing decisions and denies undecided organization
+// capabilities for both admin roles. This blocks the implicit platform default
+// until an organization admin explicitly reviews those capabilities.
+func mergeHubAccessDecisions(declared []providersv1alpha1.ProviderHubAccess, accepted map[string]bool, prev *tenancyv1alpha1.Grant, wsRole, orgRole string, setup bool) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
 	var outAccepted []tenancyv1alpha1.GrantedCapability
 	var outDeclined []tenancyv1alpha1.CapabilityRef
 	for _, d := range declared {
 		ref := tenancyv1alpha1.CapabilityRef{Capability: string(d.Capability), Scope: string(d.Scope)}
-		if hubaccess.MayDecide(d.Scope, wsRole, orgRole) {
+		decision, entry := hubaccess.Decide(prev, hubaccess.Requirement{Capability: d.Capability, Scope: d.Scope})
+		// Setup defers new organization access for both admin roles. A
+		// recorded denial prevents the implicit platform default from
+		// granting it. An earlier explicit org-admin decision still wins.
+		if setup && d.Scope == providersv1alpha1.HubAccessScopeOrg && decision == hubaccess.Undecided {
+			outDeclined = append(outDeclined, ref)
+			continue
+		}
+		if hubaccess.MayDecide(d.Scope, wsRole, orgRole) && (!setup || decision == hubaccess.Undecided) {
 			if accepted[ref.Capability+"/"+ref.Scope] {
 				outAccepted = append(outAccepted, hubaccess.FromDeclaration(d))
 			} else {
@@ -321,7 +379,7 @@ func mergeHubAccessDecisions(declared []providersv1alpha1.ProviderHubAccess, acc
 			}
 			continue
 		}
-		switch decision, entry := hubaccess.Decide(prev, hubaccess.Requirement{Capability: d.Capability, Scope: d.Scope}); decision {
+		switch decision {
 		case hubaccess.Accepted:
 			outAccepted = append(outAccepted, entry)
 		case hubaccess.Declined:
@@ -365,13 +423,14 @@ func resolveAcceptedCompositions(declared []hubaccess.CompositionRequirement, ac
 // grant, exactly as mergeHubAccessDecisions does for hub access: a caller
 // entitled to decide accepts what they ticked and declines the rest, and one
 // who is not leaves every previous decision standing rather than silently
-// revoking it by enabling.
-func mergeCompositionDecisions(declared []hubaccess.CompositionRequirement, accepted map[string]bool, prev *tenancyv1alpha1.Grant, wsRole, orgRole string) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
+// revoking it by enabling. Onboarding only fills in undecided access.
+func mergeCompositionDecisions(declared []hubaccess.CompositionRequirement, accepted map[string]bool, prev *tenancyv1alpha1.Grant, wsRole, orgRole string, setup bool) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
 	var outAccepted []tenancyv1alpha1.GrantedCapability
 	var outDeclined []tenancyv1alpha1.CapabilityRef
 	mayDecide := hubaccess.MayDecideComposition(wsRole, orgRole)
 	for _, d := range declared {
-		if mayDecide {
+		decision := hubaccess.DecideComposition(prev, d)
+		if mayDecide && (!setup || decision == hubaccess.Undecided) {
 			if accepted[compositionKey(d.Dependency, d.Group, d.Resource)] {
 				outAccepted = append(outAccepted, hubaccess.GrantedComposition(d))
 			} else {
@@ -379,7 +438,7 @@ func mergeCompositionDecisions(declared []hubaccess.CompositionRequirement, acce
 			}
 			continue
 		}
-		switch hubaccess.DecideComposition(prev, d) {
+		switch decision {
 		case hubaccess.Accepted:
 			outAccepted = append(outAccepted, hubaccess.GrantedComposition(d))
 		case hubaccess.Declined:

@@ -40,6 +40,8 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
 
+	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
@@ -595,6 +597,60 @@ func TestFTenantEnableAndCRUsable(t *testing.T) {
 	if msg, _, _ := unstructured.NestedString(got.Object, "spec", "message"); msg != "hello from e2e" {
 		t.Errorf("spec.message = %q", msg)
 	}
+}
+
+func TestF1GuidedSetupWaitsForAppliedClaims(t *testing.T) {
+	cluster := loginAndGetCluster(t, secondToken)
+	tenant := kcpDynamic(t, cluster, secondToken)
+	logical, err := tenant.Resource(schema.GroupVersionResource{Group: "core.kcp.io", Version: "v1alpha1", Resource: "logicalclusters"}).
+		Get(ctxWithTimeout(t, 10*time.Second), "cluster", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	org, workspace, ok := kcppaths.SplitWorkspacePath(logical.GetAnnotations()["kcp.io/path"])
+	if !ok {
+		t.Fatal("cannot resolve the test workspace")
+	}
+	body := `{
+		"setupReview": {
+			"exportPath": "root:railgrid:providers:quickstart",
+			"exportName": "quickstart.providers.railgrid.ai",
+			"requires": [{"group":"authorization.k8s.io","resources":[{"name":"subjectaccessreviews","verbs":["create"]}]}]
+		},
+		"acceptedClaims": [{"group":"authorization.k8s.io","resource":"subjectaccessreviews"}]
+	}`
+	url := fmt.Sprintf("%s/api/orgs/%s/workspaces/%s/providers/quickstart/setup", hubURL, org, workspace)
+	req, err := http.NewRequestWithContext(ctxWithTimeout(t, 70*time.Second), http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+secondToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Railgrid-Org", org)
+	req.Header.Set("X-Railgrid-Workspace", workspace)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("guided setup = %d: %s", resp.StatusCode, raw)
+	}
+
+	binding, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), "quickstart", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, _, _ := unstructured.NestedSlice(binding.Object, "spec", "permissionClaims")
+	applied, _, _ := unstructured.NestedSlice(binding.Object, "status", "appliedPermissionClaims")
+	if binding.GetAnnotations()[providers.ProviderSetupAnnotation] != providers.ProviderSetupComplete || len(spec) != 1 || len(applied) != 1 {
+		t.Fatalf("setup returned before kcp applied the reviewed claim: spec=%v applied=%v", spec, applied)
+	}
+	if ready, reason := providers.BindingReadiness(binding); !ready {
+		t.Fatalf("completed setup binding is not routable: %s, spec=%v applied=%v", reason, spec, applied)
+	}
+	t.Logf("kcp applied the reviewed claim: spec=%v applied=%v", spec, applied)
 }
 
 // TestF2GreetVerbAcrossTwoWorkspaces is the suite's contract test for the

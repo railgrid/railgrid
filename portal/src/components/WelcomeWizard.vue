@@ -1,20 +1,18 @@
 <script setup lang="ts">
-// Intent guides setup; enablement always uses the existing consent contract.
-import { computed, ref, watch, nextTick, onMounted } from 'vue'
-import { ArrowLeft, ArrowRight, ChevronRight, Check, Copy, RefreshCw, Plus, Loader2, Puzzle, Server, Boxes, Building2, Rocket } from 'lucide-vue-next'
+import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ArrowLeft, ArrowRight, ChevronRight, Check, Copy, RefreshCw, Loader2, Puzzle, Server, Boxes, Building2, Rocket } from 'lucide-vue-next'
+import { useRouter } from 'vue-router'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
-import { useProviderEnableFlow } from '@/composables/useProviderEnableFlow'
-import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
-import { useProvidersStore, type ProviderDTO } from '@/stores/providers'
+import { useProvidersStore, type AcceptedClaim, type AcceptedComposition, type ProviderDTO, type ProviderSetupReview } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { useAuthStore } from '@/stores/auth'
-import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 import { welcomeIdentity } from '@/lib/firstWelcome'
 import { audienceCopy, defaultGoalForAudience, goalBodyForAudience, goalCopy, goalTitleForAudience, purposeForProvider } from '@/lib/onboardingCopy'
 import { planFor, setupReadyFor } from '@/lib/onboardingPlan'
 import { isConfirmedAdmin, onboardingStorageKey, persistOnboardingState, restoreOnboardingState } from '@/lib/onboardingState'
 
 const { scopePath } = useScopedNavigation()
+const router = useRouter()
 const emit = defineEmits<{ dismiss: [] }>()
 const props = defineProps<{ startAtGoal?: boolean }>()
 const providers = useProvidersStore()
@@ -48,10 +46,6 @@ const orderedGoals = computed(() => {
   const first = defaultGoalForAudience(audience.value)
   return [...goals].sort((a, b) => Number(b.id === first) - Number(a.id === first))
 })
-function categoryIcon(name: string) {
-  const category = providers.categories.find(item => item.name === name)
-  return categoryIcons[category?.icon || ''] ?? fallbackCategoryIcon
-}
 const failedIcons = ref<Record<string, boolean>>({})
 const target = computed(() => providers.workspaceProvider(goal.value))
 const plan = computed(() => planFor(goal.value, providers.workspaceProvider))
@@ -67,7 +61,10 @@ const setupDataCurrent = computed(() =>
   providers.bindingsOrgUUID === tenant.orgUUID && providers.bindingsWorkspace === tenant.workspaceUUID &&
   providers.bindingsLoadState === 'ready' && !providers.bindingsStale,
 )
-const setupReady = computed(() => setupReadyFor(setupDataCurrent.value, canOpen.value, plan.value, providers.isEnabled))
+const setupLabel = computed(() => selectedGoal.value.setupLabel)
+const setupReady = computed(() => setupReadyFor(setupDataCurrent.value, canOpen.value, plan.value, name =>
+  memberJourney.value ? providers.isEnabled(name) : usableForSetup(name),
+))
 
 const memberJourney = computed(() => !isConfirmedAdmin(tenant.activeWorkspace?.role, tenant.activeOrg?.role))
 const canSkipSetup = computed(() => memberJourney.value && !teamSetup.value && setupReady.value)
@@ -98,50 +95,125 @@ const description = computed(() => {
   if (memberJourney.value && exploring.value) return 'Explore the tools your team has made available from your Workspace dashboard.'
   if (memberJourney.value) return setupReady.value ? `${target.value?.displayName} is available. Open it to start your task.` : setupDataCurrent.value ? `To ${selectedGoal.value.title.toLowerCase()}, your team needs to make the required tools available. Your Workspace administrator can help.` : 'We couldn’t confirm that the tools for this task are available. Check again before asking your administrator for help.'
   if (exploring.value) return 'A Workspace groups your projects and resources. Providers add the tools you can use here.'
-  if (teamSetup.value && setupReady.value) return 'These Providers are available in your team’s Workspace. Your team can open them to start creating.'
-  return teamSetup.value ? 'A Workspace groups your team’s projects and resources. Enable these Providers to support your chosen starting point.' : 'Enable the Providers below to make these tools available. You’ll create your app, agent, or service after opening them.'
+  if (setupReady.value) {
+    return teamSetup.value
+      ? 'These Providers are available in your team’s Workspace.'
+      : `Open ${setupLabel.value} to get started.`
+  }
+  return `Review the tools and access ${setupLabel.value} needs. Railgrid will enable them for this Workspace in one step.`
 })
 function next() { step.value = Math.min(2, step.value + 1) }
 function back() { step.value = Math.max(0, step.value - 1) }
-function dependencyNotice(p: ProviderDTO): string {
-  const missing = providers.missingDependencies(p)
-  if (missing.length === 0) return ''
-  return missing.map(name => providers.isEnabled(name)
-    ? `Waiting for ${providers.dependencyLabels([name]).join(', ')} to become ready.`
-    : `Enable ${providers.dependencyLabels([name]).join(', ')} first.`).join(' ')
-}
 
-const {
-  busy,
-  actionError,
-  dialogProvider,
-  dialogScope,
-  openEnableDialog: openAdminEnableDialog,
-  closeEnableDialog,
-  onDialogConfirm: confirmEnable,
-} = useProviderEnableFlow({
-  scope: () => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`,
-  enable: (provider, accept, acceptHubAccess, acceptCompositions) =>
-    providers.enable(provider, accept, acceptHubAccess, acceptCompositions),
-  dependencyError: provider => dependencyNotice(provider) || null,
-})
-function openEnableDialog(provider: ProviderDTO) {
-  if (memberJourney.value) return
-  openAdminEnableDialog(provider)
-}
-function onDialogConfirm(...args: Parameters<typeof confirmEnable>) {
-  if (memberJourney.value) {
-    closeEnableDialog()
-    return
-  }
-  return confirmEnable(...args)
-}
-watch(memberJourney, isMember => { if (isMember) closeEnableDialog() })
-
-
+const workspaceScope = computed(() => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`)
 // This is a local presentation preference, never an authorization decision.
 const welcomeUser = computed(() => welcomeIdentity(auth))
-const storageKey = computed(() => onboardingStorageKey(welcomeUser.value, dialogScope.value))
+const setupPending = ref(false)
+const setupProgress = ref('')
+const setupError = ref('')
+let setupRun: symbol | undefined
+
+function resetSetup() {
+  setupRun = undefined
+  setupPending.value = false
+  setupProgress.value = ''
+  setupError.value = ''
+}
+watch([workspaceScope, welcomeUser, memberJourney, goal], resetSetup, { flush: 'sync' })
+onBeforeUnmount(resetSetup)
+
+function usableForSetup(name: string): boolean {
+  const provider = providers.workspaceProvider(name)
+  if (!provider?.ready) return false
+  if (!provider.export?.name) return name !== goal.value
+  const binding = providers.bindingsByProvider[name]
+  return providers.isEnabled(name) && binding?.ready !== false && !binding?.terminating
+}
+
+const missingSetupProviders = computed(() => plan.value.flatMap(({ provider }) =>
+  provider && !providers.isEnabled(provider.name) && provider.export?.path && provider.export.name ? [provider] : [],
+))
+const setupBlocked = computed(() => {
+  if (!setupDataCurrent.value) return 'Refresh Provider status to check this Workspace before setup.'
+  if (!target.value?.serving?.ui) return `${setupLabel.value} is unavailable in this Workspace.`
+  const scheduled = new Set<string>()
+  for (const { name, provider } of plan.value) {
+    const label = provider?.displayName || name
+    if (!provider?.ready) return `${label} is unavailable. Refresh Provider status to try again.`
+    if (usableForSetup(name)) continue
+    if (providers.isEnabled(name)) return `Waiting for ${label} to become available. Refresh Provider status to try again.`
+    if (!provider.export?.name || !provider.export.path) return `${label} cannot be enabled in this Workspace.`
+    if (providers.missingDependencies(provider).some(dependency => !scheduled.has(dependency))) {
+      return `The requirements for ${label} cannot be enabled in this Workspace.`
+    }
+    scheduled.add(name)
+  }
+  return ''
+})
+
+function setupReviewFor(provider: ProviderDTO): ProviderSetupReview {
+  return {
+    exportPath: provider.export?.path ?? '',
+    exportName: provider.export?.name ?? '',
+    requires: provider.requires,
+    hubAccess: provider.hub?.access,
+  }
+}
+
+async function runGuidedSetup() {
+  if (memberJourney.value || exploring.value || setupPending.value || setupBlocked.value || !missingSetupProviders.value.length) return
+  const reviewed = missingSetupProviders.value.map(provider => ({ name: provider.name, review: setupReviewFor(provider) }))
+  const destination = scopePath(`/providers/${goal.value}`)
+  const operation = Symbol()
+  setupRun = operation
+  setupPending.value = true
+  setupError.value = ''
+  try {
+    for (const { name, review } of reviewed) {
+      if (setupRun !== operation) return
+      if (!setupDataCurrent.value) throw new Error('Refresh Provider status and try again.')
+      if (providers.isEnabled(name)) continue
+      const provider = providers.workspaceProvider(name)
+      if (!provider || JSON.stringify(setupReviewFor(provider)) !== JSON.stringify(review)) {
+        throw new Error('Requested access changed. Review the updated permissions and try again.')
+      }
+      if (!provider.ready || providers.hasMissingDependencies(provider)) {
+        throw new Error(`${provider.displayName} or a required Provider is still unavailable. Refresh Provider status and try again.`)
+      }
+      setupProgress.value = `Enabling ${provider.displayName}…`
+      const claims: AcceptedClaim[] = []
+      const compositions: AcceptedComposition[] = []
+      for (const requirement of review.requires ?? []) {
+        for (const resource of requirement.resources) {
+          const claim = { group: requirement.group ?? '', resource: resource.name }
+          if (requirement.provider) compositions.push({ ...claim, provider: requirement.provider })
+          else claims.push(claim)
+        }
+      }
+      const hubAccess = (review.hubAccess ?? []).filter(access => access.scope === 'workspace')
+      await providers.enable(provider, claims, hubAccess, compositions, review)
+      if (setupRun !== operation) return
+      if (!setupDataCurrent.value || !usableForSetup(name)) {
+        throw new Error(`${provider.displayName} is still becoming available. Refresh Provider status to continue.`)
+      }
+    }
+    if (setupReady.value) {
+      await router.push(destination)
+      if (setupRun === operation && router.currentRoute.value.path === destination) emit('dismiss')
+    }
+  } catch (error) {
+    if (setupRun !== operation) return
+    setupError.value = error instanceof Error ? error.message : String(error)
+    await providers.load()
+  } finally {
+    if (setupRun === operation) {
+      setupPending.value = false
+      setupProgress.value = ''
+    }
+  }
+}
+
+const storageKey = computed(() => onboardingStorageKey(welcomeUser.value, workspaceScope.value))
 function restore() {
   let raw: string | null = null
   try { if (storageKey.value) raw = localStorage.getItem(storageKey.value) } catch { /* Storage can be disabled; setup remains usable. */ }
@@ -166,27 +238,9 @@ async function focusStep() {
 }
 onMounted(focusStep)
 watch(step, focusStep)
-const finalActionReason = computed(() => {
-  if (exploring.value) return ''
-  if (canOpen.value && !setupReady.value) return 'Some Providers are unavailable or their status is out of date. Refresh Providers to continue.'
-  if (setupReady.value) return ''
-  const provider = target.value
-  if (!provider) return 'This capability is unavailable in this Workspace. Browse Providers or ask an administrator for help.'
-  if (providers.isEnabled(goal.value)) {
-    if (providers.hasMissingDependencies(provider)) {
-      const waitingFor = providers.dependencyLabels(providers.missingDependencies(provider)).join(', ')
-      return `Waiting for ${waitingFor} to become available in this Workspace.`
-    }
-    if (!provider.ready) return 'This Provider is enabled but unavailable. Refresh its status or ask your administrator for help.'
-    if (!provider.serving?.ui) return 'This Provider has no web interface. Browse Providers for its available access options.'
-  }
-  if (!provider.export?.name || !provider.export?.path) return 'This Provider is unavailable for setup in this Workspace. Ask your administrator for help.'
-  if (providers.hasMissingDependencies(provider)) {
-    const required = providers.dependencyLabels(providers.missingDependencies(provider)).join(', ')
-    return `Enable ${required} first to continue.`
-  }
-  return `Enable ${provider.displayName} to continue.`
-})
+const finalActionReason = computed(() =>
+  setupPending.value ? setupProgress.value : setupReady.value ? '' : setupBlocked.value,
+)
 </script>
 
 <template>
@@ -244,10 +298,10 @@ const finalActionReason = computed(() => {
       <p v-if="!setupReady && setupDataCurrent" class="onboarding-help">You can keep using your Workspace while your administrator sets this up.</p>
     </div>
     <div v-else class="onboarding-preview">
-      <div class="onboarding-capabilities" :aria-busy="providers.loading || Object.values(busy).some(Boolean)">
+      <div class="onboarding-capabilities" :aria-busy="providers.loading || setupPending">
       <p v-if="providers.loading" role="status" class="onboarding-help">Refreshing Providers…</p>
-      <div v-if="providers.error" role="alert" class="my-4 text-danger"><p>{{ providers.error }}</p><button type="button" class="k-btn k-btn--ghost" :disabled="providers.loading" @click="providers.load()">Retry loading Providers</button></div>
-      <p v-if="actionError && !dialogProvider" role="alert" class="text-danger">{{ actionError }}</p>
+      <div v-if="providers.error" role="alert" class="my-4 text-danger"><p>{{ providers.error }}</p><button type="button" class="k-btn k-btn--ghost" :disabled="providers.loading || setupPending" @click="providers.load()">Retry loading Providers</button></div>
+      <p v-if="setupError" role="alert" class="my-2 text-[13px] text-danger">{{ setupError }}</p>
       <ul class="onboarding-providers">
         <li v-for="item in plan" :key="item.name" :class="{ 'onboarding-provider-enabled': providers.isEnabled(item.name) }">
           <div class="onboarding-provider-icon" aria-hidden="true">
@@ -257,64 +311,65 @@ const finalActionReason = computed(() => {
           <div class="onboarding-provider-copy">
             <div class="onboarding-provider-heading">
               <strong>{{ item.provider?.displayName || item.name }}</strong>
-              <span v-if="item.provider?.category" class="onboarding-provider-category font-mono">
-                <component :is="categoryIcon(item.provider.category)" :stroke-width="1.75" class="h-3.5 w-3.5" aria-hidden="true" />{{ item.provider.category }}
-              </span>
+              <span v-if="item.provider?.scope === 'org'" class="text-[12px] text-text-secondary">Organization-managed</span>
             </div>
             <p v-if="!item.provider">Not available in this catalog. Ask your administrator to make this Provider available, or choose another goal.</p>
             <template v-else>
               <p>{{ purpose(item.name, item.provider) }}</p>
               <p v-if="providers.isEnabled(item.name) && !item.provider.ready" role="status">Enabled, but not yet available</p>
-              <p v-if="dependencyNotice(item.provider)" class="text-warning">{{ dependencyNotice(item.provider) }}</p>
               <p v-if="!item.provider.ready && item.provider.readinessMessage">{{ item.provider.readinessMessage }}</p>
             </template>
           </div>
           <span v-if="item.provider && providers.isEnabled(item.name)" role="status" class="onboarding-provider-action inline-flex items-center gap-1.5 text-[13px] text-accent"><Check :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />Enabled</span>
-          <button v-else-if="item.provider?.export?.name && item.provider.export.path" type="button" class="k-btn k-btn--ghost onboarding-provider-action shrink-0 text-accent" :aria-label="`${busy[item.name] ? 'Enabling' : 'Enable provider'}: ${item.provider.displayName || item.name}`" :disabled="!!busy[item.name] || providers.hasMissingDependencies(item.provider) || providers.loading" @click="openEnableDialog(item.provider)">
-            <Loader2 v-if="busy[item.name]" :stroke-width="1.75" class="h-4 w-4 animate-spin" aria-hidden="true" /><Plus v-else :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />{{ busy[item.name] ? 'Enabling…' : 'Enable provider' }}
-          </button>
         </li>
       </ul>
-      <button v-if="plan.some(item => item.provider && providers.isEnabled(item.name) && !item.provider.ready) || (canOpen && !setupReady)" type="button" class="k-btn k-btn--ghost mb-4" :disabled="providers.loading" @click="providers.load()">Refresh Provider status</button>
-      <p v-if="target && (!target.export?.name || !target.export?.path)" class="onboarding-help">This Provider is unavailable for setup in this Workspace. Ask your administrator for help.</p>
-      <p v-if="target && providers.isEnabled(goal) && !target.serving?.ui" class="onboarding-help">This Provider has no web interface. Open the catalog for its available access options.</p>
+      <button v-if="setupBlocked" type="button" class="k-btn k-btn--ghost mb-4" :disabled="providers.loading || setupPending" @click="providers.load()">Refresh Provider status</button>
+      <p v-if="missingSetupProviders.length" class="onboarding-help mb-2">{{ selectedGoal.setupAccess }}</p>
       <div class="onboarding-resources">
-        <details class="onboarding-details">
-          <summary><ChevronRight :stroke-width="1.75" class="onboarding-details-chevron h-3.5 w-3.5" aria-hidden="true" /><span>Setup details</span></summary>
+        <details v-if="missingSetupProviders.length" class="onboarding-details">
+          <summary><ChevronRight :stroke-width="1.75" class="onboarding-details-chevron h-3.5 w-3.5" aria-hidden="true" />Review permissions</summary>
           <div class="onboarding-details-content">
-            <h2>{{ selectedGoal.task }}</h2>
-            <p class="onboarding-help">{{ selectedGoal.prerequisite }}</p>
-            <p class="onboarding-help">Enabling adds this Provider to this Workspace. Review its requested access, including any organization-level permissions, before continuing.</p>
+            <h2>Workspace access</h2>
             <dl>
-              <template v-for="item in plan" :key="item.name">
-                <dt>{{ item.provider?.displayName || item.name }}</dt>
-                <dd>{{ item.provider?.description || 'Not available in this catalog.' }}</dd>
+              <template v-for="provider in missingSetupProviders" :key="provider.name">
+                <dt>{{ provider.displayName }}</dt>
+                <dd v-for="requirement in provider.requires" :key="requirement.group ?? ''">
+                  <p>{{ requirement.provider ? providers.dependencyLabel(requirement.provider) : requirement.group || 'Workspace resources' }}</p>
+                  <ul class="list-disc space-y-1 pl-5">
+                    <li v-for="resource in requirement.resources" :key="resource.name">
+                      <code>{{ resource.name }}</code> · {{ resource.verbs?.join(', ') || 'Call this operation' }}
+                      <span v-for="(value, label) in resource.selector?.matchLabels" :key="label"> · <code>{{ label }}={{ value }}</code></span>
+                    </li>
+                  </ul>
+                </dd>
+                <dd v-for="access in provider.hub?.access?.filter(access => access.scope === 'workspace')" :key="access.capability">{{ access.reason || access.capability }}</dd>
               </template>
             </dl>
           </div>
         </details>
-        <router-link :to="scopePath('/providers')" class="text-accent text-[13px]">Browse all Providers</router-link>
+        <router-link v-if="!setupPending" :to="scopePath('/providers')" class="text-accent text-[13px]">Browse all Providers</router-link>
       </div>
       </div>
     </div>
 
     <button v-if="step === 1" type="button" class="k-btn k-btn--ghost mt-4 min-h-11 onboarding-control w-full" @click="explore">Not sure, I’m exploring</button>
 
-    <p v-if="step === 2 && !memberJourney && finalActionReason" id="onboarding-action-reason" class="onboarding-action-reason" role="status" aria-live="polite">{{ finalActionReason }}</p>
+    <p v-if="step === 2 && !memberJourney && !exploring && finalActionReason" id="onboarding-action-reason" class="onboarding-action-reason" role="status" aria-live="polite">{{ finalActionReason }}</p>
 
     </div>
     <footer class="onboarding-footer">
-      <button v-if="step > 0" type="button" class="k-btn k-btn--text" @click="back"><ArrowLeft :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />Back</button>
+      <button v-if="step > 0" type="button" class="k-btn k-btn--text" :disabled="setupPending" @click="back"><ArrowLeft :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />Back</button>
       <button v-else type="button" class="k-btn k-btn--ghost" @click="emit('dismiss')">Go to dashboard</button>
       <router-link v-if="step === 1 && canSkipSetup" :to="scopePath(`/providers/${goal}`)" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">{{ openLabel }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
       <button v-else-if="step < 2" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="next">{{ step === 0 ? 'Continue' : memberJourney ? 'See next steps' : 'Review setup' }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
       <button v-else-if="memberJourney && (exploring || !setupReady)" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">Go to Workspace<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
       <router-link v-else-if="exploring" :to="scopePath('/providers')" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">Explore Providers<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
-      <button v-else-if="teamSetup && setupReady" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">Go to Workspace<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
-      <router-link v-else-if="setupReady && !teamSetup" :to="scopePath(`/providers/${goal}`)" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">{{ openLabel }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
-      <button v-else type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" disabled :aria-describedby="finalActionReason ? 'onboarding-action-reason' : undefined">{{ teamSetup ? "Go to Workspace" : openLabel }}</button>
+      <button v-else-if="!setupReady || setupPending" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" :disabled="setupPending || !!setupBlocked || !missingSetupProviders.length" :aria-describedby="finalActionReason ? 'onboarding-action-reason' : undefined" @click="runGuidedSetup">
+        <Loader2 v-if="setupPending" :stroke-width="1.75" class="h-4 w-4 animate-spin" aria-hidden="true" />{{ setupPending ? `Setting up ${setupLabel}…` : setupError ? `Retry ${setupLabel} setup` : `Set up ${setupLabel}` }}
+      </button>
+      <button v-else-if="teamSetup" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">Go to Workspace<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
+      <router-link v-else :to="scopePath(`/providers/${goal}`)" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">{{ openLabel }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
     </footer>
-    <ProviderEnableDialog :provider="dialogProvider" :org-role="tenant.activeOrg?.role" :workspace-role="tenant.activeWorkspace?.role" :busy="dialogProvider ? !!busy[dialogProvider.name] : false" :error="dialogProvider ? actionError : null" @cancel="closeEnableDialog" @confirm="onDialogConfirm" />
   </section>
   </div>
 </template>
@@ -342,7 +397,7 @@ h2 { font-size: 14px; font-weight: 600; margin: 0; }
 .onboarding-capabilities { min-width: 0; }
 .onboarding-capabilities > .onboarding-help { max-width: 75ch; }
 .onboarding-help, .onboarding-providers p { font-size: 13px; margin-top: 8px; overflow-wrap: anywhere; }
-.onboarding-help, .onboarding-providers p:not(.text-warning) { color: var(--color-text-secondary); }
+.onboarding-help, .onboarding-providers p { color: var(--color-text-secondary); }
 .onboarding-providers { display: grid; gap: 12px; list-style: none; padding: 0; margin: 20px 0; }
 .onboarding-providers li { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 20px; border: 1px solid var(--color-border-default); border-radius: 6px; background: color-mix(in srgb, var(--color-surface-overlay) 35%, var(--color-surface-raised)); }
 .onboarding-providers li.onboarding-provider-enabled { border-color: var(--color-accent); }
@@ -350,8 +405,6 @@ h2 { font-size: 14px; font-weight: 600; margin: 0; }
 .onboarding-provider-icon img { width: 20px; height: 20px; object-fit: contain; }
 .onboarding-provider-copy { min-width: 0; }
 .onboarding-provider-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.onboarding-provider-category { display: inline-flex; align-items: center; gap: 5px; padding: 2px 6px; border: 1px solid var(--color-border-default); border-radius: 3px; color: var(--color-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
-.onboarding-provider-category svg { flex-shrink: 0; }
 .onboarding-provider-action { justify-self: end; white-space: nowrap; }
 @media (max-width: 600px) { .onboarding-providers li { grid-template-columns: 36px minmax(0, 1fr); gap: 12px; padding: 16px; } .onboarding-provider-icon { width: 36px; height: 36px; } .onboarding-provider-action { grid-column: 2; justify-self: start; } }
 .onboarding-providers strong { font-size: 13px; font-weight: 600; }
@@ -386,5 +439,12 @@ h2 { font-size: 14px; font-weight: 600; margin: 0; }
   .onboarding-action-reason { margin-top: 6px; }
 }
 @media (pointer: fine) { .onboarding-control { min-height: 36px; } }
-@media (max-width: 480px) { .onboarding { min-height: 0; padding: 16px; } .onboarding-choice { padding: 16px; gap: 12px; } .onboarding-footer > * { flex: 1 1 auto; } }
+@media (max-width: 480px) {
+  .onboarding { min-height: 0; padding: 16px; }
+  .onboarding-choice { padding: 16px; gap: 12px; }
+  .onboarding-footer > * { flex: 1 1 auto; }
+  .onboarding-providers { margin: 0 0 12px; gap: 8px; }
+  .onboarding-providers li { padding: 12px; }
+  .onboarding-providers p { margin-top: 4px; }
+}
 </style>

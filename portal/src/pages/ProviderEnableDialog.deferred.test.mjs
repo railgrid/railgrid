@@ -106,6 +106,7 @@ const document = {
 const onMounted = () => {}
 const unmountCallbacks = []
 const onUnmounted = (callback) => unmountCallbacks.push(callback)
+const onBeforeUnmount = onUnmounted
 const timers = new Map()
 const timerDelays = new Map()
 let nextTimer = 1
@@ -217,13 +218,7 @@ ${flowSource}
 ${sourceWithoutImports}
 ${isWizard ? '' : 'function setInventoryPollingMounted(value) { inventoryPollingMounted = value }'}
 export {
-  actionError,
-  busy,
-  openEnableDialog,
-  closeEnableDialog,
-  dialogProvider,
-  dialogScope,
-  onDialogConfirm,
+  ${isWizard ? 'workspaceScope, runGuidedSetup, setupPending, setupError,' : 'actionError, busy, openEnableDialog, closeEnableDialog, dialogProvider, dialogScope, onDialogConfirm,'}
   providerStore,
   orgProviderStore,
   tenantStore,
@@ -250,7 +245,8 @@ export {
       caller.tenantStore.orgUUID = orgUUID
       caller.tenantStore.workspaceUUID = workspaceUUID
       for (const watchCall of caller.watchCalls) {
-        if (watchCall.source === caller.dialogScope) watchCall.callback()
+        if (watchCall.source === caller.dialogScope ||
+          (Array.isArray(watchCall.source) && watchCall.source.includes(caller.workspaceScope))) watchCall.callback()
       }
     },
     resetRoute() {
@@ -276,17 +272,13 @@ const callers = await Promise.all([
   loadCaller('components/WelcomeWizard.vue'),
 ])
 
-for (const [index, caller] of callers.entries()) {
-  const label = index === 0 ? 'ProvidersPage' : 'WelcomeWizard'
+{
+  const caller = callers[0]
 
-  test(`${label} reports a dismissed same-scope deferred failure as a toast`, async () => {
+  test('ProvidersPage reports a dismissed same-scope deferred failure as a toast', async () => {
     caller.toastCalls.length = 0
     caller.setScope('org-a', 'workspace-a')
     const provider = { name: 'edges', displayName: 'Edges', requires: [] }
-    if (label === 'WelcomeWizard') {
-      caller.tenantStore.activeWorkspace = { role: 'admin' }
-      caller.tenantStore.activeOrg = { role: 'member' }
-    }
     const pending = deferred()
     caller.providerStore.enable = () => pending.promise
     caller.openEnableDialog(provider)
@@ -307,14 +299,10 @@ for (const [index, caller] of callers.entries()) {
     assert.equal(caller.toastCalls[0][2].scope, 'org-a/workspace-a/workspace')
   })
 
-  test(`${label} drops a deferred failure after a scope change`, async () => {
+  test('ProvidersPage drops a deferred failure after a scope change', async () => {
     caller.toastCalls.length = 0
     caller.setScope('org-a', 'workspace-a')
     const provider = { name: 'code', displayName: 'Code', requires: [] }
-    if (label === 'WelcomeWizard') {
-      caller.tenantStore.activeWorkspace = { role: 'admin' }
-      caller.tenantStore.activeOrg = { role: 'member' }
-    }
     const pending = deferred()
     caller.providerStore.enable = () => pending.promise
     caller.openEnableDialog(provider)
@@ -373,35 +361,24 @@ test('ProvidersPage ignores a deferred disable failure after a same-provider ena
   assert.equal(caller.busy.value.edges, undefined)
 })
 
-test('WelcomeWizard fails closed until admin access is confirmed, including the team audience', () => {
-  const caller = callers[1]
-  const beforeWorkspace = caller.tenantStore.activeWorkspace
-  const beforeOrg = caller.tenantStore.activeOrg
-  const provider = { name: 'edges', displayName: 'Edges', requires: [] }
-  try {
-    caller.audience.value = 'team'
-    caller.tenantStore.activeWorkspace = null
-    caller.tenantStore.activeOrg = null
-    assert.equal(caller.memberJourney.value, true)
-    caller.openEnableDialog(provider)
-    assert.equal(caller.dialogProvider.value, null, 'unknown roles must not open consent')
-    assert.equal(caller.setupDataCurrent.value, false, 'unknown roles need the check-again state')
+test('WelcomeWizard fails closed until admin access is confirmed, including the team audience', async () => {
+  const caller = await loadCaller('components/WelcomeWizard.vue')
+  caller.audience.value = 'team'
+  caller.goal.value = 'edges'
+  const provider = { name: 'edges', ready: true, serving: { ui: {} }, export: { name: 'edges', path: 'root:providers:edges' } }
+  const calls = []
+  Object.assign(caller.providerStore, { loaded: true, catalogOrgUUID: 'org-a', byName: () => provider, enable: async (...args) => calls.push(args) })
 
-    caller.tenantStore.activeWorkspace = { role: 'member' }
-    caller.tenantStore.activeOrg = { role: 'member' }
-    assert.equal(caller.memberJourney.value, true)
-    caller.openEnableDialog(provider)
-    assert.equal(caller.dialogProvider.value, null, 'team audience never grants enable access to a member')
+  assert.equal(caller.memberJourney.value, true)
+  assert.equal(caller.setupDataCurrent.value, false)
+  await caller.runGuidedSetup()
 
-    caller.tenantStore.activeWorkspace = { role: 'admin' }
-    assert.equal(caller.memberJourney.value, false)
-    caller.openEnableDialog(provider)
-    assert.equal(caller.dialogProvider.value, provider)
-    caller.closeEnableDialog()
-  } finally {
-    caller.tenantStore.activeWorkspace = beforeWorkspace
-    caller.tenantStore.activeOrg = beforeOrg
-  }
+  caller.tenantStore.activeWorkspace = { role: 'member' }
+  caller.tenantStore.activeOrg = { role: 'member' }
+  assert.equal(caller.setupDataCurrent.value, true)
+  assert.equal(caller.memberJourney.value, true)
+  await caller.runGuidedSetup()
+  assert.deepEqual(calls, [])
 })
 
 test('WelcomeWizard only opens an enabled, ready Provider with UI and satisfied dependencies', () => {
@@ -497,28 +474,32 @@ test('WelcomeWizard persists whether the selected goal is intentional', () => {
   }
 })
 
-test('WelcomeWizard forwards accepted compositions to the provider enable request', async () => {
-  const caller = callers[1]
-  const beforeWorkspace = caller.tenantStore.activeWorkspace
-  const beforeOrg = caller.tenantStore.activeOrg
+test('WelcomeWizard stops a deferred setup when the workspace changes', async () => {
+  const caller = await loadCaller('components/WelcomeWizard.vue')
+  caller.goal.value = 'agents'
   caller.tenantStore.activeWorkspace = { role: 'admin' }
   caller.tenantStore.activeOrg = { role: 'member' }
-  const provider = { name: 'app-studio', displayName: 'App Studio', requires: [] }
-  const acceptedClaims = [{ group: 'apps.railgrid.ai', resource: 'projects' }]
-  const acceptedHubAccess = [{ capability: 'provider-proxy', scope: 'workspace' }]
-  const acceptedCompositions = [{ provider: 'code', group: 'code.railgrid.ai', resource: 'repositories' }]
+  const edges = { name: 'edges', displayName: 'Edges', ready: true, export: { name: 'edges', path: 'root:providers:edges' } }
+  const agents = { name: 'agents', ready: true, serving: { ui: {} }, export: { name: 'agents', path: 'root:providers:agents' }, requires: [{ provider: 'edges', resources: [{ name: 'services' }] }] }
+  const pending = deferred()
   const calls = []
-  caller.providerStore.enable = async (...args) => calls.push(args)
-  caller.openEnableDialog(provider)
+  Object.assign(caller.providerStore, {
+    loaded: true,
+    catalogOrgUUID: 'org-a',
+    byName: name => [edges, agents].find(provider => provider.name === name),
+    enable: provider => { calls.push(provider.name); return pending.promise },
+  })
 
-  await caller.onDialogConfirm(acceptedClaims, acceptedHubAccess, acceptedCompositions)
+  const setup = caller.runGuidedSetup()
+  assert.equal(caller.setupPending.value, true)
+  caller.setScope('org-b')
+  pending.reject(new Error('old-scope failure'))
+  await setup
 
-  assert.deepEqual(calls, [[provider, acceptedClaims, acceptedHubAccess, acceptedCompositions]])
-  assert.equal(caller.dialogProvider.value, null)
-  caller.tenantStore.activeWorkspace = beforeWorkspace
-  caller.tenantStore.activeOrg = beforeOrg
+  assert.deepEqual(calls, ['edges'])
+  assert.equal(caller.setupPending.value, false)
+  assert.equal(caller.setupError.value, '')
 })
-
 
 test('WelcomeWizard exploration continues without choosing or enabling a Provider', () => {
   const caller = callers[1]

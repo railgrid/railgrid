@@ -8,10 +8,15 @@ package providers
 import (
 	"context"
 	"errors"
-
+	"slices"
 	"strings"
 
+	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	conditionsv1alpha1 "github.com/kcp-dev/sdk/apis/third_party/conditions/apis/conditions/v1alpha1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ErrBoundCopyUnavailable means the workspace has no usable registered copy.
@@ -48,9 +53,20 @@ func (r *Registry) BoundCopy(org, name, path, export, cluster string) (Provider,
 	return selected, matched
 }
 
+// Provider setup reserves the APIBinding before recording its grants.
+const (
+	ProviderSetupAnnotation = "railgrid.ai/provider-setup"
+	ProviderSetupPending    = "pending"
+	ProviderSetupComplete   = "complete"
+)
+
 // BindingReadiness is shared by routing and the enabled-provider projection.
 // A Bound phase alone does not establish that the export and claims are usable.
 func BindingReadiness(item *unstructured.Unstructured) (bool, string) {
+	setup := item.GetAnnotations()[ProviderSetupAnnotation]
+	if setup == ProviderSetupPending {
+		return false, "Provider setup is waiting for permission decisions."
+	}
 	conditions, _, _ := unstructured.NestedSlice(item.Object, "status", "conditions")
 	for _, raw := range conditions {
 		c, ok := raw.(map[string]any)
@@ -70,7 +86,31 @@ func BindingReadiness(item *unstructured.Unstructured) (bool, string) {
 		}
 	}
 	phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
+	if phase == "Bound" && setup == ProviderSetupComplete && !setupClaimsApplied(item) {
+		return false, "Provider permission claims are still being applied."
+	}
 	return phase == "Bound", ""
+}
+
+func setupClaimsApplied(item *unstructured.Unstructured) bool {
+	var binding apisv1alpha2.APIBinding
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(item.Object, &binding); err != nil {
+		return false
+	}
+	applied := slices.ContainsFunc(binding.Status.Conditions, func(condition conditionsv1alpha1.Condition) bool {
+		return condition.Type == apisv1alpha2.PermissionClaimsApplied && condition.Status == "True"
+	})
+	for _, claim := range binding.Spec.PermissionClaims {
+		if claim.State != apisv1alpha2.ClaimAccepted {
+			continue
+		}
+		if !applied || !slices.ContainsFunc(binding.Status.AppliedPermissionClaims, func(current apisv1alpha2.ScopedPermissionClaim) bool {
+			return apiequality.Semantic.DeepEqual(current, claim.ScopedPermissionClaim)
+		}) {
+			return false
+		}
+	}
+	return true
 }
 
 // Only authenticated, workspace-scoped MCP, OAuth and health requests use the

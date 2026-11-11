@@ -71,13 +71,14 @@ type fakeOps struct {
 	mcpServerCalls         map[wsKey]int                // (org,ws) → count
 	railgridBindingCalls   map[wsKey]int                // (org,ws) → count
 	workspaceAdmins        map[wsKey]map[string]bool    // (org,ws) → rbacIdentity set
-	providerBindings       map[wsKey]map[string]string  // (org,ws) → provider → binding name
-	providerBindCalls      map[wsKey]int                // (org,ws) → count
-	setDeletionCalls       map[wsKey]int                // (org,ws) → count
-	setDeletionConflicts   map[wsKey]int                // conflicts to inject before a successful write
-	clearDeletionCalls     map[wsKey]int                // (org,ws) → count
-	clearDeletionConflicts map[wsKey]int                // conflicts to inject before a successful clear
-	clearDeletionRaceStamp map[wsKey]time.Time          // marker written by an injected clear race
+	providerSetupPending   bool
+	providerBindings       map[wsKey]map[string]string // (org,ws) → provider → binding name
+	providerBindCalls      map[wsKey]int               // (org,ws) → count
+	setDeletionCalls       map[wsKey]int               // (org,ws) → count
+	setDeletionConflicts   map[wsKey]int               // conflicts to inject before a successful write
+	clearDeletionCalls     map[wsKey]int               // (org,ws) → count
+	clearDeletionConflicts map[wsKey]int               // conflicts to inject before a successful clear
+	clearDeletionRaceStamp map[wsKey]time.Time         // marker written by an injected clear race
 
 	// Admin claims migration (admin_provider_claims.go). bindingClaims is the
 	// claim set each binding currently holds, keyed "group/resource", so a
@@ -223,6 +224,25 @@ func (f *fakeOps) EnsureProviderAPIBinding(_ context.Context, orgUUID, wsUUID, b
 	f.providerBindings[key][bindingName] = bindingName
 	f.providerBindCalls[key]++
 	return nil
+}
+
+func (f *fakeOps) ProviderSetupPending(_ context.Context, _, _, _ string) (bool, error) {
+	return f.providerSetupPending, nil
+}
+
+func (f *fakeOps) SetupProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, prepare func() ([]kcp.ProviderClaim, error)) (bool, error) {
+	f.mu.Lock()
+	_, exists := f.providerBindings[wsKey{orgUUID, wsUUID}][bindingName]
+	f.mu.Unlock()
+	if exists {
+		return false, nil
+	}
+	claims, err := prepare()
+	if err != nil {
+		return false, err
+	}
+	err = f.EnsureProviderAPIBinding(ctx, orgUUID, wsUUID, bindingName, exportPath, exportName, claims)
+	return err == nil, err
 }
 
 // ListProviderAPIBindings is the test stub for the read-side provider-enable

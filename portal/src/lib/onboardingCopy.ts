@@ -5,10 +5,10 @@ export const audienceCopy = [
 ] as const
 
 export const goalCopy = [
-  { id: 'app-studio', title: 'Build an app', body: 'Develop an application with AI in App Studio.', next: 'Open App Studio', task: 'Describe your app', prerequisite: 'App Studio guides you through model and project setup.' },
-  { id: 'agents', title: 'Run an AI agent', body: 'Create an AI agent with tools and memory.', next: 'Open Agents', task: 'Configure an agent', prerequisite: 'Connect a model and choose its tools before running a task.' },
-  { id: 'infrastructure', title: 'Deploy a service', body: 'Start with a configurable application template.', next: 'Open Application Templates', task: 'Choose a service template', prerequisite: 'Have a deployment target and your template’s configuration ready.' },
-  { id: 'edges', title: 'Connect infrastructure', body: 'Reach your servers and clusters through Railgrid.', next: 'Open Edges', task: 'Connect a server or cluster', prerequisite: 'You’ll need permission to install the Railgrid agent on your server or cluster.' },
+  { id: 'app-studio', title: 'Build an app', body: 'Develop an application with AI in App Studio.', setupLabel: 'App Studio', setupAccess: 'These tools get access to workspace resources for app development. Organization access for sharing apps can be reviewed later in Providers.', next: 'Open App Studio', task: 'Describe your app', prerequisite: 'App Studio guides you through model and project setup.' },
+  { id: 'agents', title: 'Run an AI agent', body: 'Create an AI agent with tools and memory.', setupLabel: 'Agents', setupAccess: 'Setup grants workspace access so Agents can use connected services and reach agent runners on your hosts.', next: 'Open Agents', task: 'Configure an agent', prerequisite: 'Connect a model and choose its tools before running a task.' },
+  { id: 'infrastructure', title: 'Deploy a service', body: 'Start with a configurable application template.', setupLabel: 'Application Templates', setupAccess: 'Application Templates can read credentials labeled for its use and check access to deployments in this Workspace.', next: 'Open Application Templates', task: 'Choose a service template', prerequisite: 'Have a deployment target and your template’s configuration ready.' },
+  { id: 'edges', title: 'Connect infrastructure', body: 'Reach your servers and clusters through Railgrid.', setupLabel: 'Edges', setupAccess: 'Edges can verify agent connections and manage credentials labeled for its use. After setup, open Edges to connect a server or cluster.', next: 'Open Edges', task: 'Connect a server or cluster', prerequisite: 'You’ll need permission to install the Railgrid agent on your server or cluster.' },
 ] as const
 
 const teamGoalCopy: Record<string, { title: string; body: string }> = {
@@ -41,5 +41,7 @@ export function goalBodyForAudience(goal: string, team: boolean): string {
 export function purposeForProvider(goal: string, name: string, description = ''): string {
   if (goal === 'app-studio' && name === 'code') return 'Manage source repositories for your apps.'
   if (goal === 'app-studio' && name === 'infrastructure') return 'Provide the runtime for your apps.'
+  if (goal === 'agents' && name === 'infrastructure') return 'Run services that agents can use as tools.'
+  if (goal === 'agents' && name === 'edges') return 'Connect agents to services and runners on your hosts.'
   return providerPurpose[name] || description
 }
