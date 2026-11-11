@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 47;
+  --railgrid-ui-core-version: 48;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -652,6 +652,10 @@ html.light .k-create-surface {
 .k-first-run__step-copy strong { color: var(--color-text-primary, #e9e9f2); font-size: 12px; font-weight: 600; }
 .k-first-run__step-copy small { color: var(--color-text-secondary, #8a8ca6); font-size: 11px; line-height: 1.45; }
 
+.k-first-run--embedded { container-type: inline-size; margin-block-start: 16px; }
+.k-first-run--embedded .k-first-run__journey { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; }
+.k-first-run--embedded .k-first-run__step { align-items: center; }
+
 @media (max-width: 620px) {
   .k-first-run__lead { grid-template-columns: minmax(0, 1fr); }
   .k-first-run__actions { grid-column: 1; }
@@ -660,6 +664,21 @@ html.light .k-create-surface {
 @container (max-width: 48rem) {
   .k-first-run__journey { gap: 12px; grid-template-columns: minmax(0, 1fr); }
   .k-first-run__step { border-inline-start: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); border-top: 0; padding: 0; padding-inline-start: 14px; }
+}
+
+@container (min-width: 36rem) {
+  .k-first-run--embedded .k-first-run__journey { gap: 0; }
+  .k-first-run--embedded .k-first-run__step {
+    border-inline-start: 0;
+    border-top: 1px solid var(--color-border-default);
+    padding: 15px 16px 0 0;
+  }
+  .k-first-run--embedded .k-first-run__step:is(.is-complete, .is-current) {
+    border-top-color: color-mix(in srgb, var(--color-accent) 72%, var(--color-border-default));
+  }
+}
+@container (width < 36rem) {
+  .k-first-run--embedded .k-first-run__journey { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 620px) {

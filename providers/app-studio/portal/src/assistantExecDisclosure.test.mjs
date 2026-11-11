@@ -19,7 +19,7 @@ test('accepts the complete public server exec contract and validates source evid
     sourceRevision: 173, sourceDigest: 'a'.repeat(64), syncStatus: 'succeeded', sourceStale: false,
     networkProfile: 'application-runtime', authorityProfile: 'application-container',
     writebackPolicy: 'runtime-workspace-only', status: 'succeeded', summary: 'Command succeeded.',
-    exitCode: 0, durationMs: 473, stdout: ['OK'], stderr: [], outputTruncated: false,
+    exitCode: 0, durationMs: 473, stdout: ['OK'], stderr: [], outputTruncated: false, detail: 'Command detail.',
   }
   // Exercise every field emitted by the Go public envelope so an added field
   // cannot silently make the strict portal parser hide all command activity.
@@ -342,6 +342,22 @@ test('preserves failure and blocked details while adding stale source context', 
   assert.match(staleBlocked, /Approval is required before this command can run/)
   assert.match(staleBlocked, /project source may have changed during execution/)
   assert.doesNotMatch(staleBlocked, /Unverified/)
+})
+
+test('shows a command blocker separately from shell output and falls back to older summaries', async () => {
+  const { default: AssistantExecDetails } = await vite.ssrLoadModule('/src/AssistantExecDetails.vue')
+  const exec = {
+    argv: ['npm', 'view', 'example'],
+    status: 'blocked',
+    summary: 'Workspace synchronization failed.',
+  }
+  const html = await renderToString(createSSRApp(AssistantExecDetails, {
+    exec: { ...exec, detail: 'component api sync returned 404: Not Found' },
+  }))
+  assert.match(html, /No output/)
+  assert.match(html, /k-ai-execution-details__detail[\s\S]*component api sync returned 404: Not Found/)
+  const older = await renderToString(createSSRApp(AssistantExecDetails, { exec }))
+  assert.match(older, /k-ai-execution-details__detail[\s\S]*Workspace synchronization failed\./)
 })
 
 test('renders shared command status labels for blocked, skipped, unknown, and terminal outcomes', async () => {

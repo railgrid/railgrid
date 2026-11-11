@@ -893,13 +893,15 @@ func (s *Server) templateDevelopmentPreview(ctx context.Context, c *asclient.Cli
 // projectDevelopmentTemplateView is one catalog entry the portal offers when
 // selecting (or switching) a project's development template.
 type projectDevelopmentTemplateView struct {
-	Name               string            `json:"name"`
-	DisplayName        string            `json:"displayName,omitempty"`
-	Description        string            `json:"description,omitempty"`
-	Category           string            `json:"category,omitempty"`
-	Components         map[string]string `json:"components"`
-	PreviewAccessModes []string          `json:"previewAccessModes,omitempty"`
-	BrowserPreview     bool              `json:"browserPreview"`
+	Name               string                           `json:"name"`
+	DisplayName        string                           `json:"displayName,omitempty"`
+	Description        string                           `json:"description,omitempty"`
+	Category           string                           `json:"category,omitempty"`
+	Components         map[string]string                `json:"components"`
+	PreviewAccessModes []string                         `json:"previewAccessModes,omitempty"`
+	InstanceKind       string                           `json:"instanceKind"`
+	ResourceKinds      []projectDevelopmentResourceKind `json:"resourceKinds,omitempty"`
+	BrowserPreview     bool                             `json:"browserPreview"`
 	// HasScaffold reports whether picking this template seeds the workspace
 	// with starter code (spec.development.scaffold) — the wizard shows it so
 	// the user knows the project opens on a runnable placeholder.
@@ -908,6 +910,75 @@ type projectDevelopmentTemplateView struct {
 	// not inferred from the template name or model recommendation.
 	RailgridAuthSupported bool   `json:"railgridAuthSupported"`
 	RailgridAuthReason    string `json:"railgridAuthReason"`
+}
+
+type projectDevelopmentResourceKind struct {
+	Kind        string `json:"kind"`
+	Conditional bool   `json:"conditional,omitempty"`
+}
+
+// developmentResourceKinds summarizes authored and platform-generated
+// resource kinds. Names and counts depend on the reconciled instance.
+func developmentResourceKinds(obj *unstructured.Unstructured, info projectTemplateInfo) []projectDevelopmentResourceKind {
+	backend, _, _ := unstructured.NestedString(obj.Object, "spec", "backend")
+	if backend != "kro" {
+		return nil
+	}
+	nodes, _, _ := unstructured.NestedSlice(obj.Object, "spec", "backendConfig", "resources")
+	kinds := make(map[string]bool)
+	if len(info.Components) > 0 {
+		// Infrastructure's Kro development overlay always adds component
+		// platform-state storage, a CA ConfigMap, and a control Service. It
+		// also adds an instance-wide control-token bootstrap and its RBAC.
+		for _, kind := range []string{"ConfigMap", "Job", "PersistentVolumeClaim", "Role", "RoleBinding", "Secret", "Service", "ServiceAccount"} {
+			kinds[kind] = false
+		}
+	}
+	for _, raw := range nodes {
+		node, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		kind, _, _ := unstructured.NestedString(node, "template", "kind")
+		if kind == "" {
+			continue
+		}
+		id, _, _ := unstructured.NestedString(node, "id")
+		_, component := info.Components[id]
+		_, componentDeployment := info.Components[strings.TrimSuffix(id, "Deployment")]
+		// Kro substitutes a development Deployment for each component workload.
+		if kind == "Deployment" && (component || componentDeployment) {
+			kinds[kind] = false
+			continue
+		}
+		when, _, err := unstructured.NestedStringSlice(node, "includeWhen")
+		_, forEach := node["forEach"]
+		conditional := forEach || err != nil
+		excluded := false
+		for _, condition := range when {
+			switch strings.TrimSpace(condition) {
+			case `${schema.spec.railgridMode != "development"}`, `${false}`:
+				excluded = true
+			case `${schema.spec.railgridMode == "development"}`, `${true}`:
+			default:
+				conditional = true
+			}
+		}
+		if existing, found := kinds[kind]; !excluded && (!found || existing) {
+			kinds[kind] = conditional
+		}
+	}
+	result := make([]projectDevelopmentResourceKind, 0, len(kinds))
+	for kind, conditional := range kinds {
+		result = append(result, projectDevelopmentResourceKind{Kind: kind, Conditional: conditional})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Conditional != result[j].Conditional {
+			return !result[i].Conditional
+		}
+		return result[i].Kind < result[j].Kind
+	})
+	return result
 }
 
 // listDevelopmentTemplates is GET /api/projects/development-templates: the
@@ -973,6 +1044,8 @@ func developmentTemplateViews(items []unstructured.Unstructured) []projectDevelo
 			HasScaffold:           info.ScaffoldRepo != "",
 			BrowserPreview:        info.supportsBrowserPreview(),
 			PreviewAccessModes:    append([]string(nil), info.PreviewAccessModes...),
+			InstanceKind:          info.Kind,
+			ResourceKinds:         developmentResourceKinds(obj, info),
 			RailgridAuthSupported: info.RailgridAuthSupport.Supported,
 			RailgridAuthReason:    info.RailgridAuthSupport.Reason,
 		}

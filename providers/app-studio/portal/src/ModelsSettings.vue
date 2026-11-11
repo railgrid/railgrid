@@ -42,6 +42,7 @@ const providerOptions = [
 
 const props = withDefaults(defineProps<{
   ctx: RailgridContext | null
+  onboarding?: boolean
   routePage?: boolean
   providerConnectionsRoute?: boolean
   usageRoute?: boolean
@@ -96,6 +97,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   retry: []
+  retryConnections: []
   navigate: [route: string]
   openEditor: [modelID?: string, connectionRef?: string, connectionInfo?: ProjectModelProviderConnection]
   beginProviderDetour: []
@@ -146,6 +148,7 @@ const connectionError = ref('')
 const connectionNotice = ref('')
 const connectionDraftRevision = ref(0)
 const connectionHeadingRef = ref<HTMLHeadingElement | null>(null)
+const onboardingModelHeadingRef = ref<HTMLHeadingElement | null>(null)
 const connectionCredentialRef = ref<HTMLInputElement | HTMLTextAreaElement | null>(null)
 let connectionRequestSerial = 0
 
@@ -377,11 +380,13 @@ function closeConnectionEditor() {
   connectionEditorOpen.value = false
   connectionOriginal.value = null
   connectionAPIKey.value = ''
-  if (props.providerDetourActive) emit('cancelProviderDetour')
+  if (props.onboarding && !props.connectionRef) emit('cancelEditor')
+  else if (props.providerDetourActive) emit('cancelProviderDetour')
 }
 
 watch(connectionEditorOpen, open => {
   if (open) void nextTick(() => connectionHeadingRef.value?.focus({ preventScroll: true }))
+  else if (props.onboarding) void nextTick(() => onboardingModelHeadingRef.value?.focus({ preventScroll: true }))
   else if (!props.providerDetourActive) void focusProviderConnections()
 })
 
@@ -533,7 +538,14 @@ function acceptSavedConnection(connection: ProjectModelProviderConnection, finge
   if (!connection.activationPending) toast('ok', editing ? 'Provider connection updated.' : 'Provider connected.')
   // A provider connection created from the model form is a detour in that
   // binding flow. Return to the draft as soon as the save is acknowledged.
-  if (props.providerDetourActive) emit('continueModelWithProvider', connection)
+  if (props.onboarding) {
+    emit('continueModelWithProvider', {
+      ...connection,
+      models: connection.models?.length ? connection.models : connectionDiscoveredModels.value,
+    })
+  } else if (props.providerDetourActive) {
+    emit('continueModelWithProvider', connection)
+  }
 }
 
 function selectConnectionDiscoveryModel(model: ProjectLLMDiscoveredModel) {
@@ -654,6 +666,7 @@ watch(() => [connectionProvider.value, connectionEndpoint.value, connectionWorks
 const legacyEditing = computed(() => Boolean(props.editingModelID && !props.connectionRef))
 const modelConnectionOptions = computed(() => connectionRows.value.filter(connection => !connection.deleting))
 const selectedModelRows = computed(() => props.discoveryComplete ? props.discoveredModels : selectedConnection.value?.models ?? props.discoveredModels)
+const modelRefreshDisabled = computed(() => !props.canDiscover || props.saving || props.testing)
 const modelCanSave = computed(() => Boolean(props.nameOnlyEdit || (props.connectionRef && selectedConnectionSnapshotReady.value))
   && props.model.trim().length > 0
   && !props.saving && !props.testing && !props.reasoningEffortError)
@@ -676,10 +689,22 @@ function toggleModelDetails(id: string) {
 }
 
 function startProviderDetour() {
-  emit('beginProviderDetour')
+  if (!props.onboarding) emit('beginProviderDetour')
   openConnectionEditor()
 }
 
+watch(
+  () => [props.onboarding, props.connectionsLoading, props.connectionsError, modelConnectionOptions.value.length] as const,
+  ([onboarding, loading, error, count]) => {
+    if (!onboarding || loading || error || connectionEditorOpen.value || props.connectionRef) return
+    if (!count) openConnectionEditor()
+    else {
+      if (count === 1) emit('selectConnection', modelConnectionOptions.value[0].name)
+      void nextTick(() => onboardingModelHeadingRef.value?.focus({ preventScroll: true }))
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -697,34 +722,40 @@ function startProviderDetour() {
     <InlineNotification v-if="loadError" tone="error" :message="loadError" action-label="Retry" :action-busy="loading" action-busy-label="Retrying models…" @action="emit('retry')" />
     <InlineNotification v-if="actionError" tone="error" :message="actionError" />
 
-    <template v-if="usageRoute">
+    <div v-if="onboarding && connectionsLoading && !connectionRef && !connectionEditorOpen" role="status" class="k-inline-notification">
+      <Loader2 class="h-4 w-4 animate-spin text-accent" /> Loading provider connections…
+    </div>
+    <InlineNotification
+      v-else-if="onboarding && connectionsError && !connectionRef && !connectionEditorOpen"
+      tone="error" :message="connectionsError" action-label="Retry" @action="emit('retryConnections')"
+    />
+    <template v-else-if="usageRoute">
       <ModelUsageSection provider="App Studio" />
     </template>
 
     <template v-else-if="connectionEditorOpen">
       <div class="k-create-page">
-        <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="connectionBusy" @click="closeConnectionEditor"><ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> Back to Models</button>
-        <header class="k-create-header">
+        <button v-if="!onboarding" type="button" class="k-btn k-btn--ghost k-back-action" :disabled="connectionBusy" @click="closeConnectionEditor"><ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> Back to Models</button>
+        <header v-if="!onboarding" class="k-create-header">
           <h1 ref="connectionHeadingRef" class="k-create-title" tabindex="-1">{{ connectionOriginal ? 'Edit provider connection' : 'Connect provider' }}</h1>
           <p class="k-create-description">Save a provider credential once so multiple model configurations can reuse it.</p>
         </header>
         <form class="k-create-surface k-create-surface--wide k-model-form agents-provider-connect" aria-label="Provider connection form" novalidate :aria-busy="connectionBusy" @submit.prevent="connectionStage === 'details' ? continueConnection() : saveProviderConnection()">
           <div class="k-create-body">
+            <header v-if="onboarding" class="k-create-header m-0">
+              <h2 ref="connectionHeadingRef" class="k-create-title" tabindex="-1">Connect a provider</h2>
+              <slot name="provider-progress" />
+            </header>
             <section class="agents-provider-connect__section" aria-labelledby="provider-connect-heading">
-              <h2 id="provider-connect-heading" class="k-model-form-heading">Provider connection</h2>
-              <label for="provider-connection-name" class="k-model-form-field">Connection name (optional)
-                <input id="provider-connection-name" class="k-input" :value="connectionDisplayName" maxlength="100" placeholder="For example, OpenAI production" :disabled="connectionBusy" @input="connectionDisplayName = ($event.target as HTMLInputElement).value; connectionVerifiedFingerprint = ''">
-                <span class="k-model-form-hint">This label identifies the saved provider credential, not a model.</span>
-              </label>
+              <h2 id="provider-connect-heading" class="k-model-form-heading" :class="{ 'sr-only': onboarding }">Provider connection</h2>
               <label class="k-model-form-field"><span id="connection-provider-label">Provider</span>
                 <select id="model-provider" class="k-input" :value="connectionPreset" aria-labelledby="connection-provider-label" :disabled="connectionBusy" @change="chooseConnectionProvider(($event.target as HTMLSelectElement).value)"><option v-for="option in providerOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select>
-                <span class="k-model-form-hint">{{ connectionPreset === 'custom' ? 'Use an OpenAI-compatible API endpoint. You can enter a model ID if the provider does not list models.' : 'The endpoint is selected for this provider. You can review it before connecting.' }}</span>
+                <span v-if="connectionPreset === 'custom'" class="k-model-form-hint">Use an OpenAI-compatible API endpoint.</span>
               </label>
               <label v-if="connectionPreset === 'custom' || connectionCredentialMode === 'service-account-json'" class="k-model-form-field">API endpoint
                 <input id="model-base-url" class="k-input min-w-0 font-mono text-[12px]" type="url" autocomplete="url" :value="connectionBaseURL" placeholder="https://your-provider.example/v1" :disabled="connectionBusy" :required="connectionPreset === 'custom'" :aria-required="connectionPreset === 'custom'" :aria-invalid="Boolean(connectionBaseURLError)" aria-describedby="model-base-url-help" @input="updateConnectionBaseURL(($event.target as HTMLInputElement).value)">
                 <span id="model-base-url-help" class="k-model-form-hint">{{ connectionCredentialMode === 'service-account-json' ? 'Use the Vertex AI endpoint for this service account.' : 'Use the provider API endpoint.' }}</span>
               </label>
-              <details v-else class="agents-provider-connect__details"><summary>Connection details</summary><p class="k-model-form-hint break-all">API endpoint: <span class="font-mono">{{ connectionEndpoint }}</span></p></details>
             </section>
             <section class="k-model-form-section" aria-labelledby="provider-key-heading">
               <div class="k-model-form-row"><h2 id="provider-key-heading" class="k-model-form-heading">{{ connectionCredentialMode === 'service-account-json' ? 'Service account JSON' : 'API key' }}</h2><label v-if="connectionPreset === 'google'" class="k-model-form-field max-w-xs">Credential method
@@ -733,13 +764,23 @@ function startProviderDetour() {
               <label for="model-credential" class="sr-only">{{ connectionCredentialMode === 'service-account-json' ? 'Service account JSON' : 'API key' }}</label>
               <textarea v-if="connectionCredentialMode === 'service-account-json'" id="model-credential" ref="connectionCredentialRef" class="k-input min-h-[132px] resize-y font-mono text-[12px] leading-5" :value="connectionAPIKey" autocomplete="new-password" :placeholder="connectionNameOnlyEdit ? 'Leave blank to save the label only' : connectionOriginal && connectionHasReusableKey ? 'Leave blank to keep the saved key' : 'Paste the complete service-account JSON'" :disabled="connectionBusy" :required="!connectionHasReusableKey && !connectionNameOnlyEdit" @input="connectionAPIKey = ($event.target as HTMLTextAreaElement).value; invalidateConnectionProbe()" />
               <input v-else id="model-credential" ref="connectionCredentialRef" class="k-input" type="password" :value="connectionAPIKey" autocomplete="new-password" :placeholder="connectionNameOnlyEdit ? 'Leave blank to save the label only' : connectionOriginal && connectionHasReusableKey ? 'Leave blank to keep the saved key' : 'Paste your API key'" :disabled="connectionBusy" :required="!connectionHasReusableKey && !connectionNameOnlyEdit" @input="connectionAPIKey = ($event.target as HTMLInputElement).value; invalidateConnectionProbe()">
-              <p class="k-model-form-hint">Stored in this workspace and never returned to the browser. Models on this connection reuse this key. Changing the provider, endpoint, credential method, or Anthropic workspace clears a typed key.</p>
+              <p class="k-model-form-hint">Stored in this workspace. Models on this connection reuse this credential.</p>
               <label v-if="connectionPreset === 'anthropic'" class="k-model-form-field">Anthropic workspace ID (if required by your key)
                 <input id="anthropic-workspace-id" class="k-input" :value="connectionWorkspaceID" placeholder="wrkspc_…" :disabled="connectionBusy" @input="updateConnectionWorkspaceID(($event.target as HTMLInputElement).value)">
                 <span class="k-model-form-hint">Leave blank for a workspace-scoped key. Re-enter the key when changing its workspace.</span>
               </label>
               <p v-if="connectionOriginal && !connectionAPIKey && !connectionHasReusableKey && !connectionNameOnlyEdit" class="k-model-form-hint" role="status">Checking whether the saved credential can be reused. Refresh connections if this takes longer than a moment.</p>
             </section>
+            <details class="agents-provider-connect__details border-t border-border-subtle pt-3">
+              <summary class="text-[13px] font-medium">Connection details</summary>
+              <div class="mt-3">
+                <label for="provider-connection-name" class="k-model-form-field">Connection name (optional)
+                <input id="provider-connection-name" class="k-input" :value="connectionDisplayName" maxlength="100" placeholder="For example, OpenAI production" :disabled="connectionBusy" @input="connectionDisplayName = ($event.target as HTMLInputElement).value; connectionVerifiedFingerprint = ''">
+                <span class="k-model-form-hint">This label identifies the saved provider credential, not a model.</span>
+                </label>
+                <p v-if="connectionPreset !== 'custom' && connectionCredentialMode !== 'service-account-json'" class="k-model-form-hint break-all">API endpoint <span class="font-mono">{{ connectionEndpoint }}</span></p>
+              </div>
+            </details>
             <InlineNotification v-if="connectionError" tone="error" :message="connectionError" />
             <p v-else-if="connectionNotice" class="k-model-form-hint" role="status" aria-live="polite">{{ connectionNotice }}</p>
             <section v-if="connectionStage === 'verify'" class="k-model-form-section" aria-labelledby="provider-model-heading">
@@ -753,10 +794,10 @@ function startProviderDetour() {
             </section>
           </div>
           <footer class="k-create-actions agents-provider-connect__actions">
-            <p class="k-model-form-hint agents-provider-connect__charge">{{ connectionStage === 'details' ? connectionOriginal ? 'Continue discovers available models without sending a model request or saving changes.' : 'Discovery checks provider access without sending a model request or adding a model binding. A successful provider connection is saved.' : connectionVerificationWillCallModel ? 'Verify sends the selected model request before saving the provider connection.' : 'Discovery checks provider access before saving. No model request will be sent.' }}</p>
+            <p v-if="!onboarding || connectionStage === 'verify'" class="k-model-form-hint agents-provider-connect__charge">{{ connectionStage === 'details' ? connectionOriginal ? 'Continue discovers available models without sending a model request or saving changes.' : 'Discovery checks provider access without sending a model request or adding a model binding. A successful provider connection is saved.' : connectionVerificationWillCallModel ? 'Verify sends the selected model request before saving the provider connection.' : 'Discovery checks provider access before saving. No model request will be sent.' }}</p>
             <button type="button" class="k-btn k-btn--ghost" :disabled="connectionBusy" @click="closeConnectionEditor">Cancel</button>
-            <button v-if="connectionStage === 'details'" type="submit" class="k-btn k-btn--primary" :disabled="!connectionCanContinue"><Loader2 v-if="connectionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />{{ connectionBusy ? connectionOriginal ? 'Checking provider…' : 'Verifying & connecting…' : connectionOriginal ? 'Continue' : 'Verify & connect' }}</button>
-            <button v-else type="submit" class="k-btn k-btn--primary" :disabled="connectionBusy || !connectionCanContinue || (connectionCredentialMode === 'service-account-json' && !connectionVerificationModel.trim() && !connectionNameOnlyEdit)"><Loader2 v-if="connectionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />{{ connectionBusy ? 'Verifying…' : connectionNameOnlyEdit || connectionOriginal && !connectionAPIKey && !connectionHasConfigChanges ? 'Save changes' : connectionOriginal ? 'Verify & save' : 'Verify & connect' }}</button>
+            <button v-if="connectionStage === 'details'" type="submit" class="k-btn k-btn--primary" :disabled="!connectionCanContinue"><Loader2 v-if="connectionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />{{ connectionBusy ? connectionOriginal ? 'Checking provider…' : 'Verifying & connecting…' : connectionOriginal ? 'Continue' : onboarding ? 'Save provider and continue' : 'Verify & connect' }}</button>
+            <button v-else type="submit" class="k-btn k-btn--primary" :disabled="connectionBusy || !connectionCanContinue || (connectionCredentialMode === 'service-account-json' && !connectionVerificationModel.trim() && !connectionNameOnlyEdit)"><Loader2 v-if="connectionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />{{ connectionBusy ? 'Verifying…' : connectionNameOnlyEdit || connectionOriginal && !connectionAPIKey && !connectionHasConfigChanges ? 'Save changes' : connectionOriginal ? 'Verify & save' : onboarding ? 'Save provider and continue' : 'Verify & connect' }}</button>
           </footer>
         </form>
       </div>
@@ -781,7 +822,7 @@ function startProviderDetour() {
       <div v-else-if="loading && !settings && !loadError" class="grid min-h-48 content-start gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-live="polite" aria-busy="true">
         <div class="shimmer h-4 w-36 rounded bg-surface-overlay" /><div class="shimmer h-24 w-full rounded bg-surface-overlay" /><div class="text-[12px] text-text-muted">Loading models…</div>
       </div>
-      <div v-else>
+      <div v-else-if="!onboarding">
         <div v-if="loading" class="flex items-center gap-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true"><Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" /> Refreshing models…</div>
         <InlineNotification v-if="testError" tone="error" :message="testError" />
         <InlineNotification v-else-if="testStatus" tone="success" :message="testStatus" />
@@ -850,7 +891,17 @@ function startProviderDetour() {
     <template v-else>
       <form class="k-create-surface k-create-surface--wide k-model-form agents-provider-connect" aria-label="Model binding form" novalidate :aria-busy="saving || testing" @submit.prevent="emit('save')">
         <div class="k-create-body">
-            <section class="agents-provider-connect__section" aria-labelledby="binding-provider-heading">
+            <header v-if="onboarding">
+              <h2 ref="onboardingModelHeadingRef" class="k-create-title" tabindex="-1">Choose a model</h2>
+              <slot name="model-progress" />
+            </header>
+            <div v-if="onboarding && selectedConnection" class="k-model-form-row">
+              <div class="flex items-center gap-2">
+                <span class="text-[13px]">Provider <strong>{{ selectedConnection.displayName || selectedConnection.name }}</strong></span>
+              </div>
+              <button type="button" class="k-btn k-btn--ghost" :disabled="saving || testing" @click="startProviderDetour">Change</button>
+            </div>
+            <section :class="onboarding && selectedConnection && modelConnectionOptions.length === 1 ? 'sr-only' : 'agents-provider-connect__section'" :aria-hidden="onboarding && !!selectedConnection && modelConnectionOptions.length === 1 || undefined" :inert="onboarding && !!selectedConnection && modelConnectionOptions.length === 1 || undefined" aria-labelledby="binding-provider-heading">
               <h2 id="binding-provider-heading" class="k-model-form-heading">Provider connection</h2>
               <InlineNotification v-if="legacyEditing" tone="warning" message="This model uses a legacy direct credential. Select a saved provider connection to migrate it; its stable model ID, workspace default, and prior run history will be preserved." />
               <label for="model-provider" class="k-model-form-field">Saved provider connection
@@ -861,32 +912,60 @@ function startProviderDetour() {
               </label>
               <p v-if="!modelConnectionOptions.length" class="k-model-form-hint">No provider connections are saved yet. <button type="button" class="font-medium text-accent underline underline-offset-2" @click="startProviderDetour">Connect a provider</button> before adding a model.</p>
               <p v-else-if="connectionRef && !selectedConnection" class="k-model-form-hint" role="status">This model's provider connection is not currently visible. Check workspace access or refresh connections.</p>
-              <p v-if="modelConnectionOptions.length" class="k-model-form-hint">Need another provider? <button type="button" class="font-medium text-accent underline underline-offset-2" :disabled="saving || testing" @click="startProviderDetour">Connect provider</button></p>
+              <p v-if="modelConnectionOptions.length && (!onboarding || !selectedConnection)" class="k-model-form-hint">Need another provider? <button type="button" class="font-medium text-accent underline underline-offset-2" :disabled="saving || testing" @click="startProviderDetour">Connect provider</button></p>
             </section>
-            <section class="k-model-form-section" aria-labelledby="binding-model-heading">
-              <div class="k-model-form-row"><h2 id="binding-model-heading" class="k-model-form-heading">Model</h2><button type="button" class="k-btn k-btn--ghost" :disabled="!canDiscover || discoveryLoading || saving" @click="emit('discoverConnection', connectionRef)"><RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />Refresh models</button></div>
+            <p v-if="onboarding && selectedConnection && !selectedConnectionSnapshotReady" class="k-model-form-hint" role="status">
+              Confirming the saved provider key version.
+              <button v-if="connectionStatusTimedOut" type="button" class="font-medium text-accent underline" @click="emit('retryConnectionStatus', connectionRef)">Retry status check</button>
+            </p>
+            <section class="k-model-form-section" :aria-labelledby="onboarding ? undefined : 'binding-model-heading'">
+              <h2 v-if="!onboarding" id="binding-model-heading" class="k-model-form-heading">Model</h2>
               <label for="model-id" class="k-model-form-field">Model ID
-                <ModelIDSelector :model-value="model" :models="selectedModelRows" :invalid="Boolean(modelError)" :disabled="saving || testing || !connectionRef" :described-by="modelError ? 'model-id-error binding-model-help' : 'binding-model-help'" @update:model-value="emit('update:model', $event)" @select="emit('selectDiscoveredModel', $event)" />
+                <ModelIDSelector :model-value="model" :models="selectedModelRows" :invalid="Boolean(modelError)" :disabled="saving || testing || !connectionRef" :described-by="modelError ? 'model-id-error binding-model-help' : 'binding-model-help'" @update:model-value="emit('update:model', $event)" @select="emit('selectDiscoveredModel', $event)">
+                  <template #search-action>
+                    <button
+                      type="button"
+                      class="k-icon-action"
+                      aria-label="Refresh models"
+                      title="Refresh models"
+                      :disabled="modelRefreshDisabled"
+                      :aria-disabled="discoveryLoading || undefined"
+                      @click="!modelRefreshDisabled && !discoveryLoading && emit('discoverConnection', connectionRef)"
+                    >
+                      <Loader2 v-if="discoveryLoading" class="k-spin" aria-hidden="true" />
+                      <RefreshCw v-else :stroke-width="1.75" aria-hidden="true" />
+                    </button>
+                  </template>
+                  <template #status>
+                    <span class="model-discovery-status" role="status">{{ discoveryLoading ? 'Refreshing models…' : discoveryComplete && !discoveryError ? `${selectedModelRows.length} models found` : '' }}</span>
+                    <InlineNotification v-if="discoveryError" tone="warning" :message="`${discoveryError} You can still enter a model ID manually.`" />
+                  </template>
+                </ModelIDSelector>
                 <span v-if="modelError" id="model-id-error" class="k-model-form-hint text-danger" role="alert">{{ modelError }}</span>
-                <span id="binding-model-help" class="k-model-form-hint" role="status">{{ discoveryLoading ? 'Loading models…' : modelHint || 'Choose a discovered model or enter its exact ID.' }}</span>
+                <span id="binding-model-help" class="k-model-form-hint">{{ discoveryLoading ? 'Loading models…' : onboarding ? 'Runs a short model test. Provider charges may apply.' : (modelHint || 'Choose a discovered model or enter its exact ID.') }}</span>
               </label>
-              <InlineNotification v-if="discoveryError" tone="warning" :message="`${discoveryError} You can still enter a model ID manually.`" />
-              <ReasoningEffortControl variant="settings" :effort="reasoningEffort" :options="reasoningEffortOptions" :validation-error="reasoningEffortError" :disabled="saving || testing" @update:effort="emit('update:reasoningEffort', $event)" />
+              <p v-if="onboarding && reasoningEffortError" class="k-model-form-hint text-danger" role="alert">{{ reasoningEffortError }}</p>
             </section>
-            <label v-if="model.trim() || editingModelID" for="model-display-name" class="k-model-form-section k-model-form-field">Display name (optional)
+            <component :is="onboarding ? 'details' : 'div'" :class="onboarding ? 'agents-provider-connect__details border-t border-border-subtle pt-3' : ''">
+              <summary v-if="onboarding" class="text-[13px] font-medium">Model settings</summary>
+              <div class="grid gap-3" :class="{ 'mt-3': onboarding }">
+                <label v-if="onboarding || model.trim() || editingModelID" for="model-display-name" class="k-model-form-field">Display name (optional)
               <input id="model-display-name" class="k-input" :class="nameError ? 'border-danger focus:border-danger focus:ring-danger/20' : ''" :value="name" :placeholder="model.split('/').pop() || 'Model name'" maxlength="80" :disabled="saving || testing" :aria-invalid="Boolean(nameError)" :aria-describedby="nameError ? 'model-display-name-error' : undefined" @input="emit('update:name', ($event.target as HTMLInputElement).value)">
               <span v-if="nameError" id="model-display-name-error" class="k-model-form-hint text-danger" role="alert">{{ nameError }}</span>
               <span v-else class="k-model-form-hint">Defaults to the selected model ID. You can choose a shorter name for model pickers.</span>
             </label>
+                <ReasoningEffortControl variant="settings" :effort="reasoningEffort" :options="reasoningEffortOptions" :validation-error="reasoningEffortError" :disabled="saving || testing" @update:effort="emit('update:reasoningEffort', $event)" />
+              </div>
+            </component>
             <div v-if="testError || testStatus">
               <InlineNotification v-if="testError" tone="error" :message="testError" />
               <p v-else-if="testStatus" class="k-model-form-hint" role="status">{{ testStatus }}</p>
             </div>
         </div>
         <footer class="k-create-actions agents-provider-connect__actions">
-          <p v-if="!nameOnlyEdit" class="k-model-form-hint agents-provider-connect__charge">Runs a short model test. Provider charges may apply.</p>
+          <p v-if="!nameOnlyEdit && !onboarding" class="k-model-form-hint agents-provider-connect__charge">Runs a short model test. Provider charges may apply.</p>
           <button type="button" class="k-btn k-btn--ghost" :disabled="saving || testing" @click="emit('cancelEditor')">Cancel</button>
-          <button type="submit" class="k-btn k-btn--primary" :disabled="!modelCanSave">{{ testing ? 'Verifying…' : saving ? 'Saving…' : legacyEditing ? 'Verify & migrate' : editingModelID ? requireConnectionTest ? 'Verify & save' : 'Save changes' : 'Verify & connect' }}</button>
+          <button type="submit" class="k-btn k-btn--primary" :disabled="!modelCanSave">{{ testing ? 'Verifying…' : saving ? 'Saving…' : legacyEditing ? 'Verify & migrate' : editingModelID ? requireConnectionTest ? 'Verify & save' : 'Save changes' : onboarding ? 'Save model and continue' : 'Verify & connect' }}</button>
         </footer>
       </form>
 
@@ -902,5 +981,13 @@ function startProviderDetour() {
 .agents-provider-connect__details summary{cursor:pointer;}
 .agents-provider-connect__details p{margin-top:8px;overflow-wrap:anywhere;}
 .agents-provider-connect__charge{flex:1 1 100%;max-width:75ch;}
+.model-discovery-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 @media(max-width:620px){.agents-provider-connect__actions{position:static;}}
 </style>

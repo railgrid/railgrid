@@ -223,12 +223,6 @@ func projectEinoAssistantToolsForDiscovery(
 	if projectEinoAssistantProgressEnabled(req, runState) {
 		out = append(out, newProjectEinoAssistantProgressTool(req, runState))
 	}
-	if req.CollaborationMode == projectAssistantCollaborationModeDefault {
-		// Deep's built-in write_todos middleware is disabled in newAgent. Keep
-		// exactly one App-owned copy in Default so it follows the durable tool
-		// ledger and remains absent from read-only collaboration modes.
-		out = append(out, newProjectEinoAssistantWriteTodosTool(server, req, runState))
-	}
 	graphTools, err := newProjectAssistantGraphWorkflowTools(ctx, projectAssistantWorkflowRunContextForRequest(server, req, runState), catalogPolicy)
 	if err != nil {
 		return nil, err

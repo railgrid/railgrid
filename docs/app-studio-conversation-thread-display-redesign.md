@@ -8,8 +8,7 @@ more conversational:
 
 1. keep the current collapsed action summary;
 2. replace the expanded action cards with a compact work log;
-3. replace the full-width plan dock with a floating progress capsule and
-   checklist card; and
+3. stream assistant progress inline and keep the final turn summary; and
 4. replace raw tool-call disclosure with a product-facing action presentation
    contract.
 
@@ -28,8 +27,6 @@ they need to act.
 - Actions already have useful semantic kinds and statuses.
 - Many tools already produce good user-facing labels such as `Read
   src/App.vue`, `Updated src/App.vue`, and `Checked development preview`.
-- The assistant plan is already validated, sanitized, persisted, streamed, and
-  recoverable after refresh. No new plan transport is needed.
 - Approval and clarification requests are already separate, prominent
   interaction surfaces.
 
@@ -38,8 +35,6 @@ they need to act.
 - Expanding an action summary renders every call as a bordered card with a
   large status icon, tool badge, role label, and multiline monospace detail.
   Long runs become a second transcript inside the conversation.
-- The active plan dock consumes a full horizontal row above the composer even
-  when collapsed.
 - The expanded action detail concatenates `arguments` and `detail`. For a file
   read, the argument summarizer includes `path`, `offset`, and `limit`, even
   though only the path normally matters to the user.
@@ -49,8 +44,6 @@ they need to act.
   look more complicated than the user-visible work actually was.
 - Failed and rejected metadata actions currently pass through the generic
   `tool result` role and can be projected as completed with a green check.
-- `write_todos` can appear as generic tool activity even though its meaningful
-  user-facing representation is the separate plan UI.
 - The trace merges persisted `assistantActions` with A2UI tool cards.
   Both paths can contribute rows and technical detail, so redesigning only one
   would leave duplication and inconsistent status handling.
@@ -79,8 +72,8 @@ explicitly enters a diagnostic view.
 
 There are three levels:
 
-1. **Glance:** a collapsed action summary or plan progress capsule.
-2. **Review:** a compact work log or checklist with human-readable outcomes.
+1. **Glance:** a collapsed action summary.
+2. **Review:** a compact work log with human-readable outcomes.
 3. **Diagnose:** separately disclosed, sanitized technical information for
    failures and support workflows.
 
@@ -145,69 +138,18 @@ Recommended behavior:
   `Updated 3 files`.
 - Never group an error, approval, user-input request, or commit milestone into
   a routine aggregate.
-- Suppress `write_todos` as a work-log row because its state is already
-  represented by the plan capsule.
+- Omit historical `write_todos` events from the work log.
 
 The expanded log is reviewable history, not a live console. It updates in place
 while a run is active and remains readable after completion.
 
-### 2. Floating plan progress
+### 2. Inline progress and turn summaries
 
-Replace the full-width `AssistantPlanDock` bar with a small capsule anchored
-inside the chat pane just above the composer:
-
-```text
-[Checklist] 2 of 5 · Updating preview
-```
-
-The capsule:
-
-- is positioned at the lower-right of the transcript on desktop;
-- occupies only its intrinsic width;
-- shows completed count, total count, and a bounded active-step label;
-- remains visible only for the active streaming plan;
-- does not replace approvals, clarifications, or the send controls; and
-- leaves enough bottom padding in the transcript that the collapsed capsule
-  does not cover the last message.
-
-Hovering the capsule with a fine pointer, focusing it with the keyboard, or
-tapping it opens a floating checklist above it:
-
-```text
-┌ 2 of 5 steps ──────────────────────────┐
-│ ✓ Inspect the current quote flow       │
-│ ✓ Add the submission endpoint          │
-│ ◌ Add the quote form                    │
-│ □ Update category and list state       │
-│ □ Verify the development preview       │
-└─────────────────────────────────────────┘
-```
-
-Interaction details:
-
-- Hover opens the card after a short delay and closes it after a forgiving
-  delay so the pointer can move from capsule to card.
-- Focus opens it. `Escape` closes it and restores focus.
-- Click pins or unpins it so the card can be inspected without maintaining
-  hover.
-- Outside click closes a pinned card.
-- Touch uses tap, never hover emulation.
-- The card is about 280–320 px wide, has a bounded height, opens upward, and
-  scrolls internally for long plans.
-- Step status is communicated by text available to assistive technology, not
-  color alone.
-- The capsule and every interactive checklist control provide at least a 44 px
-  pointer target.
-- Only active-step changes and terminal state changes are announced through
-  `aria-live`; every streamed action should not be announced.
-- Reduced-motion preferences disable the spinning/pulsing treatment.
-
-On narrow screens, put the capsule in the composer toolbar and open the
-checklist as a compact bottom sheet. A hover-only interaction is not acceptable.
-
-When the run finishes, remove the floating capsule. If the completed plan is
-useful history, add a terse marker to the assistant turn such as `5 of 5 steps
-completed`; do not restore the full checklist as a permanent horizontal bar.
+App Studio streams brief assistant-authored updates inline during longer turns.
+The final assistant message summarizes the work and its verification.
+The proposed floating checklist and its mobile sheet are superseded. App Studio
+retains historical checklist records for replay and omits them from the work
+log. New turns use `report_progress` for meaningful updates.
 
 ### 3. Product-facing action details
 
@@ -237,7 +179,7 @@ configured disclosure policy.
 Per-tool presenters belong in the backend, next to the existing action
 classification and safe summarizers. This keeps tool knowledge and the
 security/disclosure boundary out of Vue. The portal owns grouping, density,
-popover behavior, and responsive layout.
+disclosure behavior, and responsive layout.
 
 #### Display policy
 
@@ -250,7 +192,6 @@ popover behavior, and responsive layout.
 | Runtime logs | `Reviewed 80 log lines` or a safe blocker | raw logs unless explicitly requested elsewhere |
 | Environment | `Updated 3 environment variables` | all values; names only when safe and useful |
 | Commit | `Committed 2 files` with an optional short commit reference | repository plumbing and raw request payload |
-| Todo update | represented by the plan capsule | the `write_todos` tool call itself |
 | Approval/input | the existing dedicated interrupt surface | duplicate trace row unless needed as history |
 | Unknown/provider tool | server-owned safe generic label | title-cased internal tool name and raw arguments |
 
@@ -314,10 +255,8 @@ offset and limit should not enter the normal UI action.
 Refactor the conversation-specific presentation code out of
 `providers/app-studio/portal/src/App.vue`:
 
-- a pure action-presentation/grouping module;
-- a compact `AssistantActionLog` component; and
-- a floating `AssistantPlanPopover` component replacing
-  `AssistantPlanDock`.
+- a pure action-presentation/grouping module; and
+- a compact `AssistantActionLog` component.
 
 This is component extraction for a bounded conversation surface, not a new
 shared framework or cross-provider abstraction.
@@ -339,7 +278,7 @@ actions must never fall through to a generic completed state.
 - There is no requirement to render historical action traces stored in an old
   format.
 - Deploy the backend and App Studio portal together as one contract change.
-- Keep the existing `assistantPlan` snapshot contract unchanged.
+- Preserve the `assistantPlan` snapshot contract for historical replay.
 - Preserve refresh/reconnect behavior and revision ordering.
 - Preserve `APP_STUDIO_TOOL_DISCLOSURE=minimal`.
 
@@ -352,8 +291,7 @@ Implement this as one coordinated backend-and-portal contract change:
 2. Remove the old `assistantActions` metadata and A2UI tool-call/result paths.
 3. Build `AssistantActionLog` against only the new structured feed, including
    semantic grouping, collapsed outcome summaries, and correct failure states.
-4. Replace `AssistantPlanDock` with the accessible floating
-   `AssistantPlanPopover`.
+4. Stream assistant progress and the final turn summary inline.
 5. Add allowlisted structured failure diagnostics and a copyable run
    reference.
 6. Remove obsolete trace parsing, card rendering, and tests rather than
@@ -373,20 +311,11 @@ Implement this as one coordinated backend-and-portal contract change:
   diagnostic disclosure.
 - The collapsed summary remains at least as informative as it is today.
 
-### Plan progress
+### Turn progress
 
-- The active plan consumes no full-width horizontal bar.
-- Desktop users can open the checklist by hover, focus, or click.
-- Keyboard and touch users can perform the same review without hover.
-- The checklist never covers the composer controls.
-- Stream revisions and reconnects update the open card without resetting its
-  pinned state.
-- Terminal runs remove the floating control.
-- A stable, always-mounted offscreen `aria-live` region announces meaningful
-  active-step and terminal changes even when the visible capsule unmounts.
-- The mobile checklist uses dialog semantics, moves initial focus into the
-  sheet, traps focus, makes the background inert, locks background scroll,
-  closes on `Escape`, and restores focus to the capsule.
+- Meaningful assistant updates stream inline during active turns.
+- The final turn summary remains visible after completion and reconnection.
+- Historical checklist calls stay out of the work log.
 
 ### Safety and resilience
 
@@ -403,11 +332,10 @@ Implement this as one coordinated backend-and-portal contract change:
 
 ### Validation
 
-- Focused unit tests for the new action feed, presentation, grouping, and plan
-  popover state.
+- Focused unit tests for action-feed presentation and grouping.
 - Vue typecheck and production portal build.
-- Existing assistant progress, assistant plan, plan dock replacement, and
-  conversation resilience suites.
+- Existing assistant progress, historical plan replay, and conversation
+  resilience suites.
 - App Studio provider tests covering disclosure modes and per-tool presenters.
 - Browser verification at desktop and narrow widths with mouse, keyboard, and
   touch emulation.
@@ -416,9 +344,7 @@ Implement this as one coordinated backend-and-portal contract change:
 
 ## Non-goals
 
-- Changing how the assistant chooses or updates todos.
 - Exposing reasoning, prompts, raw model events, or raw tool payloads.
-- Making the plan editable or retaining plan history across runs.
 - Replacing audit logs with the user-facing work log.
 - Adding checkpoint history or rollback controls to the conversation trace.
 - Defining provider-supplied or localized display metadata for arbitrary tools;
@@ -431,12 +357,9 @@ Implement this as one coordinated backend-and-portal contract change:
 
 The recommended defaults are:
 
-- completed plans leave a terse completion marker in the assistant turn;
 - technical details are available only for failures and support-relevant
   events;
 - consecutive routine reads and edits are grouped;
-- mobile uses a bottom sheet for the checklist; and
 - unknown and provider tools use a server-owned generic safe label.
 
-These choices are independently adjustable, but none requires a change to the
-assistant execution or plan-generation model.
+These choices concern conversation presentation.

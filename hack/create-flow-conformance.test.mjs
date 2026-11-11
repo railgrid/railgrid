@@ -66,7 +66,7 @@ test('PortalKit defines shared first-run and guided-create widgets', async () =>
   assert.match(css, /@container k-create-surface \(max-width: 960px\)[\s\S]*\.k-create-guidance[\s\S]*grid-row: 2/)
   assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.k-first-run__journey/)
 
-  assert.match(firstRun, /<section class="k-first-run" :aria-labelledby="titleID">/)
+  assert.match(firstRun, /:class="embedded \? \'k-first-run--embedded\' : \'k-first-run\'" :aria-labelledby="embedded \? undefined : titleID"/)
   assert.match(firstRun, /ensureRailgridUIStyles\(\)/)
   assert.match(firstRun, /<ol v-if="steps\.length" class="k-first-run__journey"/)
   assert.match(firstRun, /:aria-current="index === boundedCurrentStep \? 'step' : undefined"/)
@@ -145,7 +145,7 @@ test('App Studio removes collection tabs and nested settings chrome from model c
   ])
   assert.match(app, /<Tabs[\s\S]*v-if="!isCreateModelRoute"/)
   assert.match(app, /const isModelsRoute = computed\(\(\) => routeSegment\.value === MODELS_ROUTE\)/)
-  assert.match(app, /v-if="!settingsInWorkbench && !publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute"/)
+  assert.match(app, /v-if="!createModelSetup && !settingsInWorkbench && !publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute"/)
   assert.match(settings, /v-if="routePage && !creationRoute && !editorOpen && !connectionEditorOpen"/)
   for (const form of ['Provider connection form', 'Model binding form']) {
     assert.match(settings, new RegExp(`<form[^>]*class="[^"]*k-create-surface--wide[^\"]*k-model-form[^\"]*"[^>]*aria-label="${form}"`))

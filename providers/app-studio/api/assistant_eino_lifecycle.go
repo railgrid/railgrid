@@ -974,6 +974,8 @@ func (m *projectEinoAssistantLifecycle) WrapInvokableToolCall(
 			return result, err
 		}
 		succeeded := m.toolCallSucceeded(ctx, name, result)
+		// Preserve settlement for legacy write_todos calls. New turns do not
+		// register this tool and use report_progress for inline updates.
 		if name == projectEinoAssistantWriteTodosTool && succeeded {
 			if planProgress, ok := m.settledPlanSnapshot(ctx); ok {
 				previousPlan := m.runState.PlanProgress()

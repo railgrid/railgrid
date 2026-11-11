@@ -1161,6 +1161,34 @@ func TestProjectAssistantExecMetadataIsStructuredAndDoesNotExposeSecrets(t *test
 	}
 }
 
+func TestProjectAssistantDeniedExecPublishesReason(t *testing.T) {
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolExecCommand)
+	if !ok {
+		t.Fatal("exec command is missing from the workflow catalog")
+	}
+	var live projectToolCallStreamEvent
+	tool := projectAssistantDeniedGraphTool{
+		Spec: spec,
+		OnToolCall: func(event projectToolCallStreamEvent) {
+			live = event
+		},
+	}
+	args := map[string]any{"component": "app", "argv": []string{"npm", "view", "example"}}
+	result, err := tool.InvokableRun(context.Background(), projectEinoToolArgumentsString(args))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := projectAssistantExecPublicDetail(projectAssistantPermissionDenialReason(spec, nil, args, false))
+	if live.Exec == nil || live.Exec.Status != "rejected" || live.Exec.Detail != want || want == "" {
+		t.Fatalf("live denied exec = %+v, want %q", live.Exec, want)
+	}
+	replayed, found := projectAssistantExecReceiptFromOutcome("denied", projectToolExecCommand, args,
+		projectAssistantRunToolCallOutcome{Result: result, Error: want, Failed: true})
+	if !found || replayed.Exec.Status != "rejected" || replayed.Exec.Detail != want {
+		t.Fatalf("replayed denied exec = %+v, want %q", replayed.Exec, want)
+	}
+}
+
 func TestProjectAssistantExecMetadataMergePreservesSourceReceipt(t *testing.T) {
 	existing := &projectAssistantExecMetadata{
 		Status:         "stale",
@@ -1215,6 +1243,21 @@ func TestProjectAssistantExecPublicProjectionRedactsOutputAndMapsTimeout(t *test
 	})
 	if action.Status != projectAssistantActionFeedStatusFailed || action.Severity != projectAssistantActionFeedSeverityError {
 		t.Fatalf("timed-out public action = %#v, want failed/error", action)
+	}
+}
+
+func TestProjectAssistantExecPublicProjectionPreservesSafeBlocker(t *testing.T) {
+	metadata := projectAssistantExecMetadataForToolArguments(projectToolExecCommand, map[string]any{
+		"component": "api",
+		"argv":      []any{"npm", "view", "example"},
+	}, `{"status":"blocked","summary":"Workspace synchronization failed.","blockers":["component api sync returned 404: Not Found","token=blocker-secret"]}`, "failed")
+	want := "component api sync returned 404: Not Found token=[redacted]"
+	if metadata == nil || metadata.Detail != want {
+		t.Fatalf("blocked exec metadata = %#v, want detail %q", metadata, want)
+	}
+	merged := mergeProjectAssistantExecMetadata(metadata, &projectAssistantExecMetadata{Status: "blocked"})
+	if merged.Detail != want {
+		t.Fatalf("merged detail = %q, want %q", merged.Detail, want)
 	}
 }
 

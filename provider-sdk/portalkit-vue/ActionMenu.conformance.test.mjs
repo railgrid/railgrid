@@ -405,15 +405,31 @@ test('cached popup owners close their production state on KeepAlive deactivation
   }
 })
 
-test('model search popup Tab returns to its source anchor before native navigation', () => {
+test('model search popup tabs between search and its action before returning to the source anchor', () => {
   const source = readFileSync(new URL('../agentkit-vue/ModelIDSelector.vue', import.meta.url), 'utf8')
   const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
   const parsed = ts.createSourceFile('ModelIDSelector.ts', script, ts.ScriptTarget.Latest, true)
-  const handler = parsed.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'onSearchKeydown')
+  const handler = parsed.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'onPanelTab')
   const code = ts.transpileModule(handler.getText(parsed), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   const events = []
-  const keydown = runInNewContext(`${code}\nonSearchKeydown`, { closeSelector: () => events.push('close'), trigger: { value: { focus: () => events.push('focus') } } })
-  keydown({ key: 'Tab', preventDefault: () => events.push('blocked') })
+  const search = {}
+  const refresh = {}
+  let availableAction = refresh
+  const keydown = runInNewContext(`${code}\nonPanelTab`, {
+    searchInput: { value: search },
+    panel: { value: { querySelector: () => availableAction } },
+    closeSelector: () => events.push('close'),
+    trigger: { value: { focus: () => events.push('focus') } },
+  })
+  const tab = (target, shiftKey = false) => keydown({ target, shiftKey, preventDefault: () => events.push('blocked') })
+  tab(search)
+  tab(refresh, true)
+  assert.deepEqual(events, [])
+  tab(refresh)
+  tab(search, true)
+  assert.deepEqual(events.splice(0), ['close', 'focus', 'close', 'focus'])
+  availableAction = null
+  tab(search)
   assert.deepEqual(events, ['close', 'focus'])
 })
 

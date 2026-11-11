@@ -526,6 +526,14 @@ func (t projectAssistantDeniedGraphTool) InvokableRun(
 	}
 	reason := projectAssistantPermissionDenialReason(t.Spec, t.RunState, args, false)
 	result := projectEinoAssistantSafeToolFailureResult(projectToolBaseName(t.Spec.Name), errors.New(reason))
+	if projectToolBaseName(t.Spec.Name) == projectToolExecCommand {
+		// Keep the denial in the typed result so the live execution panel
+		// and durable receipt reconstruction can both show it.
+		result = projectEinoToolArgumentsString(map[string]any{
+			"status":   "rejected",
+			"blockers": []string{projectAssistantExecPublicDetail(reason)},
+		})
+	}
 	if t.Ledger == nil {
 		emitProjectAssistantWorkflowExecToolCall(t.RunState, t.Ledger, t.OnToolCall, projectToolCallStreamEvent{
 			ID:                compose.GetToolCallID(ctx),

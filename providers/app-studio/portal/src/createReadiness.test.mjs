@@ -44,11 +44,10 @@ test('new-project route has one setup surface and a stable wizard entry label', 
   assert.match(appSource, />\s*Continue without Git\s*</)
 })
 
-test('new-project stream explicitly authorizes development-template inference when no template is selected', () => {
-  assert.match(
-    appSource,
-    /api\.createProjectStream\(props\.ctx,\s*\{[\s\S]*prompt:\s*content,[\s\S]*inferDevelopmentTemplate:\s*!createOverrides\?\.templateName,[\s\S]*\}, \(message\) =>/,
-  )
+test('new-project stream uses the reviewed template decision', () => {
+  const stream = appSource.match(/api\.createProjectStream\(props\.ctx,\s*\{[\s\S]*?\}, \(message\) =>/)?.[0] ?? ''
+  assert.match(stream, /templateName: createOverrides\?\.templateName/)
+  assert.doesNotMatch(stream, /inferDevelopmentTemplate/)
 })
 
 test('optional Code reads cannot put the entire App Studio into initialization', () => {
@@ -60,5 +59,5 @@ test('optional Code reads cannot put the entire App Studio into initialization',
 })
 
 test('workspace revalidation keeps the reviewed wizard mounted', () => {
-  assert.match(appSource, /firstTimeSetupVisible = computed\(\(\) => isCreateRoute\.value && !wizardOpen\.value/)
+  assert.match(appSource, /<div v-if="wizardOpen" v-show="[^"]+">\s*<NewProjectWizard/)
 })

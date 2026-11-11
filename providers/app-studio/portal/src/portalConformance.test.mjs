@@ -12,7 +12,6 @@ const element = await readFile(new URL('./element.ts', import.meta.url), 'utf8')
 const pageElement = await readFile(new URL('./page-element.ts', import.meta.url), 'utf8')
 const styleLoader = await readFile(new URL('./styles.ts', import.meta.url), 'utf8')
 const shareDialog = await readFile(new URL('./ProjectShareDialog.vue', import.meta.url), 'utf8')
-const assistantPlanPopover = await readFile(new URL('./AssistantPlanPopover.vue', import.meta.url), 'utf8')
 const providerFrame = await readFile(new URL('../../../../portal/src/pages/ProviderFrame.vue', import.meta.url), 'utf8')
 const api = await readFile(new URL('./api.ts', import.meta.url), 'utf8')
 const projectThumbnailViews = await readFile(new URL('./projectThumbnailViews.ts', import.meta.url), 'utf8')
@@ -58,9 +57,9 @@ test('keeps the project index unpainted while loading and exposes settled first-
   const emptyListStart = app.indexOf('if (visibleProjectList.length === 0)')
   const pathStart = app.indexOf('const pathName = selectedNameFromPath.value', emptyListStart)
   const emptyList = app.slice(emptyListStart, pathStart)
-  assert.match(emptyList, /if \(!isProjectIndexRoute\.value\) props\.navigate\(CREATE_PROJECT_ROUTE, \{ replace: true \}\)/)
+  assert.match(emptyList, /\n\s*props\.navigate\(CREATE_PROJECT_ROUTE, \{ replace: true \}\)/)
   assert.doesNotMatch(app, /emptyProjectRedirectPending/)
-  assert.match(app, /<FirstRunGuide[\s\S]*v-if="projectsLoaded && !loading && !error && projects.length === 0"/)
+  assert.doesNotMatch(app, /title="No projects yet\."/)
 })
 
 test('presents Projects and Models through the shared tabs surface without a generic settings action', () => {
@@ -149,11 +148,6 @@ test('keeps Tailwind overlays inside the provider scope and preserves their focu
   assert.match(shareDialog, /dialogCloseButton\.value\?\.focus\(\)/)
   assert.match(shareDialog, /role="dialog"[\s\S]*aria-modal="true"/)
   assert.doesNotMatch(shareDialog, /<Teleport to="body">/)
-  assert.match(assistantPlanPopover, /<Teleport v-if="mounted && mobileOpen" to="#app-studio-overlay-root">/)
-  assert.match(assistantPlanPopover, /mobileCloseRef\.value\?\.focus\(\)/)
-  assert.match(assistantPlanPopover, /mobileTriggerRef\.value\?\.focus\(\)/)
-  assert.match(assistantPlanPopover, /role="dialog"[\s\S]*aria-modal="true"/)
-  assert.doesNotMatch(assistantPlanPopover, /<Teleport v-if="mounted && mobileOpen" to="body">/)
 })
 
 test('registers lightweight elements and defers page and tile implementations independently', () => {
@@ -202,6 +196,6 @@ test('keeps the project collection fluid while constraining only the create-rout
 
   assert.match(
     app.slice(createStart),
-    /<section class="w-full max-w-\[1060px\]">[\s\S]*<template v-else-if="wizardOpen">[\s\S]*<NewProjectWizard/,
+    /<section class="w-full" :class="[^"]*max-w-\[760px\][^"]*">[\s\S]*<div v-if="wizardOpen" v-show="[^"]+">[\s\S]*<NewProjectWizard/,
   )
 })

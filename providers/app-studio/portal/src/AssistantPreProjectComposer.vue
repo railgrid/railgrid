@@ -169,26 +169,31 @@ onBeforeUnmount(() => {
 <template>
   <div
     ref="rootRef"
-    class="relative flex flex-col rounded-lg border border-border-subtle bg-surface-raised shadow-sm transition focus-within:border-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-    :class="attachmentOnly ? 'min-h-[64px]' : 'min-h-[132px]'"
+    class="relative flex flex-col focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    :class="attachmentOnly ? 'gap-2' : 'min-h-[132px] rounded-lg border border-border-subtle bg-surface-raised shadow-sm transition focus-within:border-accent/50'"
     :tabindex="attachmentOnly ? 0 : undefined"
     :role="attachmentOnly ? 'group' : undefined"
     :aria-label="attachmentOnly ? 'Paste an image or large text file to attach' : undefined"
     @paste.self="handlePaste"
   >
-    <div v-if="attachments.length" class="relative z-10 flex flex-wrap gap-1.5 px-3 pt-2.5" aria-label="Staged attachments">
+    <div v-if="attachments.length" class="relative z-10 gap-1.5" :class="attachmentOnly ? 'grid' : 'flex flex-wrap px-3 pt-2.5'" aria-label="Staged attachments">
       <template v-for="attachment in attachments" :key="attachment.clientID">
-        <AssistantAttachmentPreview
+        <div
           v-if="assistantAttachmentIsImage(attachment.file)"
-          :file="attachment.file"
-          :label="attachmentLabel(attachment)"
-          :status="attachment.status"
-          :error="attachment.error"
-          :retryable="attachment.retryable"
-          :retry-action="attachment.retryAction"
-          @retry="emit('retry-attachment', attachment.clientID)"
-          @remove="emit('remove-attachment', attachment.clientID)"
-        />
+          :class="attachmentOnly ? 'flex min-w-0 items-center gap-2 rounded-sm border border-border-subtle p-1 text-[13px]' : 'contents'"
+        >
+          <AssistantAttachmentPreview
+            :file="attachment.file"
+            :label="attachmentLabel(attachment)"
+            :status="attachment.status"
+            :error="attachment.error"
+            :retryable="attachment.retryable"
+            :retry-action="attachment.retryAction"
+            @retry="emit('retry-attachment', attachment.clientID)"
+            @remove="emit('remove-attachment', attachment.clientID)"
+          />
+          <span v-if="attachmentOnly" class="min-w-0 [overflow-wrap:anywhere]">{{ attachmentLabel(attachment) }}</span>
+        </div>
         <div
           v-else
           class="flex min-w-0 max-w-full flex-col items-stretch rounded-sm border px-2 py-1 text-[11px] font-mono"
@@ -202,7 +207,7 @@ onBeforeUnmount(() => {
           <div class="flex min-w-0 items-center gap-1.5">
             <FileIcon v-if="assistantAttachmentKind(attachment.file) === 'file'" class="h-3 w-3 shrink-0" :stroke-width="1.75" aria-hidden="true" />
             <FileText v-else class="h-3 w-3 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-            <span class="max-w-48 truncate">{{ attachmentLabel(attachment) }}</span>
+            <span :class="attachmentOnly ? 'min-w-0 [overflow-wrap:anywhere]' : 'max-w-48 truncate'">{{ attachmentLabel(attachment) }}</span>
             <span v-if="assistantAttachmentKind(attachment.file) === 'file'" class="shrink-0 text-[10px] opacity-75">{{ assistantAttachmentSizeLabel(attachment.file.size) }}</span>
             <span class="text-[10px] opacity-75">{{ statusLabel(attachment) }}</span>
             <div class="ml-auto flex shrink-0 items-center gap-0.5">
@@ -241,7 +246,7 @@ onBeforeUnmount(() => {
       ref="editorRef"
       :id="inputId"
       :value="modelValue"
-      class="min-h-[72px] w-full flex-1 resize-none border-0 bg-transparent px-5 pb-12 pt-4 text-[16px] leading-7 text-text-primary outline-none placeholder:text-text-secondary md:text-[14px]"
+      class="min-h-[72px] w-full flex-1 resize-none border-0 bg-transparent px-5 pb-2 pt-4 text-[16px] leading-7 text-text-primary outline-none placeholder:text-text-secondary md:text-[14px]"
       :placeholder="placeholder"
       :disabled="disabled"
       @input="handleInput"
@@ -251,7 +256,7 @@ onBeforeUnmount(() => {
     />
     <p v-if="error" class="px-5 pb-2 text-[12px] text-danger" role="alert">{{ error }}</p>
     <input ref="attachmentInputRef" type="file" class="hidden" :accept="ASSISTANT_ATTACHMENT_ACCEPT" multiple @change="handleAttachmentInput" />
-    <div class="absolute bottom-2 left-1.5 right-2 flex min-w-0 items-center gap-2">
+    <div class="mt-auto flex min-w-0 items-end gap-2 px-2 pb-2">
       <div class="flex min-w-0 items-center gap-0.5">
         <div ref="addMenuRootRef" class="contents">
           <div v-if="attachmentMenuOpen" class="k-menu absolute bottom-11 left-1 [z-index:var(--app-studio-z-menu)] min-w-48" role="menu" aria-label="Add">
@@ -283,7 +288,7 @@ onBeforeUnmount(() => {
         </div>
         <slot name="leading" />
       </div>
-      <div class="ml-auto flex min-w-0 items-center justify-end gap-1">
+      <div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1">
         <slot name="actions" />
       </div>
     </div>
