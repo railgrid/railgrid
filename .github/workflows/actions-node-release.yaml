@@ -36,7 +36,7 @@ jobs:
           package_version="$(node --print "require('./package.json').version")"
           test "$version" = "$package_version"
 
-      - name: Test package and clean alias install
+      - name: Test package and clean install
         run: npm test && npm run test:install
 
       - name: Inspect publish artifact
@@ -45,14 +45,14 @@ jobs:
       - name: Publish with npm trusted publishing
         run: npm publish --access public --provenance
 
-      - name: Verify registry alias install
+      - name: Verify registry install
         run: |
           version="$(node --print "require('./package.json').version")"
           scratch="$(mktemp -d)"
           cd "$scratch"
           npm init --yes >/dev/null
           for attempt in $(seq 1 12); do
-            if npm install --prefer-online --ignore-scripts --no-audit --no-fund "@railgrid/actions-node@npm:@crwilhit/railgrid-actions-node@$version"; then
+            if npm install --prefer-online --ignore-scripts --no-audit --no-fund "@railgrid/actions-node@$version"; then
               break
             fi
             if [ "$attempt" -eq 12 ]; then

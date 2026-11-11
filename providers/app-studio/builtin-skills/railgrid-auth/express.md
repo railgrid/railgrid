@@ -10,9 +10,13 @@ Install the exact server dependency in the app's server `package.json`:
 }
 ```
 
-App Studio's normal runtime install flow installs the pinned dependency in both
-development and production. Do not ask an LLM to run a separate `npm install`
-or use a floating version.
+For the `application` template, edit `api/package.json` and let App Studio sync
+the change. The API component's dependency reload runs the install when the
+manifest changes, and the production build uses the same manifest. A separate
+registry lookup or install command is unnecessary for the normal setup.
+If a command shows `Unverified` with no output, use the API component's install
+and startup logs to determine whether dependency setup failed. If the logs
+show a registry or install error, report that error and keep the pinned SDK.
 
 ```js
 import express from 'express';
@@ -44,3 +48,11 @@ usable cache produces `503`. Unsafe methods require the exact configured
 The user ID is the assertion's opaque `sub`. The optional signed `name` claim
 becomes `displayName`. Do not return or persist the assertion, use email as a
 key, or create a second auth cookie inside the app.
+
+Use `get_project_authentication` to confirm `enabled` for the project and
+`configured` and `runtimeReady` for development. Verify through the app's
+preview URL so requests pass through the access gate. Check that `/api/me`
+returns 401 without an app session, returns the user's ID after sign-in, and
+returns 401 again after logout. Keep preview access requirements in place
+during these checks. If the browser needs the user to complete sign-in, report
+which checks are pending.

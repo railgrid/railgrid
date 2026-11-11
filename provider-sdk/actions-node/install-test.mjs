@@ -37,7 +37,7 @@ try {
     'pack', '--json', '--pack-destination', scratch,
   ], { cwd: packageDir, encoding: 'utf8' }));
   const packageMetadata = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8'));
-  assert.equal(artifact.name, packageMetadata.name, 'npm pack returned a different package');
+  assert.equal(artifact.name, '@railgrid/actions-node', 'npm pack must use the public package name');
   assert.equal(artifact.version, packageMetadata.version, 'npm pack returned a different version');
 
   const consumer = join(scratch, 'consumer');
