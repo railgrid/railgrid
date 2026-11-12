@@ -65,27 +65,7 @@ func (s *Server) delegatedRepository(ctx context.Context, d tools.Deps, child *a
 		(d.CodeScope.Mode == "task" && (d.CodeScope.Repository != observed.Repository || d.CodeScope.RepositoryUID == "" || d.CodeScope.ConnectionUID == "")) {
 		return nil, fmt.Errorf("worker checkout does not match admitted repository")
 	}
-	return (&invokeRepository{EnvironmentID: delegatedEnvironmentID(d.CodeScope, cfg), RepositoryID: repositoryID, BaseCommit: observed.Observation.Head, CloneSource: &invokeCloneSource{RemoteURL: "https://github.com/" + observed.Repository + ".git", Username: "x-access-token"}, CommitMessage: "Apply scoped PR fixes"}).validate()
-}
-
-// A verified command is stable across orchestrator continuations and worker
-// retries. The harness adds tenant, repository and child Agent UID scoping;
-// neither model arguments nor the child Run ID select the retained checkout.
-func delegatedEnvironmentID(scope *tools.CodeScope, cfg *agentsv1alpha1.AgentHarnessBackend) string {
-	if scope == nil || cfg == nil || cfg.Workspace == agentsv1alpha1.HarnessWorkspaceEphemeral || scope.PullRequestUID == "" {
-		return ""
-	}
-	commandScope := scope.EventUID
-	if scope.Mode == "task" {
-		if scope.SourceUID == "" || scope.SourceDigest == "" {
-			return ""
-		}
-		commandScope = scope.SourceUID + "\x00" + scope.SourceDigest
-	} else if commandScope == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(scope.PullRequestUID + "\x00" + commandScope))
-	return "pr-" + hex.EncodeToString(sum[:])
+	return (&invokeRepository{RepositoryID: repositoryID, BaseCommit: observed.Observation.Head, CloneSource: &invokeCloneSource{RemoteURL: "https://github.com/" + observed.Repository + ".git", Username: "x-access-token"}, CommitMessage: "Apply scoped PR fixes"}).validate()
 }
 
 func (s *Server) delegationOutput(ctx context.Context, scope store.Scope, child store.Run) (string, error) {
