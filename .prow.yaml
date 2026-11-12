@@ -19,6 +19,11 @@
 # after an org member comments /ok-to-test: read the diff first, this file and
 # hack/ci/prow/ included.
 #
+# Every job has a CPU limit equal to its request, and a memory limit. Do not
+# remove them: the nodes also run the dev platform and the cluster's single
+# CoreDNS, and on the first run unlimited jobs took 99% of two nodes' CPU and
+# DNS timed out for every pod, the jobs' own included.
+#
 # Periodics cannot be defined here; they live in railgrid/ops
 # (cicd/apps/railgrid-dev/prow/config.yaml).
 presubmits:
@@ -42,6 +47,9 @@ presubmits:
             requests:
               cpu: "2"
               memory: 3Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
 
   # make build + verify-codegen (ci.yaml `build`, `verify-codegen`).
   - name: pull-railgrid-build
@@ -63,6 +71,9 @@ presubmits:
             requests:
               cpu: "4"
               memory: 4Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
 
   # golangci-lint, root module and the App Studio harness (ci.yaml `lint`).
   - name: pull-railgrid-lint
@@ -84,6 +95,9 @@ presubmits:
             requests:
               cpu: "4"
               memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
 
   # Root module tests under -race (ci.yaml `test-modules`, module `.`).
   - name: pull-railgrid-test
@@ -105,6 +119,9 @@ presubmits:
             requests:
               cpu: "4"
               memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
 
   # Every standalone module, then the App Studio store on PostgreSQL (ci.yaml `test-modules`, `test-app-studio-postgres`).
   - name: pull-railgrid-test-providers
@@ -126,6 +143,9 @@ presubmits:
             requests:
               cpu: "4"
               memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
 
   # Root portal and the selected provider portals (ci.yaml `portal`, `provider-portals`).
   - name: pull-railgrid-portals
@@ -147,6 +167,9 @@ presubmits:
             requests:
               cpu: "2"
               memory: 4Gi
+            limits:
+              cpu: "2"
+              memory: 6Gi
 
   # Provider suites on embedded kcp, no Docker (e2e.yaml `e2e-providers`).
   - name: pull-railgrid-e2e-providers
@@ -168,6 +191,9 @@ presubmits:
             requests:
               cpu: "4"
               memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
 
   # kind: standalone suite (e2e.yaml `e2e-standalone`).
   - name: pull-railgrid-e2e-standalone
@@ -193,6 +219,9 @@ presubmits:
             requests:
               cpu: "4"
               memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
 
   # kind: SSH server-mode suite (e2e.yaml `e2e-ssh`).
   - name: pull-railgrid-e2e-ssh
@@ -218,6 +247,9 @@ presubmits:
             requests:
               cpu: "4"
               memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
 
   # kind: OIDC suite with Dex (e2e.yaml `e2e-oidc`).
   - name: pull-railgrid-e2e-oidc
@@ -243,6 +275,9 @@ presubmits:
             requests:
               cpu: "4"
               memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
 
   # kind: kcp via Helm (e2e.yaml `e2e-external-kcp`).
   - name: pull-railgrid-e2e-external-kcp
@@ -268,6 +303,9 @@ presubmits:
             requests:
               cpu: "4"
               memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
 
   # kind: edges data-plane connectivity (e2e.yaml `e2e-edges-connectivity`).
   - name: pull-railgrid-e2e-edges-connectivity
@@ -293,6 +331,9 @@ presubmits:
             requests:
               cpu: "4"
               memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
 
   # kind: railgrid CLI suite (e2e.yaml `e2e-cli`).
   - name: pull-railgrid-e2e-cli
@@ -318,3 +359,6 @@ presubmits:
             requests:
               cpu: "4"
               memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
