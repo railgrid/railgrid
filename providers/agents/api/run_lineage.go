@@ -14,6 +14,7 @@ import (
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
+	runctrl "github.com/railgrid/provider-agents/controller/run"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tenant"
 	"github.com/railgrid/provider-agents/tools"
@@ -130,7 +131,7 @@ func (s *Server) cancelDescendantRun(ctx context.Context, scope store.Scope, par
 		return fmt.Errorf("checking cancellation of child Run %s: %w", child.ID, err)
 	}
 	if runCancellable(latest.Phase) {
-		return fmt.Errorf("child Run %s is still active after cancellation was requested", child.ID)
+		return fmt.Errorf("child Run %s is still active after cancellation was requested: %w", child.ID, runctrl.ErrAwaitingChildRuns)
 	}
 	return nil
 }
@@ -212,14 +213,7 @@ func (s *Server) reconcileRunDescendants(ctx context.Context, scope store.Scope,
 	return firstErr
 }
 
-func isTerminalRunPhase(phase store.RunPhase) bool {
-	switch phase {
-	case store.RunPhaseSucceeded, store.RunPhaseFailed, store.RunPhaseAborted:
-		return true
-	default:
-		return false
-	}
-}
+func isTerminalRunPhase(phase store.RunPhase) bool { return store.TerminalRunPhase(phase) }
 
 func (s *Server) reconcileTerminalRunDescendants(ctx context.Context, clusterID, agentName, runID string) error {
 	if s.bg == nil {

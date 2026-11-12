@@ -565,14 +565,21 @@ func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun,
 			return fmt.Errorf("claiming recovered run: %w", err)
 		}
 	}
-	if claimed.AgentUID == "" {
-		return fmt.Errorf("recovered run has no frozen Agent UID")
-	}
 	runObject, err := dyn.Resource(agentsclient.RunGVR).Get(ctx, claimed.ID, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("reading recovered Run object: %w", err)
 	}
-	if runAgentOwnerUID(runObject.GetOwnerReferences(), claimed.AgentName) != claimed.AgentUID {
+	ownerUID := runAgentOwnerUID(runObject.GetOwnerReferences(), claimed.AgentName)
+	if claimed.AgentUID == "" {
+		// Admitted before the run row recorded its Agent: the Run object's
+		// owner reference is the frozen incarnation, checked against the live
+		// Agent below exactly as a recorded UID would be.
+		claimed.AgentUID = ownerUID
+	}
+	if claimed.AgentUID == "" {
+		return fmt.Errorf("recovered run has no frozen Agent UID")
+	}
+	if ownerUID != claimed.AgentUID {
 		return fmt.Errorf("recovered Run owner reference does not match its admitted Agent incarnation")
 	}
 	agentObject, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, claimed.AgentName, metav1.GetOptions{})

@@ -1198,7 +1198,7 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 			return lookupErr
 		}
 		currentPhase := RunPhase(phase)
-		if terminalRunPhase(currentPhase) && currentPhase != run.Phase {
+		if TerminalRunPhase(currentPhase) && currentPhase != run.Phase {
 			return ErrRunAlreadySettled
 		}
 		if owner != "" && (!cancelRequested || run.Phase != RunPhaseAborted) {
@@ -1237,6 +1237,10 @@ func (p *PostgresStore) checkDelegationAdmission(ctx context.Context, mutation *
 	}
 	return nil
 }
+
+// runLeaseMicros is RunLeaseDuration as a query parameter, so Postgres and the
+// executors' Go-side deadlines can never disagree about lease validity.
+func runLeaseMicros() int64 { return RunLeaseDuration.Microseconds() }
 
 func (p *PostgresStore) ClaimFreshRun(ctx context.Context, scope Scope, id string, observed time.Time, owner, agentUID string, now time.Time) (Run, error) {
 	mutation, err := p.beginScopedMutation(ctx, scope)
@@ -1392,17 +1396,21 @@ func (p *PostgresStore) saveRunningRun(ctx context.Context, scope Scope, run Run
 			backend=$20, attempt_id=$21, harness_session_id=$22,
 			repository=$23, result=$24,
 			harness_settings=COALESCE(harness_settings,$25),
-			model_settings=COALESCE(model_settings,$26)
+			model_settings=COALESCE(model_settings,$26),
+			-- A run handed back to the queue is unowned: ClaimFreshRun and
+			-- FailPendingRun only match Pending rows with no owner or lease.
+			execution_owner=CASE WHEN $4::text=$34::text THEN '' ELSE execution_owner END,
+			execution_lease_at=CASE WHEN $4::text=$34::text THEN NULL ELSE execution_lease_at END
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase=$27
 			AND execution_owner=$28 AND attempt=$29 AND $5=$29
 			AND (($28='' AND execution_lease_at IS NULL)
-				OR execution_lease_at > $30::timestamptz - interval '2 minutes')
+				OR execution_lease_at > $30::timestamptz - ($33::bigint * interval '1 microsecond'))
 			AND (cancel_requested=FALSE OR $4=$31) AND agent_name=$32`,
 		scope.OrgUUID, scope.WorkspaceUUID, run.ID, string(run.Phase), run.Attempt, run.Message, run.Retries, nullTime(run.RetryAt),
 		run.Output, sources, delivery, nullBytes(run.Checkpoint), run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), worked,
 		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, harnessSettings, modelSettings,
-		string(RunPhaseRunning), owner, attempt, now.UTC(), string(RunPhaseAborted), scope.AgentName)
+		string(RunPhaseRunning), owner, attempt, now.UTC(), string(RunPhaseAborted), scope.AgentName, runLeaseMicros(), string(RunPhasePending))
 	if err != nil {
 		return false, err
 	}
@@ -1446,9 +1454,9 @@ func (p *PostgresStore) UpdateRunCheckpoint(ctx context.Context, scope Scope, id
 			updated_at=GREATEST($8::timestamptz, updated_at + interval '1 microsecond')
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND execution_owner=$4 AND attempt=$5 AND phase=$9
 			AND cancel_requested=FALSE AND updated_at=$10
-			AND ($4='' OR execution_lease_at > $8::timestamptz - interval '2 minutes')`,
+			AND ($4='' OR execution_lease_at > $8::timestamptz - ($11::bigint * interval '1 microsecond'))`,
 		scope.OrgUUID, scope.WorkspaceUUID, id, owner, attempt, nullBytes(checkpoint), worked,
-		now.UTC(), string(RunPhaseRunning), expectedUpdatedAt.UTC())
+		now.UTC(), string(RunPhaseRunning), expectedUpdatedAt.UTC(), runLeaseMicros())
 	if err != nil {
 		return false, err
 	}
@@ -1579,9 +1587,9 @@ func (p *PostgresStore) ClaimRecovery(ctx context.Context, scope Scope, id strin
  WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase=$4
 		AND updated_at=$6
 	 AND cancel_requested=FALSE
-	 AND (execution_lease_at IS NULL OR execution_lease_at <= $5::timestamptz - interval '2 minutes')
+	 AND (execution_lease_at IS NULL OR execution_lease_at <= $5::timestamptz - ($8::bigint * interval '1 microsecond'))
 	 RETURNING `+runColumns, scope.OrgUUID, scope.WorkspaceUUID, id,
-		string(RunPhaseRunning), now.UTC(), observed.UTC(), owner)
+		string(RunPhaseRunning), now.UTC(), observed.UTC(), owner, runLeaseMicros())
 	run, err := scanRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, fmt.Errorf("run %q: %w", id, ErrRecoveryClaimStale)
@@ -1613,8 +1621,8 @@ func (p *PostgresStore) AcquireRunLease(ctx context.Context, scope Scope, id, ow
 	     execution_lease_at=CASE WHEN execution_owner='' THEN GREATEST($5::timestamptz, updated_at + interval '1 microsecond') ELSE execution_lease_at END
 	 WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase=$6 AND attempt=$7
 	   AND cancel_requested=FALSE
-	   AND (execution_owner='' OR (execution_owner=$4 AND execution_lease_at > $5::timestamptz - interval '2 minutes'))
-	 RETURNING `+runColumns, scope.OrgUUID, scope.WorkspaceUUID, id, owner, now.UTC(), string(RunPhaseRunning), attempt)
+	   AND (execution_owner='' OR (execution_owner=$4 AND execution_lease_at > $5::timestamptz - ($8::bigint * interval '1 microsecond')))
+	 RETURNING `+runColumns, scope.OrgUUID, scope.WorkspaceUUID, id, owner, now.UTC(), string(RunPhaseRunning), attempt, runLeaseMicros())
 	run, err := scanRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunLeaseLost)
@@ -1641,8 +1649,8 @@ func (p *PostgresStore) RenewRunLease(ctx context.Context, scope Scope, id, owne
 	row := mutation.executor.QueryRowContext(ctx, `UPDATE agents_runs SET execution_lease_at=GREATEST(execution_lease_at,$5::timestamptz)
 	 WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND execution_owner=$4 AND attempt=$6
 	   AND phase=$7 AND cancel_requested=FALSE
-	   AND execution_lease_at > $5::timestamptz - interval '2 minutes'
-	 RETURNING `+runColumns, scope.OrgUUID, scope.WorkspaceUUID, id, owner, now.UTC(), attempt, string(RunPhaseRunning))
+	   AND execution_lease_at > $5::timestamptz - ($8::bigint * interval '1 microsecond')
+	 RETURNING `+runColumns, scope.OrgUUID, scope.WorkspaceUUID, id, owner, now.UTC(), attempt, string(RunPhaseRunning), runLeaseMicros())
 	run, err := scanRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		var cancelled bool
@@ -2055,7 +2063,7 @@ func (p *PostgresStore) AddInboxItem(ctx context.Context, scope Scope, item Inbo
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if err == nil && (agent != item.AgentName || cancelled || terminalRunPhase(phase)) {
+		if err == nil && (agent != item.AgentName || cancelled || TerminalRunPhase(phase)) {
 			return ErrRunAlreadySettled
 		}
 	}
@@ -2611,10 +2619,10 @@ func (p *PostgresStore) RecordRunUsageOwned(ctx context.Context, scope Scope, ru
 		FROM agents_runs
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND agent_name=$4
 		  AND execution_owner=$5 AND attempt=$6
-		  AND ((phase=$8 AND execution_lease_at > $7::timestamptz - interval '2 minutes')
+		  AND ((phase=$8 AND execution_lease_at > $7::timestamptz - ($10::bigint * interval '1 microsecond'))
 		       OR (phase=$9 AND cancel_requested))
 		FOR UPDATE`,
-		scope.OrgUUID, scope.WorkspaceUUID, runID, scope.AgentName, owner, attempt, now.UTC(), string(RunPhaseRunning), string(RunPhaseAborted)).
+		scope.OrgUUID, scope.WorkspaceUUID, runID, scope.AgentName, owner, attempt, now.UTC(), string(RunPhaseRunning), string(RunPhaseAborted), runLeaseMicros()).
 		Scan(&currentIn, &currentOut, &currentCost)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Usage{}, false, nil
@@ -2672,12 +2680,8 @@ func (p *PostgresStore) AddDelegatedUsage(ctx context.Context, parentScope Scope
 	if in < 0 || out < 0 || usdMicros < 0 {
 		return Usage{}, false, fmt.Errorf("delegated usage values must not be negative")
 	}
-	if mutation.tx == nil {
-		mutation.tx, err = p.db.BeginTx(ctx, nil)
-		if err != nil {
-			return Usage{}, false, err
-		}
-		mutation.executor = mutation.tx
+	if err := mutation.ensureTransaction(ctx, p.db); err != nil {
+		return Usage{}, false, err
 	}
 	var parentAgent string
 	err = mutation.executor.QueryRowContext(ctx, `

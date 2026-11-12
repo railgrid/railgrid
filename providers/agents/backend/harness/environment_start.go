@@ -14,31 +14,44 @@ import (
 	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 )
 
-// An idle environment's approved cleanup can take up to five minutes. Retry
-// only authenticated refusals proving that no attempt was accepted. The same
-// request identity is used throughout; transport failures and receipts remain
-// the existing recovery path's responsibility.
+// environmentStartWindow is how long a warm environment's refusals are retried
+// in place; an idle environment's approved cleanup can take up to five minutes.
+var environmentStartWindow = 5 * time.Minute //nolint:gochecknoglobals // test seam
+
+// startWithEnvironmentRetry retries only authenticated refusals proving that
+// no attempt was accepted, with the same request identity throughout;
+// transport failures and receipts remain the existing recovery path's
+// responsibility.
+//
+// The window bounds the retries, not any one Start: a request the runner may
+// be accepting is never cut off by it. When the window is spent the last
+// refusal is returned as it is, so the run-level retry still recognises it and
+// requeues an unattended run instead of failing it with a timeout. Only the
+// caller's own context ends the wait with a context error.
 func (b *Backend) startWithEnvironmentRetry(ctx context.Context, req runner.StartRequest) (runner.Receipt, error) {
 	if req.EnvironmentID == "" {
 		return b.cfg.Runner.Start(ctx, req)
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
+	deadline := time.Now().Add(environmentStartWindow)
 	delay := 250 * time.Millisecond
 	for {
-		if err := waitCtx.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return runner.Receipt{}, err
 		}
-		receipt, err := b.cfg.Runner.Start(waitCtx, req)
+		receipt, err := b.cfg.Runner.Start(ctx, req)
 		refusal, refused := dispatch.Refusal(err)
 		if err == nil || !refused || !refusal.Retryable || refusal.Receipt != nil || receipt.AttemptID != "" || receipt.TaskID != "" || receipt.Phase != "" || (refusal.Code != runner.ErrorUnavailable && refusal.Code != runner.ErrorBusy) {
 			return receipt, err
 		}
-		timer := time.NewTimer(delay)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return receipt, err
+		}
+		timer := time.NewTimer(min(delay, remaining))
 		select {
-		case <-waitCtx.Done():
+		case <-ctx.Done():
 			timer.Stop()
-			return runner.Receipt{}, waitCtx.Err()
+			return runner.Receipt{}, ctx.Err()
 		case <-timer.C:
 		}
 		delay = min(2*delay, 2*time.Second)

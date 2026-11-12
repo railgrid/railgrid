@@ -1022,7 +1022,7 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 		if current.AgentName != run.AgentName {
 			return ErrRunClaimConflict
 		}
-		if terminalRunPhase(current.Phase) && current.Phase != run.Phase {
+		if TerminalRunPhase(current.Phase) && current.Phase != run.Phase {
 			return ErrRunAlreadySettled
 		}
 		if current.ExecutionOwner != "" && (!current.CancelRequested || run.Phase != RunPhaseAborted) {
@@ -1143,6 +1143,11 @@ func (m *MemoryStore) saveRunningRun(scope Scope, run Run, owner string, attempt
 	// refused turn returns to Pending or fails before dispatch. SaveRun snapshots
 	// cannot make that lifecycle decision.
 	updated := m.runs[key]
+	if run.Phase == RunPhasePending {
+		// Handed back to the queue: unowned, as ClaimFreshRun requires.
+		updated.ExecutionOwner = ""
+		updated.ExecutionLeaseAt = time.Time{}
+	}
 	if run.StartedAt == nil {
 		updated.StartedAt = nil
 	} else {
@@ -1169,7 +1174,7 @@ func (m *MemoryStore) saveRunLocked(scope Scope, run Run) error {
 		}
 	}
 	if old, ok := m.runs[key]; ok {
-		if terminalRunPhase(old.Phase) && run.Phase != old.Phase {
+		if TerminalRunPhase(old.Phase) && run.Phase != old.Phase {
 			return ErrRunAlreadySettled
 		}
 		run.InputTokens = max(run.InputTokens, old.InputTokens)
@@ -1186,7 +1191,7 @@ func (m *MemoryStore) saveRunLocked(scope Scope, run Run) error {
 		run.RecoveryIdentity = old.RecoveryIdentity
 		run.AgentUID = old.AgentUID
 		resetStart := old.Phase == RunPhaseRunning &&
-			(run.Phase == RunPhasePending || terminalRunPhase(run.Phase)) && run.StartedAt == nil
+			(run.Phase == RunPhasePending || TerminalRunPhase(run.Phase)) && run.StartedAt == nil
 		if old.StartedAt != nil && !resetStart {
 			started := *old.StartedAt
 			run.StartedAt = &started
@@ -1667,7 +1672,7 @@ func (m *MemoryStore) AddInboxItem(_ context.Context, scope Scope, item InboxIte
 	scope = m.normalizeScopeLocked(scope)
 	if pendingRunPrompt(item) {
 		run, exists := m.runs[tenantKey(scope)+"|"+item.RunID]
-		if exists && (run.AgentName != item.AgentName || run.CancelRequested || terminalRunPhase(run.Phase)) {
+		if exists && (run.AgentName != item.AgentName || run.CancelRequested || TerminalRunPhase(run.Phase)) {
 			return ErrRunAlreadySettled
 		}
 	}
