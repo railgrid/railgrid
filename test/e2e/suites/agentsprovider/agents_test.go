@@ -49,7 +49,7 @@ var (
 const onPRFilteredReason = "action does not match opened"
 
 // TestAProvisioning asserts what provisioning and `agents-provider init` leave
-// behind, and that the hub's catalog lists agents Ready with the Webhooks
+// behind, and that the hub's catalog lists agents Ready with the Activity
 // sidebar entry.
 func TestAProvisioning(t *testing.T) {
 	sys := kcpDynamic(t, "root:railgrid:system:providers", adminToken)
@@ -121,14 +121,10 @@ func TestAProvisioning(t *testing.T) {
 	}) {
 		t.Fatal("/api/providers never listed agents as Ready")
 	}
-	found := false
-	for _, c := range agents.Serving.UI.Children {
-		if c.DisplayName == "Webhooks" && c.BuiltinRoute == "webhooks" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("agents serving.ui.children = %+v, want a Webhooks/webhooks entry", agents.Serving.UI.Children)
+	children := agents.Serving.UI.Children
+	want := navChild{DisplayName: "Activity", BuiltinRoute: "activity"}
+	if len(children) != 1 || children[0] != want {
+		t.Errorf("agents serving.ui.children = %+v, want only %+v", children, want)
 	}
 }
 

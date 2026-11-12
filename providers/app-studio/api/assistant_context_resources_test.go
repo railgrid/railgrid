@@ -221,7 +221,7 @@ func TestProjectAssistantContextResourceReplayIdentityUsesCanonicalReferences(t 
 }
 
 func TestProjectAssistantContextResourceInheritedContinuationPreservesReceiptAfterDiscovery(t *testing.T) {
-	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo"}, Spec: aiv1alpha1.ProjectSpec{DisplayName: "Demo"}}
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid", Generation: 1}, Spec: aiv1alpha1.ProjectSpec{DisplayName: "Demo"}}
 	server, client := automaticIntegrationTestServer(t, project, []string{"orders"})
 	discoveryCalls := 0
 	resolver := server.providerActionCatalogResolver
