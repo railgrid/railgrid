@@ -7,6 +7,17 @@
 # checkout to the `ci` user, runs the command as that user, and cleans up.
 set -euo pipefail
 
+# Become a child subreaper before anything else. Prow's entrypoint is PID 1 in
+# the job container and does not reap orphans, so a killed grandchild stays a
+# zombie forever, and to kill(pid, 0) a zombie still exists: every "the process
+# group was killed" test in the tree failed on the first cluster run. tini -s
+# adopts and reaps everything below this script; -g forwards an abort's
+# SIGTERM to the whole process group.
+if [[ -z "${RUNNER_REAPER:-}" ]]; then
+  export RUNNER_REAPER=1
+  exec tini -s -g -- "$0" "$@"
+fi
+
 CI_USER=ci
 ARTIFACTS="${ARTIFACTS:-/tmp/artifacts}"
 mkdir -p "${ARTIFACTS}"
