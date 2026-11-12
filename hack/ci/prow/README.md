@@ -14,12 +14,20 @@ job definitions and what they run.
 | `/.github/workflows/ci-image.yaml` | Builds and pushes the CI image |
 | `/OWNERS` | Who can approve |
 
-## Status: shadowing GitHub Actions
+## Status: the pull request gate
 
-Every job is `optional: true`. Prow reports results on the PR next to the
-Actions checks and blocks nothing. The plan is to compare the two for a while,
-then make jobs required one at a time and drop the matching Actions job.
-macOS, releases and image publishing stay on Actions.
+Prow validates pull requests to `main`. The `CI` and `E2E` workflows
+(`ci.yaml`, `e2e.yaml`) no longer run on `pull_request`; they run on pushes to
+`main` as the post-merge check, because Prow has no postsubmits yet. No Prow
+job is `optional`, so Tide does not merge past a red one; an approver can
+waive a job on one PR with `/override pull-railgrid-<job>`.
+
+Still on Actions for pull requests: the image builds (`images.yaml`), the
+infrastructure example and template workflows, and macOS. Releases and image
+publishing stay on Actions as well.
+
+A pull request to the `ssh` branch gets no CI: Prow's jobs target `main`
+only. Add the branch to `branches` in `.prow.yaml` if that is needed.
 
 ## Working with it
 

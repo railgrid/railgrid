@@ -36,7 +36,10 @@ owns this inventory as one selection rule per job; tests compare it with the
 actual workflow jobs, direct dependencies, and `if` conditions so newly added
 jobs cannot escape it. No repository rulesets are changed. If required checks
 are introduced later, use the stable `CI result`, `E2E result` and
-`Images result` names. The Helm workflow runs only where it publishes (push to
+`Images result` names. Since Prow became the pull request gate
+(`hack/ci/prow/README.md`) the CI and E2E workflows run only on pushes and
+manual dispatch; on pull requests the same selection is computed by
+`hack/ci/prow/mode.py`. The Helm workflow runs only where it publishes (push to
 main and `v*` tags) and has no result job; chart validation on PRs is the
 `contracts` job.
 
