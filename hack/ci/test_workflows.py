@@ -126,8 +126,14 @@ class WorkflowTests(unittest.TestCase):
             with self.subTest(workflow=name):
                 events = workflow.get("on", workflow.get(True))  # PyYAML's YAML 1.1 'on' boolean
                 self.assertIn("workflow_dispatch", events)
-                self.assertNotIn("paths", events["pull_request"])
-                self.assertNotIn("paths-ignore", events["pull_request"])
+                # Prow validates pull requests for ci and e2e (/.prow.yaml);
+                # those two run on Actions only after merge.
+                if name in ("ci", "e2e"):
+                    self.assertNotIn("pull_request", events)
+                    self.assertIn("push", events)
+                else:
+                    self.assertNotIn("paths", events["pull_request"])
+                    self.assertNotIn("paths-ignore", events["pull_request"])
                 changes = workflow["jobs"]["changes"]
                 self.assertEqual(changes["permissions"], {"contents": "read"})
                 self.assertEqual(changes["steps"][0]["with"]["fetch-depth"], 0)

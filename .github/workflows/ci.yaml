@@ -1,9 +1,12 @@
 name: CI
 
+# Pull requests are validated by Prow (/.prow.yaml, hack/ci/prow/README.md),
+# which runs the same commands through hack/ci/prow/job.sh. This workflow no
+# longer runs on pull_request: it is the post-merge run on main (Prow has no
+# postsubmits yet) and the writer of the Go caches. Keep the steps here and
+# the matching case in job.sh in step.
 on:
   push:
-    branches: [main]
-  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -11,6 +14,8 @@ permissions:
   contents: read
 
 # Cancel superseded PR validation only; publishing runs have unique groups.
+# (Nothing here runs on pull_request today; the expression is kept so that
+# re-adding the trigger is the whole change.)
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
