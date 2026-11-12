@@ -751,3 +751,26 @@ func TestWebhookPreAuthenticationFailuresMatch(t *testing.T) {
 		}
 	}
 }
+
+func TestWebhookOversizedBodyDoesNotRevealTheConnection(t *testing.T) {
+	oversized := func(f *fixture) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/webhooks/github/cluster/app", strings.NewReader(strings.Repeat("x", (1<<20)+1)))
+		r.SetPathValue("cluster", "cluster")
+		r.SetPathValue("name", "app")
+		r.Header.Set("X-GitHub-Event", "issue_comment")
+		r.Header.Set("X-Hub-Signature-256", "sha256="+strings.Repeat("0", 64))
+		w := httptest.NewRecorder()
+		f.s.Webhook(w, r)
+		return w
+	}
+	present := oversized(newFixture(t))
+	missing := newFixture(t)
+	if err := missing.dyn.Resource(connections).Delete(context.Background(), "app", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	absent := oversized(missing)
+	if present.Code != absent.Code || present.Body.String() != absent.Body.String() {
+		t.Fatalf("oversized body distinguishes the connection: present=%d %q absent=%d %q",
+			present.Code, present.Body.String(), absent.Code, absent.Body.String())
+	}
+}

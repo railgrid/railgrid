@@ -166,6 +166,14 @@ func (s *Server) Webhook(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 	cluster, name := r.PathValue("cluster"), r.PathValue("name")
+	// Read and bound the body before any lookup. Every reply before the
+	// signature check must be the same whether or not the connection exists,
+	// so a size failure cannot come after the binding reads.
+	raw, err := io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
+	if err != nil || len(raw) > 1<<20 {
+		reply(w, 400, map[string]string{"error": "invalid body"})
+		return
+	}
 	dyn, err := s.Callers.AsProvider(cluster)
 	if err != nil {
 		log.Printf("github webhook %q/%q: workspace: %v", cluster, name, err)
@@ -176,11 +184,6 @@ func (s *Server) Webhook(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("github webhook %q/%q: binding: %v", cluster, name, err)
 		reply(w, http.StatusNotFound, map[string]string{"error": "not found"})
-		return
-	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
-	if err != nil || len(raw) > 1<<20 {
-		reply(w, 400, map[string]string{"error": "invalid body"})
 		return
 	}
 	if !Verify(b.data["webhookSecret"], raw, r.Header.Get("X-Hub-Signature-256")) {
