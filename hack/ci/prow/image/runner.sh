@@ -34,21 +34,35 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ "${DOCKER_IN_DOCKER_ENABLED:-false}" == "true" ]]; then
-  # cgroup v2: a cgroup that has processes cannot delegate controllers to
-  # children, and dockerd (then kind's kubelets) need them. Move everything in
-  # this container's root cgroup into a leaf first. Same step as docker's own
-  # dind entrypoint. This is the container's private cgroup namespace; the
-  # host's /sys/fs/cgroup is deliberately not mounted into the pod.
-  if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
-    mkdir -p /sys/fs/cgroup/init
-    xargs -rn1 < /sys/fs/cgroup/cgroup.procs > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true
-    sed -e 's/ / +/g' -e 's/^/+/' < /sys/fs/cgroup/cgroup.controllers \
-      > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+  # Keep everything Docker starts (image builds, kind nodes) INSIDE this
+  # container's cgroup, so the job's CPU and memory limits cover it.
+  #
+  # Kubernetes gives a privileged container the HOST cgroup namespace:
+  # /sys/fs/cgroup here is the node's root, and a dockerd left to its defaults
+  # creates /docker there, outside the pod. On the first cluster runs that is
+  # where every build and kind node ran, unlimited, next to the dev platform.
+  # So: find our own cgroup, and make dockerd parent its containers under it.
+  #
+  # cgroup v2 forbids a cgroup that holds processes from delegating
+  # controllers to children, so first move what is in ours into a leaf
+  # (`init`) and enable the controllers. Same step as docker's own dind
+  # entrypoint, applied to our cgroup instead of the namespace root. With a
+  # private cgroup namespace (plain `docker run --privileged`) own_cgroup is
+  # empty and this reduces to exactly that upstream behaviour.
+  own_cgroup="$(sed -n 's/^0:://p' /proc/self/cgroup)"
+  own_cgroup="${own_cgroup%/}"
+  cgroup_dir="/sys/fs/cgroup${own_cgroup}"
+  if [[ -f "${cgroup_dir}/cgroup.controllers" ]]; then
+    mkdir -p "${cgroup_dir}/init"
+    xargs -rn1 < "${cgroup_dir}/cgroup.procs" > "${cgroup_dir}/init/cgroup.procs" 2>/dev/null || true
+    sed -e 's/ / +/g' -e 's/^/+/' < "${cgroup_dir}/cgroup.controllers" \
+      > "${cgroup_dir}/cgroup.subtree_control" 2>/dev/null || true
   fi
   # The pod network is a VXLAN overlay with an MTU below 1500. Containers on a
   # default 1500 bridge would have large packets dropped; kind copies this
   # value onto its own network.
-  dockerd --mtu="${DOCKER_MTU:-1400}" > /var/log/dockerd.log 2>&1 &
+  dockerd --cgroup-parent="${own_cgroup}/docker" --exec-opt native.cgroupdriver=cgroupfs \
+    --mtu="${DOCKER_MTU:-1400}" > /var/log/dockerd.log 2>&1 &
   dockerd_pid=$!
   for _ in $(seq 1 60); do
     docker info >/dev/null 2>&1 && break

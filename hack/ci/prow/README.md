@@ -48,7 +48,8 @@ diff, including `.prow.yaml` and everything under `hack/ci/prow/`.
 - No service containers: `test-providers` starts PostgreSQL 16 from the image.
 - No shared Go caches yet: every job downloads modules and compiles cold.
 - Jobs run as user `ci` with passwordless sudo; Docker for the kind suites
-  runs inside the job pod.
+  runs inside the job pod, and `runner.sh` keeps its containers inside the
+  pod's cgroup so the job's limits apply to builds and kind nodes too.
 - The cluster is three small machines: Prow runs a few jobs at a time, so a
   full run takes much longer than on Actions.
 
