@@ -1,4 +1,4 @@
-import type { OrgBilling, OrgBillingPrice } from '@/stores/tenant'
+import type { OrgBilling, OrgBillingLimit, OrgBillingPlan, OrgBillingPrice } from '@/stores/tenant'
 
 const PREFIX = 'railgrid:billing:'
 const MAX_AGE = 60 * 60 * 1000
@@ -84,4 +84,21 @@ export function subscriptionActivated(value: OrgBilling, expectedPlan: string, a
   return !!expectedPlan && value.plan === expectedPlan && value.managedBy === 'billing' &&
     value.subscription?.entitledPlan === expectedPlan && ['active', 'trialing'].includes(value.subscription.status || '') &&
     value.overrides !== undefined && !allowancesUpdating
+}
+
+// Compare what applies to this organization, including persistent overrides.
+export function proposedLimits(plan: OrgBillingPlan, overrides?: OrgBillingLimit[]): OrgBillingLimit[] {
+  const limits = new Map(plan.limits.map((limit) => [limit.meter, limit]))
+  for (const limit of overrides ?? []) limits.set(limit.meter, limit)
+  return [...limits.values()]
+}
+// The declaration changes immediately; metering applies it on its next sample.
+// Keep the enforced snapshot visible, but do not infer upgrades from mixed versions.
+export function allowancesPending(value: OrgBilling): boolean {
+  const plan = value.plans.find((item) => item.current)
+  if (!plan || value.overrides === undefined) return false
+  const signature = (limits: OrgBillingLimit[]) => JSON.stringify(limits.map((limit) => ({
+    meter: limit.meter, shape: limit.shape || 'Consumption', enforce: limit.enforce, max: limit.max ?? '',
+  })).sort((a, b) => a.meter.localeCompare(b.meter)))
+  return signature(proposedLimits(plan, value.overrides)) !== signature(value.limits)
 }

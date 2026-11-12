@@ -28,14 +28,14 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// The organization's billing routes, a thin layer over the metering seam:
+// Billing routes backed by the metering deployment:
 //
+//	GET  /api/billing/plans                signed-in user: plans and prices
 //	GET  /api/orgs/{org}/billing            organization member: plan, limits, usage, subscription, plans on offer
 //	POST /api/orgs/{org}/billing/checkout   org admin: {plan} -> {url} to redirect to
 //	POST /api/orgs/{org}/billing/portal     org admin: {} -> {url} to redirect to
 //
-// The hub supplies the return addresses: the organization's settings page,
-// with a query parameter the page turns into a notice.
+// The hub supplies the return addresses for billing settings and onboarding.
 
 // BillingOps is the slice of pkg/hub/metering.Billing the routes need.
 type BillingOps interface {
@@ -46,13 +46,34 @@ type BillingOps interface {
 
 // CheckoutRequest is the POST /api/orgs/{org}/billing/checkout body.
 type CheckoutRequest struct {
-	Plan    string `json:"plan"`
-	PriceID string `json:"priceID,omitempty"`
+	Plan       string `json:"plan"`
+	PriceID    string `json:"priceID,omitempty"`
+	Onboarding bool   `json:"onboarding,omitempty"`
 }
 
 // SessionResponse carries the hosted page's URL.
 type SessionResponse struct {
 	URL string `json:"url"`
+}
+
+func (h *Handler) getBillingPlans(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireUser(w, r); !ok {
+		return
+	}
+	catalog := struct {
+		Enabled bool                 `json:"enabled"`
+		Plans   []metering.PlanOffer `json:"plans"`
+	}{Plans: []metering.PlanOffer{}}
+	if h.mgr.billing != nil {
+		summary, err := h.mgr.billing.Summary(r.Context(), "")
+		if err != nil {
+			writeBillingError(w, r, err)
+			return
+		}
+		catalog.Enabled, catalog.Plans = summary.Enabled, summary.Plans
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, catalog)
 }
 
 func (h *Handler) getOrgBilling(w http.ResponseWriter, r *http.Request) {
@@ -89,6 +110,17 @@ func (h *Handler) orgBillingCheckout(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusServiceUnavailable, "BillingUnavailable", "metering is not configured on this hub")
 		return
 	}
+	successURL := h.billingReturnURL(tc.OrgUUID, "success")
+	cancelURL := h.billingReturnURL(tc.OrgUUID, "canceled")
+	if req.Onboarding {
+		if req.PriceID == "" {
+			writeError(w, newValidationError("a reviewed price is required for onboarding checkout"))
+			return
+		}
+		base := strings.TrimRight(h.mgr.hubExternalURL, "/") + "/ui/onboarding?org=" + neturl.QueryEscape(tc.OrgUUID)
+		successURL = base + "&billing=success"
+		cancelURL = base + "&billing=canceled"
+	}
 	var url string
 	var err error
 	if req.PriceID != "" {
@@ -99,9 +131,9 @@ func (h *Handler) orgBillingCheckout(w http.ResponseWriter, r *http.Request) {
 			writeStatus(w, http.StatusServiceUnavailable, "BillingUnavailable", "the billing integration cannot confirm the reviewed price")
 			return
 		}
-		url, err = quoted.CheckoutQuoted(r.Context(), tc.OrgUUID, req.Plan, req.PriceID, h.billingReturnURL(tc.OrgUUID, "success")+"&billingPlan="+neturl.QueryEscape(req.Plan), h.billingReturnURL(tc.OrgUUID, "canceled")+"&billingPlan="+neturl.QueryEscape(req.Plan))
+		url, err = quoted.CheckoutQuoted(r.Context(), tc.OrgUUID, req.Plan, req.PriceID, successURL+"&billingPlan="+neturl.QueryEscape(req.Plan), cancelURL+"&billingPlan="+neturl.QueryEscape(req.Plan))
 	} else {
-		url, err = h.mgr.billing.Checkout(r.Context(), tc.OrgUUID, req.Plan, h.billingReturnURL(tc.OrgUUID, "success"), h.billingReturnURL(tc.OrgUUID, "canceled"))
+		url, err = h.mgr.billing.Checkout(r.Context(), tc.OrgUUID, req.Plan, successURL, cancelURL)
 	}
 	if err != nil {
 		writeBillingError(w, r, err)

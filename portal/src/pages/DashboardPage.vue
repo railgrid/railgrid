@@ -5,6 +5,7 @@ import { claimFirstWelcome, welcomeIdentity } from '@/lib/firstWelcome'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRoute, useRouter } from 'vue-router'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import DashboardTile from '@/components/DashboardTile.vue'
@@ -18,6 +19,8 @@ import { Puzzle, RotateCcw, Check, LayoutDashboard, LayoutGrid, Plus, Rocket } f
 import { gettingStartedReadState } from '@/lib/gettingStarted'
 
 const { scopePath } = useScopedNavigation()
+const route = useRoute()
+const router = useRouter()
 
 // The dashboard iterates the catalog and mounts one <DashboardTile> per
 // ready provider. Each provider may register a
@@ -120,6 +123,9 @@ const welcomeUser = computed(() => welcomeIdentity(auth))
 const welcomeOpen = ref(false)
 const gettingStartedTrigger = ref<HTMLButtonElement | null>(null)
 const guideForced = ref(false)
+// The audience chosen on the onboarding page; empty when the guide was not
+// opened as that page's first task.
+const firstTask = ref<'' | 'personal' | 'team'>('')
 const showWelcome = computed(() => welcomeOpen.value || guideForced.value)
 
 const guideShownScope = ref<string | null>(null)
@@ -143,8 +149,21 @@ const retrying = ref(false)
 const initializing = computed(() => providers.loading && !showWelcome.value && !retrying.value && gettingStartedStatus.value !== 'unscoped')
 
 watch(
-  [gettingStartedStatus, welcomeUser, currentScope] as const,
-  ([status, user]) => {
+  [gettingStartedStatus, welcomeUser, currentScope, () => route.query.firstTask] as const,
+  ([status, user, _scope, request]) => {
+    if (status === 'ready' && user && (request === 'personal' || request === 'team')) {
+      // The query only says which audience to start in. Whether the guide
+      // opens at all is still the once-per-user latch, so a bookmarked or
+      // history URL cannot reopen a guide that was already dismissed.
+      if (claimFirstWelcome(user)) {
+        firstTask.value = request
+        welcomeOpen.value = true
+      }
+      const query = { ...route.query }
+      delete query.firstTask
+      void router.replace({ query })
+      return
+    }
     if (status === 'ready' && claimFirstWelcome(user)) welcomeOpen.value = true
   },
   { immediate: true },
@@ -175,6 +194,7 @@ function openGettingStarted() {
 async function dismissWelcome() {
   welcomeOpen.value = false
   guideForced.value = false
+  firstTask.value = ''
   await nextTick()
   gettingStartedTrigger.value?.focus()
 }
@@ -185,6 +205,7 @@ watch(
     guideForced.value = false
     welcomeOpen.value = false
     guideShownScope.value = null
+    firstTask.value = ''
   },
   { flush: 'sync' },
 )
@@ -262,7 +283,8 @@ function onGridSelectStart(event: Event) {
         v-if="showWelcome"
         :key="`${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}`"
         v-show="guideVisible"
-        :start-at-goal="guideForced"
+        :start-at-goal="guideForced || !!firstTask"
+        :first-task="firstTask"
         @dismiss="dismissWelcome"
       />
 

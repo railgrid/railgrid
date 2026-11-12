@@ -32,6 +32,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -746,8 +748,15 @@ func TestCreateOrg_ValidatesAndPersists(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	// happy path
-	body, _ = json.Marshal(CreateOrgRequest{DisplayName: "acme"})
+	// A retried onboarding request returns the same organization.
+	requestID := uuid.Must(uuid.NewV7()).String()
+	stale, _ := json.Marshal(CreateOrgRequest{DisplayName: "acme", RequestID: "df093ac1-ea4b-4386-a7ce-9417b184855b"})
+	resp, _ = http.Post(srv.URL+"/api/orgs", "application/json", jsonBody(stale))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("version 4 request ID: got %d, want 400", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	body, _ = json.Marshal(CreateOrgRequest{DisplayName: "acme", RequestID: requestID})
 	resp, _ = http.Post(srv.URL+"/api/orgs", "application/json", jsonBody(body))
 	if resp.StatusCode != http.StatusCreated {
 		t.Errorf("happy: got %d, want 201", resp.StatusCode)
@@ -757,8 +766,41 @@ func TestCreateOrg_ValidatesAndPersists(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	_ = resp.Body.Close()
-	if view.DisplayName != "acme" || view.UUID == "" {
+	if view.DisplayName != "acme" || view.UUID == "" || view.UUID == requestID {
 		t.Errorf("view: %#v", view)
+	}
+	forbidden, err := http.Post(srv.URL+"/api/orgs", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = forbidden.Body.Close()
+	if forbidden.StatusCode != http.StatusForbidden {
+		t.Fatalf("replay without current admin membership: got %d", forbidden.StatusCode)
+	}
+	ops.mu.Lock()
+	ops.orgMemberships[view.UUID] = map[string]string{"alice": tenancyv1alpha1.MembershipRoleAdmin}
+	ops.mu.Unlock()
+	replay, err := http.Post(srv.URL+"/api/orgs", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replayed OrgView
+	if err := json.NewDecoder(replay.Body).Decode(&replayed); err != nil {
+		t.Fatalf("decode replay: %v", err)
+	}
+	_ = replay.Body.Close()
+	if replay.StatusCode != http.StatusCreated || replayed.UUID != view.UUID {
+		t.Fatalf("create replay: status %d, organization %#v", replay.StatusCode, replayed)
+	}
+	// The same key asking for different policies did not get them.
+	changed, _ := json.Marshal(CreateOrgRequest{DisplayName: "acme", RequestID: requestID, CatalogEntryCreation: tenancyv1alpha1.CatalogEntryCreationMembers})
+	conflict, err := http.Post(srv.URL+"/api/orgs", "application/json", jsonBody(changed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conflict.Body.Close()
+	if conflict.StatusCode != http.StatusConflict {
+		t.Fatalf("replay with different policies: got %d, want 409", conflict.StatusCode)
 	}
 	created, err := mgr.client.Organizations().Get(context.Background(), view.UUID, metav1.GetOptions{})
 	if err != nil {
@@ -773,7 +815,7 @@ func TestCreateOrg_ValidatesAndPersists(t *testing.T) {
 	if reads < 2 {
 		t.Fatal("creation returned before controller access readiness")
 	}
-	if len(ops.orgWorkspaces) != 0 || len(ops.orgMemberships) != 0 {
+	if len(ops.orgWorkspaces) != 0 || len(ops.orgMemberships) != 1 || len(ops.orgMemberships[view.UUID]) != 1 {
 		t.Fatal("REST creation must not write access concurrently with the controller")
 	}
 }

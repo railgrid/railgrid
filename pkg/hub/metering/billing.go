@@ -170,7 +170,7 @@ type billingStatus struct {
 	DefaultPlan string `json:"defaultPlan"`
 }
 
-// Summary composes OrgBilling for org.
+// Summary composes OrgBilling for org. An empty org returns only the deployment catalog.
 func (b *Billing) Summary(ctx context.Context, org string) (OrgBilling, error) {
 	out := OrgBilling{Limits: []Limit{}, Overrides: []Limit{}, Usage: map[string]string{}, Plans: []PlanOffer{}}
 	e, ok := b.discovery.Current()
@@ -205,44 +205,46 @@ func (b *Billing) Summary(ctx context.Context, org string) (OrgBilling, error) {
 	}
 	sort.Slice(out.Plans, func(i, j int) bool { return out.Plans[i].Name < out.Plans[j].Name })
 
-	ent, err := b.store.Resource(gvrEntitlements).Get(ctx, org, metav1.GetOptions{})
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			return out, fmt.Errorf("reading entitlement: %w", err)
-		}
-		out.Plan = out.DefaultPlan
-	} else {
-		out.Plan, _, _ = unstructured.NestedString(ent.Object, "spec", "plan")
-		out.ManagedBy = ent.GetLabels()[PlanSourceLabel]
-		out.Limits = limitsOf(ent.Object, "status", "effectiveLimits")
-		out.Overrides = limitsOf(ent.Object, "spec", "overrides")
-		if usage, ok, _ := unstructured.NestedStringMap(ent.Object, "status", "usage"); ok {
-			out.Usage = usage
-		}
-		if w, ok, _ := unstructured.NestedStringMap(ent.Object, "status", "window"); ok {
-			out.Window = &UsageWindow{Start: w["start"], End: w["end"]}
-		}
-		conditions, _, _ := unstructured.NestedSlice(ent.Object, "status", "conditions")
-		for _, c := range conditions {
-			m, _ := c.(map[string]any)
-			t, _ := m["type"].(string)
-			s, _ := m["status"].(string)
-			switch {
-			case t == "OverSoftLimit" && s == "True":
-				out.OverSoftLimit = true
-			case t == "OverHardLimit" && s == "True":
-				out.OverHardLimit = true
+	if org != "" {
+		ent, err := b.store.Resource(gvrEntitlements).Get(ctx, org, metav1.GetOptions{})
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				return out, fmt.Errorf("reading entitlement: %w", err)
 			}
-		}
-		if bl, ok, _ := unstructured.NestedMap(ent.Object, "status", "billing"); ok {
-			str := func(k string) string { v, _ := bl[k].(string); return v }
-			cancel, _ := bl["cancelAtPeriodEnd"].(bool)
-			out.Subscription = &OrgSubscription{
-				EntitledPlan:      str("entitledPlan"),
-				Status:            str("status"),
-				CurrentPeriodEnd:  str("currentPeriodEnd"),
-				CancelAtPeriodEnd: cancel,
-				SyncedAt:          str("syncedAt"),
+			out.Plan = out.DefaultPlan
+		} else {
+			out.Plan, _, _ = unstructured.NestedString(ent.Object, "spec", "plan")
+			out.ManagedBy = ent.GetLabels()[PlanSourceLabel]
+			out.Limits = limitsOf(ent.Object, "status", "effectiveLimits")
+			out.Overrides = limitsOf(ent.Object, "spec", "overrides")
+			if usage, ok, _ := unstructured.NestedStringMap(ent.Object, "status", "usage"); ok {
+				out.Usage = usage
+			}
+			if w, ok, _ := unstructured.NestedStringMap(ent.Object, "status", "window"); ok {
+				out.Window = &UsageWindow{Start: w["start"], End: w["end"]}
+			}
+			conditions, _, _ := unstructured.NestedSlice(ent.Object, "status", "conditions")
+			for _, c := range conditions {
+				m, _ := c.(map[string]any)
+				t, _ := m["type"].(string)
+				s, _ := m["status"].(string)
+				switch {
+				case t == "OverSoftLimit" && s == "True":
+					out.OverSoftLimit = true
+				case t == "OverHardLimit" && s == "True":
+					out.OverHardLimit = true
+				}
+			}
+			if bl, ok, _ := unstructured.NestedMap(ent.Object, "status", "billing"); ok {
+				str := func(k string) string { v, _ := bl[k].(string); return v }
+				cancel, _ := bl["cancelAtPeriodEnd"].(bool)
+				out.Subscription = &OrgSubscription{
+					EntitledPlan:      str("entitledPlan"),
+					Status:            str("status"),
+					CurrentPeriodEnd:  str("currentPeriodEnd"),
+					CancelAtPeriodEnd: cancel,
+					SyncedAt:          str("syncedAt"),
+				}
 			}
 		}
 	}

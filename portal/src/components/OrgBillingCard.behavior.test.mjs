@@ -14,10 +14,12 @@ const source = fs.readFileSync(new URL('./OrgBillingCard.vue', import.meta.url),
 const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
 const parsed = ts.createSourceFile('OrgBillingCard.ts', script, ts.ScriptTarget.Latest, true)
 
-function loadFunction(name, context, functionSource = parsed) {
+const billingFlow = ts.createSourceFile('billing-flow.ts', fs.readFileSync(new URL('../lib/billing-flow.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true)
+
+function loadFunction(name, context, functionSource = ['proposedLimits', 'allowancesPending'].includes(name) ? billingFlow : parsed) {
   const declaration = functionSource.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name)
   assert.ok(declaration, `${name} exists in the production component`)
-  const code = ts.transpileModule(declaration.getText(functionSource), {
+  const code = ts.transpileModule(declaration.getText(functionSource).replace(/^export /, ''), {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
   return runInNewContext(`${code}\n${name}`, context)

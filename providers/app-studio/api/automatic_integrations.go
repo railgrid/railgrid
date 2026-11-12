@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -35,6 +36,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -721,23 +723,30 @@ func materializeDiscoveredAutomaticProjectIntegrations(ctx context.Context, c *a
 	if c == nil || project == nil || len(targets) == 0 {
 		return project, nil
 	}
-	next := project.DeepCopy()
 	materializable := make([]automaticIntegrationTarget, 0, len(targets))
 	for _, target := range targets {
 		if len(target.actions) > 0 {
 			materializable = append(materializable, target)
 		}
 	}
-	changed := materializeAutomaticIntegrationTargets(next, materializable)
-	if !changed {
-		// Automatic discovery only writes the Project's providerReference
-		// bindings. Provider-owned resources are converged by the Project
-		// controller; this turn-start path must never create or update them.
-		return project, nil
-	}
+	current := project
 	var lastErr error
 	for attempt := 0; attempt < automaticIntegrationUpdateAttempts; attempt++ {
-		updated, err := c.Projects().Update(ctx, next, metav1.UpdateOptions{})
+		next := current.DeepCopy()
+		if !materializeAutomaticIntegrationTargets(next, materializable) {
+			return current, nil
+		}
+		// Status reconciliation changes resourceVersion even when the spec is
+		// unchanged. Guard the spec patch by generation and object identity.
+		patch, err := json.Marshal([]map[string]any{
+			{"op": "test", "path": "/metadata/uid", "value": current.UID},
+			{"op": "test", "path": "/metadata/generation", "value": current.Generation},
+			{"op": "add", "path": "/spec/environments", "value": next.Spec.Environments},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("encode automatic provider integrations patch: %w", err)
+		}
+		updated, err := c.Projects().Patch(ctx, current.Name, types.JSONPatchType, patch, metav1.PatchOptions{})
 		if err == nil {
 			// Do not synchronously reconcile provider resources here. The controller is
 			// the sole owner of provider-resource writes, while read-through status
@@ -745,23 +754,44 @@ func materializeDiscoveredAutomaticProjectIntegrations(ctx context.Context, c *a
 			return updated, nil
 		}
 		lastErr = err
-		if !apierrors.IsConflict(err) || attempt == automaticIntegrationUpdateAttempts-1 {
+		patchRejected := isAutomaticIntegrationPatchRejection(err)
+		lastAttempt := attempt == automaticIntegrationUpdateAttempts-1
+		if !patchRejected && (!apierrors.IsConflict(err) || lastAttempt) {
 			break
 		}
 
-		// The initial Project may have gone stale while automatic discovery was
-		// listing provider resources. Merge only our binding materialization into
-		// the latest object so concurrent user/controller changes to the rest of
-		// the Project survive the retry.
-		next, err = c.Projects().Get(ctx, project.Name, metav1.GetOptions{})
+		latest, err := c.Projects().Get(ctx, project.Name, metav1.GetOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("persist automatic provider integrations: %w", err)
 		}
-		if !materializeAutomaticIntegrationTargets(next, targets) {
-			return next, nil
+		// Confirm that a generic patch rejection corresponds to a stale guard.
+		if patchRejected {
+			if latest.UID == current.UID && latest.Generation == current.Generation {
+				break
+			}
+			lastErr = apierrors.NewConflict(asclient.ProjectGVR.GroupResource(), project.Name, errors.New("the project changed while saving automatic integrations"))
 		}
+		if lastAttempt || latest.UID != project.UID || !latest.DeletionTimestamp.IsZero() {
+			break
+		}
+		current = latest
 	}
 	return nil, fmt.Errorf("persist automatic provider integrations: %w", lastErr)
+}
+
+func isAutomaticIntegrationPatchRejection(err error) bool {
+	var apiStatus apierrors.APIStatus
+	if !apierrors.IsInvalid(err) || !errors.As(err, &apiStatus) {
+		return false
+	}
+	// kcp's JSON Patch handler reports failed test operations as HTTP 422
+	// without object details or field causes. Other generic 422s can have
+	// the same shape, so the caller reloads the Project to check the guards.
+	// Schema validation identifies the object and includes field causes.
+	status := apiStatus.Status()
+	details := status.Details
+	return status.Code == http.StatusUnprocessableEntity && (details == nil ||
+		(details.Group == "" && details.Kind == "" && details.Name == "" && len(details.Causes) == 0))
 }
 
 func automaticProviderCatalogResources(catalog []providerCatalogEntry) []automaticProviderCatalogResource {

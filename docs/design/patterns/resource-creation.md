@@ -190,6 +190,14 @@ no longer contains that provider.
 
 ## Workspace onboarding
 
+New accounts that enter through portal SSO first choose a personal Workspace or
+create an Organization on the [onboarding page](../../../portal/src/pages/OnboardingPage.vue).
+The Organization form shows the plans and current recurring prices available
+through billing. Enterprise opens the sales contact page. Self-serve checkout
+resumes onboarding for the same Organization after the subscription is active.
+While the Workspace is provisioning, the setup action shows progress on the
+current page. Once the Workspace is ready, the guide opens at **Your goal**.
+
 The host’s [WelcomeWizard](../../../portal/src/components/WelcomeWizard.vue)
 uses three steps: context, goal, and a starting Workspace preview. Context
 suggests a goal; an explicit goal choice takes precedence. The preview walks
