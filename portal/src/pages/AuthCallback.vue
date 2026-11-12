@@ -51,7 +51,8 @@ onMounted(() => {
       window.location.assign(next)
       return
     }
-    router.replace(consumePortalNext() ?? '/')
+    const portalNext = consumePortalNext()
+    router.replace(resp.firstLogin && (!portalNext || portalNext === '/') ? '/onboarding' : portalNext ?? '/')
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to process auth callback'
   }

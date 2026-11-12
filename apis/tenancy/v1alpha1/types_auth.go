@@ -27,6 +27,7 @@ type LoginResponse struct {
 	ExpiresAt  int64  `json:"expiresAt,omitempty"`
 	Email      string `json:"email,omitempty"`
 	UserID     string `json:"userId,omitempty"`
+	FirstLogin bool   `json:"firstLogin,omitempty"`
 
 	// OIDC credentials for the exec credential plugin to cache and refresh.
 	IDToken      string `json:"idToken,omitempty"`

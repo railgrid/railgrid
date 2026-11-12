@@ -899,11 +899,11 @@ export const useTenantStore = defineStore('tenant', () => {
     return true
   }
 
-  async function createOrg(displayName: string): Promise<OrgRow | null> {
+  async function createOrg(displayName: string, requestId?: string): Promise<OrgRow | null> {
     const resp = await authFetch('/api/orgs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ displayName }),
+      body: JSON.stringify({ displayName, requestId }),
     })
     if (!resp.ok) {
       // A 409 QuotaExceeded carries the hub's own sentence (how many of how
@@ -1086,11 +1086,11 @@ export const useTenantStore = defineStore('tenant', () => {
 
   // startOrgCheckout and openOrgBillingPortal return the hosted page's URL
   // the caller redirects to; the hub supplies the return addresses.
-  async function startOrgCheckout(targetOrgUUID: string, plan: string, priceID?: string): Promise<string> {
+  async function startOrgCheckout(targetOrgUUID: string, plan: string, priceID?: string, onboarding?: boolean): Promise<string> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/billing/checkout`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Railgrid-Org': targetOrgUUID },
-      body: JSON.stringify({ plan, priceID }),
+      body: JSON.stringify({ plan, priceID, onboarding }),
     })
     if (!resp.ok) throw new Error(await hubMessage(resp, 'failed to start checkout'))
     return ((await resp.json()) as { url: string }).url

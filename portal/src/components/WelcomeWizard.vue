@@ -14,7 +14,9 @@ import { isConfirmedAdmin, onboardingStorageKey, persistOnboardingState, restore
 const { scopePath } = useScopedNavigation()
 const router = useRouter()
 const emit = defineEmits<{ dismiss: [] }>()
-const props = defineProps<{ startAtGoal?: boolean }>()
+// firstTask is the audience the onboarding page already established, so the
+// guide skips "About you" and starts at the goal for that audience.
+const props = defineProps<{ startAtGoal?: boolean; firstTask?: '' | 'personal' | 'team' }>()
 const providers = useProvidersStore()
 const tenant = useTenantStore()
 const auth = useAuthStore()
@@ -217,7 +219,9 @@ const storageKey = computed(() => onboardingStorageKey(welcomeUser.value, worksp
 function restore() {
   let raw: string | null = null
   try { if (storageKey.value) raw = localStorage.getItem(storageKey.value) } catch { /* Storage can be disabled; setup remains usable. */ }
-  const state = restoreOnboardingState(raw, props.startAtGoal)
+  const state = props.firstTask
+    ? { step: 1, audience: props.firstTask, goal: defaultGoalForAudience(props.firstTask), goalExplicit: false }
+    : restoreOnboardingState(raw, props.startAtGoal)
   step.value = state.step
   audience.value = state.audience
   goal.value = state.goal
@@ -247,7 +251,7 @@ const finalActionReason = computed(() =>
   <div class="onboarding-viewport">
   <section class="onboarding" aria-labelledby="onboarding-title">
     <ol class="k-wizard-steps mb-4" aria-label="Getting started progress">
-      <li class="text-[12px]" v-for="(label, index) in ['About you', 'Your goal', 'Get started']" :key="label" :aria-current="step === index ? 'step' : undefined">{{ label }}</li>
+      <li class="text-[12px]" v-for="(label, index) in (props.firstTask ? ['Your goal', 'Get started'] : ['About you', 'Your goal', 'Get started'])" :key="label" :aria-current="step === index + (props.firstTask ? 1 : 0) ? 'step' : undefined">{{ label }}</li>
     </ol>
     <div class="onboarding-body">
     <h1 id="onboarding-title" ref="heading" tabindex="-1">{{ title }}</h1>
@@ -358,7 +362,7 @@ const finalActionReason = computed(() =>
 
     </div>
     <footer class="onboarding-footer">
-      <button v-if="step > 0" type="button" class="k-btn k-btn--text" :disabled="setupPending" @click="back"><ArrowLeft :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />Back</button>
+      <button v-if="step > (props.firstTask ? 1 : 0)" type="button" class="k-btn k-btn--text" :disabled="setupPending" @click="back"><ArrowLeft :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />Back</button>
       <button v-else type="button" class="k-btn k-btn--ghost" @click="emit('dismiss')">Go to dashboard</button>
       <router-link v-if="step === 1 && canSkipSetup" :to="scopePath(`/providers/${goal}`)" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">{{ openLabel }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
       <button v-else-if="step < 2" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="next">{{ step === 0 ? 'Continue' : memberJourney ? 'See next steps' : 'Review setup' }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
