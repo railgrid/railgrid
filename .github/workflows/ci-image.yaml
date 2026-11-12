@@ -1,0 +1,57 @@
+name: CI image (Prow)
+
+# Builds the image every Prow job runs in (hack/ci/prow/image/) and pushes it
+# as ghcr.io/railgrid/railgrid-ci:<hack/ci/prow/image/VERSION>, the tag
+# .prow.yaml names. Prow cannot build its own image, so this one stays on
+# GitHub Actions.
+#
+# To change the image: bump VERSION and the tag in .prow.yaml in the same pull
+# request, merge, and wait for this run. Until it finishes, jobs that name the
+# new tag fail to pull. A manual run from main rebuilds the current VERSION.
+on:
+  push:
+    branches: [main]
+    paths:
+      - hack/ci/prow/image/**
+      - .github/workflows/ci-image.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ci-image
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read image version
+        id: version
+        run: echo "version=$(tr -d '[:space:]' < hack/ci/prow/image/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # amd64 only: that is what the cluster nodes are.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: hack/ci/prow/image
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/railgrid/railgrid-ci:${{ steps.version.outputs.version }}
+            ghcr.io/railgrid/railgrid-ci:${{ github.sha }}
