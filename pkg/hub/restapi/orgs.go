@@ -152,7 +152,7 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		}
 		// Scope the retry key to the authenticated creator. The hub owns
 		// the resulting organization ID even when clients choose a key.
-		orgUUID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("railgrid:org-create:"+user+":"+id.String())).String()
+		orgUUID = orgUUIDForRequest(user, id)
 	}
 
 	// Hold the user's create lock through the quota check and Create. A replay
@@ -207,6 +207,11 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.waitForCreatedOrg(w, r, created.Name, "")
+}
+
+// orgUUIDForRequest is the organization a creator's request ID resolves to.
+func orgUUIDForRequest(user string, id uuid.UUID) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("railgrid:org-create:"+user+":"+id.String())).String()
 }
 
 // orgRequestIDSkew is how far ahead of the hub a client's clock may run when

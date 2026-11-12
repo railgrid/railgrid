@@ -220,7 +220,10 @@ async function submit() {
     }
     if (!createdOrg.value) {
       status.value = 'Creating your organization…'
-      const requestId = (draft.value?.name === organizationName && reusableRequestId(draft.value.requestId)) || requestIdV7()
+      // A request that was already sent may have created the organization
+      // even if its response never arrived, so its key is kept for the whole
+      // attempt and the name stays locked (see the template) until Start over.
+      const requestId = reusableRequestId(draft.value?.requestId) || requestIdV7()
       saveDraft({ name: organizationName, requestId, plan: plan.value })
       const org = await tenant.createOrg(organizationName, requestId)
       if (!current()) return
@@ -379,7 +382,7 @@ onMounted(() => {
           <template v-if="startWith === 'organization'">
             <label class="block text-sm font-medium">
               Organization name
-              <input v-model="name" class="k-input mt-2 min-h-11" :required="!enterprise" :readonly="!!createdOrg" :disabled="busy || (canceled && !createdOrg)" />
+              <input v-model="name" class="k-input mt-2 min-h-11" :required="!enterprise" :readonly="!!createdOrg || !!draft" :disabled="busy || (canceled && !createdOrg)" />
             </label>
             <div>
               <label id="onboarding-plan-label" for="onboarding-plan" class="mb-2 block text-sm font-medium">Plan</label>
@@ -404,7 +407,7 @@ onMounted(() => {
           <p role="status" class="sr-only">{{ status }}</p>
           <p v-if="error" role="alert" class="text-sm text-danger">{{ error }}</p>
           <div class="flex flex-wrap justify-end gap-2">
-            <button v-if="createdOrg && !canceled && error && !busy" type="button" class="k-btn k-btn--text min-h-11" @click="startOver()">Start over</button>
+            <button v-if="(createdOrg || draft) && !canceled && error && !busy" type="button" class="k-btn k-btn--text min-h-11" @click="startOver()">Start over</button>
             <button v-if="canceled && !createdOrg" type="button" class="k-btn k-btn--primary min-h-11" :disabled="busy" @click="restoreCanceledCheckout">Try again</button>
             <a v-else-if="enterprise" class="k-btn k-btn--primary min-h-11" href="https://railgrid.ai/contact/" target="_blank" rel="noopener noreferrer">
               Contact sales <ExternalLink class="h-4 w-4" aria-hidden="true" /><span class="sr-only"> (opens in a new tab)</span>
