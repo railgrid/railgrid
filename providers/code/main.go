@@ -226,6 +226,7 @@ func runServe() {
 		MCP:          mcpHandler,
 		Actions:      codeActions,
 		DataPlane:    dataPlane,
+		Extra:        codeWebhookRoutes(workflow.Webhook),
 		OAuth:        oauthRoutes,
 		Subresources: subresources,
 	})
@@ -295,4 +296,10 @@ func codeDataPlaneHandler(workflow, actions http.Handler) http.Handler {
 		}
 		actions.ServeHTTP(w, r)
 	})
+}
+
+func codeWebhookRoutes(webhook http.HandlerFunc) []serve.Route {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /webhooks/github/{cluster}/{name}", webhook)
+	return []serve.Route{{Prefix: serve.WebhooksPrefix, Class: serve.ClassWebhook, Handler: mux}}
 }
