@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"strings"
 	"time"
 
@@ -39,8 +40,44 @@ var ErrSessionNotFound = fmt.Errorf("session not found")
 // ErrRunClaimConflict means the run no longer matches the claim conditions.
 var ErrRunClaimConflict = errors.New("run is no longer claimable")
 
+// ErrRunAlreadySettled means a stale lifecycle snapshot tried to reopen a terminal run.
+var ErrRunAlreadySettled = errors.New("run is already settled")
+
 // ErrRecoveryClaimStale means the observed run changed before recovery claimed it.
 var ErrRecoveryClaimStale = fmt.Errorf("recovery claim is stale")
+
+// ErrRunLeaseLost means the process no longer owns the execution epoch.
+var ErrRunLeaseLost = fmt.Errorf("run execution lease was lost")
+
+// ErrRunCancellationRequested means this lease's run was explicitly cancelled.
+// The executor should stop remote work rather than treat it as a recovery handoff.
+var ErrRunCancellationRequested = errors.New("run cancellation was requested")
+
+// MaxDelegatedRuns bounds direct child admissions per parent run.
+const MaxDelegatedRuns = 3
+
+// ErrDelegationLimit means the parent already admitted its maximum children.
+var ErrDelegationLimit = fmt.Errorf("delegation fan-out limit (%d per run) reached", MaxDelegatedRuns)
+
+// RunLeaseDuration is the period after which an execution lease may be taken
+// over if its owner has stopped renewing it.
+const RunLeaseDuration = 2 * time.Minute
+
+// RecoveryIdentity says which principal the run executed as, so recovery never
+// resumes caller-scoped work as the provider's broader service account.
+type RecoveryIdentity string
+
+const (
+	RecoveryIdentityUnknown RecoveryIdentity = ""
+	RecoveryIdentityAgent   RecoveryIdentity = "agent"
+	RecoveryIdentityCaller  RecoveryIdentity = "caller"
+)
+
+// TerminalRunPhase reports whether a run has reached an outcome. A run parked
+// for approval has not: it continues in place.
+func TerminalRunPhase(phase RunPhase) bool {
+	return phase == RunPhaseSucceeded || phase == RunPhaseFailed || phase == RunPhaseAborted
+}
 
 // Scope isolates all data to one tenant + agent boundary. Every query includes
 // org and workspace; AgentName narrows to a single agent where relevant.
@@ -156,6 +193,20 @@ type Run struct {
 	ParentRunID string   `json:"parentRunID,omitempty"`
 	Phase       RunPhase `json:"phase"`
 	Attempt     int      `json:"attempt,omitempty"`
+	// ExecutionOwner and ExecutionLeaseAt are the cross-replica execution
+	// lease. Dedicated store operations own these fields; SaveRun snapshots may
+	// never overwrite them.
+	ExecutionOwner   string    `json:"-"`
+	ExecutionLeaseAt time.Time `json:"-"`
+	// ResumeDeadlineAt bounds execution after an approval, excluding time spent
+	// waiting. The approval claim sets it once; lease renewals preserve it.
+	ResumeDeadlineAt *time.Time `json:"-"`
+	// RecoveryIdentity records whether the original authority can be rebuilt
+	// after restart. Caller-scoped and unknown runs fail closed on recovery.
+	RecoveryIdentity RecoveryIdentity `json:"-"`
+	// AgentUID freezes the Agent incarnation this run was admitted for. It
+	// prevents a same-name replacement from inheriting a recoverable run.
+	AgentUID string `json:"-"`
 	// Retries counts how many times this run was handed back to the queue after
 	// a transient refusal (a runner at capacity, a runner not yet ready) instead
 	// of being failed. It is distinct from Attempt, which counts recoveries of a
@@ -234,11 +285,14 @@ type Run struct {
 	// CancelRequestedBy is the authenticated caller of the first stop request.
 	// It is internal attribution evidence, never a public Run field.
 	CancelRequestedBy string `json:"-"`
+	// DelegatedUsageRolledUp is the durable, per-child marker used to atomically
+	// charge delegated execution to its parent Agent's usage bucket. It is
+	// internal accounting state and is not part of the public Run projection.
+	DelegatedUsageRolledUp bool `json:"-"`
 }
 
-// RunRepository is what a repository run was asked to run against. The same
-// shape is projected onto the Run object's spec.repository, so a reader of
-// either knows what ran without being able to clone it.
+// RunRepository stores the admitted repository coordinates and runner limit.
+// The Run object projects the checkout coordinates and the effective deadline.
 type RunRepository struct {
 	// EnvironmentID identifies an opt-in reusable development checkout.
 	// +optional
@@ -248,6 +302,8 @@ type RunRepository struct {
 	RepositoryID  string `json:"repositoryID"`
 	BaseCommit    string `json:"baseCommit"`
 	CommitMessage string `json:"commitMessage,omitempty"`
+	// MaxDurationSeconds retains the admitted runner limit across retries and recovery.
+	MaxDurationSeconds int `json:"maxDurationSeconds,omitempty"`
 }
 
 // RunResult is a repository run's verified Git result: the snapshot commit on
@@ -277,7 +333,13 @@ type RunArtifact struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// validate checks the facts an artifact row must carry.
+const (
+	StructuredResultArtifact = "structured-result.json"
+	MaxStructuredResultBytes = 32 << 10
+	maxRunArtifactBytes      = 32 << 20
+)
+
+// validate checks the facts and limits an artifact row must carry.
 func (a RunArtifact) validate() error {
 	switch {
 	case strings.TrimSpace(a.RunID) == "":
@@ -288,6 +350,27 @@ func (a RunArtifact) validate() error {
 		return fmt.Errorf("run artifact needs a digest")
 	case a.Size != int64(len(a.Data)):
 		return fmt.Errorf("run artifact size %d does not match its %d data bytes", a.Size, len(a.Data))
+	case a.Size > maxRunArtifactBytes:
+		return fmt.Errorf("run artifact exceeds the %d-byte limit", maxRunArtifactBytes)
+	}
+	if a.Name == StructuredResultArtifact && (a.Size > MaxStructuredResultBytes || a.MediaType != "application/json") {
+		return fmt.Errorf("structured run result must be application/json and at most %d bytes", MaxStructuredResultBytes)
+	}
+	if len(a.MediaType) > 255 {
+		return fmt.Errorf("run artifact media type exceeds 255 bytes")
+	}
+	if a.MediaType != "" {
+		mediaType, _, err := mime.ParseMediaType(a.MediaType)
+		if err != nil || !strings.Contains(mediaType, "/") {
+			return fmt.Errorf("invalid run artifact media type %q", a.MediaType)
+		}
+	}
+	return nil
+}
+
+func validateRunCompletion(run Run, final Message) error {
+	if run.Phase != RunPhaseSucceeded || final.RunID != run.ID || final.Role != "assistant" || final.ID == "" || final.CreatedAt.IsZero() {
+		return fmt.Errorf("run completion requires a succeeded run and its final assistant message")
 	}
 	return nil
 }
@@ -575,6 +658,11 @@ const (
 )
 
 // InboxItemState is the lifecycle of an inbox item.
+// pendingRunPrompt identifies inbox entries whose lifetime follows a Run.
+func pendingRunPrompt(item InboxItem) bool {
+	return item.RunID != "" && item.State == InboxStatePending && (item.Kind == InboxKindApproval || item.Kind == InboxKindQuestion)
+}
+
 type InboxItemState string
 
 const (
@@ -780,6 +868,7 @@ type Page struct {
 // RunQuery filters a run listing. Zero values mean "any". Scope.AgentName (when
 // set) narrows to one agent; Cursor/Limit page newest-first.
 type RunQuery struct {
+	ID          string
 	Phase       RunPhase
 	Trigger     string
 	SessionID   string
@@ -894,15 +983,45 @@ type Store interface {
 
 	// Runs (durable, resumable).
 	SaveRun(ctx context.Context, scope Scope, run Run) error
+	// ClaimFreshRun turns an admitted Pending run into Running and installs its
+	// first execution lease atomically. It fences both delayed starters and
+	// recovery of abandoned admissions.
+	// agentUID must match the frozen Agent or come from the verified owner
+	// reference for a legacy admission. The claim pins it for recovery.
+	ClaimFreshRun(ctx context.Context, scope Scope, id string, observed time.Time, owner, agentUID string, now time.Time) (Run, error)
+	// FailPendingRun settles an old Pending row only if its admission revision
+	// has not advanced and it has no execution lease.
+	FailPendingRun(ctx context.Context, scope Scope, id string, observed time.Time, olderThan, now time.Time, message string) (Run, bool, error)
+	// UpdateRunCheckpoint stores a checkpoint only while the same Running
+	// revision is still current and has not been cancelled. This fences a stale
+	// executor from restoring a checkpoint over cancellation or recovery claim.
+	UpdateRunCheckpoint(ctx context.Context, scope Scope, id, owner string, attempt int, expectedUpdatedAt time.Time, checkpoint json.RawMessage, workedDurationMS *int64, now time.Time) (bool, error)
 	GetRun(ctx context.Context, scope Scope, id string) (Run, error)
 	// ClaimRun atomically moves a pending/resumable run to Running. A canceled or
 	// terminal run cannot be claimed, so an approval racing with cancel cannot
 	// revive work after the cancel flag or terminal phase is recorded. When
-	// supplied, inboxID must match the parked checkpoint atomically.
-	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time, inboxID ...string) (Run, error)
+	// supplied, inboxID must match the parked checkpoint atomically. A nonempty
+	// owner takes a fresh execution lease in the same transition.
+	ClaimRun(ctx context.Context, scope Scope, id, owner string, now time.Time, resumeTimeout time.Duration, inboxID ...string) (Run, error)
 	// ClaimRecovery claims exactly the observed Running revision and increments its
-	// recovery attempt atomically. Stale, cancelled and terminal runs are rejected.
-	ClaimRecovery(ctx context.Context, scope Scope, id string, observed time.Time, now time.Time) (Run, error)
+	// recovery attempt atomically. It also checks that the execution lease expired,
+	// then transfers the lease to owner. Stale, cancelled and terminal runs are rejected.
+	ClaimRecovery(ctx context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error)
+	// AcquireRunLease starts a fresh execution epoch if no lease exists, or accepts
+	// the current process's still-live lease after ClaimRecovery.
+	AcquireRunLease(ctx context.Context, scope Scope, id, owner string, attempt int, now time.Time) (Run, error)
+	// RenewRunLease refreshes only the dedicated lease timestamp. It never changes
+	// UpdatedAt, so checkpoint compare tokens remain stable.
+	RenewRunLease(ctx context.Context, scope Scope, id, owner string, attempt int, now time.Time) (Run, bool, error)
+	// ReleaseRunLease clears a completed/parked execution lease when this epoch
+	// still owns it.
+	ReleaseRunLease(ctx context.Context, scope Scope, id, owner string, attempt int) (bool, error)
+	// SaveRunOwned atomically persists an execution transition only while owner
+	// still owns the unexpired epoch. Lease columns are preserved.
+	SaveRunOwned(ctx context.Context, scope Scope, run Run, owner string, attempt int, now time.Time) (bool, error)
+	// CompleteRun commits the fenced transition to Succeeded and the final
+	// transcript message together. An empty owner matches only an unleased run.
+	CompleteRun(ctx context.Context, scope Scope, run Run, owner string, attempt int, now time.Time, final Message) (bool, error)
 	// RequestCancel durably asks a run to stop: it sets CancelRequested (and
 	// the time of the first request) on the row without touching anything
 	// else, so it cannot race a concurrent checkpoint SaveRun. Idempotent; a
@@ -949,6 +1068,8 @@ type Store interface {
 	AddInboxItem(ctx context.Context, scope Scope, item InboxItem) error
 	GetInboxItem(ctx context.Context, scope Scope, id string) (InboxItem, error)
 	ListInbox(ctx context.Context, scope Scope, state InboxItemState) ([]InboxItem, error)
+	// ClosePendingRunInbox settles approval and question items by durable run ID.
+	ClosePendingRunInbox(ctx context.Context, scope Scope, runID, response string, now time.Time) ([]InboxItem, error)
 	ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, resolution InboxResolution) (InboxItem, error)
 
 	// Harness MCP sessions: the bearer a remote harness turn presents to the
@@ -983,6 +1104,15 @@ type Store interface {
 	// finalizer's teardown.
 	DeleteWebhookDeliveries(ctx context.Context, scope Scope, webhookUID string) error
 	AddUsage(ctx context.Context, scope Scope, agentName string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, error)
+	// RecordRunUsageOwned monotonically records one execution's cumulative usage
+	// and bills only the increase. The same lease owner may finish accounting
+	// after a requested abort, until it releases ownership.
+	RecordRunUsageOwned(ctx context.Context, scope Scope, runID, owner string, attempt int, total backend.Cost, now time.Time, window time.Duration) (Usage, bool, error)
+	// AddDelegatedUsage charges one child run to its parent Agent exactly once.
+	// The child Run's parent link and durable rollup marker are updated in the
+	// same mutation as the usage bucket so retries, restarts and window rollovers
+	// cannot charge the same child twice.
+	AddDelegatedUsage(ctx context.Context, parentScope Scope, parentRunID, childRunID string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, bool, error)
 	GetUsage(ctx context.Context, scope Scope, agentName string, now time.Time, window time.Duration) (Usage, error)
 
 	// Tenant mapping (cluster ID → org/workspace scope) for background runs.

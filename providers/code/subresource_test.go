@@ -36,14 +36,19 @@ func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 		t.Fatalf("subresourceRoutes: %v", err)
 	}
 
-	// Fifteen catalogued actions plus the three transfer verbs: every
-	// coordinate this provider serves, and every one is an actions-handler
-	// coordinate at the one contract version — code registers no data-plane
-	// handler at all.
-	if len(routes) != 18 {
-		t.Errorf("routes has %d coordinates, want 18: %v", len(routes), keys(routes))
+	// Catalogued repository actions and transfer operations retain their
+	// versioned handler; command context, PR operations and source authorization
+	// reach the native Code handler.
+	if len(routes) != 21 {
+		t.Errorf("routes has %d coordinates, want 21: %v", len(routes), keys(routes))
 	}
 	for coordinate, route := range routes {
+		if coordinate == "githubevents/context" || coordinate == "pullrequests/operate" || coordinate == "repositories/authorize" {
+			if route.Action {
+				t.Errorf("%s must reach the native Code handler", coordinate)
+			}
+			continue
+		}
 		if !route.Action || route.Version != "v1" {
 			t.Errorf("routes[%q] = %+v, want an action at v1", coordinate, route)
 		}

@@ -85,6 +85,9 @@ func (s *MCPSession) Close() {
 // returned (not fatal to the run) so a dead MCP server degrades to "tools
 // missing" rather than breaking chat.
 func ConnectMCP(ctx context.Context, d Deps, conn *agentsv1alpha1.Connection) (*MCPSession, error) {
+	if conn.Spec.Type == agentsv1alpha1.ConnectionTypeGitHub && conn.Spec.Config["credentialType"] == "github-app" {
+		return nil, fmt.Errorf("GitHub App connection %q is for harness githubConnectionRef, not the hosted GitHub MCP server", conn.Name)
+	}
 	// An instance-backed connection names a workload provisioned by the
 	// infrastructure provider and is reached over the platform's internal data
 	// plane — no public hostname, and authorized as THIS PROVIDER through the

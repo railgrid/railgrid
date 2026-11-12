@@ -53,6 +53,7 @@ import (
 	"github.com/google/uuid"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -70,6 +71,7 @@ import (
 	"github.com/railgrid/provider-agents/internal/webhookpath"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 var sliceGVR = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha1", Resource: "apiexportendpointslices"}
@@ -435,10 +437,11 @@ func (b *background) scoped(ctx context.Context, clusterID string) (dynamic.Inte
 // construction: it acts as the calling user, and there is none.
 func (b *background) agentAccess(ctx context.Context, dyn dynamic.Interface, clusterID, agentName string) runAccess {
 	return runAccess{
-		Creds:     vwSecrets{dyn},
-		CR:        vwCR{dyn},
-		ClusterID: clusterID,
-		HubToken:  b.agentToken(ctx, dyn, clusterID, agentName),
+		Creds:            vwSecrets{dyn},
+		CR:               vwCR{dyn},
+		ClusterID:        clusterID,
+		HubToken:         b.agentToken(ctx, dyn, clusterID, agentName),
+		RecoveryIdentity: store.RecoveryIdentityAgent,
 	}
 }
 
@@ -543,24 +546,58 @@ func (b *background) notifyStrandedRun(ctx context.Context, sr store.ScopedRun, 
 // ServiceAccount through the APIExport virtual workspace, exactly as a scheduled
 // run executes. No user token, so no edges family, same as any background run.
 func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun, clusterID string) error {
+	if recoveryIdentityFor(sr.Run) != store.RecoveryIdentityAgent {
+		return fmt.Errorf("recovered run does not have a reconstructible Agent execution identity")
+	}
 	dyn, err := b.scoped(ctx, clusterID)
 	if err != nil {
 		return fmt.Errorf("workspace %s: %w", clusterID, err)
 	}
-	// Claim synchronously so competing reconciles cannot resume the same
-	// revision, and a failed claim cannot silently abandon recovery.
-	claimed, err := b.server.store.ClaimRecovery(ctx, sr.Scope, sr.Run.ID, sr.Run.UpdatedAt, time.Now().UTC())
-	if errors.Is(err, store.ErrRecoveryClaimStale) {
-		return nil // Another writer advanced or settled the run.
+	claimed := sr.Run
+	if !executionOwnerBelongsToProcess(claimed.ExecutionOwner, b.server.cfg.ProcessID) || claimed.ExecutionLeaseAt.IsZero() {
+		// Kept for direct recovery policy callers; production ReconcileRun claims
+		// before applying failure policy so even a non-resumable run is fenced.
+		claimed, err = b.server.store.ClaimRecovery(ctx, sr.Scope, sr.Run.ID, sr.Run.UpdatedAt, newExecutionOwner(b.server.cfg.ProcessID), time.Now().UTC())
+		if errors.Is(err, store.ErrRecoveryClaimStale) {
+			return nil // Another writer advanced or settled the run.
+		}
+		if err != nil {
+			return fmt.Errorf("claiming recovered run: %w", err)
+		}
 	}
+	runObject, err := dyn.Resource(agentsclient.RunGVR).Get(ctx, claimed.ID, metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("claiming recovered run: %w", err)
+		return fmt.Errorf("reading recovered Run object: %w", err)
+	}
+	ownerUID := runAgentOwnerUID(runObject.GetOwnerReferences(), claimed.AgentName)
+	if claimed.AgentUID == "" {
+		// Admitted before the run row recorded its Agent: the Run object's
+		// owner reference is the frozen incarnation, checked against the live
+		// Agent below exactly as a recorded UID would be.
+		claimed.AgentUID = ownerUID
+	}
+	if claimed.AgentUID == "" {
+		return fmt.Errorf("recovered run has no frozen Agent UID")
+	}
+	if ownerUID != claimed.AgentUID {
+		return fmt.Errorf("recovered Run owner reference does not match its admitted Agent incarnation")
+	}
+	agentObject, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, claimed.AgentName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("reading recovered Agent: %w", err)
+	}
+	agent, err := fromU[agentsv1alpha1.Agent](agentObject)
+	if err != nil {
+		return fmt.Errorf("decoding recovered Agent: %w", err)
+	}
+	if string(agent.UID) != claimed.AgentUID {
+		return fmt.Errorf("recovered Agent %s was replaced since the Run was admitted", claimed.AgentName)
 	}
 	// Detached: the resume outlives this reconcile, and its own timeout bounds it.
 	access := b.agentAccess(ctx, dyn, clusterID, sr.Run.AgentName)
 	go func() {
 		// The detached continuation records its terminal error on the run.
-		_, _ = b.server.resumeRun(context.WithoutCancel(ctx), sr.Scope, sr.Run.ID, access,
+		_, _ = b.server.resumeRun(context.WithoutCancel(ctx), sr.Scope, claimed.ID, access,
 			resumeIntent{FromPhase: store.RunPhaseRunning, RecoveryClaimedAt: claimed.UpdatedAt})
 	}()
 	return nil
@@ -627,7 +664,8 @@ func (b *background) submitRun(ctx context.Context, job executor.Job) (string, e
 	err = b.server.saveNewRun(ctx, job.ClusterID, scope, store.Run{
 		HarnessSettings: resolveHarnessSettings(agent, nil),
 		ID:              runID, AgentName: job.AgentRef, SessionID: job.SessionID, Trigger: job.Trigger,
-		Phase: store.RunPhasePending, Input: job.Task, CreatedAt: now, UpdatedAt: now,
+		AgentUID: string(agent.UID), RecoveryIdentity: store.RecoveryIdentityAgent,
+		Phase: store.RunPhasePending, Input: tools.PublicRunTask(job.Task), CreatedAt: now, UpdatedAt: now,
 		Delivery: &store.RunDelivery{
 			SourceName: job.SourceName, ReplyTarget: job.ReplyTarget,
 			NotifyChannel: job.NotifyChannel, Kind: string(job.Kind),
@@ -659,11 +697,12 @@ func (b *background) DispatchRun(ctx context.Context, clusterID string, object *
 	if run.CancelRequested {
 		// Cancelled while it sat in the queue. Honour it rather than start work
 		// nobody wants; the person who cancelled is not told twice.
-		b.server.closeRunNow(ctx, scope, run, store.RunPhaseAborted, "cancelled by user")
-		return nil
+		return b.stopCancelledRun(ctx, clusterID, scope, run, "cancelled by user")
 	}
 	if runSettled(run.Phase) {
-		return nil
+		return b.server.projectRunTo(ctx, clusterID, run, func(ctx context.Context) (store.Run, error) {
+			return b.server.store.GetRun(ctx, scope, run.ID)
+		})
 	}
 
 	job := executor.Job{
@@ -681,6 +720,38 @@ func (b *background) DispatchRun(ctx context.Context, clusterID string, object *
 		job.ReplyTarget = d.ReplyTarget
 		job.NotifyChannel = d.NotifyChannel
 	}
+
+	agentUID := run.AgentUID
+	if agentUID == "" {
+		// Legacy rows predate the UID column. Their projected Run already
+		// pins the original Agent in its owner reference.
+		agentUID = runAgentOwnerUID(object.OwnerReferences, run.AgentName)
+		if agentUID == "" {
+			return b.failQueuedRun(ctx, scope, run)
+		}
+	}
+
+	// Check the Agent while dispatch can still report a retry to the controller.
+	dyn, err := b.scoped(ctx, clusterID)
+	if err != nil {
+		return err
+	}
+	agentObject, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, run.AgentName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		b.recordOutcome(ctx, job, run.ID, fmt.Errorf("agent %q: %w", run.AgentName, err), true)
+		return b.failQueuedRun(ctx, scope, run)
+	}
+	if err != nil {
+		return fmt.Errorf("reading Agent for queued run %s: %w", run.ID, err)
+	}
+	agent, err := fromU[agentsv1alpha1.Agent](agentObject)
+	if err != nil {
+		return err
+	}
+	if string(agent.UID) != agentUID {
+		return b.failQueuedRun(ctx, scope, run)
+	}
+
 	// Take a slot BEFORE the run is told it is executing. A run that cannot get
 	// one is left exactly as it was — claimed, Pending, undelivered — and the
 	// reconciler brings it back; the alternative is a replica that accepts every
@@ -688,8 +759,32 @@ func (b *background) DispatchRun(ctx context.Context, clusterID string, object *
 	if !b.tryAcquireSlot() {
 		return fmt.Errorf("dispatching run %s: %w", object.Name, errNoRunSlot)
 	}
-	b.execute(job)
+	b.execute(job, dyn, agent)
 	return nil
+}
+
+func runAgentOwnerUID(owners []metav1.OwnerReference, agentName string) string {
+	for _, owner := range owners {
+		if owner.APIVersion == agentsv1alpha1.SchemeGroupVersion.String() && owner.Kind == "Agent" && owner.Name == agentName {
+			return string(owner.UID)
+		}
+	}
+	return ""
+}
+
+func (b *background) failQueuedRun(ctx context.Context, scope store.Scope, run store.Run) error {
+	failed, settled, err := b.server.store.FailPendingRun(ctx, scope, run.ID, run.UpdatedAt, run.CreatedAt, time.Now().UTC(),
+		"the queued run could not verify its original Agent")
+	if err != nil {
+		return err
+	}
+	if !settled {
+		return nil
+	}
+	b.server.publishRunEvent(scope, runEvent{ID: failed.ID, Agent: failed.AgentName, Trigger: failed.Trigger, ParentRunID: failed.ParentRunID, Phase: failed.Phase})
+	return b.server.projectRunTo(ctx, scope.ClusterID, failed, func(ctx context.Context) (store.Run, error) {
+		return b.server.store.GetRun(ctx, scope, failed.ID)
+	})
 }
 
 // execute runs one claimed job, detached and panic-isolated.
@@ -709,7 +804,7 @@ func (b *background) DispatchRun(ctx context.Context, clusterID string, object *
 //
 // It runs on the provider's context, not the reconcile's: a run outlives the
 // reconcile that claimed it, but not the process.
-func (b *background) execute(job executor.Job) {
+func (b *background) execute(job executor.Job, dyn dynamic.Interface, agent *agentsv1alpha1.Agent) {
 	go func() {
 		defer b.releaseSlot()
 		defer func() {
@@ -717,7 +812,7 @@ func (b *background) execute(job executor.Job) {
 				log.Printf("background: job %s %s/%s panicked: %v", job.Kind, job.ClusterID, job.SourceName, r)
 			}
 		}()
-		if err := b.handle(b.ctx, job); err != nil {
+		if err := b.handle(b.ctx, job, dyn, agent); err != nil {
 			log.Printf("background: job %s %s/%s failed: %v", job.Kind, job.ClusterID, job.SourceName, err)
 		}
 	}()
@@ -795,22 +890,111 @@ func (b *background) releaseSlot() {
 // tenant, every thirty seconds, is now one reconcile of one object whose own
 // claim went stale.
 func (b *background) RecoverRun(ctx context.Context, clusterID, agentName, runID string) error {
+	if b.server.cfg.ProcessID == "" {
+		return fmt.Errorf("recovering a run requires a process-incarnation owner")
+	}
 	scope := b.scopeFor(ctx, clusterID, agentName)
 	run, err := b.server.store.GetRun(ctx, scope, runID)
 	if err != nil {
 		return err
 	}
 	if runSettled(run.Phase) {
+		// The store may have committed the final outcome while its best-effort
+		// projection failed. This hook was called because the watched object is
+		// still active: repair it without claiming or executing the run again.
+		// Return projection errors so the controller retries a transient outage.
+		if b.server.bg == nil {
+			return nil
+		}
+		return b.server.projectRunTo(ctx, clusterID, run, func(ctx context.Context) (store.Run, error) {
+			return b.server.store.GetRun(ctx, scope, runID)
+		})
+	}
+	if run.Phase == store.RunPhasePending {
+		if run.CancelRequested {
+			b.server.closeRunNow(ctx, scope, run, store.RunPhaseAborted, "cancelled by user")
+			return nil
+		}
+		now := time.Now().UTC()
+		failed, settled, settleErr := b.server.store.FailPendingRun(ctx, scope, runID, run.UpdatedAt, now.Add(-store.RunLeaseDuration), now,
+			"the provider restarted before this run began, so it could not be resumed")
+		if settleErr != nil {
+			return fmt.Errorf("settling abandoned pending run: %w", settleErr)
+		}
+		if settled {
+			b.server.projectRun(ctx, scope, failed)
+			b.server.publishRunEvent(scope, runEvent{ID: failed.ID, Agent: failed.AgentName, Trigger: failed.Trigger, ParentRunID: failed.ParentRunID, Phase: failed.Phase})
+			if err := b.server.reconcileRunDescendants(ctx, scope, failed.ID); err != nil {
+				log.Printf("runs: reconciling descendants of abandoned pending run %s: %v", failed.ID, err)
+			}
+			return nil
+		}
+		run, err = b.server.store.GetRun(ctx, scope, runID)
+		if err != nil {
+			return err
+		}
+		b.server.projectRun(ctx, scope, run)
+		if runSettled(run.Phase) {
+			return nil
+		}
+		if run.Phase == store.RunPhasePending {
+			return fmt.Errorf("pending run %s has not advanced or aged past its recovery grace", runID)
+		}
+	}
+	claimed, err := b.server.store.ClaimRecovery(ctx, scope, runID, run.UpdatedAt, newExecutionOwner(b.server.cfg.ProcessID), time.Now().UTC())
+	if errors.Is(err, store.ErrRecoveryClaimStale) {
+		latest, latestErr := b.server.store.GetRun(ctx, scope, runID)
+		if latestErr != nil {
+			return latestErr
+		}
+		b.server.projectRun(ctx, scope, latest)
+		if latest.Phase == store.RunPhaseRunning && latest.CancelRequested {
+			return b.StopRun(ctx, clusterID, agentName, runID, "cancelled by user")
+		}
+		if latest.Phase == store.RunPhaseRunning && latest.ExecutionOwner != "" && !latest.ExecutionLeaseAt.IsZero() && time.Since(latest.ExecutionLeaseAt) < store.RunLeaseDuration {
+			return fmt.Errorf("run %s still has a live execution lease", runID)
+		}
 		return nil
 	}
-	if b.server.liveRuns.has(runID) {
-		// Executing right here after all. A run can sit inside one slow tool
-		// call for far longer than any grace, and killing it because its claim
-		// looks old would be the sweep's oldest bug reintroduced.
-		return nil
+	if err != nil {
+		return fmt.Errorf("claiming stranded run: %w", err)
 	}
-	b.server.recoverRun(ctx, store.ScopedRun{Scope: scope, Run: run}, b.resumeRecoveredRun, b.notifyStrandedRun)
+	b.server.projectRun(ctx, scope, claimed)
+	b.server.recoverRun(ctx, store.ScopedRun{Scope: scope, Run: claimed}, b.resumeRecoveredRun, b.notifyStrandedRun)
 	return nil
+}
+
+// ReconcileParkedRun repairs an approval claim whose Running status never
+// reached the Run object. Once projected, the ordinary lease recovery path
+// decides whether the executor is still live or the checkpoint needs recovery.
+func (b *background) ReconcileParkedRun(ctx context.Context, clusterID, agentName, runID string) error {
+	scope := b.scopeFor(ctx, clusterID, agentName)
+	run, err := b.server.store.GetRun(ctx, scope, runID)
+	if err != nil {
+		return err
+	}
+	if run.Phase == store.RunPhasePendingApproval {
+		if run.CancelRequested {
+			return b.stopCancelledRun(ctx, clusterID, scope, run, "cancelled by user")
+		}
+		return nil
+	}
+	return b.server.projectRunTo(ctx, clusterID, run, func(ctx context.Context) (store.Run, error) {
+		return b.server.store.GetRun(ctx, scope, runID)
+	})
+}
+
+// ReconcileRunDescendants retries parent cleanup from the Run controller. The
+// controller calls it for terminal Run objects, including ones another
+// replica terminalized before this process restarted.
+func (b *background) ReconcileRunDescendants(ctx context.Context, clusterID, agentName, runID string) error {
+	return b.server.reconcileTerminalRunDescendants(ctx, clusterID, agentName, runID)
+}
+
+// ReconcileRunParent retries cleanup for an orphaned active child Run.
+func (b *background) ReconcileRunParent(ctx context.Context, clusterID, agentName, runID string) error {
+	scope := b.scopeFor(ctx, clusterID, agentName)
+	return b.server.reconcileRunParent(ctx, scope, runID)
 }
 
 // StopRun closes a run the Run reconciler has decided must not continue: one
@@ -831,13 +1015,19 @@ func (b *background) StopRun(ctx context.Context, clusterID, agentName, runID, r
 	if runSettled(run.Phase) {
 		return nil
 	}
-	now := time.Now().UTC()
-	if err := b.server.store.RequestCancel(ctx, scope, runID, now, ""); err != nil {
+	run, err = b.server.requestRunCancellation(ctx, scope, runID, "")
+	if err != nil {
 		return err
 	}
-	if b.server.liveRuns.cancel(runID) {
-		// Executing here: its context is cancelled and the executor writes the
-		// terminal phase with the timing it actually measured.
+	return b.stopCancelledRun(ctx, clusterID, scope, run, reason)
+}
+
+func (b *background) stopCancelledRun(ctx context.Context, clusterID string, scope store.Scope, run store.Run, reason string) error {
+	if !runCancellable(run.Phase) {
+		return nil
+	}
+	if run.Phase == store.RunPhaseRunning && b.server.liveRuns != nil && b.server.liveRuns.cancel(run.ID) {
+		// The executor closes the run with the timing it measured.
 		return nil
 	}
 	if run.Backend == agentsv1alpha1.AgentBackendHarness && len(run.Checkpoint) > 0 {
@@ -845,12 +1035,11 @@ func (b *background) StopRun(ctx context.Context, clusterID, agentName, runID, r
 		// parked or still working. Use the durable start/park checkpoint, and let
 		// the Run reconciler retry if the bounded remote cancellation fails.
 		if err := b.stopHarnessFromRun(ctx, clusterID, scope, run); err != nil {
-			log.Printf("background: run %s: stopping its remote harness attempt failed", runID)
+			log.Printf("background: run %s: stopping its remote harness attempt failed", run.ID)
 			return errors.New("stopping the remote harness attempt failed")
 		}
 	}
-	b.server.closeRunNow(ctx, scope, run, store.RunPhaseAborted, reason)
-	return nil
+	return b.server.settleRunNow(ctx, scope, run, store.RunPhaseAborted, reason)
 }
 
 // ---- job handler ------------------------------------------------------------
@@ -875,21 +1064,8 @@ func channelErrorText(err error) string {
 	return "⚠️ " + err.Error()
 }
 
-func (b *background) handle(ctx context.Context, job executor.Job) error {
-	dyn, err := b.scoped(ctx, job.ClusterID)
-	if err != nil {
-		return err
-	}
-	au, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, job.AgentRef, metav1.GetOptions{})
-	if err != nil {
-		b.recordOutcome(ctx, job, "", fmt.Errorf("agent %q: %w", job.AgentRef, err), true)
-		return fmt.Errorf("agent %q: %w", job.AgentRef, err)
-	}
-	agent, err := fromU[agentsv1alpha1.Agent](au)
-	if err != nil {
-		return err
-	}
-
+func (b *background) handle(ctx context.Context, job executor.Job, dyn dynamic.Interface, agent *agentsv1alpha1.Agent) error {
+	agentUID := string(agent.UID)
 	scope := b.scopeFor(ctx, job.ClusterID, agent.Name)
 	// A job Submit pre-recorded may have been cancelled (or closed by the
 	// recovery sweep) while it sat in the queue; starting it now would
@@ -897,7 +1073,10 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	var repository *repositoryAttempt
 	var modelSettings *store.ModelSettings
 	var harnessSettings *store.HarnessSettings
-	var retries int
+	executionCtx := ctx
+	leaseManaged := false
+	var executionOwner string
+	var retries, attempt int
 	if job.RunID != "" {
 		stored, gerr := b.server.store.GetRun(ctx, scope, job.RunID)
 		if gerr != nil {
@@ -910,19 +1089,31 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 			log.Printf("background: job %s/%s: run %s is %s (cancelRequested=%t); not starting it", job.Kind, job.SourceName, job.RunID, stored.Phase, stored.CancelRequested)
 			return nil
 		}
-		// A repository run picked up here never has its clone source any
-		// more — that died with the process that accepted it — so a fresh
-		// dispatch of one fails with the retry message rather than
-		// starting a workspace turn in its place.
+		if agentUID == "" || (stored.AgentUID != "" && stored.AgentUID != agentUID) {
+			return b.failQueuedRun(ctx, scope, stored)
+		}
+		if b.server.cfg.ProcessID != "" {
+			claimed, leaseCtx, stop, claimErr := b.server.claimFreshRunLease(ctx, scope, job.RunID, agentUID)
+			if claimErr != nil {
+				return fmt.Errorf("claiming queued run %s for execution: %w", job.RunID, claimErr)
+			}
+			executionCtx, leaseManaged = leaseCtx, true
+			executionOwner = claimed.ExecutionOwner
+			defer stop()
+		}
+		// Restore the stored repository coordinates. At dispatch, the Agent's
+		// pinned checkout connection reconstructs the clone source and mints
+		// a fresh read-only token.
 		repository = repositoryAttemptFromStored(stored.Repository)
 		harnessSettings = stored.HarnessSettings
 		modelSettings = stored.ModelSettings
 		// A run picked up for the second time carries how many times it
 		// was handed back, which is what bounds handing it back again.
 		retries = stored.Retries
+		attempt = stored.Attempt
 	}
 	tr := taskRun{
-		Scope: scope, Agent: agent, RunID: job.RunID,
+		Scope: scope, Agent: agent, RunID: job.RunID, ExecutionOwner: executionOwner,
 		SessionID: effectiveSessionID(job.SessionID, job.Trigger), Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
 		NotifyChannel: job.NotifyChannel,
 		// Recorded on the run so a crash mid-flight can still be reported to
@@ -933,13 +1124,14 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		Repository:      repository,
 		HarnessSettings: harnessSettings,
 		ModelSettings:   modelSettings,
-		Retries:         retries,
-		MaxAttempts:     b.maxAttemptsFor(ctx, dyn, job),
+		Retries:         retries, Attempt: attempt,
+		MaxAttempts: b.maxAttemptsFor(ctx, dyn, job),
 	}
+	tr.executionLeaseManaged = leaseManaged
 	// There is no user to act as here, so the run acts as the AGENT's own
 	// ServiceAccount through the virtual workspace.
 	b.agentAccess(ctx, dyn, job.ClusterID, agent.Name).applyTo(&tr)
-	res, runErr := b.server.executeTask(ctx, tr)
+	res, runErr := b.server.executeTask(executionCtx, tr)
 
 	var requeued *runRequeued
 	if errors.As(runErr, &requeued) {

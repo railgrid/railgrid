@@ -630,3 +630,77 @@ default memory limit is 512 MiB to leave headroom for JSON buffers and Git.
 ### Branch discovery
 
 The read-only Repository-bound `branches/v1` action returns `branches` (up to 50 names) and `nextPage` (zero when complete). Supply the canonical repository, repository UID, connection UID, and an optional one-based `page`. Each page uses the caller's `create` permission on the `repositories/branches` subresource and rechecks the registered repository against the Git host. No Git credentials are returned. Consumers must follow `nextPage` with their own bounded traversal and must not interpret a failed or partial read as an empty repository.
+
+### Coordinator task grants
+
+`repositories/authorize` is a separate Code capability for trusted coordinator
+providers. It grants authority only for an existing PullRequest whose repository,
+connection and PR UIDs match the request. Code stamps the issuer from the
+authenticated provider identity and pins the opaque source UID and digest, the
+original caller, repository ID, PR UID, branch and base, operation mode and
+deadline. The coordinator retains its task record and budgets; Code stores only
+the narrow grant on the existing PullRequest.
+
+Before issuing a grant, and again when a coordinator asks for an invocation
+scope or uses task publication authority, Code runs a SubjectAccessReview for
+the original caller's `create` permission on `pullrequests/operate` for that PR.
+The caller identity and group claims are captured at admission. These reviews
+re-evaluate current RBAC policy against those captured claims; they do not refresh
+identity-provider group membership. Membership changes outside RBAC require
+explicit grant revocation or expiry of the bounded authorization lease.
+
+The grant and invocation scope are signed with a domain-separated key derived
+from the GitHub App webhook secret already bound to the repository. The scope
+proof binds the task grant, invocation key, and frozen Agent name and UID. Agents copies
+those values from immutable Run input and overwrites model-supplied authority.
+Task operations are accepted only from a trusted consumer: another provider's
+ServiceAccount acting through its own export, or the scoped identity the hub
+minted for the Agents Run the operation names (`invocationRun` and
+`invocationRunUID`). Code recognizes that identity by its ServiceAccount name,
+which the hub derives from the Run (`identityclient.ServiceAccountName`).
+The worker can observe the admitted PR, publish COMMENT reviews on its exact
+current head, or publish a verified snapshot to its pinned branch and base; it
+cannot merge or approve.
+
+**Trust boundary.** The signing key derives from the Connection Secret in the
+tenant workspace, and the grant and tombstones live in the PullRequest spec. A
+principal that can read that Secret and update PullRequests can therefore forge
+a grant or remove a tombstone. This is not treated as an escalation: the same
+Secret holds the GitHub App private key, so that principal can already act as
+the App on GitHub directly. Inside Railgrid, a forged grant borrows only the
+authority of the caller it names, because every use re-runs the SubjectAccessReview
+above. What it can do is attribute work to a caller who did not request it.
+Grant read access to the Connection's credentials namespace and `update` on
+`pullrequests` only to principals you would trust with the App key. Moving the
+key to a provider-held secret and the grant to provider-owned state would remove
+that attribution gap; it is not implemented.
+
+Only the same authenticated coordinator identity can renew or revoke its grant.
+Revocation clears the command and desired head and writes a bounded tombstone on
+the PullRequest, so a delayed grant retry cannot restore canceled authority.
+The issuer can update the single App-owned status comment. Agents workers do not
+receive that operation. Task grants are limited to 24 hours and require a
+GitHub App connection with a webhook signing secret of at least 32 bytes.
+
+### Delegated findings publication
+
+An admitted invocation may attenuate its Code scope with `delegate-review` for
+a child invocation key and Agent UID. The child proof is signed separately for
+the review-only role. Removing that role or changing the child identity invalidates
+the proof. These scopes permit only `observe` and expected-head COMMENT reviews;
+branch publication, status comments and further delegation are rejected. Current
+permission, repository/PR identity and deadline checks still apply. Zero-finding
+reviews create no GitHub post. Status publication retains one App-owned comment.
+
+Inline review findings use `comments: [{path, line, side, body}]` on the existing
+`review` operation. Code accepts up to 50 single-line findings (64 KiB combined,
+8 KiB per comment), with matching `findingsCount`. Paths and LEFT/RIGHT lines must
+exist in GitHub's PR diff (LEFT for deletions, RIGHT for additions or context);
+absent, binary or truncated patches fail closed.
+Code submits all comments in one COMMENT review bound to `expectedHead`, rechecks
+the current head before submission, and recovers lost responses using the existing
+App-owned review marker. Reusing that key with different inline content is refused.
+GitHub has no atomic head lease for reviews: a concurrent push can make a review
+outdated, but its explicit commit ID prevents it from attaching to the newer head.
+Existing body-only reviews remain supported; clean reviews remain suppressed and
+the single PR status comment is unchanged. Approval and merge are not exposed.

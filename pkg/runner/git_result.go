@@ -229,6 +229,11 @@ func exportGitResult(ctx context.Context, cfg Config, request StartRequest, work
 		return gitResultExport{}, err
 	}
 	for _, path := range paths {
+		// Hook output is runner-owned diagnostic data and can contain secrets.
+		// Do not turn it into source merely because a repository did not ignore it.
+		if (path == ".railgrid-prepare.log" || path == ".railgrid-cleanup.log") && !trackedInBase[path] {
+			continue
+		}
 		if strings.HasPrefix(path, screenshotDirectory+"/") && !trackedInBase[path] {
 			continue
 		}

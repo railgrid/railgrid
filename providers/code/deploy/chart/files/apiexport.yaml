@@ -52,12 +52,17 @@ spec:
       crd: {}
   - group: code.railgrid.ai
     name: connections
-    schema: v260609-fc69fa2.connections.code.railgrid.ai
+    schema: v261108-aafad9fce.connections.code.railgrid.ai
     storage:
       crd: {}
   - group: code.railgrid.ai
     name: deploykeys
     schema: v260609-fc69fa2.deploykeys.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: githubevents
+    schema: v261108-aafad9fce.githubevents.code.railgrid.ai
     storage:
       crd: {}
   - group: code.railgrid.ai
@@ -67,7 +72,7 @@ spec:
       crd: {}
   - group: code.railgrid.ai
     name: pullrequests
-    schema: v261018-947b2daa.pullrequests.code.railgrid.ai
+    schema: v261109-b1f2d78.pullrequests.code.railgrid.ai
     storage:
       crd: {}
   - group: code.railgrid.ai
@@ -100,8 +105,35 @@ spec:
           kind: DataPlaneEndpointSlice
           name: code.providers.railgrid.ai
   - group: code.railgrid.ai
+    name: githubevents/context
+    schema: v261108-aafad9fce.context.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: pullrequests/operate
+    schema: v261108-aafad9fce.operate.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
     name: repositories/add-comment
     schema: v260924-87f1980f.add-comment.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: repositories/authorize
+    schema: v261109-aafad9fce.authorize.code.railgrid.ai
     storage:
       virtual:
         reference:

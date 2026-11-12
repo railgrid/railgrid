@@ -18,12 +18,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
+	"github.com/railgrid/provider-sdk/dataplane"
 
 	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
 )
@@ -54,6 +58,10 @@ const (
 )
 
 type invokeRunRequest struct {
+	// PreventStart atomically reserves an absent idempotency key as Aborted.
+	// If it already exists, returns that Run without changing its execution.
+	// This closes cancellation after an uncertain acceptance without starting work.
+	PreventStart bool `json:"preventStart,omitempty"`
 	// Model overrides the Agent model for this run; omitted inherits, empty selects the harness default.
 	Model *string `json:"model,omitempty"`
 	// ReasoningEffort follows the same inheritance rules and requires the existing run permission.
@@ -119,11 +127,23 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Task = strings.TrimSpace(req.Task)
-	if req.Task == "" {
+	if req.Task == "" && !req.PreventStart {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "task is required")
 		return
 	}
 	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	hasCodeScope := tools.PublicRunTask(req.Task) != req.Task
+	if hasCodeScope {
+		caller, _ := dataplane.ProxiedIdentityFrom(r.Context())
+		if !caller.IsForeignProvider(id.clusterID) {
+			writeStatus(w, http.StatusForbidden, "Forbidden", "Code-scoped invocations require a provider caller")
+			return
+		}
+		if req.IdempotencyKey == "" || tools.ParseCodeScope(req.Task) == nil || strings.TrimSpace(tools.PublicRunTask(req.Task)) == "" {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "Code-scoped invocations require a valid scope, task and idempotency key")
+			return
+		}
+	}
 	if err := req.Callback.validate(); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
@@ -159,6 +179,12 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if found {
+			if s.bg != nil {
+				if err := s.projectRunTo(r.Context(), id.clusterID, existing, func(ctx context.Context) (store.Run, error) { return s.store.GetRun(ctx, scope, existing.ID) }); err != nil {
+					writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "accepted Run projection unavailable; retry")
+					return
+				}
+			}
 			resp := invokeRunResponse{RunID: existing.ID, Phase: string(existing.Phase), Reused: true}
 			if detail, derr := s.runDetailFor(r.Context(), scope, existing.ID); derr == nil {
 				resp.Run = &detail
@@ -166,6 +192,26 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
+	}
+
+	if req.PreventStart {
+		if req.IdempotencyKey == "" {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "preventStart requires idempotencyKey")
+			return
+		}
+		record, err := s.fenceInvocation(r.Context(), scope, req.IdempotencyKey)
+		if err != nil {
+			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "invocation fence unavailable; retry")
+			return
+		}
+		if s.bg != nil {
+			if err := s.projectRunTo(r.Context(), id.clusterID, record, func(ctx context.Context) (store.Run, error) { return s.store.GetRun(ctx, scope, record.ID) }); err != nil {
+				writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "fenced Run projection unavailable; retry")
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, invokeRunResponse{RunID: record.ID, Phase: string(record.Phase), Reused: true})
+		return
 	}
 
 	settings, err := invokeHarnessSettings(agent, req.Model, req.ReasoningEffort)
@@ -197,6 +243,7 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		SessionID:       strings.TrimSpace(req.SessionID), Task: req.Task,
 		Trigger:        agentsv1alpha1.RunTriggerAPI,
 		IdempotencyKey: req.IdempotencyKey,
+		allowCodeScope: hasCodeScope,
 		Callback:       req.Callback,
 		Repository:     repository,
 		// SourceName attributes the run to its caller in the activity view. The
@@ -337,4 +384,23 @@ func (s *Server) backgroundScoped(ctx context.Context, clusterID string) (dynami
 		return nil, fmt.Errorf("no provider kubeconfig: the virtual workspace is unavailable")
 	}
 	return s.bg.scoped(ctx, clusterID)
+}
+
+// fenceInvocation races through the SAME unique store key as startRun. Either
+// admission wins and recovery locates it, or the Aborted reservation wins and
+// every late/retried admission returns it without executing.
+func (s *Server) fenceInvocation(ctx context.Context, scope store.Scope, key string) (store.Run, error) {
+	now := time.Now().UTC()
+	record := store.Run{ID: uuid.NewString(), AgentName: scope.AgentName, Trigger: agentsv1alpha1.RunTriggerAPI, IdempotencyKey: key, Phase: store.RunPhaseAborted, Message: "cancelled before invocation acceptance was confirmed", CreatedAt: now, UpdatedAt: now, FinishedAt: &now}
+	if err := s.saveRun(ctx, scope, record); err != nil {
+		existing, found, lookupErr := s.store.FindRunByIdempotencyKey(ctx, scope, key)
+		if lookupErr != nil {
+			return store.Run{}, lookupErr
+		}
+		if !found {
+			return store.Run{}, err
+		}
+		return existing, nil
+	}
+	return record, nil
 }

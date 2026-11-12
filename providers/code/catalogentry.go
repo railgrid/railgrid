@@ -18,6 +18,7 @@ import (
 	"github.com/railgrid/provider-sdk/serve"
 
 	"github.com/railgrid/provider-code/actions"
+	"github.com/railgrid/provider-code/githubworkflow"
 )
 
 // The CatalogEntry manifest is this provider's single declaration of what it
@@ -93,6 +94,10 @@ func subresourceRoutes() (map[string]serve.SubresourceRoute, error) {
 		return nil, err
 	}
 	for coordinate, route := range routes {
+		parts := strings.Split(coordinate, "/")
+		if len(parts) == 2 && githubworkflow.ServedVerbs[parts[0]] == parts[1] {
+			continue
+		}
 		if route.Action {
 			continue
 		}

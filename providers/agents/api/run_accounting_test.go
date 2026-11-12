@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/railgrid/provider-agents/engine"
+
 	"github.com/railgrid/railgrid/pkg/runner"
 	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 
@@ -26,6 +28,59 @@ import (
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 )
+
+func TestResumedModelBillsCheckpointUsageBeyondDurableRunTotals(t *testing.T) {
+	f := newCompactFixture(t, 0, 0, "gpt-4o")
+	ctx := context.Background()
+	run := f.run()
+	run.RunID = "model-resume-accounting"
+	now := time.Now().UTC()
+	startedAt := now.Add(-time.Minute)
+	prior := backend.Cost{Tokens: backend.Tokens{InputTokens: 200, OutputTokens: 5}}
+	if _, err := f.s.store.AddUsage(ctx, f.scope, f.agent.Name, prior.InputTokens, prior.OutputTokens, 0, now, 30*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.store.SaveRun(ctx, f.scope, store.Run{
+		ID: run.RunID, AgentName: f.agent.Name, SessionID: run.SessionID,
+		Trigger: run.Trigger, Phase: store.RunPhaseRunning,
+		InputTokens: prior.InputTokens, OutputTokens: prior.OutputTokens,
+		CreatedAt: startedAt, UpdatedAt: now, StartedAt: &startedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The model checkpoint reports cumulative usage from before the crash. The
+	// run row can lag that checkpoint, so the resumed total must be reconciled
+	// against the durable billed baseline and the gap charged exactly once.
+	checkpoint := runCheckpoint{Engine: engine.Checkpoint{
+		Messages: []engine.CheckpointMessage{{Role: engine.RoleUser, Content: "resume this task"}},
+		Usage:    engine.Usage{InputTokens: 300, OutputTokens: 15},
+		Iter:     1,
+	}}
+	result, err := f.s.runTurn(ctx, run, &continuation{
+		Checkpoint: checkpoint, StartedAt: startedAt, Tracker: newTurnProgressTracker(0), Billed: prior,
+	})
+	if err != nil || result.Phase != store.RunPhaseSucceeded {
+		t.Fatalf("resumed model result=%+v err=%v, want success", result, err)
+	}
+	if result.Usage.InputTokens != 400 || result.Usage.OutputTokens != 35 {
+		t.Fatalf("resumed total usage = %d/%d, want 400/35", result.Usage.InputTokens, result.Usage.OutputTokens)
+	}
+	stored, err := f.s.store.GetRun(ctx, f.scope, run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.InputTokens != 400 || stored.OutputTokens != 35 {
+		t.Fatalf("stored run usage = %d/%d, want 400/35", stored.InputTokens, stored.OutputTokens)
+	}
+	usage, err := f.s.store.GetUsage(ctx, f.scope, f.agent.Name, time.Now().UTC(), 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.InputTokens != 400 || usage.OutputTokens != 35 {
+		t.Fatalf("rolling usage = %d/%d, want durable prior plus the recovered checkpoint gap and new work (400/35)", usage.InputTokens, usage.OutputTokens)
+	}
+}
 
 func TestFailedHarnessTurnBillsPartialUsage(t *testing.T) {
 	dispatcher := &accountingHarnessDispatcher{

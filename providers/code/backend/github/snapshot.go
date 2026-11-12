@@ -31,11 +31,22 @@ func (b *Backend) VerifySnapshot(ctx context.Context, conn *api.Connection, cred
 	return b.withSnapshot(ctx, conn, cred, repo, input, nil)
 }
 func (b *Backend) PublishSnapshot(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, input backend.Snapshot, branch, expected string) error {
+	return b.publishSnapshot(ctx, conn, cred, repo, input, branch, expected, nil)
+}
+
+func (b *Backend) PublishSnapshotGuarded(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, input backend.Snapshot, branch, expected string, guard backend.SnapshotPublicationGuard) error {
+	if guard == nil {
+		return errors.New("snapshot publication guard is required")
+	}
+	return b.publishSnapshot(ctx, conn, cred, repo, input, branch, expected, guard)
+}
+
+func (b *Backend) publishSnapshot(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, input backend.Snapshot, branch, expected string, guard backend.SnapshotPublicationGuard) error {
 	if !validBranch(branch) || expected != "" && !objectID.MatchString(expected) {
 		return errors.New("invalid branch lease")
 	}
 	return b.withSnapshot(ctx, conn, cred, repo, input, func(ctx context.Context, g *snapshotGit, remote string) error {
-		return g.advance(ctx, remote, input.Commit, branch, expected)
+		return g.advanceGuarded(ctx, remote, input.Commit, branch, expected, guard)
 	})
 }
 func (b *Backend) withSnapshot(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, input backend.Snapshot, apply func(context.Context, *snapshotGit, string) error) error {
@@ -219,8 +230,17 @@ func (g *snapshotGit) run(ctx context.Context, args ...string) (string, error) {
 
 // advance is the single receive-pack dispatch; failure never triggers a fallback push.
 func (g *snapshotGit) advance(ctx context.Context, remote, commit, branch, expected string) error {
+	return g.advanceGuarded(ctx, remote, commit, branch, expected, nil)
+}
+
+func (g *snapshotGit) advanceGuarded(ctx context.Context, remote, commit, branch, expected string, guard backend.SnapshotPublicationGuard) error {
 	if !validBranch(branch) || !objectID.MatchString(commit) || expected != "" && !objectID.MatchString(expected) {
 		return errors.New("invalid branch lease")
+	}
+	if guard != nil {
+		if err := guard(ctx); err != nil {
+			return err
+		}
 	}
 	_, err := g.run(ctx, "push", "--porcelain", "--force-with-lease=refs/heads/"+branch+":"+expected, remote, commit+":refs/heads/"+branch)
 	if err != nil {

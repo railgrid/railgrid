@@ -161,6 +161,34 @@ EOF
 kubectl get modelcredentials
 ```
 
+## GitHub App identities for coding harnesses
+
+A harness-backed Agent can post reviews and publish fixes as a GitHub App
+installation, independently of a person's GitHub account. Create a `github`
+Connection with `auth: secret` and config `credentialType: github-app` plus
+`githubRole: reviewer` or `fixer`. Its conventional Secret,
+`railgrid-agents-conn-<connection-name>` in namespace `default`, must be labelled
+`railgrid.ai/owner: agents` and hold `appID`, `installationID`, and `privateKey`
+(one PEM RSA private key of at least 2048 bits). Do not store that private key in
+an Agent prompt, a repository, or on the runner.
+
+Name the connection in `spec.backend.harness.githubConnectionRef`. Agents signs
+an App JWT and obtains a fresh installation token before each harness turn,
+including resumed turns. The runner receives only `GH_TOKEN` and `GITHUB_TOKEN`;
+there is no cached personal-token fallback. GitHub App roles request Contents
+read for a reviewer and write for a fixer, Pull requests and Issues write, and
+Actions, Checks, Metadata and Commit statuses read. The installation must grant
+those permissions. Tokens expire after about an hour; bound harness turns to
+less than an hour and resume a new turn to obtain a new token. An already running
+process cannot receive a replacement token midway through its turn.
+
+This connection is for harnesses, not the hosted GitHub MCP connection used by
+model-backed agents. A model coordinator can delegate GitHub inspection and
+publication to the harness-backed reviewer and fixer. Hosted Codex runners need
+outbound networking enabled in their runner-owned configuration to reach GitHub.
+Permission and sandbox approvals still apply. Existing PAT/OAuth connections
+keep their original behavior.
+
 ## Agent templates
 
 A template is a curated starting point: the prompt, autonomy, tool grants,
@@ -430,3 +458,149 @@ that would lose decimal precision in the browser are rejected; round them
 explicitly upstream or keep exact identifiers as strings. Prepare larger
 datasets upstream. The portal also provides the underlying data table so
 the values remain inspectable.
+
+## Code capabilities and PR execution
+
+The optional `code` tool family exposes `code_pull_request`, a capability adapter
+to Code's existing PullRequest resource, for observations and COMMENT publication.
+The separate `code-write` grant additionally permits snapshot publication;
+the adapter rejects code publication without that grant. Each call acts as the
+executing Run's own hub-minted identity, owned by the Run and limited to `get`
+and `operate` on the one admitted PullRequest; GitHub App credentials remain in
+Code. A trusted coordinator owns admission and its task
+lifecycle.
+Agents retains execution, child Run lineage, transcripts, checkpoints and usage.
+The delegation cap is checked against existing child Runs, so rebuilding tools
+after recovery does not reset it. Each delegated invocation gets a fresh scoped
+conversation, including independent re-reviews.
+
+Agents does not require Code. Its CatalogEntry declares no requirement on Code,
+because a requirement naming a provider makes it a prerequisite for enabling
+Agents. Where Code is not enabled, the hub refuses to mint the Run's Code
+identity and only `code_pull_request` fails, with that reason. The `code` tool
+family stays opt-in per Agent: grant it through that Agent's Toolset to expose
+the tool.
+
+PR workflow invocations carry an immutable `railgrid-code-scope:` header in
+Run input. Event-backed scopes pin the admitted event; task-backed scopes pin a
+coordinator task UID and request digest, Code grant reference and proof, the
+repository and connection UIDs, and the PullRequest UID. The Code adapter takes
+the PR and command binding from that input, rejects a different target, and
+injects authority outside model arguments. Code-enabled toolsets omit
+scheduling, waiting, and self-configuration tools; the coordinator owns any
+later invocation. The existing `agents/run` request accepts
+`preventStart: true` with an idempotency key: an existing Run is returned, or an
+Aborted reservation prevents a late request from starting under that key.
+
+For worker checkout, a GitHub App Connection may use
+`config.githubRole: checkout` and a required numeric `config.repositoryID`.
+The minted token is restricted to that repository with only contents/metadata
+read permission. Both reviewers and fixers use this role; Code retains forge
+publication authority. Agents mints a fresh token at dispatch and supplies it
+both to the runner's clone source and to the harness as `GH_TOKEN` and
+`GITHUB_TOKEN`. The agent and commands it runs can read these environment
+variables. Run input and checkpoints store repository coordinates without the
+token.
+
+Code-bound delegation reuses the existing native repository attempt. Code's
+observation supplies the admitted repository and current head; the worker's
+checkout connection must match that repository ID and have the checkout role.
+The runner fetches source and exports the canonical snapshot outside the model's
+shell. The delegate returns its report and verified stored snapshot to the
+orchestrator; it receives no remote publication capability. Snapshot transport
+through this adapter is currently bounded to 64 KiB of bundle data.
+
+PR delegates with a persistent harness workspace (including the default) pass
+a stable environment ID derived from the admitted PR UID and event UID or task
+UID plus request digest.
+The existing repository dispatch adds tenant, repository and worker Agent UID
+scoping and persists the ID for recovery. Ephemeral workers omit it. Repository
+policy at the approved commit must also opt in through `.railgrid/runner.json`.
+Warm reuse keeps a fresh harness conversation and the existing pinned-base,
+checkout fingerprint, exclusive lease and verified snapshot checks. It accepts
+the retained base or that environment's own exported snapshot; other heads
+require cleanup and a cold checkout. The runner currently retains one idle
+environment, so alternating workers can evict each other. Runner-declared
+retryable startup refusals without a receipt are retried under the caller's
+deadline, for at most five minutes, with the same attempt identity. Uncertain
+acceptance and nonretryable failures are never retried by this helper.
+Runner-owned preparation and cleanup logs stay outside exported source snapshots
+even when unignored; hooks refuse a log path already tracked in the approved base.
+
+A delegate call joins the existing child Run until it is terminal, including
+when the child temporarily waits for human approval. Its idempotency key uses
+the parent Run and engine tool-call ID, so replay resolves the same child.
+This is a bounded synchronous join, not durable external-condition suspension;
+the parent deadline still applies. The coordinator owns explicit later
+invocations for Code CI observations.
+
+Event publication scope is signed by Code through the verified event/context
+capability. A task grant is signed by Code for an accepted coordinator identity
+and pins the original caller, task UID and digest, repository/connection/PR
+UIDs, branch/base, mode, and deadline. Code rechecks the original caller's
+current write permission before scope issuance and protected operations. The
+invocation proof also binds the invocation key and frozen Agent name and UID.
+The runtime injects its actual invocation key and Agent identity into Code
+operations, overriding model arguments. Copying the input header to another
+invocation or Agent cannot reuse that authority. Only the authenticated grant
+issuer can update the PR status comment or revoke the task grant; Agents cannot
+issue or revoke grants.
+
+## Execution recovery
+
+Execution leases extend the existing Run store and its Kubernetes status; they
+do not introduce another lifecycle record. Each execution has a fresh owner token
+under its process incarnation, shared by API execution and the Run controller. Active execution
+renews a two-minute lease without changing the checkpoint revision. Recovery
+atomically takes an expired lease and advances the existing recovery epoch;
+stale executors cannot renew it or persist a terminal outcome for its successor.
+
+The Run also retains its original authority class and admitted Agent UID.
+Only execution originally using a reconstructible Agent service identity can
+resume automatically, and a same-name replacement Agent cannot inherit it.
+Caller-scoped or unverifiable legacy execution fails closed after abandonment.
+Finish active legacy runs before upgrading if automatic continuation is needed.
+An API request abandoned before execution and without a checkpoint is settled
+honestly as failed instead of remaining Pending indefinitely.
+
+The engine durably checkpoints a replay-safe delegate call before starting its
+child. Recovery replays that exact call ID and joins the existing child; usage
+rollup is recorded once on that child's existing Run. This does not make other
+external tools replay-safe or add durable CI waits. A coordinator's
+Code-observation continuation remains a new invocation, separate from
+execution recovery.
+
+## Consumer-defined typed results
+
+An invocation can carry a bounded `railgrid-result-contract:` metadata line
+with a tool name, description, and JSON Schema. Model executions expose that
+result tool and validate its arguments before recording `structured-result.json`
+on the existing Run. The artifact is immutable: identical canonical submissions
+are idempotent and conflicting submissions fail. Consumers fetch it through the
+existing digest-verified artifact API and remain responsible for evidence and
+lifecycle validation. Final prose does not replace the recorded result.
+
+Code-scoped delegated harness workers can receive review-only Code tools through
+the existing per-run MCP session, independently of self-configuration. Explicit
+Code tool grants, the active Run, frozen Agent identity and pinned repository
+head are checked. Code signs the attenuated child scope; it permits observations
+and findings reviews, never branch writes, status comments or further delegation.
+
+Set `RAILGRID_HARNESS_MCP_URL` (Helm: `harnessMCPURL`) to a reachable direct provider MCP endpoint when
+the Hub requires normal caller identity for backend routing. Harness session
+bearers authenticate only to Agents, not to kcp or the Hub. HTTPS is required
+except for loopback HTTP on a colocated runner. The override is operator-owned;
+never add a human or provider bearer to the URL or runner environment. Without
+an override the existing HubPublicURL-based address remains the default.
+
+Codex runners advertise `remote-mcp-approved-tools-v1` before accepting an
+explicit MCP tool allowlist. Review sessions preapprove only `code_pull_request`
+and expose only that tool; native shell and file approval policies are unchanged.
+Unsupported MCP elicitation fails explicitly instead of leaving a running call
+waiting silently for an approval that cannot be answered.
+
+Reviewers should provide structured `comments` with repository-relative `path`,
+PR-diff `line`, LEFT/RIGHT `side`, and finding `body` to `code_pull_request`.
+Code validates and publishes them together as one formal inline COMMENT review.
+The runtime continues to inject the admitted PR identity and worker's pinned head;
+inline arguments convey locations, never additional publication authority.

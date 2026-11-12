@@ -20,7 +20,7 @@ import (
 // PullRequest is one pull request on a managed Repository, as a resource:
 // what the forge should show (spec) and what it does show (status).
 //
-// A coordinator such as Factory states intent — the branch, the base, the
+// A trusted coordinator states intent — the branch, the base, the
 // public title and body, and the exact commit the branch should be at, as a
 // verified snapshot it staged — and Code makes the forge agree: it advances
 // the branch under an expected-head lease, opens the pull request once, and
@@ -57,8 +57,90 @@ type PullRequestList struct {
 	Items           []PullRequest `json:"items"`
 }
 
+// PullRequestCommand binds publication to a verified maintainer command.
+// The coordinator's task record remains the source of task scope and budgets.
+type PullRequestCommand struct {
+	// +kubebuilder:validation:MaxLength=253
+	EventRef string `json:"eventRef"`
+	// +kubebuilder:validation:MaxLength=128
+	EventUID string      `json:"eventUID"`
+	Deadline metav1.Time `json:"deadline"`
+	// Task is a Code-signed authorization for one existing coordinator task to
+	// operate on this PR. Code treats sourceUID as opaque and never reads or
+	// depends on the issuer's task API.
+	// +optional
+	Task *PullRequestTaskAuthorization `json:"task,omitempty"`
+}
+
+// PullRequestTaskAuthorization is the public, generic Code-side projection of
+// an authorization issued by a trusted coordinator provider. The issuer
+// identity and proof are written by Code's repositories/authorize verb;
+// tenant-authored values are not trusted without a valid proof.
+type PullRequestTaskAuthorization struct {
+	// +kubebuilder:validation:MaxLength=128
+	SourceUID string `json:"sourceUID"`
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	SourceDigest string `json:"sourceDigest"`
+	// +kubebuilder:validation:MaxLength=253
+	RepositoryRef string `json:"repositoryRef"`
+	// +kubebuilder:validation:MaxLength=256
+	Repository string `json:"repository"`
+	// +kubebuilder:validation:Minimum=1
+	RepositoryID int64 `json:"repositoryID"`
+	// +kubebuilder:validation:MaxLength=128
+	RepositoryUID string `json:"repositoryUID"`
+	// +kubebuilder:validation:MaxLength=128
+	ConnectionUID string `json:"connectionUID"`
+	// +kubebuilder:validation:MaxLength=128
+	PullRequestUID string `json:"pullRequestUID"`
+	// +kubebuilder:validation:MaxLength=253
+	PullRequestRef string `json:"pullRequestRef"`
+	// +kubebuilder:validation:MaxLength=255
+	Branch string `json:"branch"`
+	// +kubebuilder:validation:MaxLength=255
+	Base string `json:"base"`
+	// +kubebuilder:validation:MaxLength=253
+	Caller string `json:"caller"`
+	// +kubebuilder:validation:MaxLength=128
+	CallerUID string `json:"callerUID,omitempty"`
+	// +kubebuilder:validation:MaxItems=64
+	CallerGroups []string    `json:"callerGroups,omitempty"`
+	Deadline     metav1.Time `json:"deadline"`
+	// +kubebuilder:validation:Enum=review-fix
+	Mode string `json:"mode"`
+	// GrantRef is a deterministic, opaque idempotency key for this grant.
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	GrantRef string `json:"grantRef"`
+	// Proof is a Code-generated HMAC over the frozen scope and issuer identity.
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	Proof string `json:"proof"`
+	// IssuerUser and IssuerCluster are stamped from the authenticated
+	// requestheader identity; callers cannot choose the grant issuer.
+	// +kubebuilder:validation:MaxLength=253
+	IssuerUser string `json:"issuerUser"`
+	// +kubebuilder:validation:MaxLength=253
+	IssuerCluster string `json:"issuerCluster"`
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	IssuerIdentityDigest string `json:"issuerIdentityDigest"`
+}
+
 // PullRequestSpec is what the forge should show.
 type PullRequestSpec struct {
+	// Number adopts an existing PR instead of creating one.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Number int `json:"number,omitempty"`
+	// Command limits Code publication to this verified command.
+	// +optional
+	Command *PullRequestCommand `json:"command,omitempty"`
+	// TaskAuthorizationRevocations are Code-owned cancellation tombstones. They
+	// close the race between a lost grant response and a retry after task cancel.
+	// +optional
+	// +listType=map
+	// +listMapKey=sourceUID
+	// +kubebuilder:validation:MaxItems=64
+	TaskAuthorizationRevocations []PullRequestTaskRevocation `json:"taskAuthorizationRevocations,omitempty"`
+
 	// RepositoryRef names the Repository (same workspace) the pull request
 	// belongs to.
 	// +required
@@ -106,6 +188,29 @@ type PullRequestSpec struct {
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 	ObserveInterval *metav1.Duration `json:"observeInterval,omitempty"`
+}
+
+// PullRequestTaskRevocation is the durable cancellation marker for one opaque
+// coordinator source UID. It prevents a late/retried grant from restoring a
+// task the issuer already canceled.
+type PullRequestTaskRevocation struct {
+	// +kubebuilder:validation:MaxLength=128
+	SourceUID string `json:"sourceUID"`
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	SourceDigest string `json:"sourceDigest"`
+	// +kubebuilder:validation:MaxLength=128
+	RepositoryUID string `json:"repositoryUID"`
+	// +kubebuilder:validation:MaxLength=128
+	ConnectionUID string `json:"connectionUID"`
+	// +kubebuilder:validation:MaxLength=128
+	PullRequestUID string `json:"pullRequestUID"`
+	// +kubebuilder:validation:MaxLength=253
+	IssuerUser string `json:"issuerUser"`
+	// +kubebuilder:validation:MaxLength=253
+	IssuerCluster string `json:"issuerCluster"`
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	IssuerIdentityDigest string      `json:"issuerIdentityDigest"`
+	RevokedAt            metav1.Time `json:"revokedAt"`
 }
 
 // PullRequestHead identifies one staged, verified snapshot commit.
@@ -205,6 +310,19 @@ type PublishedAttachment struct {
 
 // PullRequestStatus is what the forge shows.
 type PullRequestStatus struct {
+	// BaseCurrent is true only when the observed base is an ancestor of the observed PR head.
+	// +optional
+	BaseCurrent *bool `json:"baseCurrent,omitempty"`
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	CIState string `json:"ciState,omitempty"`
+	// +optional
+	// +kubebuilder:validation:MaxLength=40
+	BaseHead string `json:"baseHead,omitempty"`
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	MergeableState string `json:"mergeableState,omitempty"`
+
 	// AttachmentRepositoryUID binds upload receipts to their destination repository.
 	// +optional
 	AttachmentRepositoryUID string `json:"attachmentRepositoryUID,omitempty"`
