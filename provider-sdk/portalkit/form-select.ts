@@ -164,6 +164,7 @@ export class FormSelectElement extends HTMLElement {
       this.errorNode = document.createElement('p')
       this.errorNode.id = this.errorID
       this.errorNode.className = 'k-form-select__error'
+      this.errorNode.setAttribute('role', 'alert')
       const icon = document.createElement('span')
       icon.innerHTML = ic('alert-circle')
       const svg = icon.firstElementChild
@@ -173,7 +174,9 @@ export class FormSelectElement extends HTMLElement {
     }
     if (showError && this.errorNode) {
       const message = this.errorNode.lastElementChild
-      if (message) message.textContent = this.currentErrorMessage
+      if (message && message.textContent !== this.currentErrorMessage) {
+        message.textContent = this.currentErrorMessage
+      }
     } else if (this.errorNode) {
       this.errorNode.remove()
       this.errorNode = null

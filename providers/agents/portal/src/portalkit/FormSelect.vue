@@ -316,7 +316,7 @@ onBeforeUnmount(() => {
       <span :id="valueID" class="k-form-select__value" :class="{ 'is-placeholder': !modelValue }">{{ selectedLabel }}</span>
       <ChevronDown class="k-form-select__chevron" :size="15" :stroke-width="1.75" aria-hidden="true" />
     </button>
-    <p v-if="invalid && errorMessage" :id="errorID" class="k-form-select__error">
+    <p v-if="invalid && errorMessage" :id="errorID" class="k-form-select__error" role="alert">
       <AlertCircle :size="15" :stroke-width="1.75" aria-hidden="true" />
       <span>{{ errorMessage }}</span>
     </p>

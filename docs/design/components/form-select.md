@@ -15,8 +15,9 @@ what it can.
 
 Use `FormSelect.vue` in Vue portals or the framework-neutral
 `railgrid-form-select` from `form-select.ts` in the Quickstart portal when a
-a shared, viewport-aware single-select popup and consistent option presentation are required. Both provide the shared
-combobox/listbox behavior instead of relying on a browser popup.
+shared, viewport-aware single-select popup and consistent option presentation
+are required. Both provide the shared combobox/listbox behavior instead of
+relying on a browser popup.
 
 ## Avoid when
 
@@ -40,8 +41,9 @@ operating-system popup behavior.
 
 The form owner must validate required FormSelect values, prevent submission
 when invalid, set `invalid`, connect the message with `describedby`, and
-focus the first invalid control or an error summary. Pass `errorMessage` for the shared danger border and icon-led corrective message. Keep any separate help text associated with `describedby`. The `required` prop
-announces the requirement; the button and optional hidden input do not provide
+focus the first invalid control or an error summary. Pass `errorMessage` to show the shared corrective message, which is exposed as
+an alert. Keep any separate help text associated with `describedby`. The
+`required` prop announces the requirement; the button and optional hidden input do not provide
 native required-field validation. Retain the draft and clear the error after
 a valid selection.
 
