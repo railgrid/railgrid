@@ -2819,7 +2819,7 @@ e2e-infrastructure-up: ## Bring up a throwaway kind cluster with Gateway API CRD
 		echo ">>> creating kind cluster $(E2E_KRO_KIND_NAME)"; \
 		kind create cluster --name $(E2E_KRO_KIND_NAME) --kubeconfig $(E2E_KRO_KUBECONFIG); \
 	else \
-		kind get kubeconfig --name $(E2E_KRO_KIND_NAME) > $(E2E_KRO_KUBECONFIG); \
+		python3 hack/scripts/write-kind-kubeconfig.py "$(E2E_KRO_KIND_NAME)" "$(E2E_KRO_KUBECONFIG)"; \
 	fi
 	@echo ">>> installing Gateway API CRDs ($(GATEWAY_API_VERSION)) — templates declare HTTPRoute/ReferenceGrant"
 	KUBECONFIG=$(E2E_KRO_KUBECONFIG) kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/$(GATEWAY_API_VERSION)/standard-install.yaml
