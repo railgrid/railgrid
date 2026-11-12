@@ -784,8 +784,10 @@ func isAutomaticIntegrationPatchRejection(err error) bool {
 	if !apierrors.IsInvalid(err) || !errors.As(err, &apiStatus) {
 		return false
 	}
-	// kcp reports JSON Patch application failures as a generic 422. Schema
-	// validation identifies the object and includes structured field causes.
+	// kcp's JSON Patch handler reports failed test operations as HTTP 422
+	// without object details or field causes. Other generic 422s can have
+	// the same shape, so the caller reloads the Project to check the guards.
+	// Schema validation identifies the object and includes field causes.
 	status := apiStatus.Status()
 	details := status.Details
 	return status.Code == http.StatusUnprocessableEntity && (details == nil ||
