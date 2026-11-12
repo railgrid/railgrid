@@ -1,0 +1,10 @@
+# Prow (https://prow-dev.railgrid.ai) reads this file. An approver's own pull
+# request gets the `approved` label automatically; anyone else's needs
+# /approve from one of them. Tide merges on `approved` once every check is
+# green. See hack/ci/prow/README.md.
+approvers:
+  - cwilhit
+  - mjudeikis
+reviewers:
+  - cwilhit
+  - mjudeikis
