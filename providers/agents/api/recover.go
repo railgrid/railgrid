@@ -11,15 +11,12 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"strconv"
 	"strings"
 	"time"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
-	"github.com/railgrid/provider-agents/engine"
-	"github.com/railgrid/provider-agents/executor"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 )
@@ -91,7 +88,6 @@ func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID,
 		}
 		ck := runCheckpoint{
 			SourceName: sourceName, NotifyChannel: notifyChannel,
-			Worker:           run.Worker,
 			WorkedDurationMS: workedMS,
 			ArtifactOwner:    artifactOwner, ArtifactRefs: artifactRefs,
 			AttachmentOwner: attachmentOwner, AttachmentRefs: attachmentRefs,
@@ -111,12 +107,6 @@ func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID,
 		if stored.Phase != store.RunPhaseRunning {
 			return
 		}
-		if stored.Attempt != run.Attempt {
-			return // A recovery claim advanced the execution epoch.
-		}
-		if stored.ExecutionOwner != run.ExecutionOwner {
-			return // The lease changed, including an approval resume in this process.
-		}
 		if backendType == agentsv1alpha1.AgentBackendHarness && len(stored.Checkpoint) > 0 {
 			var previous runCheckpoint
 			if err := json.Unmarshal(stored.Checkpoint, &previous); err == nil && previous.Backend == agentsv1alpha1.AgentBackendHarness {
@@ -130,7 +120,7 @@ func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID,
 		if err != nil {
 			return
 		}
-		var workedValue *int64
+		stored.Checkpoint = payload
 		if len(worked) > 0 && worked[0] != nil {
 			value := workedMS
 			if value < 0 {
@@ -139,69 +129,13 @@ func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID,
 			// A checkpoint callback is an explicit provider measurement boundary,
 			// so persist a non-nil zero as measured zero too. Historical rows that
 			// predate this callback keep a nil value.
-			workedValue = &value
+			stored.WorkedDurationMS = &value
 		}
-		updated, err := s.store.UpdateRunCheckpoint(ctx, scope, runID, run.ExecutionOwner, run.Attempt, stored.UpdatedAt, payload, workedValue, time.Now().UTC())
-		if err != nil {
+		stored.UpdatedAt = time.Now().UTC()
+		if err := s.saveRun(ctx, scope, stored); err != nil {
 			log.Printf("recovery: checkpointing run %s (agent %s, session %s): %v", runID, agentName, sessionID, err)
 		}
-		_ = updated // A concurrent cancel, phase change or recovery claim wins.
 	}
-}
-
-// persistReplaySafeCheckpoint is a required checkpoint boundary. The model
-// engine calls it immediately before invoking a batch of tools that all
-// declared ID-based replay safety. The conditional store update fences this
-// replica against cancellation or recovery taking ownership in the meantime.
-func (s *Server) persistReplaySafeCheckpoint(ctx context.Context, run taskRun, backendType string, workedMS int64, state json.RawMessage, approved bool) error {
-	if backendType != agentsv1alpha1.AgentBackendModel {
-		return fmt.Errorf("replay-safe checkpoints are supported only by the model backend")
-	}
-	var engineState engine.Checkpoint
-	if err := json.Unmarshal(state, &engineState); err != nil || !engineState.ReplaySafePending || len(engineState.Pending) == 0 || engineState.ApprovedPending != approved {
-		return fmt.Errorf("replay-safe checkpoint state is invalid")
-	}
-	stored, err := s.store.GetRun(ctx, run.Scope, run.RunID)
-	if err != nil {
-		return fmt.Errorf("reading run before replay checkpoint: %w", err)
-	}
-	if stored.Phase != store.RunPhaseRunning || stored.CancelRequested {
-		return fmt.Errorf("run no longer accepts a replay checkpoint")
-	}
-	if stored.Attempt != run.Attempt {
-		return fmt.Errorf("run recovery epoch changed before its replay checkpoint")
-	}
-	if stored.ExecutionOwner != run.ExecutionOwner {
-		return fmt.Errorf("run execution lease changed before its replay checkpoint")
-	}
-	artifactOwner, artifactRefs := checkpointArtifactReferences(run)
-	attachmentOwner, attachmentRefs, skillRefs, resourceOwner, contextResources := checkpointAgentInputReferences(run)
-	checkpoint := runCheckpoint{
-		SourceName: run.SourceName, NotifyChannel: run.NotifyChannel, Worker: run.Worker,
-		WorkedDurationMS: max(workedMS, 0),
-		ArtifactOwner:    artifactOwner, ArtifactRefs: artifactRefs,
-		AttachmentOwner: attachmentOwner, AttachmentRefs: attachmentRefs,
-		SkillRefs: skillRefs, ContextResourceOwner: resourceOwner, ContextResources: contextResources,
-	}
-	if approved {
-		checkpoint.Tool, checkpoint.Args = engineState.Pending[0].Name, engineState.Pending[0].Args
-	}
-	if err := checkpoint.setBackendState(backendType, state); err != nil {
-		return fmt.Errorf("encoding replay-safe checkpoint state: %w", err)
-	}
-	payload, err := json.Marshal(checkpoint)
-	if err != nil {
-		return fmt.Errorf("encoding replay-safe run checkpoint: %w", err)
-	}
-	worked := max(workedMS, 0)
-	updated, err := s.store.UpdateRunCheckpoint(ctx, run.Scope, run.RunID, run.ExecutionOwner, run.Attempt, stored.UpdatedAt, payload, &worked, time.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("saving replay-safe run checkpoint: %w", err)
-	}
-	if !updated {
-		return fmt.Errorf("run changed or was cancelled before its replay checkpoint could be saved")
-	}
-	return nil
 }
 
 // cancelCheckInterval throttles the durable-cancel read: the engine asks before
@@ -281,20 +215,8 @@ func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume reco
 		persistCtx, cancelPersist := boundedPersistContext(ctx)
 		defer cancelPersist()
 		tracker := trackerForStored(run)
-		finished := false
-		if run.CancelRequested && phase == store.RunPhaseAborted {
-			// Cancellation is itself the fence: ClaimRecovery intentionally
-			// refuses cancelled rows, and the cancel flag prevents a fresh lease.
-			finished = s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: reason, WorkedDurationMS: tracker.workedDurationMS()}, now)
-		} else if run.ExecutionOwner != "" {
-			finished = s.finishRunOwned(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: reason, WorkedDurationMS: tracker.workedDurationMS()}, now, run.ExecutionOwner, run.Attempt)
-		} else {
-			finished = s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: reason, WorkedDurationMS: tracker.workedDurationMS()}, now)
-		}
-		if !finished {
-			return false
-		}
 		s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), effectiveSessionID(run.SessionID, run.Trigger), startedAt, now, tracker, turnStatusForRunPhase(phase), "", reason)
+		s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: reason, WorkedDurationMS: tracker.workedDurationMS()}, now)
 		s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 		if tell {
 			s.reportStrandedRun(ctx, sr, notify, reason)
@@ -317,11 +239,6 @@ func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume reco
 		// Honour the request rather than resuming work nobody wants; the person
 		// who cancelled is not told twice.
 		return close(store.RunPhaseAborted, "cancelled by user", false)
-	case recoveryIdentityFor(run) != store.RecoveryIdentityAgent:
-		// Caller-scoped work cannot be safely resumed with the provider's
-		// ServiceAccount. Older unattended submissions are unambiguous because
-		// they carry a Delivery.Kind; ambiguous legacy API runs fail closed.
-		return fail("the provider restarted while this run was in progress, but its original caller identity cannot be safely restored")
 	case scope.OrgUUID == "" || scope.WorkspaceUUID == "":
 		// A run whose scope was never recorded cannot be addressed again.
 		return fail("the provider restarted while this run was in progress, and its workspace could not be resolved to resume it")
@@ -343,21 +260,6 @@ func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume reco
 		return fail("the provider restarted while this run was in progress, and resuming it failed: " + err.Error())
 	}
 	return true
-}
-
-func recoveryIdentityFor(run store.Run) store.RecoveryIdentity {
-	if run.RecoveryIdentity != store.RecoveryIdentityUnknown {
-		return run.RecoveryIdentity
-	}
-	if run.Delivery == nil {
-		return store.RecoveryIdentityUnknown
-	}
-	switch executor.JobKind(run.Delivery.Kind) {
-	case executor.KindSchedule, executor.KindTrigger, executor.KindChannel:
-		return store.RecoveryIdentityAgent
-	default:
-		return store.RecoveryIdentityUnknown
-	}
 }
 
 // reportStrandedRun tells the chat or channel a dead run was answering that it is

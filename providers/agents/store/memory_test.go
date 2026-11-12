@@ -265,10 +265,10 @@ func TestMemoryStore_RunClaimIsExclusive(t *testing.T) {
 	if err := s.SaveRun(ctx, sc, Run{ID: "r1", AgentName: sc.AgentName, Trigger: "schedule", Phase: RunPhasePending, CreatedAt: now}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if _, err := s.ClaimRun(ctx, sc, "r1", "", now, 0); err != nil {
+	if _, err := s.ClaimRun(ctx, sc, "r1", "req-1", now); err != nil {
 		t.Fatalf("first claim should win: %v", err)
 	}
-	if _, err := s.ClaimRun(ctx, sc, "r1", "", now, 0); err == nil {
+	if _, err := s.ClaimRun(ctx, sc, "r1", "req-2", now); err == nil {
 		t.Fatalf("second claim should fail while running")
 	}
 }
@@ -288,7 +288,7 @@ func TestMemoryStore_RunClaimRejectsCancelledAndTerminalRuns(t *testing.T) {
 	if err := s.RequestCancel(ctx, sc, "cancelled-approval", now, ""); err != nil {
 		t.Fatalf("request cancel: %v", err)
 	}
-	if _, err := s.ClaimRun(ctx, sc, "cancelled-approval", "", now, 0); err == nil {
+	if _, err := s.ClaimRun(ctx, sc, "cancelled-approval", "late-approval", now); err == nil {
 		t.Fatal("ClaimRun succeeded after cancellation was recorded")
 	}
 	stored, err := s.GetRun(ctx, sc, "cancelled-approval")
@@ -302,7 +302,7 @@ func TestMemoryStore_RunClaimRejectsCancelledAndTerminalRuns(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save aborted run: %v", err)
 	}
-	if _, err := s.ClaimRun(ctx, sc, "already-aborted", "", now, 0); err == nil {
+	if _, err := s.ClaimRun(ctx, sc, "already-aborted", "late-approval", now); err == nil {
 		t.Fatal("ClaimRun succeeded for an aborted run")
 	}
 	stored, err = s.GetRun(ctx, sc, "already-aborted")

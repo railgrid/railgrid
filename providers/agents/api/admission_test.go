@@ -185,31 +185,3 @@ func TestPostgresConcurrentRunAdmissionReusesOneExecution(t *testing.T) {
 		t.Fatalf("executions=%d, want exactly 1", got)
 	}
 }
-
-func TestPreventStartFenceSurvivesLateAdmission(t *testing.T) {
-	s := &Server{store: store.NewMemoryStore(), events: newEventBus()}
-	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "agent"}
-	fence, err := s.fenceInvocation(t.Context(), scope, "uncertain")
-	if err != nil || fence.Phase != store.RunPhaseAborted {
-		t.Fatalf("fence: %+v %v", fence, err)
-	}
-	a := &agentsv1alpha1.Agent{}
-	a.Name = "agent"
-	result, err := s.startRun(t.Context(), scope, a, taskRun{Trigger: "api", Task: "late request", IdempotencyKey: "uncertain"}, runAccess{})
-	if err != nil || !result.Reused || result.ID != fence.ID || result.Phase != store.RunPhaseAborted {
-		t.Fatalf("late admission escaped fence: %+v %v", result, err)
-	}
-}
-func TestPreventStartFenceReturnsAlreadyAcceptedRun(t *testing.T) {
-	s := &Server{store: store.NewMemoryStore(), events: newEventBus()}
-	scope := store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "a"}
-	now := time.Now()
-	accepted := store.Run{ID: "accepted", AgentName: "a", Phase: store.RunPhaseRunning, IdempotencyKey: "key", CreatedAt: now, UpdatedAt: now}
-	if err := s.store.SaveRun(t.Context(), scope, accepted); err != nil {
-		t.Fatal(err)
-	}
-	got, err := s.fenceInvocation(t.Context(), scope, "key")
-	if err != nil || got.ID != "accepted" || got.Phase != store.RunPhaseRunning {
-		t.Fatalf("accepted execution lost: %+v %v", got, err)
-	}
-}

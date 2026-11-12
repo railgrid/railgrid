@@ -390,7 +390,7 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 	if strings.TrimSpace(req.Instructions) == "" {
 		return backend.Outcome{Status: backend.StatusFailed}, errors.New("the turn has nothing to ask the harness")
 	}
-	receipt, err := b.startWithEnvironmentRetry(ctx, req)
+	receipt, err := b.cfg.Runner.Start(ctx, req)
 	if err != nil {
 		operation := "starting the harness turn"
 		var dial *net.OpError

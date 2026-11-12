@@ -9,8 +9,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/railgrid/provider-code/githubworkflow"
-
 	"sigs.k8s.io/yaml"
 )
 
@@ -59,9 +57,6 @@ func servedVerbs() map[string]map[string]struct{} {
 	out := map[string]map[string]struct{}{
 		repositories.Resource: {},
 		connections.Resource:  {},
-	}
-	for resource, verb := range githubworkflow.ServedVerbs {
-		out[resource] = map[string]struct{}{verb: {}}
 	}
 	for verb := range served {
 		out[repositories.Resource][verb] = struct{}{}

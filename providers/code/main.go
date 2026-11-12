@@ -47,7 +47,6 @@ import (
 	"github.com/railgrid/provider-code/backend"
 	githubbackend "github.com/railgrid/provider-code/backend/github"
 	"github.com/railgrid/provider-code/controller/shared"
-	"github.com/railgrid/provider-code/githubworkflow"
 	"github.com/railgrid/provider-code/install"
 	"github.com/railgrid/provider-code/mcpserver"
 	"github.com/railgrid/provider-code/oauthgithub"
@@ -197,7 +196,6 @@ func runServe() {
 	}
 	shared.Credentials = credentials
 
-	workflow := &githubworkflow.Server{Callers: providerCallers, Credentials: credentials, Backends: backends, Snapshots: stores.snapshots}
 	codeActions := actions.New(providerCallers, backends)
 	codeActions.Credentials = credentials
 	codeActions.Bundles = stores.bundles
@@ -218,15 +216,12 @@ func runServe() {
 		log.Fatalf("subresource routes: %v", err)
 	}
 
-	dataPlane := codeDataPlaneHandler(workflow, codeActions)
 	srv, err := serve.New(serve.Options{
 		Name:         "code",
 		Readiness:    vwhealth.Handler(vwState),
 		Portal:       dist,
 		MCP:          mcpHandler,
 		Actions:      codeActions,
-		DataPlane:    dataPlane,
-		Extra:        codeWebhookRoutes(workflow.Webhook),
 		OAuth:        oauthRoutes,
 		Subresources: subresources,
 	})
@@ -282,24 +277,4 @@ func runServe() {
 	if err := httpSrv.Shutdown(shutdown); err != nil {
 		log.Printf("shutdown error: %v", err)
 	}
-}
-
-// codeDataPlaneHandler dispatches native protocol verbs using the same served
-// coordinate table as catalog validation, so a newly declared repository verb
-// cannot accidentally fall through to the unrelated repository actions server.
-func codeDataPlaneHandler(workflow, actions http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		route, ok := dataplane.RouteFrom(r.Context())
-		if ok && githubworkflow.ServedVerbs[route.Resource] == route.Verb {
-			workflow.ServeHTTP(w, r)
-			return
-		}
-		actions.ServeHTTP(w, r)
-	})
-}
-
-func codeWebhookRoutes(webhook http.HandlerFunc) []serve.Route {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /webhooks/github/{cluster}/{name}", webhook)
-	return []serve.Route{{Prefix: serve.WebhooksPrefix, Class: serve.ClassWebhook, Handler: mux}}
 }

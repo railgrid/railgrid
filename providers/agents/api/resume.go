@@ -30,15 +30,14 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/google/uuid"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/channels"
-	runctrl "github.com/railgrid/provider-agents/controller/run"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
-	"github.com/railgrid/provider-agents/tools"
 )
 
 // resumeApprovedRun continues a checkpointed run after the user's decision.
@@ -62,10 +61,10 @@ var errResumeConflict = errors.New("the run has already continued or is no longe
 // resumeIntent distinguishes the two reasons a checkpointed run continues.
 //
 // An approval resume answers one specific gated call, so it must find the run in
-// PendingApproval and it carries the user's verdict. A recovery resume usually
-// re-asks the model from an ordinary checkpoint; a replay-safe checkpoint may
-// resume the exact idempotent call it captured, restoring approval only when
-// that checkpoint recorded a prior explicit grant.
+// PendingApproval and it carries the user's verdict. A recovery resume picks up a
+// run its replica dropped: the checkpoint holds no pending call (see
+// engine.Callbacks.OnCheckpoint), so there is no verdict to apply and the loop
+// simply re-asks the model.
 type resumeIntent struct {
 	Approval  bool
 	Approve   bool
@@ -93,21 +92,6 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		log.Printf("resume: run %s is %s (not resumable)", run.ID, run.Phase)
 		return runResult{}, errResumeConflict
 	}
-	if run.Repository != nil && run.Backend != agentsv1alpha1.AgentBackendHarness {
-		err := fmt.Errorf("repository Run cannot resume because its stored backend is %q, not harness", run.Backend)
-		s.closeRunNow(ctx, agentScope, run, store.RunPhaseFailed, err.Error())
-		return runResult{}, err
-	}
-	if run.ParentRunID != "" {
-		active, err := s.parentRunAllowsResume(ctx, agentScope, run)
-		if err != nil {
-			return runResult{}, fmt.Errorf("verifying parent Run before resume: %w", err)
-		}
-		if !active {
-			cancelErr := s.cancelDescendantRun(ctx, agentScope, run.ParentRunID, run)
-			return runResult{}, errors.Join(errResumeConflict, cancelErr)
-		}
-	}
 	var ck runCheckpoint
 	if err := json.Unmarshal(run.Checkpoint, &ck); err != nil {
 		log.Printf("resume: run %s checkpoint corrupt: %v", run.ID, err)
@@ -131,55 +115,23 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		}
 	}
 
-	if intent.FromPhase == store.RunPhaseRunning && (intent.RecoveryClaimedAt.IsZero() || !run.UpdatedAt.Equal(intent.RecoveryClaimedAt) || run.CancelRequested) {
-		log.Printf("resume: run %s recovery claim rejected (missing=%t, current=%t, cancel=%t)", run.ID, intent.RecoveryClaimedAt.IsZero(), run.UpdatedAt.Equal(intent.RecoveryClaimedAt), run.CancelRequested)
-		return runResult{}, errResumeConflict
-	}
-	agent, agentErr := access.CR.GetAgent(ctx, run.AgentName)
-	timeout := runctrl.DefaultTimeout
-	if agentErr == nil {
-		if run.AgentUID != "" && string(agent.UID) != run.AgentUID {
-			agentErr = errors.New("the Agent was replaced since this run was admitted")
-		}
-		timeout = runctrl.AgentRunTimeout(agent.Spec.Limits.TimeoutSeconds)
-	}
-	if run.Repository != nil && run.Repository.MaxDurationSeconds > 0 {
-		timeout = repositoryRunTimeout(run.Repository.MaxDurationSeconds)
-	}
-
 	// Claim so only one resolver resumes (double /approve, portal + channel).
 	var claimed store.Run
 	if intent.FromPhase == store.RunPhaseRunning {
+		if intent.RecoveryClaimedAt.IsZero() || !run.UpdatedAt.Equal(intent.RecoveryClaimedAt) || run.CancelRequested {
+			log.Printf("resume: run %s recovery claim rejected (missing=%t, current=%t, cancel=%t)", run.ID, intent.RecoveryClaimedAt.IsZero(), run.UpdatedAt.Equal(intent.RecoveryClaimedAt), run.CancelRequested)
+			return runResult{}, errResumeConflict
+		}
 		claimed = run
 	} else {
 		var claimErr error
-		claimed, claimErr = s.store.ClaimRun(ctx, agentScope, run.ID, newExecutionOwner(s.cfg.ProcessID), time.Now().UTC(), timeout, intent.InboxItem.ID)
+		claimed, claimErr = s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC(), intent.InboxItem.ID)
 		if claimErr != nil {
 			log.Printf("resume: run %s: %v", run.ID, claimErr)
 			if errors.Is(claimErr, store.ErrRunClaimConflict) {
 				return runResult{}, errResumeConflict
 			}
 			return runResult{}, claimErr
-		}
-	}
-	leaseManaged := false
-	if claimed.ExecutionOwner != "" && s.cfg.ProcessID != "" {
-		leased, leaseCtx, stop, err := s.startRunLease(ctx, agentScope, claimed)
-		if err != nil {
-			return runResult{}, err
-		}
-		defer stop()
-		claimed, ctx, leaseManaged = leased, leaseCtx, true
-	}
-	if run.ParentRunID != "" {
-		active, err := s.parentRunAllowsResume(ctx, agentScope, claimed)
-		if err != nil {
-			s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, "could not verify the parent Run before resuming this child")
-			return runResult{}, err
-		}
-		if !active {
-			cancelErr := s.cancelDescendantRun(ctx, agentScope, run.ParentRunID, claimed)
-			return runResult{}, errors.Join(errResumeConflict, cancelErr)
 		}
 	}
 	// A crash after claiming a model question can leave its question
@@ -241,23 +193,18 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, inputErr.Error())
 		return runResult{}, inputErr
 	}
-	if !leaseManaged {
-		s.projectRun(ctx, agentScope, claimed)
-	}
+	s.projectRun(ctx, agentScope, claimed)
 	legacyRun := run
 	legacyRun.SessionID = effectiveSessionID(run.SessionID, run.Trigger)
 	s.upgradeLegacyImageCheckpoint(ctx, agentScope, legacyRun, &ck.Engine)
-	for i := range ck.Engine.Messages {
-		if ck.Engine.Messages[i].Role == "user" {
-			ck.Engine.Messages[i].Content = tools.PublicRunTask(ck.Engine.Messages[i].Content)
-		}
-	}
 	s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseRunning})
 
-	if agentErr != nil {
-		log.Printf("resume: run %s: loading agent %s: %v", run.ID, run.AgentName, agentErr)
-		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, fmt.Sprintf("loading agent: %v", agentErr))
-		return runResult{}, agentErr
+	agent, err := access.CR.GetAgent(ctx, run.AgentName)
+	if err != nil {
+		// The run has been announced Running, so it cannot just be abandoned.
+		log.Printf("resume: run %s: loading agent %s: %v", run.ID, run.AgentName, err)
+		s.closeRunNow(ctx, agentScope, run, store.RunPhaseFailed, fmt.Sprintf("loading agent: %v", err))
+		return runResult{}, err
 	}
 	if len(attachmentRefs) > 0 {
 		for _, receipt := range attachmentRefs {
@@ -273,15 +220,10 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	// no delegated read capability, and any later tool read is authorized by its
 	// ordinary current-caller path.
 
-	task := run.Input
-	if run.Trigger != agentsv1alpha1.RunTriggerAPI && run.Trigger != agentsv1alpha1.RunTriggerDelegation {
-		task = tools.PublicRunTask(task)
-	}
 	used := false
 	tr := taskRun{
-		Scope: agentScope, Agent: agent, Task: task, IdempotencyKey: run.IdempotencyKey,
-		ExecutionOwner: claimed.ExecutionOwner, executionLeaseManaged: leaseManaged,
-		RunID: run.ID, Attempt: run.Attempt, Backend: run.Backend, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger,
+		Scope: agentScope, Agent: agent,
+		RunID: run.ID, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger,
 		ParentRunID: run.ParentRunID,
 		SourceName:  ck.SourceName, NotifyChannel: ck.NotifyChannel,
 		ArtifactOwner: artifactOwner, ArtifactRefs: artifactRefs,
@@ -306,18 +248,10 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	// pending call at all, so there is nothing to grant.
 	if intent.Approval && intent.Approve {
 		tr.ApproveTool, tr.ApproveArgs, tr.approveUsed = ck.Tool, ck.Args, &used
-	} else if intent.FromPhase == store.RunPhaseRunning && ck.Backend != agentsv1alpha1.AgentBackendHarness && ck.Engine.ReplaySafePending && ck.Engine.ApprovedPending {
-		if len(ck.Engine.Pending) == 0 || ck.Engine.Pending[0].Name == "" {
-			err := errors.New("the replay-safe checkpoint has no approved tool call")
-			s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, err.Error())
-			return runResult{}, err
-		}
-		pending := ck.Engine.Pending[0]
-		tr.ApproveTool, tr.ApproveArgs, tr.approveUsed = pending.Name, pending.Args, &used
 	}
 
 	res, err := s.runTurn(ctx, tr, &continuation{
-		Checkpoint: ck, StartedAt: startedAt, Tracker: trackerForStored(run), DeadlineAt: claimed.ResumeDeadlineAt,
+		Checkpoint: ck, StartedAt: startedAt, Tracker: trackerForStored(run),
 		Billed:  backend.Cost{Tokens: backend.Tokens{InputTokens: run.InputTokens, OutputTokens: run.OutputTokens}, CostMicros: run.USDMicros},
 		Decided: intent.Approval, Approved: intent.Approve, Note: intent.Note,
 	})
@@ -327,7 +261,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 			// The turn never started — no budget left, no model to resolve — so
 			// nothing was recorded. Close the run, which is already Running as far
 			// as everyone watching is concerned.
-			s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, err.Error())
+			s.closeRunNow(ctx, agentScope, run, store.RunPhaseFailed, err.Error())
 		}
 		return res, err
 	}

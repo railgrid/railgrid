@@ -152,11 +152,6 @@ type Tool struct {
 	Desc       string
 	Params     map[string]Param
 	JSONSchema map[string]any
-	// ReplaySafe means the executor deduplicates retries by the model tool-call
-	// ID. The model backend may checkpoint such calls immediately before
-	// execution and replay them after a process restart. Leave false for every
-	// executor whose side effects are not durably idempotent.
-	ReplaySafe bool
 	// ResultPolicy controls durable result retention. Reference-only tools must
 	// also provide a fresh result reader; tools without a policy retain results.
 	ResultPolicy ToolResultPolicy
@@ -534,14 +529,6 @@ type EventSink interface {
 	// with that error, which is how a cancellation that did not arrive through
 	// ctx (a durable flag another replica wrote) stops a turn cleanly.
 	Aborted(ctx context.Context) error
-}
-
-// ReplaySafeCheckpointSink is an optional durability boundary used only when
-// a model response has pending calls whose tools all opted into ReplaySafe.
-// Unlike Checkpoint, this write is required: execution must stop if the exact
-// call IDs and arguments cannot be durably recorded first.
-type ReplaySafeCheckpointSink interface {
-	ReplaySafeCheckpoint(state json.RawMessage, approvedPending bool) error
 }
 
 // Backend executes turns for a run. The agents provider owns the run — the

@@ -17,7 +17,6 @@ import (
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
-	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/llm"
 )
 
@@ -129,92 +128,6 @@ func TestResumeApprovedExecutesAndContinues(t *testing.T) {
 	}
 	if !m.sawToolMsg {
 		t.Fatal("the tool observation was not fed back to the model on resume")
-	}
-}
-
-func TestReplaySafeToolRequiresDurableCheckpointBeforeExecution(t *testing.T) {
-	const callID = "delegate-call-id"
-	const callArgs = `{"agent":"reviewer","task":"inspect"}`
-	makeModel := func() *scriptedBackendModel {
-		return &scriptedBackendModel{responses: [][]*schema.Message{
-			{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
-				ID: callID, Function: schema.FunctionCall{Name: "delegate", Arguments: callArgs},
-			}}}},
-			{{Role: schema.Assistant, Content: "complete"}},
-		}}
-	}
-
-	toolCalls := 0
-	checkpointSaved := false
-	tool := Tool{Name: "delegate", ReplaySafe: true, Exec: func(ctx context.Context, args string) (string, error) {
-		if backend.ToolCallIDFromContext(ctx) != callID || args != callArgs {
-			t.Fatalf("delegate replay identity=%q args=%q", backend.ToolCallIDFromContext(ctx), args)
-		}
-		if !checkpointSaved {
-			t.Fatal("replay-safe tool ran before its checkpoint was saved")
-		}
-		toolCalls++
-		return "child result", nil
-	}}
-	var checkpoint Checkpoint
-	model := makeModel()
-	_, err := New().StreamTurnWithTools(context.Background(), model, []Message{{Role: RoleUser, Content: "delegate"}}, []Tool{tool}, TurnConfig{MaxIters: 4}, Callbacks{
-		OnReplaySafeCheckpoint: func(ck Checkpoint, approved bool) error {
-			checkpointSaved = true
-			checkpoint = ck
-			if approved || !ck.ReplaySafePending || ck.ApprovedPending || len(ck.Pending) != 1 || ck.Pending[0].ID != callID || ck.Pending[0].Args != callArgs {
-				t.Fatalf("saved checkpoint=%+v approved=%t", ck, approved)
-			}
-			return nil
-		},
-	})
-	if err != nil || toolCalls != 1 {
-		t.Fatalf("turn err=%v tool executions=%d", err, toolCalls)
-	}
-
-	// Simulate a process restart after the operator approved this exact call and
-	// the required approved checkpoint reached durable storage.
-	checkpoint.ApprovedPending = true
-	encoded, err := json.Marshal(checkpoint)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var restored Checkpoint
-	if err := json.Unmarshal(encoded, &restored); err != nil {
-		t.Fatal(err)
-	}
-	checkpointSaved = false
-	resumeModel := &scriptedBackendModel{responses: [][]*schema.Message{{{Role: schema.Assistant, Content: "complete"}}}}
-	_, err = New().ResumeTurnWithTools(context.Background(), resumeModel, restored, []Tool{tool}, TurnConfig{MaxIters: 4}, false, "", Callbacks{
-		OnReplaySafeCheckpoint: func(ck Checkpoint, approved bool) error {
-			checkpointSaved = true
-			if !approved || !ck.ApprovedPending || len(ck.Pending) != 1 || ck.Pending[0].ID != callID {
-				t.Fatalf("recovered approved checkpoint=%+v approved=%t", ck, approved)
-			}
-			return nil
-		},
-	})
-	if err != nil || toolCalls != 2 {
-		t.Fatalf("recovered approved tool err=%v executions=%d", err, toolCalls)
-	}
-}
-
-func TestReplaySafeToolDoesNotStartWhenCheckpointPersistenceFails(t *testing.T) {
-	model := &scriptedBackendModel{responses: [][]*schema.Message{{
-		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
-			ID: "delegate-call", Function: schema.FunctionCall{Name: "delegate", Arguments: `{}`},
-		}}},
-	}}}
-	executed := false
-	tool := Tool{Name: "delegate", ReplaySafe: true, Exec: func(context.Context, string) (string, error) {
-		executed = true
-		return "child result", nil
-	}}
-	_, err := New().StreamTurnWithTools(context.Background(), model, []Message{{Role: RoleUser, Content: "delegate"}}, []Tool{tool}, TurnConfig{MaxIters: 2}, Callbacks{
-		OnReplaySafeCheckpoint: func(Checkpoint, bool) error { return errors.New("injected checkpoint failure") },
-	})
-	if err == nil || !strings.Contains(err.Error(), "injected checkpoint failure") || executed {
-		t.Fatalf("failed durable checkpoint err=%v tool executed=%t", err, executed)
 	}
 }
 

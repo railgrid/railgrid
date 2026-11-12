@@ -11,13 +11,9 @@ package api
 import (
 	"bytes"
 	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/railgrid/provider-agents/store"
-	"github.com/railgrid/provider-agents/tenant"
 )
 
 // mcpRPC POSTs one JSON-RPC call to the server's /mcp endpoint the way the
@@ -188,52 +184,5 @@ func TestMCPCallWithoutHub(t *testing.T) {
 	}
 	if len(out.Content) == 0 || !strings.Contains(out.Content[0].Text, "tenant access not configured") {
 		t.Errorf("expected 'tenant access not configured' in error, got %s", result)
-	}
-}
-
-func TestMCPRunToolsRespectCallerRunAccess(t *testing.T) {
-	s := newMCPTestServer(t)
-	ctx := t.Context()
-	const cluster = "c1"
-	kcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/runs/parent") || strings.HasSuffix(r.URL.Path, "/runs/allowed-child") {
-			name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-			writeJSON(w, http.StatusOK, map[string]any{
-				"apiVersion": "agents.railgrid.ai/v1alpha1", "kind": "Run", "metadata": map[string]any{"name": name},
-			})
-			return
-		}
-		http.Error(w, "forbidden", http.StatusForbidden)
-	}))
-	t.Cleanup(kcp.Close)
-	s.tenant = tenant.NewClient(kcp.URL, false)
-	if err := s.store.SaveTenantRef(ctx, cluster, store.TenantRef{OrgUUID: "o", WorkspaceUUID: "w"}); err != nil {
-		t.Fatal(err)
-	}
-	for _, run := range []store.Run{
-		{ID: "parent", AgentName: "coordinator"},
-		{ID: "allowed-child", AgentName: "allowed", ParentRunID: "parent", Input: "allowed-child-input"},
-		{ID: "restricted-child", AgentName: "restricted", ParentRunID: "parent", Input: "restricted-child-input"},
-	} {
-		scope := store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: run.AgentName}
-		if err := s.store.SaveRun(ctx, scope, run); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, tc := range []struct {
-		tool        string
-		args        map[string]any
-		wantAllowed bool
-	}{
-		{tool: "get_run", args: map[string]any{"runId": "parent"}, wantAllowed: true},
-		{tool: "get_run", args: map[string]any{"runId": "restricted-child"}},
-		{tool: "list_runs", args: map[string]any{"parent": "parent"}, wantAllowed: true},
-	} {
-		rec := httptest.NewRecorder()
-		s.MCPHandler().ServeHTTP(rec, chatToolRequest("tools/call", map[string]any{"name": tc.tool, "arguments": tc.args}, false))
-		body := rec.Body.String()
-		if rec.Code != http.StatusOK || strings.Contains(body, "restricted-child-input") || strings.Contains(body, "allowed-child-input") != tc.wantAllowed {
-			t.Fatalf("%s response = %d %s", tc.tool, rec.Code, body)
-		}
 	}
 }

@@ -668,21 +668,3 @@ func TestSubagentProgressDoesNotChangeRootSummary(t *testing.T) {
 		t.Fatalf("child progress contaminated summary: %+v", s)
 	}
 }
-
-func TestNativeMCPObjectResultClosesItsToolCall(t *testing.T) {
-	item, ok := toolItem(json.RawMessage(`{"item":{"id":"mcp-1","type":"mcpToolCall","server":"agent","tool":"code_pull_request","status":"completed","arguments":{"input":{"op":"observe"}},"result":{"content":[{"type":"text","text":"observed"}],"structuredContent":null},"error":null,"durationMs":2000}}`))
-	if !ok || !item.Done || item.Failed || item.Result != "observed" || item.Args != `{"input":{"op":"observe"}}` {
-		t.Fatalf("MCP result not recognized: %+v %v", item, ok)
-	}
-	failed, ok := toolItem(json.RawMessage(`{"item":{"id":"mcp-2","type":"mcpToolCall","tool":"code_pull_request","output":"scope rejected","result":{"isError":true,"content":[{"type":"text","text":"scope rejected"}]}}}`))
-	if !ok || !failed.Done || !failed.Failed {
-		t.Fatal("MCP failure was treated as success")
-	}
-}
-
-func TestEmptyNativeToolErrorIsNotFailure(t *testing.T) {
-	item, ok := toolItem(json.RawMessage(`{"item":{"id":"mcp-empty","type":"mcpToolCall","tool":"code_pull_request","status":"completed","result":{"content":[{"type":"text","text":"ok"}]},"error":""}}`))
-	if !ok || !item.Done || item.Failed {
-		t.Fatalf("empty error marked as failure: %+v", item)
-	}
-}

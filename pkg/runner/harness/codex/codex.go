@@ -1383,7 +1383,7 @@ func isRequestUserInput(method string) bool {
 
 func isApprovalRequest(method string) bool {
 	method = strings.ToLower(method)
-	return method == "mcpserver/elicitation/request" || strings.Contains(method, "requestapproval") || strings.Contains(method, "approval")
+	return strings.Contains(method, "requestapproval") || strings.Contains(method, "approval")
 }
 
 func isAuthNotification(method string) bool {

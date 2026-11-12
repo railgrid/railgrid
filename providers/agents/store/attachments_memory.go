@@ -275,7 +275,6 @@ func (m *MemoryStore) CreateAgentChatRun(_ context.Context, scope Scope, agentUI
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	run.AgentUID = agentUID
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)

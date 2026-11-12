@@ -282,67 +282,6 @@ func TestWarmEnvironmentAcceptsItsPublishedSnapshot(t *testing.T) {
 	}
 }
 
-func TestWarmVerificationDoesNotExportPrivateHookLogs(t *testing.T) {
-	source, _ := warmSource(t)
-	ignore, err := os.ReadFile(filepath.Join(source, ".gitignore"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ignore = []byte(strings.ReplaceAll(strings.ReplaceAll(string(ignore), ".railgrid-prepare.log\n", ""), ".railgrid-cleanup.log\n", ""))
-	if err = os.WriteFile(filepath.Join(source, ".gitignore"), ignore, 0600); err != nil {
-		t.Fatal(err)
-	}
-	policy := repositoryCleanup{Cleanup: []string{"true"}, Prepare: []string{"sh", "-c", "printf private-diagnostic"}, IdleTimeoutSeconds: 3600}
-	raw, _ := json.Marshal(policy)
-	if err = os.WriteFile(filepath.Join(source, ".railgrid/runner.json"), raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{{"add", "."}, {"-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "unignored hook logs"}} {
-		if _, err = gitOutput(t.Context(), source, args...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	commit, err := gitOutput(t.Context(), source, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := newTestRunner(t, &fakeAdapter{}, source, commit)
-	var first string
-	for _, id := range []string{"cold-verification", "warm-verification"} {
-		req := warmRequest(commit, id)
-		req.ExportGitResult = true
-		receipt, err := r.Start(t.Context(), req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		waitForWarmPhase(t, r, id, PhaseCompleted)
-		if first == "" {
-			first = receipt.Workdir
-		} else if receipt.Workdir != first {
-			t.Fatal("warm verification did not reuse checkout")
-		}
-		current, err := r.Inspect(t.Context(), id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(current.Artifacts) != 1 || current.Artifacts[0].Name != gitResultJSONName {
-			t.Fatal("hook log produced a source bundle")
-		}
-		raw, err := os.ReadFile(r.state.Artifacts[current.Artifacts[0].ID].Path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var doc gitResultDocument
-		if err = json.Unmarshal(raw, &doc); err != nil || !doc.NoChanges || doc.BaseCommit != commit {
-			t.Fatalf("invalid verification result: %+v error=%v", doc, err)
-		}
-	}
-	log, err := os.ReadFile(filepath.Join(first, ".railgrid-prepare.log"))
-	if err != nil || string(log) != "private-diagnostic" {
-		t.Fatal("private preparation log was not retained locally")
-	}
-}
-
 func TestWarmEnvironmentPrepareFailureCleansWithoutLaunchingAgent(t *testing.T) {
 	source, _ := warmSource(t)
 	raw, err := os.ReadFile(filepath.Join(source, ".railgrid/runner.json"))

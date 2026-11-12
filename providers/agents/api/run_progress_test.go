@@ -65,7 +65,7 @@ func TestFinalTranscriptPersistsContinuationOutsideVisibleContent(t *testing.T) 
 	continuation := &backend.ContinuationMetadata{ReasoningSignature: "opaque-signature"}
 	tracker := newTurnProgressTracker(0)
 	tracker.assistant(backend.AssistantMessage{Content: "answer", Complete: true, Continuation: continuation})
-	if err := s.appendProgressMessage(ctx, scope, turnFinalMessage(taskRun{RunID: "run-1"}, "chat", startedAt, startedAt.Add(time.Second), tracker, "answer")); err != nil {
+	if err := s.appendTurnFinal(ctx, scope, taskRun{RunID: "run-1"}, "chat", startedAt, startedAt.Add(time.Second), tracker, "answer"); err != nil {
 		t.Fatal(err)
 	}
 	page, err := st.ListMessages(ctx, scope, "chat", 10, "")
@@ -137,7 +137,7 @@ func TestTurnProgressFinalFallbackKeepsToolLimitNoticeSeparateFromCommentary(t *
 	s := &Server{store: st}
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", AgentName: "scout"}
 	startedAt := time.Date(2026, 9, 10, 10, 0, 0, 0, time.UTC)
-	if err := s.appendProgressMessage(ctx, scope, turnFinalMessage(taskRun{RunID: "run-1"}, "chat", startedAt, startedAt.Add(time.Second), tracker, tracker.finalText(notice))); err != nil {
+	if err := s.appendTurnFinal(ctx, scope, taskRun{RunID: "run-1"}, "chat", startedAt, startedAt.Add(time.Second), tracker, tracker.finalText(notice)); err != nil {
 		t.Fatal(err)
 	}
 	page, err := st.ListMessages(ctx, scope, "chat", 10, "")

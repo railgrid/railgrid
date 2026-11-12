@@ -62,7 +62,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/util/retry"
@@ -70,7 +69,6 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
-	"github.com/railgrid/provider-agents/tools"
 )
 
 const (
@@ -93,35 +91,6 @@ func (s *Server) saveRun(ctx context.Context, scope store.Scope, run store.Run) 
 		return err
 	}
 	s.projectRun(ctx, scope, run)
-	return nil
-}
-
-func (s *Server) saveRunOwned(ctx context.Context, scope store.Scope, run store.Run, owner string, attempt int) (bool, error) {
-	updated, err := s.store.SaveRunOwned(ctx, scope, run, owner, attempt, time.Now().UTC())
-	if err != nil || !updated {
-		return updated, err
-	}
-	s.projectRun(ctx, scope, run)
-	return true, nil
-}
-
-func (s *Server) saveRunForExecution(ctx context.Context, scope store.Scope, run store.Run, owner string, attempt int) error {
-	if owner == "" {
-		if run.ExecutionOwner != "" {
-			return store.ErrRunLeaseLost
-		}
-		return s.saveRun(ctx, scope, run)
-	}
-	if run.ExecutionOwner != "" && run.ExecutionOwner != owner {
-		return store.ErrRunLeaseLost
-	}
-	updated, err := s.saveRunOwned(ctx, scope, run, owner, attempt)
-	if err != nil {
-		return err
-	}
-	if !updated {
-		return store.ErrRunLeaseLost
-	}
 	return nil
 }
 
@@ -236,21 +205,9 @@ func (s *Server) writeRunObject(ctx context.Context, dyn dynamic.Interface, run 
 			}
 		}
 
-		// Older Runs may already have projected their private envelope. Scrub
-		// the preview once before continuing with ordinary status projection.
-		preview, _, _ := unstructured.NestedString(existing.Object, "spec", "inputPreview")
-		if tools.PublicRunTask(preview) != preview {
-			public := safeTruncate(strings.TrimSpace(tools.PublicRunTask(latest.Input)), runInputPreviewMax)
-			if err := unstructured.SetNestedField(existing.Object, public, "spec", "inputPreview"); err != nil {
-				return err
-			}
-			existing, err = runs.Update(ctx, existing, metav1.UpdateOptions{})
-			if err != nil {
-				return fmt.Errorf("scrubbing the Run input preview: %w", err)
-			}
-		}
-
-		// Normal projection writes only the status subresource.
+		// Status is a subresource, so spec is untouched here by construction —
+		// which is what makes "spec is written once" true rather than merely
+		// intended.
 		desired := runStatusFor(latest)
 		currentPhase, _, _ := unstructured.NestedString(existing.Object, "status", "phase")
 		if finalRunPhase(currentPhase) && !finalRunPhase(desired.Phase) {
@@ -327,7 +284,7 @@ func (s *Server) createRunObject(ctx context.Context, dyn dynamic.Interface, run
 			SessionID:      effectiveSessionID(run.SessionID, run.Trigger),
 			ParentRunRef:   run.ParentRunID,
 			IdempotencyKey: run.IdempotencyKey,
-			InputPreview:   safeTruncate(strings.TrimSpace(tools.PublicRunTask(run.Input)), runInputPreviewMax),
+			InputPreview:   safeTruncate(strings.TrimSpace(run.Input), runInputPreviewMax),
 		},
 	}
 	if settings := run.HarnessSettings; settings != nil {
@@ -353,15 +310,15 @@ func (s *Server) createRunObject(ctx context.Context, dyn dynamic.Interface, run
 			NotifyChannel: d.NotifyChannel,
 		}
 	}
-	if run.AgentUID != "" {
+	if agent, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, run.AgentName, metav1.GetOptions{}); err == nil {
 		object.OwnerReferences = []metav1.OwnerReference{{
 			APIVersion: agentsv1alpha1.SchemeGroupVersion.String(),
 			Kind:       "Agent",
-			Name:       run.AgentName,
-			UID:        types.UID(run.AgentUID),
+			Name:       agent.GetName(),
+			UID:        agent.GetUID(),
 		}}
 	} else {
-		log.Printf("agents: run %s has no owner reference: its admitted Agent UID is unavailable", run.ID)
+		log.Printf("agents: run %s has no owner reference: reading agent %s: %v", run.ID, run.AgentName, err)
 	}
 
 	raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(object)
@@ -394,31 +351,12 @@ func runStatusFor(run store.Run) agentsv1alpha1.RunStatus {
 		Message: safeTruncate(run.Message, 2048),
 		Retries: int32(run.Retries),
 	}
-	if run.ExecutionOwner != "" && !run.ExecutionLeaseAt.IsZero() {
-		status.Owner = run.ExecutionOwner
-		claimedAt := metav1.NewTime(run.ExecutionLeaseAt)
-		status.ClaimedAt = &claimedAt
-		if run.Delivery == nil {
-			status.Attempt = int32(run.Attempt + 1)
-		}
-	}
 	if run.RetryAt != nil && run.Phase == store.RunPhasePending {
 		// Only a queued run has a wake-up time; the reconciler clears it on the
 		// object when it claims the retry, and the row drops it when the turn
 		// starts, so the two agree without either carrying the other's copy.
 		at := metav1.NewTime(*run.RetryAt)
 		status.RetryAt = &at
-	}
-	if run.Phase == store.RunPhaseRunning {
-		switch {
-		case run.ResumeDeadlineAt != nil:
-			at := metav1.NewTime(*run.ResumeDeadlineAt)
-			status.DeadlineAt = &at
-		case run.StartedAt != nil && run.Repository != nil && run.Repository.MaxDurationSeconds > 0:
-			// Give the runner time to report its own timeout and final receipt.
-			at := metav1.NewTime(run.StartedAt.Add(repositoryRunTimeout(run.Repository.MaxDurationSeconds)))
-			status.DeadlineAt = &at
-		}
 	}
 	if run.StartedAt != nil {
 		at := metav1.NewTime(*run.StartedAt)
@@ -482,13 +420,9 @@ func equalStatus(current, next map[string]any) bool {
 	if current == nil {
 		return false
 	}
-	// The reconciler owns these fields unless the store has an authoritative
-	// execution lease. This allows a post-CAS recovery owner to replace the
-	// previous process while preserving unattended claim counts.
+	// Owner and conditions are written by the reconciler, not by the
+	// projection, so they are carried over rather than compared.
 	for _, key := range []string{"owner", "claimedAt", "attempt", "conditions", "deadlineAt", "observedGeneration"} {
-		if _, authoritative := next[key]; authoritative {
-			continue
-		}
 		if value, ok := current[key]; ok {
 			next[key] = value
 		}

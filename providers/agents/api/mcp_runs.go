@@ -18,7 +18,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
-	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -172,29 +171,16 @@ func (s *Server) registerRunMCPTools(srv *mcp.Server, r *http.Request) {
 			"Pass `wait` to block until it finishes instead of polling.",
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in getRunInput) (*mcp.CallToolResult, getRunOutput, error) {
-		c, err := s.mcpClient(r)
-		if err != nil {
-			return nil, getRunOutput{}, err
-		}
 		id := s.mcpIdentity(ctx, r)
 		if id.workspaceUUID == "" {
 			return nil, getRunOutput{}, errBadRequest("this workspace is not mapped yet — open the agents UI once, then retry")
 		}
 		scope := id.scope("")
 		runID := strings.TrimSpace(in.RunID)
-		if _, err := c.ReadReferencedResource(ctx, agentsclient.RunGVR, runID); err != nil {
-			return nil, getRunOutput{}, err
-		}
 		if in.Wait > 0 {
 			s.waitForRun(ctx, scope, runID, min(time.Duration(in.Wait)*time.Second, waitMaxTimeout))
-			if _, err := c.ReadReferencedResource(ctx, agentsclient.RunGVR, runID); err != nil {
-				return nil, getRunOutput{}, err
-			}
 		}
-		detail, err := s.runDetailWithChildAccess(ctx, scope, runID, func(ctx context.Context, childID string) bool {
-			_, err := c.ReadReferencedResource(ctx, agentsclient.RunGVR, childID)
-			return err == nil
-		})
+		detail, err := s.runDetailFor(ctx, scope, runID)
 		if err != nil {
 			return nil, getRunOutput{}, err
 		}
@@ -218,10 +204,6 @@ func (s *Server) registerRunMCPTools(srv *mcp.Server, r *http.Request) {
 		Description: "List agent runs newest-first, optionally filtered by agent, phase, trigger, session or parent run. Use it to find work in flight, or the sub-agent runs a research pass started.",
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in listRunsInput) (*mcp.CallToolResult, listRunsOutput, error) {
-		c, err := s.mcpClient(r)
-		if err != nil {
-			return nil, listRunsOutput{}, err
-		}
 		id := s.mcpIdentity(ctx, r)
 		if id.workspaceUUID == "" {
 			return nil, listRunsOutput{}, errBadRequest("this workspace is not mapped yet — open the agents UI once, then retry")
@@ -242,9 +224,7 @@ func (s *Server) registerRunMCPTools(srv *mcp.Server, r *http.Request) {
 		}
 		out := listRunsOutput{Runs: make([]runListView, 0, len(page.Items))}
 		for _, run := range page.Items {
-			if _, err := c.ReadReferencedResource(ctx, agentsclient.RunGVR, run.ID); err == nil {
-				out.Runs = append(out.Runs, runView(summarize(run)))
-			}
+			out.Runs = append(out.Runs, runView(summarize(run)))
 		}
 		return nil, out, nil
 	})

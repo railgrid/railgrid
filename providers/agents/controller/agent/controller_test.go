@@ -705,14 +705,3 @@ func TestReferencedCredentialsIsStableAndDeduped(t *testing.T) {
 		}
 	}
 }
-
-func TestHarnessCodeReviewGrantDoesNotRequireNativeCoreTools(t *testing.T) {
-	a := validAgent("reviewer")
-	a.Spec.Backend = agentsv1alpha1.AgentBackendSpec{Type: agentsv1alpha1.AgentBackendHarness, Harness: &agentsv1alpha1.AgentHarnessBackend{CredentialRef: "runner"}}
-	a.Spec.Tools.Interactive.Families = []string{"code"}
-	a.Spec.Tools.Background.Families = []string{"code"}
-	reason, message, err := (&Reconciler{}).validate(t.Context(), nil, a)
-	if err != nil || reason != "" {
-		t.Fatalf("enforced Code grant invalid: %s %s %v", reason, message, err)
-	}
-}

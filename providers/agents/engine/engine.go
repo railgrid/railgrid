@@ -114,14 +114,11 @@ type Callbacks struct {
 	// OnCheckpoint offers a resumable snapshot of the loop, every
 	// TurnConfig.CheckpointEvery iterations, at a point where no tool call is
 	// half-executed. The caller persists it so a crash or restart mid-run can
-	// continue from here instead of losing the work. Pending is empty in these
-	// ordinary snapshots: resuming re-asks the model rather than re-running tools.
+	// continue from here instead of losing the work. Pending is always empty in
+	// these snapshots: resuming re-asks the model rather than re-running tools,
+	// which costs one model call and keeps resume free of any assumption that
+	// tools are safe to repeat.
 	OnCheckpoint func(Checkpoint)
-	// OnReplaySafeCheckpoint must durably store a checkpoint before a batch of
-	// tools explicitly marked ReplaySafe begins. Returning an error prevents the
-	// tools from running. This callback is separate from OnCheckpoint because
-	// losing this particular boundary could duplicate an external side effect.
-	OnReplaySafeCheckpoint func(Checkpoint, bool) error
 	// CheckAbort is consulted before every model round and before every tool
 	// call — the two points where no call is half-executed. A non-nil error
 	// ends the turn with that error, which is how a cancellation that did not
@@ -282,13 +279,6 @@ func (e *Engine) ResumeTurnWithTools(
 	if err := validateCheckpointContinuations(ck.Messages); err != nil {
 		return Result{}, err
 	}
-	if ck.ReplaySafePending {
-		if len(ck.Pending) == 0 || ck.AwaitingReply || !allPendingReplaySafe(ck.Pending, byName) {
-			return Result{Usage: ck.Usage}, errors.New("engine: invalid replay-safe checkpoint")
-		}
-	} else if ck.ApprovedPending {
-		return Result{Usage: ck.Usage}, errors.New("engine: approval marker requires replay-safe pending calls")
-	}
 	in, identities := restoreMessagesWithIdentities(ck.Messages)
 	if len(in) == 0 {
 		return Result{}, errors.New("engine: checkpoint has no messages")
@@ -324,20 +314,13 @@ func (e *Engine) ResumeTurnWithTools(
 	content.WriteString(ck.Content)
 	usage := ck.Usage
 	pending := ck.Pending
-	// A verdict answers the FIRST PENDING CALL of the checkpoint. An ordinary
-	// recovery snapshot has none, so there is nothing to decide and the loop
-	// re-asks the model. A replay-safe checkpoint can retain only the exact
-	// idempotent call batch, and only an explicitly approved call carries its
-	// stored approval marker into this decision.
+	// A verdict answers the FIRST PENDING CALL of the checkpoint. A recovery
+	// snapshot has none (see Callbacks.OnCheckpoint), so there is nothing to
+	// decide and the loop simply re-asks the model — without a verdict nobody
+	// gave being applied to whatever it calls next.
 	var dec *decision
 	if len(pending) > 0 {
-		if ck.ReplaySafePending {
-			if ck.ApprovedPending {
-				dec = &decision{approve: true, used: true, callID: pending[0].ID}
-			}
-		} else {
-			dec = &decision{approve: approve, note: denyNote, question: ck.AwaitingReply, callID: pending[0].ID}
-		}
+		dec = &decision{approve: approve, note: denyNote, question: ck.AwaitingReply}
 	}
 	return e.loop(ctx, active, byName, in, identities, schemaTokens, task, cfg, ck.Iter, &content, &usage, pending, dec, cb)
 }
@@ -348,20 +331,6 @@ type decision struct {
 	approve  bool
 	note     string
 	used     bool
-	callID   string
-}
-
-func allPendingReplaySafe(pending []PendingCall, byName map[string]Tool) bool {
-	if len(pending) == 0 {
-		return false
-	}
-	for _, call := range pending {
-		tool, ok := byName[call.Name]
-		if !ok || !tool.ReplaySafe {
-			return false
-		}
-	}
-	return true
 }
 
 // bindTools prepares the (optionally tool-bound) model and the tool index.
@@ -533,21 +502,6 @@ func (e *Engine) loop(
 
 			if err := cb.abort(ctx); err != nil {
 				return Result{}, err
-			}
-			if allPendingReplaySafe(pending, byName) {
-				if cb.OnReplaySafeCheckpoint == nil {
-					return Result{Usage: *usage}, errors.New("engine: replay-safe tool batch has no durable checkpoint sink")
-				}
-				checkpoint := Checkpoint{
-					Messages: checkpointMessagesWithIdentities(in, identities),
-					Pending:  append([]PendingCall(nil), pending...),
-					Content:  content.String(), Usage: *usage, Iter: iter,
-					ReplaySafePending: true,
-					ApprovedPending:   dec != nil && dec.approve && dec.callID == pc.ID,
-				}
-				if err := cb.OnReplaySafeCheckpoint(checkpoint, checkpoint.ApprovedPending); err != nil {
-					return Result{Usage: *usage}, fmt.Errorf("engine: persisting replay-safe tool checkpoint: %w", err)
-				}
 			}
 			started := time.Now()
 			cb.toolStart(pc.ID, pc.Name, pc.Args)

@@ -13,13 +13,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/executor"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
@@ -139,7 +137,7 @@ func TestQueuedHarnessSettings(t *testing.T) {
 	_, missingErr := mem.GetRun(ctx, scope, "missing")
 	for _, readErr := range []error{errors.New("database unavailable"), missingErr} {
 		server.store = failingSettingsStore{Store: mem, err: readErr}
-		if err := bg.handle(ctx, job, dyn, agent); !errors.Is(err, readErr) {
+		if err := bg.handle(ctx, job); !errors.Is(err, readErr) {
 			t.Fatalf("handle error = %v, want %v", err, readErr)
 		}
 	}
@@ -147,60 +145,6 @@ func TestQueuedHarnessSettings(t *testing.T) {
 	after, err := mem.GetRun(ctx, scope, id)
 	if err != nil || after.Phase != store.RunPhasePending {
 		t.Fatalf("run changed after read failure: %+v, %v", after, err)
-	}
-}
-
-func TestDispatchChecksLegacyQueuedRunOwner(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		owner types.UID
-		phase store.RunPhase
-	}{
-		{name: "original owner", owner: "current-agent", phase: store.RunPhasePending},
-		{name: "Agent replaced", owner: "old-agent", phase: store.RunPhaseFailed},
-		{name: "owner missing", phase: store.RunPhaseFailed},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := t.Context()
-			const cluster = "tenant"
-			agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "coder", UID: "current-agent"}}
-			object := &agentsv1alpha1.Run{
-				ObjectMeta: metav1.ObjectMeta{Name: "legacy-run"},
-				Spec:       agentsv1alpha1.RunSpec{AgentRef: agent.Name},
-				Status:     agentsv1alpha1.RunStatus{Phase: agentsv1alpha1.RunPhasePending},
-			}
-			if tc.owner != "" {
-				object.OwnerReferences = []metav1.OwnerReference{{APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: tc.owner}}
-			}
-			scheme := runtime.NewScheme()
-			if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
-				t.Fatal(err)
-			}
-			dyn := dynamicfake.NewSimpleDynamicClient(scheme, agent, object)
-			mem := store.NewMemoryStore()
-			s := &Server{store: mem, events: newEventBus()}
-			bg := &background{server: s, slots: make(chan struct{}), scopedFn: func(context.Context, string) (dynamic.Interface, error) { return dyn, nil }}
-			s.bg = bg
-			scope := bg.scopeFor(ctx, cluster, agent.Name)
-			now := time.Now()
-			if err := mem.SaveRun(ctx, scope, store.Run{ID: object.Name, AgentName: agent.Name, Phase: store.RunPhasePending, CreatedAt: now, UpdatedAt: now}); err != nil {
-				t.Fatal(err)
-			}
-			err := bg.DispatchRun(ctx, cluster, object)
-			if tc.phase == store.RunPhasePending {
-				// A valid legacy run reaches slot admission. Keep it queued
-				// here without launching a backend.
-				if !errors.Is(err, errNoRunSlot) {
-					t.Fatalf("legacy dispatch = %v, want a slot refusal", err)
-				}
-			} else if err != nil {
-				t.Fatal(err)
-			}
-			run, err := mem.GetRun(ctx, scope, object.Name)
-			if err != nil || run.Phase != tc.phase {
-				t.Fatalf("legacy run = %+v, %v, want %s", run, err, tc.phase)
-			}
-		})
 	}
 }
 

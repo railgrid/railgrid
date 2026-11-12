@@ -82,10 +82,9 @@ type Credential struct {
 
 // MCPServer is one remote streamable-HTTP MCP server for a launch.
 type MCPServer struct {
-	ApprovedTools []string
-	Name          string
-	URL           string
-	Token         string
+	Name  string
+	URL   string
+	Token string
 }
 
 // InputFile is a verified runner-staged file made available to one harness

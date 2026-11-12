@@ -21,7 +21,6 @@ import (
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
-	"github.com/railgrid/provider-agents/tools"
 )
 
 const (
@@ -347,9 +346,6 @@ func engineMessagesFromHistory(history []store.Message) []engine.Message {
 
 	out := make([]engine.Message, 0, len(history))
 	for historyIndex, message := range history {
-		if message.Role == "user" {
-			message.Content = tools.PublicRunTask(message.Content)
-		}
 		switch message.Role {
 		case "assistant":
 			if phase, _ := message.Metadata["turnPhase"].(string); phase == "terminal" {

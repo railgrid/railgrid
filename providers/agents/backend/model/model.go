@@ -231,17 +231,6 @@ func callbacks(sink backend.EventSink) engine.Callbacks {
 			}
 			sink.Checkpoint(state)
 		},
-		OnReplaySafeCheckpoint: func(ck engine.Checkpoint, approved bool) error {
-			durable, ok := sink.(backend.ReplaySafeCheckpointSink)
-			if !ok {
-				return fmt.Errorf("backend/model: replay-safe checkpoint persistence is unavailable")
-			}
-			state, err := json.Marshal(ck)
-			if err != nil {
-				return fmt.Errorf("backend/model: encoding replay-safe checkpoint: %w", err)
-			}
-			return durable.ReplaySafeCheckpoint(state, approved)
-		},
 		CheckAbort: sink.Aborted,
 	}
 }

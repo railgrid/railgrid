@@ -33,7 +33,6 @@ var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // EnvironmentConfig is local operator policy, never part of a task request.
 // Values are literal: no shell evaluation, tilde expansion, or env-file loading.
 type EnvironmentConfig struct {
-	UserSystemd bool              `json:"userSystemd,omitempty"`
 	PathPrepend []string          `json:"pathPrepend,omitempty"`
 	Variables   map[string]string `json:"variables,omitempty"`
 }
@@ -87,11 +86,6 @@ func (e EnvironmentConfig) Validate() error {
 
 // ValidateForWorktreeRoot also excludes tools controlled by managed tasks.
 func (e EnvironmentConfig) ValidateForWorktreeRoot(worktreeRoot string) error {
-	if e.UserSystemd {
-		if _, err := userSystemdEnvironment(); err != nil {
-			return err
-		}
-	}
 	for _, path := range e.PathPrepend {
 		if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsAny(path, string(os.PathListSeparator)+"\x00\r\n") {
 			return errors.New("runner environment pathPrepend requires clean absolute paths")
@@ -153,17 +147,6 @@ func (e EnvironmentConfig) Apply(base []string) []string {
 	}
 	for k, v := range e.Variables {
 		values[k] = v
-	}
-	if e.UserSystemd {
-		delete(values, "XDG_RUNTIME_DIR")
-		delete(values, "DBUS_SESSION_BUS_ADDRESS")
-		// Validate is required before launch. If the manager disappears in the
-		// meantime, fail closed rather than use inherited or remote bus settings.
-		if env, err := userSystemdEnvironment(); err == nil {
-			for key, value := range env {
-				values[key] = value
-			}
-		}
 	}
 	if len(e.PathPrepend) > 0 {
 		parts := append([]string(nil), e.PathPrepend...)

@@ -31,15 +31,3 @@ type SnapshotPublisher interface {
 	VerifySnapshot(context.Context, *api.Connection, Credential, *api.Repository, Snapshot) error
 	PublishSnapshot(context.Context, *api.Connection, Credential, *api.Repository, Snapshot, string, string) error
 }
-
-// SnapshotPublicationGuard is checked after the snapshot is verified and
-// immediately before the publisher attempts its expected-head ref update.
-type SnapshotPublicationGuard func(context.Context) error
-
-// GuardedSnapshotPublisher supports publications whose authority can expire or
-// be revoked while a snapshot is being verified. The branch update still uses
-// the publisher's atomic expected-head lease.
-type GuardedSnapshotPublisher interface {
-	SnapshotPublisher
-	PublishSnapshotGuarded(context.Context, *api.Connection, Credential, *api.Repository, Snapshot, string, string, SnapshotPublicationGuard) error
-}
