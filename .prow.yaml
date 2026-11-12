@@ -37,7 +37,7 @@ presubmits:
       timeout: 25m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:
@@ -61,7 +61,7 @@ presubmits:
       timeout: 30m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:
@@ -85,7 +85,7 @@ presubmits:
       timeout: 30m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:
@@ -109,7 +109,7 @@ presubmits:
       timeout: 45m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:
@@ -133,7 +133,7 @@ presubmits:
       timeout: 75m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:
@@ -157,7 +157,7 @@ presubmits:
       timeout: 45m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:
@@ -181,7 +181,7 @@ presubmits:
       timeout: 60m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:
@@ -207,7 +207,7 @@ presubmits:
       timeout: 80m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:
@@ -235,7 +235,7 @@ presubmits:
       timeout: 55m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:
@@ -263,7 +263,7 @@ presubmits:
       timeout: 60m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:
@@ -291,7 +291,7 @@ presubmits:
       timeout: 110m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:
@@ -319,7 +319,7 @@ presubmits:
       timeout: 45m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:
@@ -347,7 +347,7 @@ presubmits:
       timeout: 45m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v1
+        - image: ghcr.io/railgrid/railgrid-ci:v2
           command:
             - runner.sh
           args:

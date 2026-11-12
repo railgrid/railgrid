@@ -22,7 +22,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git make gcc g++ libc6-dev jq unzip xz-utils file \
-      openssl openssh-client rsync sudo procps iproute2 iptables kmod \
+      openssl openssh-client rsync sudo procps iproute2 iptables kmod tini \
       python3 python3-pip python3-venv \
       postgresql-16 \
     && install -m 0755 -d /etc/apt/keyrings \
