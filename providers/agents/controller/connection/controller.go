@@ -64,6 +64,7 @@ import (
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/internal/connsecret"
+	"github.com/railgrid/provider-agents/internal/githubapp"
 	"github.com/railgrid/provider-agents/llm"
 )
 
@@ -309,6 +310,18 @@ func credentialVerdict(ctx context.Context, c client.Client, conn *agentsv1alpha
 				connsecret.Name(conn.Name), llm.SecretNamespace, conn.Spec.Type), nil
 	case err != nil:
 		return "", "", err
+	}
+	if kind := conn.Spec.Config["credentialType"]; kind != "" {
+		if conn.Spec.Type != agentsv1alpha1.ConnectionTypeGitHub || kind != "github-app" || conn.Spec.Auth != "secret" {
+			return agentsv1alpha1.ReasonUnsupportedType, "credentialType github-app requires a github connection with auth secret", nil
+		}
+		if _, err := githubapp.ForRole(conn.Spec.Config["githubRole"], conn.Spec.Config["repositoryID"]); err != nil {
+			return agentsv1alpha1.ReasonSecretIncomplete, err.Error(), nil
+		}
+		if err := githubapp.Validate(sec.Data); err != nil {
+			return agentsv1alpha1.ReasonSecretIncomplete, err.Error(), nil
+		}
+		return "", "", nil
 	}
 	if credentialTokenRequired[conn.Spec.Type] && strings.TrimSpace(string(sec.Data["token"])) == "" {
 		return agentsv1alpha1.ReasonSecretIncomplete,

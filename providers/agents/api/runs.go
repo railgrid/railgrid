@@ -18,9 +18,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 // runSummary is the list-view shape of a run. Class derives from the trigger
@@ -128,7 +131,7 @@ func summarize(run store.Run) runSummary {
 		ID: run.ID, Agent: run.AgentName, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger, Class: class,
 		ParentRunID: run.ParentRunID, Phase: string(run.Phase), Attempt: run.Attempt,
 		Retries: run.Retries, RetryAt: run.RetryAt,
-		InputPreview: safeTruncate(strings.Join(strings.Fields(run.Input), " "), 160),
+		InputPreview: safeTruncate(strings.Join(strings.Fields(tools.PublicRunTask(run.Input)), " "), 160),
 		Message:      safeTruncate(run.Message, 500),
 		HasOutput:    run.Output != "",
 		InputTokens:  run.InputTokens, OutputTokens: run.OutputTokens, USDMicros: run.USDMicros,
@@ -162,6 +165,24 @@ func (s *Server) runTrace(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusConflict, "Conflict", "this run names no agent, so its trace cannot be located")
 		return
 	}
+	if view := r.URL.Query().Get("view"); view != "" {
+		if view != "answer" {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "view must be answer when specified")
+			return
+		}
+		run, err := s.store.GetRun(r.Context(), id.scope(agent), r.PathValue("name"))
+		if err != nil {
+			writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
+			return
+		}
+		// This projection deliberately reads only the answer column. It avoids
+		// loading a large trace or child list when an orchestrator needs one
+		// bounded result from a delegated Run.
+		writeJSON(w, http.StatusOK, struct {
+			Output string `json:"output"`
+		}{Output: safeTruncate(run.Output, 16<<10)})
+		return
+	}
 	detail, err := s.runDetailFor(r.Context(), id.scope(agent), r.PathValue("name"))
 	if err != nil {
 		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
@@ -175,12 +196,16 @@ func (s *Server) runTrace(w http.ResponseWriter, r *http.Request) {
 // verb, the long-poll `wait`, and a `run` that waited — so every way of asking
 // about a run returns the same shape.
 func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID string) (runDetail, error) {
+	return s.runDetailWithChildAccess(ctx, scope, runID, canReadRunChild)
+}
+
+func (s *Server) runDetailWithChildAccess(ctx context.Context, scope store.Scope, runID string, canReadChild func(context.Context, string) bool) (runDetail, error) {
 	run, err := s.store.GetRun(ctx, scope, runID)
 	if err != nil {
 		return runDetail{}, err
 	}
 	detail := runDetail{
-		runSummary: summarize(run), Input: run.Input,
+		runSummary: summarize(run), Input: tools.PublicRunTask(run.Input),
 		Output: run.Output, Sources: run.Sources,
 		Steps: []runStep{}, Children: []runSummary{},
 	}
@@ -226,12 +251,37 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 	}
 	// Enough to hold a full fan-out (spawn caps at 20 workers per run) plus
 	// delegations, so the tree view is not silently truncated.
-	if children, err := s.store.QueryRuns(ctx, scope, store.RunQuery{ParentRunID: runID, Limit: 50}); err == nil {
+	childScope := scope
+	childScope.AgentName = "" // delegated children may belong to another Agent in this workspace
+	if children, err := s.store.QueryRuns(ctx, childScope, store.RunQuery{ParentRunID: runID, Limit: 50}); err == nil {
 		for _, child := range children.Items {
-			detail.Children = append(detail.Children, summarize(child))
+			if canReadChild(ctx, child.ID) {
+				detail.Children = append(detail.Children, summarize(child))
+			}
 		}
 	}
 	return detail, nil
+}
+
+// Gated requests are authorized for the addressed object only. Review each
+// child separately, including same-Agent workers with their own Run objects.
+func canReadRunChild(ctx context.Context, runID string) bool {
+	gate, ok := gateFrom(ctx)
+	if !ok {
+		return true // Internal callers without a request.
+	}
+	caller, ok := dataplane.ProxiedIdentityFrom(ctx)
+	if !ok {
+		return false
+	}
+	if caller.IsForeignProvider(gate.request.ClusterID) {
+		return true // Foreign-provider access is scoped by the workspace's claims.
+	}
+	gvr := agentsclient.RunGVR
+	allowed, _ := dataplane.Authorize(ctx, gate.provider, caller, dataplane.ResourceAttributes{
+		Group: gvr.Group, Version: gvr.Version, Resource: gvr.Resource, Name: runID, Verb: "get",
+	})
+	return allowed
 }
 
 // runArtifactRequest is the `artifact` verb's input: which of a repository
@@ -357,6 +407,7 @@ func runCancellable(phase store.RunPhase) bool {
 var (
 	errCancelNotRecorded = errors.New("could not record the cancellation request; retry the cancel")
 	errHarnessStopFailed = errors.New("remote harness cancellation failed; retry the cancel")
+	errCancelNotSettled  = errors.New("could not settle the cancelled run; retry the cancel")
 )
 
 // cancelStoredRun cancels one run: the cancel verb and the channel /cancel
@@ -365,22 +416,50 @@ var (
 // attempt and stamps the run Aborted. live reports whether the run was
 // executing here (and so finishes on its own once it observes the cancel).
 func (s *Server) cancelStoredRun(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) (live bool, err error) {
-	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
-	if err := s.store.RequestCancel(ctx, scope, run.ID, time.Now().UTC(), id.user); err != nil {
-		log.Printf("runs: recording cancel for run %s failed", run.ID)
-		return false, errCancelNotRecorded
+	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName, ClusterID: id.clusterID}
+	run, err = s.requestRunCancellation(ctx, scope, run.ID, id.user)
+	if err != nil {
+		log.Printf("runs: preparing cancellation: %v", err)
+		return false, err
 	}
-	if s.liveRuns.cancel(run.ID) {
+	if !runCancellable(run.Phase) {
+		return false, nil
+	}
+	if run.Phase == store.RunPhaseRunning && s.liveRuns != nil && s.liveRuns.cancel(run.ID) {
 		return true, nil
 	}
 	if run.Backend == agentsv1alpha1.AgentBackendHarness && len(run.Checkpoint) > 0 {
+		if c == nil {
+			log.Printf("runs: no workspace client available to stop parked harness attempt for run %s", run.ID)
+			return false, errHarnessStopFailed
+		}
 		if err := s.stopParkedHarness(ctx, c, id, run); err != nil {
 			log.Printf("runs: stopping parked harness attempt for run %s failed", run.ID)
 			return false, errHarnessStopFailed
 		}
 	}
-	s.closeRunNow(ctx, scope, run, store.RunPhaseAborted, "cancelled by user")
+	message := "cancelled by user"
+	if strings.HasPrefix(id.user, "parent:") {
+		message = "parent run terminated"
+	}
+	if err := s.settleRunNow(ctx, scope, run, store.RunPhaseAborted, message); err != nil {
+		log.Printf("runs: settling cancelled run %s: %v", run.ID, err)
+		return false, errCancelNotSettled
+	}
 	return false, nil
+}
+
+func (s *Server) requestRunCancellation(ctx context.Context, scope store.Scope, runID, actor string) (store.Run, error) {
+	if err := s.store.RequestCancel(ctx, scope, runID, time.Now().UTC(), actor); err != nil {
+		return store.Run{}, errCancelNotRecorded
+	}
+	// RequestCancel fences approval claims and new checkpoints. Re-read the
+	// row for the latest phase and remote stop target after the fence.
+	run, err := s.store.GetRun(ctx, scope, runID)
+	if err != nil {
+		return store.Run{}, errCancelNotSettled
+	}
+	return run, nil
 }
 
 // closeRunNow stamps a terminal phase on a run that is not executing on this
@@ -392,6 +471,12 @@ func (s *Server) cancelStoredRun(ctx context.Context, c *agentsclient.Client, id
 // and nobody local is going to notice", and a second implementation of that
 // would be a second set of timing rules for the same event.
 func (s *Server) closeRunNow(ctx context.Context, scope store.Scope, run store.Run, phase store.RunPhase, message string) {
+	if err := s.settleRunNow(ctx, scope, run, phase, message); err != nil {
+		log.Printf("runs: settling run %s: %v", run.ID, err)
+	}
+}
+
+func (s *Server) settleRunNow(ctx context.Context, scope store.Scope, run store.Run, phase store.RunPhase, message string) error {
 	now := time.Now().UTC()
 	startedAt := run.CreatedAt
 	if run.StartedAt != nil {
@@ -403,7 +488,19 @@ func (s *Server) closeRunNow(ctx context.Context, scope store.Scope, run store.R
 	persistCtx, cancelPersist := boundedPersistContext(ctx)
 	defer cancelPersist()
 	tracker := trackerForStored(run)
+	owner := run.ExecutionOwner
+	if run.CancelRequested && phase == store.RunPhaseAborted {
+		// The cancel flag fences new leases and non-abort owned writes.
+		owner = ""
+	}
+	out := runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}
+	if err := s.finishRunWithOwner(persistCtx, scope, run.ID, out, now, owner, run.Attempt, nil); err != nil {
+		if errors.Is(err, store.ErrRunAlreadySettled) {
+			return nil
+		}
+		return err
+	}
 	s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), effectiveSessionID(run.SessionID, run.Trigger), startedAt, now, tracker, turnStatusForRunPhase(phase), "", message)
-	s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}, now)
 	s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
+	return nil
 }

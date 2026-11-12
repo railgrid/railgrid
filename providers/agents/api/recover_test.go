@@ -18,7 +18,10 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/engine"
@@ -54,6 +57,7 @@ func (f *recoverFixture) seedRun(t *testing.T, id string, phase store.RunPhase, 
 	run := store.Run{
 		ID: id, AgentName: "scout", SessionID: "chat", Trigger: agentsv1alpha1.RunTriggerChat,
 		Phase: phase, Attempt: attempt, Input: "do the thing", CreatedAt: at, UpdatedAt: at, StartedAt: &at,
+		RecoveryIdentity: store.RecoveryIdentityAgent, AgentUID: "scout-agent-incarnation",
 	}
 	if checkpointed {
 		payload, err := json.Marshal(runCheckpoint{Engine: engine.Checkpoint{
@@ -244,6 +248,7 @@ func TestSweepFailsWhenResumeIsUnavailableOrFails(t *testing.T) {
 			Messages: []engine.CheckpointMessage{{Role: "user", Content: "x"}}}})
 		if err := f.s.store.SaveRun(ctx, other, store.Run{
 			ID: "r2", AgentName: "scout", Phase: store.RunPhaseRunning, Checkpoint: payload,
+			RecoveryIdentity: store.RecoveryIdentityAgent, AgentUID: "scout-agent-incarnation",
 			CreatedAt: at, UpdatedAt: at,
 		}); err != nil {
 			t.Fatal(err)
@@ -362,6 +367,7 @@ func TestSweepTellsTheWaiterTheRunDied(t *testing.T) {
 		if err := f.s.store.SaveRun(ctx, f.scope, store.Run{
 			ID: id, AgentName: "scout", SessionID: "discord:discord-dev:123",
 			Trigger: agentsv1alpha1.RunTriggerChannel, Phase: store.RunPhaseRunning,
+			RecoveryIdentity: store.RecoveryIdentityAgent, AgentUID: "scout-agent-incarnation",
 			Input: "research vertical gardens in lithuania", Delivery: d,
 			CreatedAt: at, UpdatedAt: at,
 		}); err != nil {
@@ -478,7 +484,7 @@ func TestRecoveryResumeClaimsRunningCheckpoint(t *testing.T) {
 	f := newRecoverFixture(t)
 	run := f.seedRun(t, "recovery-claim", store.RunPhaseRunning, time.Minute, true, 0)
 	checked := false
-	claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, time.Now().UTC())
+	claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, "recovery-process", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,11 +504,12 @@ func TestRecoveryResumeRejectsSupersededClaim(t *testing.T) {
 	ctx := context.Background()
 	f := newRecoverFixture(t)
 	run := f.seedRun(t, "superseded-recovery", store.RunPhaseRunning, time.Minute, true, 0)
-	claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, time.Now().UTC())
+	recoveryAt := time.Now().UTC()
+	claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, "recovery-process", recoveryAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newer, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, claimed.UpdatedAt, claimed.UpdatedAt.Add(time.Second))
+	newer, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, claimed.UpdatedAt, "recovery-process-2", claimed.ExecutionLeaseAt.Add(store.RunLeaseDuration+time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,6 +520,133 @@ func TestRecoveryResumeRejectsSupersededClaim(t *testing.T) {
 	}
 }
 
+func TestRecoveryRejectsCallerAndUnknownIdentities(t *testing.T) {
+	for _, identity := range []store.RecoveryIdentity{store.RecoveryIdentityCaller, store.RecoveryIdentityUnknown} {
+		t.Run(string(identity), func(t *testing.T) {
+			ctx := context.Background()
+			f := newRecoverFixture(t)
+			at := time.Now().UTC().Add(-time.Hour)
+			payload, err := json.Marshal(runCheckpoint{Engine: engine.Checkpoint{
+				Messages: []engine.CheckpointMessage{{Role: "user", Content: "caller-scoped request"}}, Iter: 1,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := store.Run{
+				ID: "identity-" + string(identity), AgentName: f.scope.AgentName, SessionID: "chat",
+				Trigger: agentsv1alpha1.RunTriggerChat, Phase: store.RunPhaseRunning,
+				RecoveryIdentity: identity, AgentUID: "scout-agent-incarnation",
+				Input: "caller-scoped request", Checkpoint: payload,
+				CreatedAt: at, UpdatedAt: at, StartedAt: &at,
+			}
+			if err := f.s.store.SaveRun(ctx, f.scope, run); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.s.store.AcquireRunLease(ctx, f.scope, run.ID, "dead-provider-incarnation", run.Attempt, at.Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			f.s.cfg.ProcessID = "recovery-process-incarnation"
+			bg := &background{server: f.s}
+			if err := bg.RecoverRun(ctx, "cluster-1", f.scope.AgentName, run.ID); err != nil {
+				t.Fatal(err)
+			}
+			got := f.phaseOf(t, run.ID)
+			if got.Phase != store.RunPhaseFailed || !strings.Contains(got.Message, "original caller identity cannot be safely restored") {
+				t.Fatalf("identity %q phase=%s message=%q", identity, got.Phase, got.Message)
+			}
+			if got.Attempt != run.Attempt+1 || !executionOwnerBelongsToProcess(got.ExecutionOwner, f.s.cfg.ProcessID) {
+				t.Fatalf("identity %q was not settled under the recovery lease: attempt=%d owner=%q", identity, got.Attempt, got.ExecutionOwner)
+			}
+		})
+	}
+}
+
+func TestRecoverySettlesMaxAttemptsAndAgentUIDMismatchUnderOwnedLease(t *testing.T) {
+	t.Run("max attempts", func(t *testing.T) {
+		ctx := context.Background()
+		f := newRecoverFixture(t)
+		at := time.Now().UTC().Add(-time.Hour)
+		payload, err := json.Marshal(runCheckpoint{Engine: engine.Checkpoint{
+			Messages: []engine.CheckpointMessage{{Role: "user", Content: "bounded request"}}, Iter: 1,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := store.Run{
+			ID: "exhausted-recovery", AgentName: f.scope.AgentName, SessionID: "chat",
+			Trigger: agentsv1alpha1.RunTriggerChat, Phase: store.RunPhaseRunning,
+			Attempt: maxRecoveryAttempts, RecoveryIdentity: store.RecoveryIdentityAgent,
+			AgentUID: "scout-agent-incarnation", Checkpoint: payload,
+			CreatedAt: at, UpdatedAt: at, StartedAt: &at,
+		}
+		if err := f.s.store.SaveRun(ctx, f.scope, run); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.s.store.AcquireRunLease(ctx, f.scope, run.ID, "dead-provider-incarnation", run.Attempt, at.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		f.s.cfg.ProcessID = "recovery-process-incarnation"
+		bg := &background{server: f.s}
+		if err := bg.RecoverRun(ctx, "cluster-1", f.scope.AgentName, run.ID); err != nil {
+			t.Fatal(err)
+		}
+		got := f.phaseOf(t, run.ID)
+		if got.Phase != store.RunPhaseFailed || !strings.Contains(got.Message, "will not be retried") {
+			t.Fatalf("exhausted leased run = phase %s message=%q", got.Phase, got.Message)
+		}
+		if got.Attempt != maxRecoveryAttempts+1 || !executionOwnerBelongsToProcess(got.ExecutionOwner, f.s.cfg.ProcessID) {
+			t.Fatalf("exhausted run was not settled under the recovery lease: attempt=%d owner=%q", got.Attempt, got.ExecutionOwner)
+		}
+	})
+
+	t.Run("Agent UID mismatch", func(t *testing.T) {
+		ctx := context.Background()
+		f := newRecoverFixture(t)
+		at := time.Now().UTC().Add(-time.Hour)
+		payload, err := json.Marshal(runCheckpoint{Engine: engine.Checkpoint{
+			Messages: []engine.CheckpointMessage{{Role: "user", Content: "incarnation-bound request"}}, Iter: 1,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := store.Run{
+			ID: "replaced-agent", AgentName: f.scope.AgentName, SessionID: "chat",
+			Trigger: agentsv1alpha1.RunTriggerChat, Phase: store.RunPhaseRunning,
+			RecoveryIdentity: store.RecoveryIdentityAgent, AgentUID: "admitted-agent-incarnation",
+			Checkpoint: payload, CreatedAt: at, UpdatedAt: at, StartedAt: &at,
+		}
+		if err := f.s.store.SaveRun(ctx, f.scope, run); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.s.store.AcquireRunLease(ctx, f.scope, run.ID, "dead-provider-incarnation", run.Attempt, at.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		runObject := &unstructured.Unstructured{}
+		runObject.SetAPIVersion(agentsv1alpha1.SchemeGroupVersion.String())
+		runObject.SetKind("Run")
+		runObject.SetName(run.ID)
+		runObject.SetOwnerReferences([]metav1.OwnerReference{{
+			APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "Agent", Name: run.AgentName, UID: "replacement-agent-incarnation",
+		}})
+		dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), runObject)
+		f.s.cfg.ProcessID = "recovery-process-incarnation"
+		bg := &background{
+			server:   f.s,
+			scopedFn: func(context.Context, string) (dynamic.Interface, error) { return dyn, nil },
+		}
+		if err := bg.RecoverRun(ctx, "cluster-1", f.scope.AgentName, run.ID); err != nil {
+			t.Fatal(err)
+		}
+		got := f.phaseOf(t, run.ID)
+		if got.Phase != store.RunPhaseFailed || !strings.Contains(got.Message, "Agent incarnation") {
+			t.Fatalf("replaced Agent leased run = phase %s message=%q", got.Phase, got.Message)
+		}
+		if got.Attempt != run.Attempt+1 || !executionOwnerBelongsToProcess(got.ExecutionOwner, f.s.cfg.ProcessID) {
+			t.Fatalf("UID-mismatch run was not settled under the recovery lease: attempt=%d owner=%q", got.Attempt, got.ExecutionOwner)
+		}
+	})
+}
+
 func TestRecoveryResumeGuards(t *testing.T) {
 	for _, cancelled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cancelled=%t", cancelled), func(t *testing.T) {
@@ -521,7 +655,7 @@ func TestRecoveryResumeGuards(t *testing.T) {
 			run := f.seedRun(t, "guard", store.RunPhaseRunning, time.Minute, true, 0)
 			intent := resumeIntent{FromPhase: store.RunPhaseRunning}
 			if cancelled {
-				claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, time.Now().UTC())
+				claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, "recovery-process", time.Now().UTC())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -547,7 +681,7 @@ type recoveryClaimErrorStore struct {
 	calls int
 }
 
-func (s *recoveryClaimErrorStore) ClaimRecovery(context.Context, store.Scope, string, time.Time, time.Time) (store.Run, error) {
+func (s *recoveryClaimErrorStore) ClaimRecovery(context.Context, store.Scope, string, time.Time, string, time.Time) (store.Run, error) {
 	s.calls++
 	return store.Run{}, s.err
 }
@@ -577,5 +711,39 @@ func TestRecoveryClaimErrors(t *testing.T) {
 				t.Fatalf("missing failure cause: %s", got.Message)
 			}
 		})
+	}
+}
+
+func TestAbandonedPendingAPIRunFailsClosedAndCannotBeReopened(t *testing.T) {
+	ctx := context.Background()
+	f := newRecoverFixture(t)
+	now := time.Now().UTC()
+	created := now.Add(-2 * store.RunLeaseDuration)
+	run := store.Run{
+		ID: "abandoned-api-admission", AgentName: f.scope.AgentName, SessionID: "chat",
+		Trigger: agentsv1alpha1.RunTriggerAPI, Phase: store.RunPhasePending,
+		RecoveryIdentity: store.RecoveryIdentityCaller, AgentUID: "agent-incarnation",
+		CreatedAt: created, UpdatedAt: created,
+	}
+	if err := f.s.store.SaveRun(ctx, f.scope, run); err != nil {
+		t.Fatal(err)
+	}
+	f.s.cfg.ProcessID = "recovery-process-incarnation"
+	bg := &background{server: f.s}
+	if err := bg.RecoverRun(ctx, "cluster-1", f.scope.AgentName, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := f.s.store.GetRun(ctx, f.scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.Phase != store.RunPhaseFailed || settled.Message != "the provider restarted before this run began, so it could not be resumed" {
+		t.Fatalf("abandoned API admission = phase %s, message %q", settled.Phase, settled.Message)
+	}
+	lateStarter := run
+	lateStarter.Phase = store.RunPhaseRunning
+	lateStarter.UpdatedAt = now
+	if err := f.s.store.SaveRun(ctx, f.scope, lateStarter); !errors.Is(err, store.ErrRunAlreadySettled) {
+		t.Fatalf("late API starter reopened the settled admission: %v", err)
 	}
 }

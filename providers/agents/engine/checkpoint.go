@@ -43,12 +43,21 @@ type Interrupt struct {
 // conversation, the tool calls not yet executed (the first one is the gated
 // call), streamed content so far, accumulated usage, and the loop iteration.
 type Checkpoint struct {
-	AwaitingReply bool                `json:"awaitingReply,omitempty"`
-	Messages      []CheckpointMessage `json:"messages"`
-	Pending       []PendingCall       `json:"pending"`
-	Content       string              `json:"content,omitempty"`
-	Usage         Usage               `json:"usage"`
-	Iter          int                 `json:"iter"`
+	AwaitingReply bool `json:"awaitingReply,omitempty"`
+	// ReplaySafePending distinguishes a crash-recovery checkpoint for tool calls
+	// that explicitly opted into ID-based idempotent replay from an approval
+	// interrupt. ReplaySafePending checkpoints execute their pending calls again
+	// with the original IDs instead of re-asking the model.
+	ReplaySafePending bool `json:"replaySafePending,omitempty"`
+	// ApprovedPending records that the first replay-safe call had already passed
+	// an approval gate before this checkpoint was written. The API layer restores
+	// that exact one-call grant on recovery.
+	ApprovedPending bool                `json:"approvedPending,omitempty"`
+	Messages        []CheckpointMessage `json:"messages"`
+	Pending         []PendingCall       `json:"pending"`
+	Content         string              `json:"content,omitempty"`
+	Usage           Usage               `json:"usage"`
+	Iter            int                 `json:"iter"`
 }
 
 // PendingCall is one tool call the model requested that has not executed yet.

@@ -9,13 +9,16 @@
 package api
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -25,6 +28,7 @@ import (
 	"github.com/railgrid/provider-sdk/serve"
 
 	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/store"
 )
 
 const (
@@ -197,6 +201,52 @@ func TestRunVerbsGateOnTheRunObject(t *testing.T) {
 	}
 }
 
+func TestRunTraceAnswerViewIsBoundedAndSkipsLargeTrace(t *testing.T) {
+	callers := &conformance.FakeCallers{
+		Cluster: conformanceCluster,
+		User:    conformanceUser,
+		Objects: []*unstructured.Unstructured{runObject("r1", conformanceAgent)},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Verb == "get" && a.Resource == "runs" && a.Name == "r1"
+		},
+	}
+	s := newGatedTestServer(t, callers)
+	scope := store.Scope{OrgUUID: store.UnmappedOrg, WorkspaceUUID: conformanceCluster, AgentName: conformanceAgent, ClusterID: conformanceCluster}
+	now := time.Now().UTC()
+	if err := s.store.SaveRun(t.Context(), scope, store.Run{
+		ID: "r1", AgentName: conformanceAgent, Phase: store.RunPhaseSucceeded,
+		Output: strings.Repeat("answer ", 3000), CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	large := strings.Repeat("tool-history ", 20_000)
+	for i := range 8 {
+		if err := s.store.AppendToolCall(t.Context(), scope, store.ToolCall{
+			ID: "call-" + strconv.Itoa(i), AgentName: conformanceAgent, RunID: "r1",
+			Trigger: "api", Tool: "large_result", Result: large, Outcome: "ok", CreatedAt: now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := gatedHandler(t, s)
+	path := verbBase(conformanceCluster, "runs", "r1") + "/trace?view=answer"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, stamped(http.MethodGet, path, nil, conformanceUser))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("answer view → %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.Len() > 100<<10 {
+		t.Fatalf("bounded answer response is %d bytes despite the 2 MiB tool trace", recorder.Body.Len())
+	}
+	var answer map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if len(answer) != 1 || len(answer["output"]) > 16<<10 || !strings.HasPrefix(answer["output"], "answer ") || !strings.Contains(answer["output"], truncationMarker) {
+		t.Fatalf("answer projection = keys=%v output bytes=%d", answer, len(answer["output"]))
+	}
+}
+
 // TestVerbHandlersActAsTheProvider: after the gate a handler holds the
 // provider's client, not a caller's — there is no caller credential on a verb,
 // and the Server under test has no tenant client and no hub URL to build one
@@ -314,6 +364,14 @@ func TestDataPlaneVerbsMatchManifest(t *testing.T) {
 		if _, ok := declared[coordinate]; !ok {
 			t.Errorf("%s is served but not declared in the CatalogEntry, so kcp never routes it here", coordinate)
 		}
+	}
+}
+
+func TestCodeToolRequirementRemainsDeclared(t *testing.T) {
+	requires := readSpecBlock(t, "../manifest.yaml", "requires")
+	want := "- provider: code\n      group: code.railgrid.ai\n      resources:\n        - name: pullrequests\n          verbs: [\"get\"]\n        - name: pullrequests/operate"
+	if !strings.Contains(requires, want) {
+		t.Fatalf("Code dependency and operate claim must remain declared together:\n%s", requires)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -59,7 +60,7 @@ func TestCredentialMCPServersReachTheLaunchAndNothingDurable(t *testing.T) {
 	}
 	waitForPhase(t, runner, receipt.AttemptID, PhaseNeedsInput)
 	got := <-seen
-	if len(got) != 1 || got[0] != (harness.MCPServer{Name: "agent-config", URL: serverURL, Token: firstToken}) {
+	if len(got) != 1 || !reflect.DeepEqual(got[0], harness.MCPServer{Name: "agent-config", URL: serverURL, Token: firstToken}) {
 		t.Fatalf("launch servers = %+v, want the brought server", got)
 	}
 
@@ -185,5 +186,23 @@ func TestCredentialMCPServersValidation(t *testing.T) {
 				t.Fatalf("servers = %+v, want %d", credential.MCPServers, len(test.servers))
 			}
 		})
+	}
+}
+
+func TestApprovedMCPToolAllowlistIsValidatedAndCopied(t *testing.T) {
+	input := []MCPServer{{Name: "agent", URL: "https://agents.example/mcp", Token: "opaque", ApprovedTools: []string{"code_pull_request"}}}
+	out, err := credentialMCPServersOf(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input[0].ApprovedTools[0] = "different"
+	if out[0].ApprovedTools[0] != "code_pull_request" {
+		t.Fatal("caller mutated approved authority")
+	}
+	for _, tools := range [][]string{{""}, {"x", "x"}, {"bad\nname"}} {
+		input[0].ApprovedTools = tools
+		if _, err := credentialMCPServersOf(input); err == nil {
+			t.Fatal("invalid tool allowlist accepted")
+		}
 	}
 }

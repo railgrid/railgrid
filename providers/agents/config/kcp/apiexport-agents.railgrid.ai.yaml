@@ -28,6 +28,14 @@ metadata:
   name: agents.railgrid.ai
 spec:
   permissionClaims:
+  - group: code.railgrid.ai
+    resource: pullrequests
+    verbs:
+    - get
+  - group: code.railgrid.ai
+    resource: pullrequests/operate
+    verbs:
+    - '*'
   - group: infrastructure.railgrid.ai
     resource: instances
     verbs:

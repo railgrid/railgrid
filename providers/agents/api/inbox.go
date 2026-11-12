@@ -202,7 +202,7 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 		writeUpdateError(w, err)
 		return
 	}
-	access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, HubToken: id.token, CallerUser: id.user}
+	access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, HubToken: id.token, CallerUser: id.user, RecoveryIdentity: store.RecoveryIdentityCaller}
 	access, err = s.prepareInboxAttachmentAccess(r.Context(), wsScope, existing, state, access)
 	if err != nil {
 		writeStatus(w, http.StatusServiceUnavailable, "CallerIdentityUnavailable", "the current caller identity could not be verified for conversation attachments; retry this decision")

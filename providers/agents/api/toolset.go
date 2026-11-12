@@ -64,6 +64,11 @@ func defaultFamilies(_ bool) []string {
 // spec.instructions) for folding into the system context, and a closer.
 func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun) ([]backend.Tool, string, func()) {
 	trigger := run.Trigger
+	deps.CodeScope = tools.ParseCodeScope(run.Task)
+	deps.InvocationKey = run.IdempotencyKey
+	if run.Repository != nil {
+		deps.CodeReviewHead = run.Repository.BaseCommit
+	}
 	deps.AskInChat = trigger == agentsv1alpha1.RunTriggerChat && run.Worker == nil && run.ParentRunID == ""
 	interactive := isInteractive(trigger)
 	// A worker inherits its parent's approval class rather than its own trigger's:
@@ -79,53 +84,26 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	// ParentRunID, and rolls the child's usage into the parent's budget.
 	if trigger != agentsv1alpha1.RunTriggerDelegation && len(deps.Agent.Spec.Delegates) > 0 {
 		parentDeps := deps
-		delegations := 0
 		deps.Delegate = func(dctx context.Context, target, task string) (string, error) {
 			if !slices.Contains(parentDeps.Agent.Spec.Delegates, target) {
 				return "", fmt.Errorf("agent %q is not in this agent's delegates list", target)
 			}
-			if delegations >= 3 {
-				return "", fmt.Errorf("delegation fan-out limit (3 per run) reached")
-			}
-			delegations++
-			child, err := parentDeps.CR.GetAgent(dctx, target)
-			if err != nil {
-				return "", fmt.Errorf("loading agent %q: %w", target, err)
-			}
-			childRun := taskRun{
-				Scope:       store.Scope{OrgUUID: parentDeps.Scope.OrgUUID, WorkspaceUUID: parentDeps.Scope.WorkspaceUUID, AgentName: target},
-				Agent:       child,
-				SessionID:   "delegate:" + parentDeps.Agent.Name + ":" + target,
-				Task:        task,
-				Trigger:     agentsv1alpha1.RunTriggerDelegation,
-				SourceName:  parentDeps.Agent.Name,
-				ParentRunID: parentDeps.RunID,
-			}
-			// The child runs in the same workspace, so it inherits the data plane
-			// (reached as this provider, like the parent's). It gets no hub token
-			// and so no edges, which widens nothing: it only lets a delegated
-			// sub-agent use the same instance-backed tools its parent could.
-			runAccess{
-				Creds: parentDeps.Secrets, CR: parentDeps.CR,
-				ClusterID: parentDeps.DataPlane.ClusterID,
-			}.applyTo(&childRun)
-			res, err := s.executeTask(dctx, childRun)
+			child, err := s.delegateAndWait(dctx, parentDeps, target, task)
 			if err != nil {
 				return "", err
 			}
-			// Budget rollup: the child's spend (tokens + cost) also counts
-			// against the parent.
-			_, _ = s.store.AddUsage(dctx, parentDeps.Scope, parentDeps.Agent.Name,
-				res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.USDMicros, time.Now().UTC(), budgetWindow(parentDeps.Agent.Spec.Budget))
-			// The child hit its own approval gate. Say so plainly rather than
-			// handing back a partial answer the parent would treat as final —
-			// the child's run resumes on its own once the user decides.
-			if res.Pending != nil {
-				return fmt.Sprintf(
-					"%s\n\n[delegation paused: %s needs approval to run %s. The user was asked; this sub-task will finish on its own once approved. Do not retry it.]",
-					res.Content, target, res.Pending.Tool), nil
+			// Conservatively account delegated spend at the same existing
+			// budget boundary; a failed write must not silently drop usage.
+			if _, _, err = s.store.AddDelegatedUsage(dctx, parentDeps.Scope, parentDeps.RunID, child.ID,
+				child.InputTokens, child.OutputTokens, child.USDMicros, time.Now().UTC(), budgetWindow(parentDeps.Agent.Spec.Budget)); err != nil {
+				return "", err
 			}
-			return res.Content, nil
+			if child.Phase != store.RunPhaseSucceeded {
+				return "", fmt.Errorf("delegate %s ended %s: %s", target, child.Phase, child.Message)
+			}
+			scope := parentDeps.Scope
+			scope.AgentName = target
+			return s.delegationOutput(dctx, scope, child)
 		}
 	}
 	grant := deps.Agent.Spec.Tools.Background
@@ -178,10 +156,21 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	}
 
 	var out []backend.Tool
+	out = append(out, tools.Result(deps, run.Task)...)
 	if slices.Contains(families, "core") {
-		out = append(out, tools.Core(deps)...)
+		for _, tool := range tools.Core(deps) {
+			if (slices.Contains(families, "code") || slices.Contains(families, "code-write")) && (strings.HasPrefix(tool.Name, "schedule_") || tool.Name == "schedules_list" || tool.Name == "wait") {
+				continue
+			}
+			out = append(out, tool)
+		}
 	}
-	out = append(out, tools.SelfConfig(deps)...)
+	if !slices.Contains(families, "code") && !slices.Contains(families, "code-write") {
+		out = append(out, tools.SelfConfig(deps)...)
+	}
+	if slices.Contains(families, "code") || slices.Contains(families, "code-write") {
+		out = append(out, tools.Code(deps, slices.Contains(families, "code-write"))...)
+	}
 	if slices.Contains(families, "web") {
 		out = append(out, tools.Web(deps)...)
 	}
@@ -379,7 +368,10 @@ func (s *Server) wrapTool(t backend.Tool, deps tools.Deps, run taskRun, trigger 
 	t.Exec = nil
 	t.ExecRich = func(ctx context.Context, argsJSON string) (engine.Observation, error) {
 		if needsApproval && !approved.consume(argsJSON) {
-			reqID := s.postApprovalRequest(ctx, deps, trigger, t.Name, argsJSON)
+			reqID, err := s.postApprovalRequest(ctx, deps, trigger, t.Name, argsJSON)
+			if err != nil {
+				return backend.Observation{}, err
+			}
 			_ = s.store.AppendToolCall(ctx, deps.Scope, store.ToolCall{
 				ID: uuid.NewString(), AgentName: deps.Agent.Name, RunID: deps.RunID, Trigger: trigger,
 				Tool: t.Name, Args: redactArgs(argsJSON), Outcome: "pending_approval",
@@ -425,11 +417,11 @@ func (s *Server) wrapTool(t backend.Tool, deps tools.Deps, run taskRun, trigger 
 
 // postApprovalRequest records a pending approval (bound to this run and the
 // exact requested call) and pushes it to the user's primary channel.
-func (s *Server) postApprovalRequest(ctx context.Context, deps tools.Deps, trigger, toolName, argsJSON string) string {
+func (s *Server) postApprovalRequest(ctx context.Context, deps tools.Deps, trigger, toolName, argsJSON string) (string, error) {
 	now := time.Now().UTC()
 	wsScope := store.Scope{OrgUUID: deps.Scope.OrgUUID, WorkspaceUUID: deps.Scope.WorkspaceUUID}
 	id := uuid.NewString()
-	_ = s.store.AddInboxItem(ctx, wsScope, store.InboxItem{
+	if err := s.store.AddInboxItem(ctx, wsScope, store.InboxItem{
 		ID: id, AgentName: deps.Agent.Name, RunID: deps.RunID, Kind: store.InboxKindApproval,
 		State:  store.InboxStatePending,
 		Prompt: "Allow " + deps.Agent.Name + " to run " + toolName + "?",
@@ -437,14 +429,16 @@ func (s *Server) postApprovalRequest(ctx context.Context, deps tools.Deps, trigg
 			"tool": toolName, "args": redactArgs(argsJSON), "trigger": trigger,
 		},
 		CreatedAt: now, UpdatedAt: now,
-	})
+	}); err != nil {
+		return "", fmt.Errorf("filing approval request: %w", err)
+	}
 	s.events.publish(wsScope, "inbox", map[string]any{
 		"id": id, "state": "pending", "agent": deps.Agent.Name, "tool": toolName, "runID": deps.RunID,
 	})
 	// Push the request to the user's channel so it can be answered where they
 	// live: reply /inbox to list, /approve N to allow (which resumes the run).
 	pushInboxNotice(ctx, deps, fmt.Sprintf("⏳ %s wants to run %s. Reply /inbox to review, /approve to allow — the run resumes automatically.", deps.Agent.Name, toolName))
-	return id
+	return id, nil
 }
 
 // pushInboxNotice tells the agent's primary channel that something waits in

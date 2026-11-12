@@ -59,6 +59,12 @@ type Deps struct {
 	ConnSecretName func(name string) string
 	// RunID is the executing run — recorded on sub-agent runs as the parent.
 	RunID string
+	// RecoveryIdentity is inherited from the parent and persisted on child runs.
+	RecoveryIdentity store.RecoveryIdentity
+	// CodeScope is parsed from the immutable invocation input, never tool arguments.
+	CodeScope      *CodeScope
+	InvocationKey  string
+	CodeReviewHead string
 	// AskInChat lets a top-level attended chat pause for the user's reply.
 	AskInChat bool
 	// DataPlane addresses tenant workloads through the infrastructure
