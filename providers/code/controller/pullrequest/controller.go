@@ -187,6 +187,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	// 1. The branch: advance it to the desired head when it is not there.
 	if pr.Status.Number == 0 && pr.Spec.Number > 0 {
+		// Adopting a PR this resource did not open would bypass the
+		// existing-branch refusal in advance(): the adopted branch's head
+		// becomes Status.Head and the next desired head force-pushes it. Only
+		// a verified command, whose every publication is rechecked by
+		// CheckPublication, may adopt.
+		if pr.Spec.Command == nil {
+			return ctrl.Result{}, r.fail(ctx, c, &pr, "spec.number adopts an existing pull request only for a verified command")
+		}
 		next.Status.Number = pr.Spec.Number
 		textChanged = false
 		next.Status.PublishedTextDigest = digest
