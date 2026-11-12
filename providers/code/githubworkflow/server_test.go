@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -133,7 +134,7 @@ func (f *fixture) deliver(t *testing.T, bad bool) *httptest.ResponseRecorder {
 }
 func TestReceiptSignatureIdentityAndDeduplication(t *testing.T) {
 	f := newFixture(t)
-	if w := f.deliver(t, true); w.Code != 403 || f.calls != 0 {
+	if w := f.deliver(t, true); w.Code != 404 || f.calls != 0 {
 		t.Fatalf("unsigned work reached upstream: %d %d", w.Code, f.calls)
 	}
 	if w := f.deliver(t, false); w.Code != 202 {
@@ -722,4 +723,54 @@ func TestCleanReviewSuppressedAtCodeBoundary(t *testing.T) {
 		}
 	}
 	// The fixture rejects any publication HTTP request, so success proves no post.
+}
+
+type failingCallers struct{}
+
+func (failingCallers) For(string, string) (dynamic.Interface, error) {
+	return nil, errors.New("unavailable")
+}
+func (failingCallers) AsProvider(string) (dynamic.Interface, error) {
+	return nil, errors.New("unavailable")
+}
+
+func TestWebhookPreAuthenticationFailuresMatch(t *testing.T) {
+	f := newFixture(t)
+	badSignature := f.deliver(t, true)
+	missing := newFixture(t)
+	if err := missing.dyn.Resource(connections).Delete(context.Background(), "app", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	missingBinding := missing.deliver(t, false)
+	unavailable := newFixture(t)
+	unavailable.s.Callers = failingCallers{}
+	noWorkspace := unavailable.deliver(t, false)
+	for _, w := range []*httptest.ResponseRecorder{badSignature, missingBinding, noWorkspace} {
+		if w.Code != http.StatusNotFound || w.Body.String() != "{\"error\":\"not found\"}\n" {
+			t.Fatalf("unexpected response: %d %q", w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestWebhookOversizedBodyDoesNotRevealTheConnection(t *testing.T) {
+	oversized := func(f *fixture) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/webhooks/github/cluster/app", strings.NewReader(strings.Repeat("x", (1<<20)+1)))
+		r.SetPathValue("cluster", "cluster")
+		r.SetPathValue("name", "app")
+		r.Header.Set("X-GitHub-Event", "issue_comment")
+		r.Header.Set("X-Hub-Signature-256", "sha256="+strings.Repeat("0", 64))
+		w := httptest.NewRecorder()
+		f.s.Webhook(w, r)
+		return w
+	}
+	present := oversized(newFixture(t))
+	missing := newFixture(t)
+	if err := missing.dyn.Resource(connections).Delete(context.Background(), "app", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	absent := oversized(missing)
+	if present.Code != absent.Code || present.Body.String() != absent.Body.String() {
+		t.Fatalf("oversized body distinguishes the connection: present=%d %q absent=%d %q",
+			present.Code, present.Body.String(), absent.Code, absent.Body.String())
+	}
 }

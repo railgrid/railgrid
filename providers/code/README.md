@@ -631,6 +631,54 @@ default memory limit is 512 MiB to leave headroom for JSON buffers and Git.
 
 The read-only Repository-bound `branches/v1` action returns `branches` (up to 50 names) and `nextPage` (zero when complete). Supply the canonical repository, repository UID, connection UID, and an optional one-based `page`. Each page uses the caller's `create` permission on the `repositories/branches` subresource and rechecks the registered repository against the Git host. No Git credentials are returned. Consumers must follow `nextPage` with their own bounded traversal and must not interpret a failed or partial read as an empty repository.
 
+### Maintainer PR comment intake
+
+Code accepts signed GitHub `issue_comment` deliveries at
+`/webhooks/github/<workspace-cluster>/<connection>` (through the hub:
+`/services/providers/code/webhooks/github/...`). Enable the binding on a
+GitHub App Connection with `spec.githubWebhook.repositoryRef`, the numeric
+`repositoryID`, and `source: app` (or `repository` for a repository webhook).
+Its existing Code-owned credential Secret also holds a random `webhookSecret`
+of at least 32 bytes. Code verifies HMAC, repository and installation identity;
+only new human comments on open same-repository PRs become bounded immutable
+`GitHubEvent` receipts. A receipt is durable delivery provenance, not a task.
+A trusted coordinator interprets admitted human requests and checks current
+maintain/admin access through the gated `githubevents/context` capability.
+
+An existing `PullRequest` can adopt a forge PR with `spec.number`. Its optional
+`spec.command` pins the verified event UID and publication deadline. The
+`pullrequests/operate` capability observes GitHub, publishes COMMENT reviews,
+posts idempotent status comments, or records a verified snapshot as the existing
+`spec.desiredHead`. It exposes no approval or merge operation. Code revalidates
+the maintainer, comment and pinned identities at publication; review-only mode
+cannot publish code, and command work cannot target main or the base branch.
+The existing controller stages and publishes snapshots under the atomic Git
+expected-head lease. Its approved snapshot parent must also match the observed
+head, so a newer observation cannot weaken the publication precondition.
+
+CI, current base and mergeability observations live on PullRequest status.
+Unknown or missing CI is not passing. Code owns these external reads; Agents
+contains no PR lifecycle controller or CI polling. Protect main independently
+with a GitHub ruleset that grants the App no bypass.
+
+Command operations also require the admitted event UID. Agents binds this to
+its immutable invocation input rather than accepting a model-selected command.
+Cancelling or settling the owning task expires the existing command deadline
+and clears desired publication intent; the final push guard re-reads that
+binding so a previously queued reconcile cannot reuse retired authority. A new
+command clears the previous desired head and waits for a Code observation of
+its own resource generation before starting work.
+
+The verified event/context capability issues deterministic publication scopes
+bound to one invocation key and Agent identity. `pullrequests/operate` verifies
+that proof as well as the live maintainer authority, mode, deadline and head.
+Scope issuance adds no delivery or lifecycle record, and repeating it during
+lost-response recovery produces the same proof while the command lease holds.
+
+PR command status uses one App-owned comment per PullRequest, updated in place
+across commands and continuations. Reviews require an explicit `findingsCount`;
+Code suppresses zero-finding posts. Existing historical posts remain unchanged.
+
 ### Coordinator task grants
 
 `repositories/authorize` is a separate Code capability for trusted coordinator
