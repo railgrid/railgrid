@@ -57,6 +57,7 @@ import (
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/internal/connsecret"
 	"github.com/railgrid/provider-agents/internal/edgeref"
+	"github.com/railgrid/provider-agents/internal/githubapp"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 	sdk "github.com/railgrid/provider-sdk/skills"
@@ -283,7 +284,7 @@ func (s *Server) persistHarnessSession(ctx context.Context, scope store.Scope, s
 // item, so first stop the attempt that otherwise waits indefinitely for it.
 func (s *Server) persistHarnessTurn(ctx context.Context, scope store.Scope, h *harnessTurn, run *backend.Run, out backend.Outcome, at time.Time) error {
 	err := s.persistHarnessSession(ctx, scope, h.Session, h.backend.Observed(), at)
-	if err == nil || out.Parked == nil {
+	if err == nil || out.Parked == nil || leaseWasLost(ctx) {
 		return err
 	}
 	if stopErr := stopHarnessTurn(ctx, h, run); stopErr != nil {
@@ -486,11 +487,11 @@ func parkedHarnessRunner(clusterID string, agent *agentsv1alpha1.Agent, target *
 	}, grantAgent, true
 }
 
-// unbilledHarnessUsage includes consumption recovered from an in-flight
+// unbilledRunUsage includes consumption recovered from an in-flight
 // checkpoint. Only usage persisted on the run at an earlier park has already
-// been charged; the backend's saved cursor and Spent are observation boundaries,
-// not billing boundaries.
-func unbilledHarnessUsage(total, billed backend.Cost) backend.Cost {
+// been charged; backend checkpoint counters are observation boundaries, not
+// billing boundaries.
+func unbilledRunUsage(total, billed backend.Cost) backend.Cost {
 	return backend.Cost{
 		Tokens: backend.Tokens{
 			InputTokens:  max(0, total.InputTokens-billed.InputTokens),
@@ -543,7 +544,12 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 	if err != nil {
 		return harnessTurn{}, err
 	}
-	environment, err := s.harnessEnvironment(ctx, run, cfg)
+	var environment []runner.EnvironmentVariable
+	if run.Repository != nil {
+		environment, err = s.harnessEnvironmentForRepository(ctx, run, cfg, run.Repository.RepositoryID)
+	} else {
+		environment, err = s.harnessEnvironment(ctx, run, cfg)
+	}
 	if err != nil {
 		return harnessTurn{}, err
 	}
@@ -682,8 +688,19 @@ type repositoryTurnDeps struct {
 // the reason rather than running as nobody and reporting "not logged in" from
 // inside the harness.
 func (s *Server) harnessEnvironment(ctx context.Context, run taskRun, cfg *agentsv1alpha1.AgentHarnessBackend) ([]runner.EnvironmentVariable, error) {
+	return s.harnessEnvironmentForRepository(ctx, run, cfg, "")
+}
+
+// harnessEnvironmentForRepository resolves the connection anew for each
+// dispatch. A repository attempt pins this to a repository-scoped GitHub App
+// checkout credential, so edits made after admission cannot widen it to a
+// PAT, fixer role, or another repository.
+func (s *Server) harnessEnvironmentForRepository(ctx context.Context, run taskRun, cfg *agentsv1alpha1.AgentHarnessBackend, repositoryID string) ([]runner.EnvironmentVariable, error) {
 	connName := strings.TrimSpace(cfg.GitHubConnectionRef)
 	if connName == "" {
+		if repositoryID != "" {
+			return nil, fmt.Errorf("repository run requires a repository-scoped GitHub App checkout connection")
+		}
 		return nil, nil
 	}
 	if run.CR == nil {
@@ -695,6 +712,20 @@ func (s *Server) harnessEnvironment(ctx context.Context, run taskRun, cfg *agent
 	}
 	if conn.Spec.Type != agentsv1alpha1.ConnectionTypeGitHub {
 		return nil, fmt.Errorf("spec.backend.harness.githubConnectionRef names connection %q of type %q; it must be a github connection", connName, conn.Spec.Type)
+	}
+	if repositoryID != "" && (conn.Spec.Auth != "secret" || conn.Spec.Config["credentialType"] != "github-app" || conn.Spec.Config["githubRole"] != "checkout" || conn.Spec.Config["repositoryID"] != repositoryID) {
+		return nil, fmt.Errorf("repository run requires GitHub App checkout authority pinned to repository %s", repositoryID)
+	}
+	repositoryURL := ""
+	if repositoryID != "" {
+		var err error
+		repositoryURL, err = pinnedGitHubRepositoryURL(conn.Spec.Config["repository"])
+		if err != nil {
+			return nil, err
+		}
+		if run.Repository != nil && run.Repository.Source != nil && run.Repository.Source.RemoteURL != repositoryURL {
+			return nil, fmt.Errorf("repository run remote does not match its pinned GitHub App checkout repository")
+		}
 	}
 	// Only the Secret this provider's own writers create for the connection.
 	// spec.secretRef is free text anyone with Connection write controls, so
@@ -711,6 +742,28 @@ func (s *Server) harnessEnvironment(ctx context.Context, run taskRun, cfg *agent
 		return nil, fmt.Errorf("reading the token of GitHub connection %q (Secret %s): %w", connName, secretName, err)
 	}
 	token := strings.TrimSpace(string(secret.Data["token"]))
+	if conn.Spec.Config["credentialType"] == "github-app" {
+		if conn.Spec.Auth != "secret" || (conn.Spec.Config["githubRole"] != "reviewer" && conn.Spec.Config["githubRole"] != "fixer" && conn.Spec.Config["githubRole"] != "checkout") {
+			return nil, fmt.Errorf("GitHub App connection %q requires auth secret and githubRole reviewer, fixer or checkout", connName)
+		}
+		policy, policyErr := githubapp.ForRole(conn.Spec.Config["githubRole"], conn.Spec.Config["repositoryID"])
+		if policyErr != nil {
+			return nil, policyErr
+		}
+		if s.githubAppTokenMint != nil {
+			token, _, err = s.githubAppTokenMint(ctx, policy, secret.Data)
+		} else {
+			token, _, err = policy.Mint(ctx, secret.Data)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("GitHub App connection %q: %w", connName, err)
+		}
+		if repositoryID != "" && run.Repository != nil {
+			run.Repository.Source = &runner.RepositorySource{RemoteURL: repositoryURL, Username: "x-access-token", Token: token}
+		}
+	} else if kind := conn.Spec.Config["credentialType"]; kind != "" {
+		return nil, fmt.Errorf("GitHub connection %q has unsupported credentialType", connName)
+	}
 	if token == "" {
 		return nil, fmt.Errorf("GitHub connection %q holds no token (Secret %s has no \"token\" key); add one or connect it with OAuth", connName, secretName)
 	}

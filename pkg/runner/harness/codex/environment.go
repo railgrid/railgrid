@@ -31,6 +31,9 @@ import (
 // prepareEnvironment checks host prerequisites before spending a model turn.
 // Network checks use the host: sandbox network permission is set separately.
 func (a *Adapter) prepareEnvironment(ctx context.Context) (string, error) {
+	if err := a.cfg.Environment.ValidateForWorktreeRoot(a.cfg.WorktreeRoot); err != nil {
+		return "", fmt.Errorf("operator environment preflight: %w", err)
+	}
 	if len(a.cfg.RegistryURLs) > 0 && !a.cfg.networkAccess {
 		return "", fmt.Errorf("codex registry preflight requires sandbox_workspace_write.network_access = true in the runner Codex config")
 	}

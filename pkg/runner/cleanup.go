@@ -87,6 +87,14 @@ func runRepositoryHook(parent context.Context, workdir, base string, kind hookKi
 	if len(argv) > 32 || argv[0] == "" {
 		return errors.New("invalid repository hook command")
 	}
+	logName := ".railgrid-" + hookName + ".log"
+	trackedLog, err := gitOutput(ctx, workdir, "ls-tree", base, "--", logName)
+	if err != nil {
+		return fmt.Errorf("check repository hook log path: %w", err)
+	}
+	if trackedLog != "" {
+		return errors.New("repository hook log path is tracked; refusing to overwrite source")
+	}
 	trusted, err := os.MkdirTemp("", "railgrid-cleanup-*")
 	if err != nil {
 		return err
@@ -113,7 +121,7 @@ func runRepositoryHook(parent context.Context, workdir, base string, kind hookKi
 	}
 	cmd.WaitDelay = time.Second
 	// Child output can contain secrets. Do not attach it to receipts or PRs.
-	logPath := filepath.Join(workdir, ".railgrid-"+hookName+".log")
+	logPath := filepath.Join(workdir, logName)
 	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if errors.Is(err, os.ErrExist) {
 		// Recovery is allowed to retry an interrupted cleanup. Replace the

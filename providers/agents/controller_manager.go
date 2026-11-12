@@ -37,8 +37,8 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 
+	"github.com/google/uuid"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -211,6 +211,8 @@ type runExecution interface {
 	DispatchRun(ctx context.Context, clusterID string, object *agentsv1alpha1.Run) error
 	RecoverRun(ctx context.Context, clusterID, agentName, runID string) error
 	StopRun(ctx context.Context, clusterID, agentName, runID, reason string) error
+	ReconcileRunDescendants(ctx context.Context, clusterID, agentName, runID string) error
+	ReconcileRunParent(ctx context.Context, clusterID, agentName, runID string) error
 	PurgeRunData(ctx context.Context, clusterID, agentName, runID string) error
 }
 
@@ -222,7 +224,11 @@ type runExecution interface {
 // claim it cannot execute is worse than no claim at all — it holds the run for
 // a full ClaimGrace before anyone else may try.
 func newRunReconciler(deps api.ControllerDeps) *runctl.Reconciler {
-	r := &runctl.Reconciler{ProcessID: processID()}
+	owner := deps.ProcessID
+	if owner == "" {
+		owner = processID()
+	}
+	r := &runctl.Reconciler{ProcessID: owner}
 	execution, ok := deps.Submit.(runExecution)
 	if !ok {
 		log.Printf("controller manager: unattended runs are not executed and run store data is not purged on delete (the executor exposes no run execution access)")
@@ -231,25 +237,29 @@ func newRunReconciler(deps api.ControllerDeps) *runctl.Reconciler {
 	r.Dispatch = execution.DispatchRun
 	r.Recover = execution.RecoverRun
 	r.Stop = execution.StopRun
+	r.ReconcileDescendants = execution.ReconcileRunDescendants
+	r.ReconcileParent = execution.ReconcileRunParent
 	r.PurgeData = execution.PurgeRunData
 	return r
 }
 
-// processID names this process as the owner of a run it claims.
-//
-// The pod name in Kubernetes, which is stable for the life of the process and
-// unique across replicas — exactly the two properties a claim needs. Outside a
-// cluster it falls back to the hostname plus the PID, so two dev processes on
-// one machine do not claim as each other.
+// processIncarnation changes when a container restarts in the same pod, and is
+// shared by the API server and every leadership-term reconciler in this process.
+var processIncarnation = uuid.NewString()
+
+// processID names this process incarnation, not merely the pod that hosts it.
 func processID() string {
-	if pod := os.Getenv("POD_NAME"); pod != "" {
-		return pod
+	base := os.Getenv("POD_NAME")
+	if base == "" {
+		base, _ = os.Hostname()
 	}
-	host, err := os.Hostname()
-	if err != nil {
-		host = "unknown"
+	if base == "" {
+		base = "unknown"
 	}
-	return host + "-" + strconv.Itoa(os.Getpid())
+	if len(base) > 215 {
+		base = base[:215]
+	}
+	return base + "-" + processIncarnation
 }
 
 // storeTeardown is the provider-store teardown the Agent reconciler performs

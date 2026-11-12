@@ -385,6 +385,50 @@ func TestPostgres_ToolOutcomeReceipts(t *testing.T) {
 	}
 }
 
+func TestPostgres_DelegatedUsageIsOnceAcrossReplayAndWindowRollover(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	parentScope := pgScope(t, ps)
+	childScope := parentScope
+	childScope.AgentName = "reviewer"
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	parentID := "parent-" + uuid.NewString()
+	if err := ps.SaveRun(ctx, parentScope, Run{ID: parentID, AgentName: parentScope.AgentName, Phase: RunPhaseRunning, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	childID := "child-" + uuid.NewString()
+	if err := ps.SaveRun(ctx, childScope, Run{ID: childID, AgentName: childScope.AgentName, ParentRunID: parentID, Phase: RunPhaseSucceeded, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := ps.GetRun(ctx, childScope, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := 24 * time.Hour
+	usage, applied, err := ps.AddDelegatedUsage(ctx, parentScope, parentID, childID, 12, 7, 90, now, window)
+	if err != nil || !applied || usage.InputTokens != 12 || usage.OutputTokens != 7 || usage.USDMicros != 90 {
+		t.Fatalf("first contribution = %+v applied=%t err=%v", usage, applied, err)
+	}
+	stale.Message = "stale writer"
+	if err := ps.SaveRun(ctx, childScope, stale); err != nil {
+		t.Fatal(err)
+	}
+	child, err := ps.GetRun(ctx, childScope, childID)
+	if err != nil || !child.DelegatedUsageRolledUp {
+		t.Fatalf("stale save cleared contribution marker: marker=%t err=%v", child.DelegatedUsageRolledUp, err)
+	}
+	if _, applied, err := ps.AddDelegatedUsage(ctx, parentScope, parentID, childID, 12, 7, 90, now.Add(48*time.Hour), window); err != nil || applied {
+		t.Fatalf("replay after window rollover applied=%t err=%v", applied, err)
+	}
+	usage, err = ps.GetUsage(ctx, parentScope, parentScope.AgentName, now.Add(48*time.Hour), window)
+	if err != nil || usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.USDMicros != 0 {
+		t.Fatalf("new usage bucket = %+v err=%v", usage, err)
+	}
+	if _, applied, err := ps.AddDelegatedUsage(ctx, parentScope, parentID, childID, -1, 0, 0, now, window); err == nil || applied {
+		t.Fatalf("negative contribution applied=%t err=%v", applied, err)
+	}
+}
+
 func TestPostgres_RunClaimRejectsCancelledAndTerminalRuns(t *testing.T) {
 	ps := openTestPostgres(t)
 	ctx := context.Background()

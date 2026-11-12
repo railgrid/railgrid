@@ -37,6 +37,18 @@ func testRunArtifacts(t *testing.T, s Store, sc Scope) {
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
+	a := RunArtifact{RunID: runID, Name: "structured-result.json", Digest: "one", MediaType: "application/json", Size: 2, Data: []byte("{}"), CreatedAt: now}
+	if err := s.SaveRunArtifact(ctx, sc, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveRunArtifact(ctx, sc, a); err != nil {
+		t.Fatal(err)
+	}
+	a.Digest = "two"
+	a.Data = []byte("[]")
+	if err := s.SaveRunArtifact(ctx, sc, a); err == nil {
+		t.Fatal("structured result was overwritten")
+	}
 	got, err := s.GetRun(ctx, sc, runID)
 	if err != nil {
 		t.Fatalf("get: %v", err)

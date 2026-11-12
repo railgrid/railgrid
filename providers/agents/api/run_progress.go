@@ -233,7 +233,7 @@ func turnStatusForRunPhase(phase store.RunPhase) string {
 func taskRunForStored(run store.Run) taskRun {
 	agent := &agentsv1alpha1.Agent{}
 	agent.Name = run.AgentName
-	return taskRun{RunID: run.ID, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger, Agent: agent}
+	return taskRun{RunID: run.ID, Attempt: run.Attempt, Backend: run.Backend, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger, Agent: agent}
 }
 
 func (s *Server) appendTurnTerminal(ctx context.Context, scope store.Scope, run taskRun, sessionID string, startedAt, createdAt time.Time, tracker *turnProgressTracker, status string, content, turnError string) map[string]any {

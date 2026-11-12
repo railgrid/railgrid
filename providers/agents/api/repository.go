@@ -241,6 +241,14 @@ func validateRemoteURL(raw string) error {
 	return nil
 }
 
+func pinnedGitHubRepositoryURL(repository string) (string, error) {
+	owner, name, ok := strings.Cut(repository, "/")
+	if !ok || strings.Contains(name, "/") || !runnerIdentifier.MatchString(owner) || !runnerIdentifier.MatchString(name) {
+		return "", errors.New("repository checkout connection must pin a GitHub repository in owner/name form")
+	}
+	return "https://github.com/" + owner + "/" + name + ".git", nil
+}
+
 // isSCPRemote mirrors the runner's reading of "user@host:path".
 func isSCPRemote(value string) bool {
 	if strings.HasPrefix(strings.ToLower(value), "ext::") {

@@ -162,6 +162,24 @@ func (s *Server) runTrace(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusConflict, "Conflict", "this run names no agent, so its trace cannot be located")
 		return
 	}
+	if view := r.URL.Query().Get("view"); view != "" {
+		if view != "answer" {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "view must be answer when specified")
+			return
+		}
+		run, err := s.store.GetRun(r.Context(), id.scope(agent), r.PathValue("name"))
+		if err != nil {
+			writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
+			return
+		}
+		// This projection deliberately reads only the answer column. It avoids
+		// loading a large trace or child list when an orchestrator needs one
+		// bounded result from a delegated Run.
+		writeJSON(w, http.StatusOK, struct {
+			Output string `json:"output"`
+		}{Output: safeTruncate(run.Output, 16<<10)})
+		return
+	}
 	detail, err := s.runDetailFor(r.Context(), id.scope(agent), r.PathValue("name"))
 	if err != nil {
 		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
@@ -226,7 +244,9 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 	}
 	// Enough to hold a full fan-out (spawn caps at 20 workers per run) plus
 	// delegations, so the tree view is not silently truncated.
-	if children, err := s.store.QueryRuns(ctx, scope, store.RunQuery{ParentRunID: runID, Limit: 50}); err == nil {
+	childScope := scope
+	childScope.AgentName = "" // delegated children may belong to another Agent in this workspace
+	if children, err := s.store.QueryRuns(ctx, childScope, store.RunQuery{ParentRunID: runID, Limit: 50}); err == nil {
 		for _, child := range children.Items {
 			detail.Children = append(detail.Children, summarize(child))
 		}
@@ -365,21 +385,29 @@ var (
 // attempt and stamps the run Aborted. live reports whether the run was
 // executing here (and so finishes on its own once it observes the cancel).
 func (s *Server) cancelStoredRun(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) (live bool, err error) {
-	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
+	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName, ClusterID: id.clusterID}
 	if err := s.store.RequestCancel(ctx, scope, run.ID, time.Now().UTC(), id.user); err != nil {
 		log.Printf("runs: recording cancel for run %s failed", run.ID)
 		return false, errCancelNotRecorded
 	}
-	if s.liveRuns.cancel(run.ID) {
+	if s.liveRuns != nil && s.liveRuns.cancel(run.ID) {
 		return true, nil
 	}
 	if run.Backend == agentsv1alpha1.AgentBackendHarness && len(run.Checkpoint) > 0 {
+		if c == nil {
+			log.Printf("runs: no workspace client available to stop parked harness attempt for run %s", run.ID)
+			return false, errHarnessStopFailed
+		}
 		if err := s.stopParkedHarness(ctx, c, id, run); err != nil {
 			log.Printf("runs: stopping parked harness attempt for run %s failed", run.ID)
 			return false, errHarnessStopFailed
 		}
 	}
-	s.closeRunNow(ctx, scope, run, store.RunPhaseAborted, "cancelled by user")
+	message := "cancelled by user"
+	if strings.HasPrefix(id.user, "parent:") {
+		message = "parent run terminated"
+	}
+	s.closeRunNow(ctx, scope, run, store.RunPhaseAborted, message)
 	return false, nil
 }
 
@@ -403,7 +431,19 @@ func (s *Server) closeRunNow(ctx context.Context, scope store.Scope, run store.R
 	persistCtx, cancelPersist := boundedPersistContext(ctx)
 	defer cancelPersist()
 	tracker := trackerForStored(run)
+	if run.CancelRequested && phase == store.RunPhaseAborted {
+		// RequestCancel prevents new leases and fences every non-abort owned
+		// save. Closing from the cancel record itself handles a crashed owner.
+		if !s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}, now) {
+			return
+		}
+	} else if run.ExecutionOwner != "" {
+		if !s.finishRunOwned(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}, now, run.ExecutionOwner, run.Attempt) {
+			return
+		}
+	} else if !s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}, now) {
+		return
+	}
 	s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), effectiveSessionID(run.SessionID, run.Trigger), startedAt, now, tracker, turnStatusForRunPhase(phase), "", message)
-	s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}, now)
 	s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 }

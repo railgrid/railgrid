@@ -32,6 +32,7 @@ import (
 	"time"
 
 	einomodel "github.com/cloudwego/eino/components/model"
+	"github.com/google/uuid"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -39,6 +40,7 @@ import (
 	"github.com/railgrid/provider-sdk/tenantaccess"
 
 	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/internal/githubapp"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tenant"
@@ -59,9 +61,16 @@ type Config struct {
 	// self-configuration enabled is given <HubPublicURL>/services/providers/agents/mcp
 	// to configure itself through; empty leaves harness agents without it.
 	HubPublicURL string
+	// HarnessMCPURL optionally addresses this provider directly when the Hub
+	// requires a caller identity that an opaque harness session cannot supply.
+	// Operator configuration only; remote edges need HTTPS, loopback permits HTTP.
+	HarnessMCPURL string
 	// DatabaseURL is the Postgres DSN for the durable store. Empty selects the
 	// in-memory store.
 	DatabaseURL string
+	// ProcessID is a process-incarnation identifier shared with the Run
+	// reconciler. It owns API and background execution leases.
+	ProcessID string
 	// InMemoryStore forces the in-memory store even when DatabaseURL is set.
 	InMemoryStore bool
 	// ProviderKubeconfig is the provider service-account kubeconfig (targets
@@ -153,12 +162,19 @@ type Server struct {
 	// metadata generation call. Production resolves the exact credential pinned
 	// in the chat run's ModelSettings snapshot.
 	sessionTitleModelFactory func(context.Context, llm.CredentialResolver, string) (einomodel.BaseChatModel, string, error)
+	// githubAppTokenMint is a test seam for verifying dispatch-time authority
+	// without making GitHub requests. Production leaves it nil and mints through
+	// the policy-scoped GitHub App client.
+	githubAppTokenMint func(context.Context, githubapp.Client, map[string][]byte) (string, time.Time, error)
 }
 
 // New constructs the server and opens the durable store: Postgres when a
 // DatabaseURL is configured (production), the in-memory backend otherwise
 // (bare-hub dev; explicitly forced by InMemoryStore).
 func New(ctx context.Context, cfg Config) (*Server, error) {
+	if cfg.ProcessID == "" {
+		cfg.ProcessID = "agents-" + uuid.NewString()
+	}
 	if err := validateMCPAppApprovedDigests(cfg.MCPAppApprovedDigests); err != nil {
 		return nil, err
 	}

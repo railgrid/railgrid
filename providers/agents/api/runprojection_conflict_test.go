@@ -67,6 +67,48 @@ func TestRunProjectionRetriesTheCreateFinalizerConflict(t *testing.T) {
 	}
 }
 
+func TestRecoveryRepairsTerminalStoreOutcomeWithoutExecuting(t *testing.T) {
+	for _, phase := range []store.RunPhase{store.RunPhaseSucceeded, store.RunPhaseFailed, store.RunPhaseAborted, store.RunPhasePendingApproval} {
+		t.Run(string(phase), func(t *testing.T) {
+			dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+			s, scope, run := newProjectionFixture(t, dyn, store.RunPhaseRunning)
+			s.cfg.ProcessID = "recovery-process"
+			s.projectRun(t.Context(), scope, run)
+			run.Phase = phase
+			run.Message = "durable outcome"
+			if err := s.store.SaveRun(t.Context(), scope, run); err != nil {
+				t.Fatal(err)
+			}
+			// Simulate an unavailable API server during terminal projection.
+			fail := true
+			dyn.PrependReactor("update", "runs", func(action ktesting.Action) (bool, runtime.Object, error) {
+				if fail && action.GetSubresource() == "status" {
+					return true, nil, errors.New("temporary API outage")
+				}
+				return false, nil, nil
+			})
+			if err := s.bg.RecoverRun(t.Context(), scope.ClusterID, scope.AgentName, run.ID); err == nil {
+				t.Fatal("projection failure must reach the controller for retry")
+			}
+			fail = false
+			for range 2 {
+				if err := s.bg.RecoverRun(t.Context(), scope.ClusterID, scope.AgentName, run.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			object := projectedObject(t, dyn, run.ID)
+			got, _, _ := unstructured.NestedString(object.Object, "status", "phase")
+			if got != string(phase) {
+				t.Fatalf("projected phase=%s, want %s", got, phase)
+			}
+			stored, err := s.store.GetRun(t.Context(), scope, run.ID)
+			if err != nil || stored.Attempt != run.Attempt || stored.ExecutionOwner != run.ExecutionOwner || stored.Phase != phase {
+				t.Fatalf("recovery executed or changed the settled run: %+v, %v", stored, err)
+			}
+		})
+	}
+}
+
 func TestRunProjectionConflictAdoptsTheCurrentTerminalRow(t *testing.T) {
 	for _, phase := range []store.RunPhase{store.RunPhaseSucceeded, store.RunPhaseFailed, store.RunPhaseAborted} {
 		t.Run(string(phase), func(t *testing.T) {

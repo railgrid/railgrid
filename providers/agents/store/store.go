@@ -39,8 +39,36 @@ var ErrSessionNotFound = fmt.Errorf("session not found")
 // ErrRunClaimConflict means the run no longer matches the claim conditions.
 var ErrRunClaimConflict = errors.New("run is no longer claimable")
 
+// ErrRunAlreadySettled means a stale lifecycle snapshot tried to reopen a terminal run.
+var ErrRunAlreadySettled = errors.New("run is already settled")
+
 // ErrRecoveryClaimStale means the observed run changed before recovery claimed it.
 var ErrRecoveryClaimStale = fmt.Errorf("recovery claim is stale")
+
+// ErrRunLeaseLost means the process no longer owns the execution epoch.
+var ErrRunLeaseLost = fmt.Errorf("run execution lease was lost")
+
+// ErrRunCancellationRequested means this lease's run was explicitly cancelled.
+// The executor should stop remote work rather than treat it as a recovery handoff.
+var ErrRunCancellationRequested = errors.New("run cancellation was requested")
+
+// RunLeaseDuration is the period after which an execution lease may be taken
+// over if its owner has stopped renewing it.
+const RunLeaseDuration = 2 * time.Minute
+
+// RecoveryIdentity says which principal the run executed as, so recovery never
+// resumes caller-scoped work as the provider's broader service account.
+type RecoveryIdentity string
+
+const (
+	RecoveryIdentityUnknown RecoveryIdentity = ""
+	RecoveryIdentityAgent   RecoveryIdentity = "agent"
+	RecoveryIdentityCaller  RecoveryIdentity = "caller"
+)
+
+func terminalRunPhase(phase RunPhase) bool {
+	return phase == RunPhaseSucceeded || phase == RunPhaseFailed || phase == RunPhaseAborted
+}
 
 // Scope isolates all data to one tenant + agent boundary. Every query includes
 // org and workspace; AgentName narrows to a single agent where relevant.
@@ -156,6 +184,17 @@ type Run struct {
 	ParentRunID string   `json:"parentRunID,omitempty"`
 	Phase       RunPhase `json:"phase"`
 	Attempt     int      `json:"attempt,omitempty"`
+	// ExecutionOwner and ExecutionLeaseAt are the cross-replica execution
+	// lease. Dedicated store operations own these fields; SaveRun snapshots may
+	// never overwrite them.
+	ExecutionOwner   string    `json:"-"`
+	ExecutionLeaseAt time.Time `json:"-"`
+	// RecoveryIdentity records whether the original authority can be rebuilt
+	// after restart. Caller-scoped and unknown runs fail closed on recovery.
+	RecoveryIdentity RecoveryIdentity `json:"-"`
+	// AgentUID freezes the Agent incarnation this run was admitted for. It
+	// prevents a same-name replacement from inheriting a recoverable run.
+	AgentUID string `json:"-"`
 	// Retries counts how many times this run was handed back to the queue after
 	// a transient refusal (a runner at capacity, a runner not yet ready) instead
 	// of being failed. It is distinct from Attempt, which counts recoveries of a
@@ -234,6 +273,10 @@ type Run struct {
 	// CancelRequestedBy is the authenticated caller of the first stop request.
 	// It is internal attribution evidence, never a public Run field.
 	CancelRequestedBy string `json:"-"`
+	// DelegatedUsageRolledUp is the durable, per-child marker used to atomically
+	// charge delegated execution to its parent Agent's usage bucket. It is
+	// internal accounting state and is not part of the public Run projection.
+	DelegatedUsageRolledUp bool `json:"-"`
 }
 
 // RunRepository is what a repository run was asked to run against. The same
@@ -780,6 +823,7 @@ type Page struct {
 // RunQuery filters a run listing. Zero values mean "any". Scope.AgentName (when
 // set) narrows to one agent; Cursor/Limit page newest-first.
 type RunQuery struct {
+	ID          string
 	Phase       RunPhase
 	Trigger     string
 	SessionID   string
@@ -894,6 +938,17 @@ type Store interface {
 
 	// Runs (durable, resumable).
 	SaveRun(ctx context.Context, scope Scope, run Run) error
+	// ClaimFreshRun turns an admitted Pending run into Running and installs its
+	// first execution lease atomically. It fences both delayed starters and
+	// recovery of abandoned admissions.
+	ClaimFreshRun(ctx context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error)
+	// FailPendingRun settles an old Pending row only if its admission revision
+	// has not advanced and it has no execution lease.
+	FailPendingRun(ctx context.Context, scope Scope, id string, observed time.Time, olderThan, now time.Time, message string) (Run, bool, error)
+	// UpdateRunCheckpoint stores a checkpoint only while the same Running
+	// revision is still current and has not been cancelled. This fences a stale
+	// executor from restoring a checkpoint over cancellation or recovery claim.
+	UpdateRunCheckpoint(ctx context.Context, scope Scope, id, owner string, attempt int, expectedUpdatedAt time.Time, checkpoint json.RawMessage, workedDurationMS *int64, now time.Time) (bool, error)
 	GetRun(ctx context.Context, scope Scope, id string) (Run, error)
 	// ClaimRun atomically moves a pending/resumable run to Running. A canceled or
 	// terminal run cannot be claimed, so an approval racing with cancel cannot
@@ -901,8 +956,21 @@ type Store interface {
 	// supplied, inboxID must match the parked checkpoint atomically.
 	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time, inboxID ...string) (Run, error)
 	// ClaimRecovery claims exactly the observed Running revision and increments its
-	// recovery attempt atomically. Stale, cancelled and terminal runs are rejected.
-	ClaimRecovery(ctx context.Context, scope Scope, id string, observed time.Time, now time.Time) (Run, error)
+	// recovery attempt atomically. It also checks that the execution lease expired,
+	// then transfers the lease to owner. Stale, cancelled and terminal runs are rejected.
+	ClaimRecovery(ctx context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error)
+	// AcquireRunLease starts a fresh execution epoch if no lease exists, or accepts
+	// the current process's still-live lease after ClaimRecovery.
+	AcquireRunLease(ctx context.Context, scope Scope, id, owner string, attempt int, now time.Time) (Run, error)
+	// RenewRunLease refreshes only the dedicated lease timestamp. It never changes
+	// UpdatedAt, so checkpoint compare tokens remain stable.
+	RenewRunLease(ctx context.Context, scope Scope, id, owner string, attempt int, now time.Time) (Run, bool, error)
+	// ReleaseRunLease clears a completed/parked execution lease when this epoch
+	// still owns it.
+	ReleaseRunLease(ctx context.Context, scope Scope, id, owner string, attempt int) (bool, error)
+	// SaveRunOwned atomically persists an execution transition only while owner
+	// still owns the unexpired epoch. Lease columns are preserved.
+	SaveRunOwned(ctx context.Context, scope Scope, run Run, owner string, attempt int, now time.Time) (bool, error)
 	// RequestCancel durably asks a run to stop: it sets CancelRequested (and
 	// the time of the first request) on the row without touching anything
 	// else, so it cannot race a concurrent checkpoint SaveRun. Idempotent; a
@@ -983,6 +1051,14 @@ type Store interface {
 	// finalizer's teardown.
 	DeleteWebhookDeliveries(ctx context.Context, scope Scope, webhookUID string) error
 	AddUsage(ctx context.Context, scope Scope, agentName string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, error)
+	// RecordRunUsageOwned monotonically records one execution's cumulative usage
+	// and bills only the increase, atomically fenced by its live run lease.
+	RecordRunUsageOwned(ctx context.Context, scope Scope, runID, owner string, attempt int, total backend.Cost, now time.Time, window time.Duration) (Usage, bool, error)
+	// AddDelegatedUsage charges one child run to its parent Agent exactly once.
+	// The child Run's parent link and durable rollup marker are updated in the
+	// same mutation as the usage bucket so retries, restarts and window rollovers
+	// cannot charge the same child twice.
+	AddDelegatedUsage(ctx context.Context, parentScope Scope, parentRunID, childRunID string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, bool, error)
 	GetUsage(ctx context.Context, scope Scope, agentName string, now time.Time, window time.Duration) (Usage, error)
 
 	// Tenant mapping (cluster ID → org/workspace scope) for background runs.

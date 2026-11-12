@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -54,6 +55,12 @@ import (
 // from a hub-forwarded caller token without a store lookup for every request.
 const harnessMCPTokenPrefix = "rgagt_"
 
+// The purpose is authenticated by the stored hash of the whole bearer. A
+// completed review session must never fall back to self-configuration tools.
+const harnessMCPReviewTokenPrefix = "rgagt_review_"
+
+type harnessMCPReviewSessionKey struct{}
+
 // harnessMCPServerName is how the harness addresses the server: Claude Code
 // shows its tools as mcp__agent__<tool>. The runner refuses "railgrid", which
 // is its own permission server.
@@ -88,18 +95,44 @@ type capabilityReader interface {
 // None of those fails the turn; the harness simply runs without the server.
 func (s *Server) harnessSelfMCPServers(ctx context.Context, run taskRun, runID string, dispatcher any) []runner.MCPServer {
 	agent := run.Agent
-	if sc := agent.Spec.SelfConfiguration; sc == nil || !sc.Enabled {
+	reviewScope := tools.ParseCodeScope(run.Task)
+	reviewEnabled := reviewScope != nil && reviewScope.ReviewOnly
+	grant := agent.Spec.Tools.Background
+	if isInteractive(run.Trigger) {
+		grant = agent.Spec.Tools.Interactive
+	}
+	reviewEnabled = reviewEnabled && slices.Contains(grant.Families, "code")
+	if sc := agent.Spec.SelfConfiguration; (sc == nil || !sc.Enabled) && !reviewEnabled {
 		return nil
 	}
 	base := strings.TrimRight(strings.TrimSpace(s.cfg.HubPublicURL), "/")
-	if base == "" {
+	endpoint := strings.TrimSpace(s.cfg.HarnessMCPURL)
+	if endpoint == "" && base != "" {
+		endpoint = base + "/services/providers/agents/mcp"
+	}
+	if endpoint == "" {
 		log.Printf("harness self-configuration: agent %s has it enabled, but RAILGRID_HUB_PUBLIC_URL is unset, so a remote harness has no address to reach it at", agent.Name)
+		return nil
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		log.Printf("harness MCP endpoint is invalid; refusing session attachment")
+		return nil
+	}
+	loopback := parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1"
+	secureTransport := parsed.Scheme == "https" || parsed.Scheme == "http" && loopback
+	if parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureTransport {
+		log.Printf("harness MCP endpoint is invalid; refusing session attachment")
 		return nil
 	}
 	if caps, ok := dispatcher.(capabilityReader); ok {
 		c, err := caps.Capabilities(ctx)
 		if err != nil {
 			log.Printf("harness self-configuration: reading runner capabilities for agent %s: %v", agent.Name, err)
+			return nil
+		}
+		if reviewEnabled && !slices.Contains(c.Verification, runner.RemoteMCPApprovedToolsCapability) {
+			log.Printf("harness review MCP requires runner capability %s", runner.RemoteMCPApprovedToolsCapability)
 			return nil
 		}
 		if !slices.Contains(c.Verification, runner.RemoteMCPCapability) {
@@ -112,13 +145,17 @@ func (s *Server) harnessSelfMCPServers(ctx context.Context, run taskRun, runID s
 		log.Printf("harness self-configuration: minting a session token: %v", err)
 		return nil
 	}
-	token := harnessMCPTokenPrefix + base64.RawURLEncoding.EncodeToString(raw)
+	prefix := harnessMCPTokenPrefix
+	if reviewEnabled {
+		prefix = harnessMCPReviewTokenPrefix
+	}
+	token := prefix + base64.RawURLEncoding.EncodeToString(raw)
 	ttl := harnessMCPDefaultTTL
 	if t := time.Duration(agent.Spec.Limits.TimeoutSeconds) * time.Second; t > 0 {
 		ttl = t + 10*time.Minute
 	}
 	now := time.Now().UTC()
-	err := s.store.PutHarnessMCPSession(ctx, store.Scope{OrgUUID: run.Scope.OrgUUID, WorkspaceUUID: run.Scope.WorkspaceUUID}, store.HarnessMCPSession{
+	err = s.store.PutHarnessMCPSession(ctx, store.Scope{OrgUUID: run.Scope.OrgUUID, WorkspaceUUID: run.Scope.WorkspaceUUID}, store.HarnessMCPSession{
 		TokenHash: hashHarnessMCPToken(token), ClusterID: run.ClusterID,
 		AgentName: agent.Name, AgentUID: string(agent.UID), RunID: runID,
 		Interactive: isInteractive(run.Trigger), ExpiresAt: now.Add(ttl), CreatedAt: now,
@@ -127,7 +164,11 @@ func (s *Server) harnessSelfMCPServers(ctx context.Context, run taskRun, runID s
 		log.Printf("harness self-configuration: recording the session for agent %s: %v", agent.Name, err)
 		return nil
 	}
-	return []runner.MCPServer{{Name: harnessMCPServerName, URL: base + "/services/providers/agents/mcp", Token: token}}
+	server := runner.MCPServer{Name: harnessMCPServerName, URL: endpoint, Token: token}
+	if reviewEnabled {
+		server.ApprovedTools = []string{"code_pull_request"}
+	}
+	return []runner.MCPServer{server}
 }
 
 // harnessSessionMCP routes a request bearing a harness session token to that
@@ -151,7 +192,9 @@ func (s *Server) harnessSessionMCP(next http.Handler) http.Handler {
 			writeStatus(w, http.StatusUnauthorized, "Unauthorized", "this harness session has ended or its token is not valid")
 			return
 		}
-		self.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), harnessMCPSessionKey{}, sess)))
+		ctx := context.WithValue(r.Context(), harnessMCPSessionKey{}, sess)
+		ctx = context.WithValue(ctx, harnessMCPReviewSessionKey{}, strings.HasPrefix(token, harnessMCPReviewTokenPrefix))
+		self.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -160,20 +203,42 @@ func (s *Server) harnessSessionMCP(next http.Handler) http.Handler {
 // turn started, so turning self-configuration off takes effect at once.
 func (s *Server) harnessSelfServer(r *http.Request) *mcp.Server {
 	sess, _ := r.Context().Value(harnessMCPSessionKey{}).(store.HarnessMCPSession)
-	srv := mcp.NewServer(&mcp.Implementation{Name: "railgrid-agent", Version: "0.1.0", Title: "this agent's own configuration"}, &mcp.ServerOptions{
+	options := &mcp.ServerOptions{
 		Instructions: "These tools change the railgrid agent you are running as: its system prompt and description, " +
 			"its triggers and their filters, its memory settings, and its schedules (recurring jobs and one-shot wakeups). " +
 			"Read self_config_get first. Changes take effect from your next turn. A change that needs the user's approval " +
 			"is queued and applied when they approve it; do not retry it.",
-	})
+	}
+	if review, _ := r.Context().Value(harnessMCPReviewSessionKey{}).(bool); review {
+		options.Instructions = "Use code_pull_request to observe this admitted PR and publish actionable findings as COMMENT reviews of the assigned commit. Zero findings produces no review. Factory manages the single PR status comment. No branch writes, status comments, self-configuration or further delegation are available."
+	}
+	srv := mcp.NewServer(&mcp.Implementation{Name: "railgrid-agent", Version: "0.1.0", Title: "scoped Agent tools"}, options)
 	deps, err := s.harnessSessionDeps(r.Context(), sess)
 	if err != nil {
 		log.Printf("harness self-configuration: session for agent %s: %v", sess.AgentName, err)
 		return srv
 	}
 	gated := selfConfigGated(deps.Agent, sess.Interactive)
-	for _, t := range harnessSelfTools(deps) {
-		srv.AddTool(&mcp.Tool{Name: t.Name, Description: t.Desc, InputSchema: paramsSchema(t.Params)},
+	available := harnessSelfTools(deps)
+	if deps.CodeScope != nil {
+		available = nil
+	}
+	if deps.CodeScope != nil && deps.CodeScope.ReviewOnly {
+		grant := deps.Agent.Spec.Tools.Background
+		if sess.Interactive {
+			grant = deps.Agent.Spec.Tools.Interactive
+		}
+		grant = s.expandToolsets(r.Context(), deps, grant)
+		if slices.Contains(grant.Families, "code") || slices.Contains(grant.Families, "code-write") {
+			available = append(available, tools.Code(deps, false)...)
+		}
+	}
+	for _, t := range available {
+		toolSchema := paramsSchema(t.Params)
+		if t.JSONSchema != nil {
+			toolSchema = t.JSONSchema
+		}
+		srv.AddTool(&mcp.Tool{Name: t.Name, Description: t.Desc, InputSchema: toolSchema},
 			s.harnessToolHandler(sess, deps, t, gated && slices.Contains(tools.SelfConfigMutatingTools, t.Name)))
 	}
 	return srv
@@ -198,16 +263,34 @@ func (s *Server) harnessSessionDeps(ctx context.Context, sess store.HarnessMCPSe
 	if string(agent.UID) != sess.AgentUID {
 		return tools.Deps{}, fmt.Errorf("agent %s was recreated since this session began", sess.AgentName)
 	}
-	if sc := agent.Spec.SelfConfiguration; sc == nil || !sc.Enabled {
-		return tools.Deps{}, fmt.Errorf("agent %s no longer has self-configuration enabled", sess.AgentName)
-	}
 	scope := store.Scope{OrgUUID: sess.Scope.OrgUUID, WorkspaceUUID: sess.Scope.WorkspaceUUID, AgentName: agent.Name}
-	return tools.Deps{Store: s.store, Scope: scope, Agent: agent, CR: cr, Secrets: vwSecrets{dyn}, RunID: sess.RunID}, nil
+	deps := tools.Deps{Store: s.store, Scope: scope, Agent: agent, CR: cr, Secrets: vwSecrets{dyn}, RunID: sess.RunID}
+	if run, err := s.store.GetRun(ctx, scope, sess.RunID); err == nil && run.Phase == store.RunPhaseRunning && run.AgentUID == sess.AgentUID {
+		if code := tools.ParseCodeScope(run.Input); code != nil && code.ReviewOnly && run.ParentRunID != "" {
+			if run.Repository == nil {
+				return tools.Deps{}, fmt.Errorf("review session has no pinned repository")
+			}
+			deps.CodeReviewHead = run.Repository.BaseCommit
+			deps.CodeScope = code
+			deps.InvocationKey = run.IdempotencyKey
+			deps.DataPlane = s.dataPlaneFor(taskRun{ClusterID: sess.ClusterID})
+		}
+	}
+	if review, _ := ctx.Value(harnessMCPReviewSessionKey{}).(bool); review && deps.CodeScope == nil {
+		return tools.Deps{}, fmt.Errorf("review session no longer has an active Run capability")
+	}
+	if sc := agent.Spec.SelfConfiguration; (sc == nil || !sc.Enabled) && deps.CodeScope == nil {
+		return tools.Deps{}, fmt.Errorf("agent session no longer has an active capability")
+	}
+	return deps, nil
 }
 
 // harnessSelfTools is what a harness session serves: the self-configuration
 // family plus the core schedule tools.
 func harnessSelfTools(deps tools.Deps) []backend.Tool {
+	if sc := deps.Agent.Spec.SelfConfiguration; sc == nil || !sc.Enabled {
+		return nil
+	}
 	out := tools.SelfConfig(deps)
 	for _, t := range tools.Core(deps) {
 		if slices.Contains(harnessScheduleTools, t.Name) {

@@ -228,6 +228,10 @@ type EnvironmentVariable struct {
 
 // MCPServer is one remote streamable-HTTP MCP server a launch may reach.
 type MCPServer struct {
+	// ApprovedTools is an explicit allowlist of tools whose authority is enforced
+	// by the authenticated MCP server. Only these tools are exposed and approved;
+	// nil retains the harness's normal approval policy.
+	ApprovedTools []string `json:"approvedTools,omitempty"`
 	// Name is how the harness addresses the server: its tools appear as
 	// mcp__<name>__<tool> to Claude Code. Lowercase letters, digits and
 	// dashes; "railgrid" is the runner's own permission server and is refused.

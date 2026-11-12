@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/railgrid/provider-agents/backend"
 )
 
 // MemoryStore is a non-durable in-process Store for development and tests. It
@@ -555,6 +557,7 @@ func mergeMigratedRun(current, incoming Run) Run {
 		if incoming.IdempotencyKey == "" {
 			incoming.IdempotencyKey = current.IdempotencyKey
 		}
+		incoming.DelegatedUsageRolledUp = incoming.DelegatedUsageRolledUp || current.DelegatedUsageRolledUp
 		return incoming
 	}
 	if current.Checkpoint == nil {
@@ -570,6 +573,7 @@ func mergeMigratedRun(current, incoming Run) Run {
 	if current.IdempotencyKey == "" {
 		current.IdempotencyKey = incoming.IdempotencyKey
 	}
+	current.DelegatedUsageRolledUp = current.DelegatedUsageRolledUp || incoming.DelegatedUsageRolledUp
 	return current
 }
 
@@ -1009,6 +1013,111 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
+	if current, ok := m.runs[tenantKey(scope)+"|"+run.ID]; ok {
+		if terminalRunPhase(current.Phase) && current.Phase != run.Phase {
+			return ErrRunAlreadySettled
+		}
+		if current.ExecutionOwner != "" && (!current.CancelRequested || run.Phase != RunPhaseAborted) {
+			return ErrRunLeaseLost
+		}
+	}
+	return m.saveRunLocked(scope, run)
+}
+
+func (m *MemoryStore) ClaimFreshRun(_ context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return Run{}, err
+	}
+	if owner == "" {
+		return Run{}, fmt.Errorf("run lease owner is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	key := tenantKey(scope) + "|" + id
+	run, ok := m.runs[key]
+	if !ok || run.Phase != RunPhasePending || run.CancelRequested || !run.UpdatedAt.Equal(observed) || run.ExecutionOwner != "" || !run.ExecutionLeaseAt.IsZero() {
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
+	}
+	if !now.After(run.UpdatedAt) {
+		now = run.UpdatedAt.Add(time.Microsecond)
+	}
+	run.Phase = RunPhaseRunning
+	run.UpdatedAt = now.UTC()
+	if run.StartedAt == nil {
+		started := now.UTC()
+		run.StartedAt = &started
+	}
+	run.ExecutionOwner = owner
+	run.ExecutionLeaseAt = run.UpdatedAt
+	m.runs[key] = run
+	return run, nil
+}
+
+func (m *MemoryStore) FailPendingRun(_ context.Context, scope Scope, id string, observed time.Time, olderThan, now time.Time, message string) (Run, bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return Run{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	key := tenantKey(scope) + "|" + id
+	run, ok := m.runs[key]
+	if !ok || run.Phase != RunPhasePending || run.CancelRequested || run.ExecutionOwner != "" || !run.ExecutionLeaseAt.IsZero() || !run.UpdatedAt.Equal(observed) || run.CreatedAt.After(olderThan) {
+		return Run{}, false, nil
+	}
+	if !now.After(run.UpdatedAt) {
+		now = run.UpdatedAt.Add(time.Microsecond)
+	}
+	run.Phase = RunPhaseFailed
+	run.Message = message
+	run.Checkpoint = nil
+	run.UpdatedAt = now.UTC()
+	finished := now.UTC()
+	run.FinishedAt = &finished
+	m.runs[key] = run
+	return run, true, nil
+}
+
+func (m *MemoryStore) SaveRunOwned(_ context.Context, scope Scope, run Run, owner string, attempt int, now time.Time) (bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	key := tenantKey(scope) + "|" + run.ID
+	current, ok := m.runs[key]
+	if run.ID == "" {
+		return false, fmt.Errorf("run ID is required")
+	}
+	if !ok || current.Phase != RunPhaseRunning || (current.CancelRequested && run.Phase != RunPhaseAborted) || current.ExecutionOwner != owner || current.Attempt != attempt || run.Attempt != attempt || current.ExecutionLeaseAt.IsZero() || now.Sub(current.ExecutionLeaseAt) >= RunLeaseDuration {
+		return false, nil
+	}
+	run.InputTokens = max(run.InputTokens, current.InputTokens)
+	run.OutputTokens = max(run.OutputTokens, current.OutputTokens)
+	run.USDMicros = max(run.USDMicros, current.USDMicros)
+	if err := m.saveRunLocked(scope, run); err != nil {
+		return false, err
+	}
+	// The owned CAS accepts the executor's deliberate StartedAt reset when a
+	// refused turn returns to Pending or fails before dispatch. SaveRun snapshots
+	// cannot make that lifecycle decision.
+	updated := m.runs[key]
+	if run.StartedAt == nil {
+		updated.StartedAt = nil
+	} else {
+		started := *run.StartedAt
+		updated.StartedAt = &started
+	}
+	m.runs[key] = updated
+	return true, nil
+}
+
+func (m *MemoryStore) saveRunLocked(scope Scope, run Run) error {
 	key := tenantKey(scope) + "|" + run.ID
 	_, exists := m.runs[key]
 	if !exists && run.IdempotencyKey != "" {
@@ -1021,7 +1130,27 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 		}
 	}
 	if old, ok := m.runs[key]; ok {
+		if terminalRunPhase(old.Phase) && run.Phase != old.Phase {
+			return ErrRunAlreadySettled
+		}
 		run.progress = old.progress
+		run.DelegatedUsageRolledUp = run.DelegatedUsageRolledUp || old.DelegatedUsageRolledUp
+		run.Attempt = max(run.Attempt, old.Attempt)
+		// Lease ownership and recovery identity are changed only by their
+		// dedicated atomic methods. A stale SaveRun snapshot cannot restore them.
+		run.ExecutionOwner = old.ExecutionOwner
+		run.ExecutionLeaseAt = old.ExecutionLeaseAt
+		run.RecoveryIdentity = old.RecoveryIdentity
+		run.AgentUID = old.AgentUID
+		resetStart := old.Phase == RunPhaseRunning &&
+			(run.Phase == RunPhasePending || terminalRunPhase(run.Phase)) && run.StartedAt == nil
+		if old.StartedAt != nil && !resetStart {
+			started := *old.StartedAt
+			run.StartedAt = &started
+		}
+		if old.UpdatedAt.After(run.UpdatedAt) {
+			run.UpdatedAt = old.UpdatedAt
+		}
 	}
 	// Mirror the Postgres upsert: the cancel columns are RequestCancel's alone,
 	// so a save from a copy read before the cancel keeps the flag.
@@ -1103,6 +1232,37 @@ func (m *MemoryStore) GetRun(_ context.Context, scope Scope, id string) (Run, er
 	return run, nil
 }
 
+func (m *MemoryStore) UpdateRunCheckpoint(_ context.Context, scope Scope, id, owner string, attempt int, expectedUpdatedAt time.Time, checkpoint json.RawMessage, workedDurationMS *int64, now time.Time) (bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.validate(); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(id) == "" || len(checkpoint) == 0 || expectedUpdatedAt.IsZero() {
+		return false, fmt.Errorf("run checkpoint update is incomplete")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	key := tenantKey(scope) + "|" + id
+	run, ok := m.runs[key]
+	if !ok || run.Phase != RunPhaseRunning || run.CancelRequested || run.ExecutionOwner != owner || run.Attempt != attempt || !run.UpdatedAt.Equal(expectedUpdatedAt) ||
+		(owner != "" && (run.ExecutionLeaseAt.IsZero() || now.Sub(run.ExecutionLeaseAt) >= RunLeaseDuration)) {
+		return false, nil
+	}
+	run.Checkpoint = append(json.RawMessage(nil), checkpoint...)
+	if workedDurationMS != nil {
+		value := max(*workedDurationMS, 0)
+		run.WorkedDurationMS = &value
+	}
+	now = now.UTC()
+	if !now.After(run.UpdatedAt) {
+		now = run.UpdatedAt.Add(time.Microsecond)
+	}
+	run.UpdatedAt = now
+	m.runs[key] = run
+	return true, nil
+}
+
 func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID string, now time.Time, inboxID ...string) (Run, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {
@@ -1128,7 +1288,14 @@ func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID str
 		}
 	}
 	run.Phase = RunPhaseRunning
+	if !now.After(run.UpdatedAt) {
+		now = run.UpdatedAt.Add(time.Microsecond)
+	}
 	run.UpdatedAt = now.UTC()
+	// A parked approval no longer owns the active execution lease. The process
+	// claiming the resumed turn acquires a fresh lease before dispatch.
+	run.ExecutionOwner = ""
+	run.ExecutionLeaseAt = time.Time{}
 	if run.StartedAt == nil {
 		t := now.UTC()
 		run.StartedAt = &t
@@ -1137,7 +1304,7 @@ func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID str
 	return run, nil
 }
 
-func (m *MemoryStore) ClaimRecovery(_ context.Context, scope Scope, id string, observed, now time.Time) (Run, error) {
+func (m *MemoryStore) ClaimRecovery(_ context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {
 		return Run{}, err
@@ -1147,7 +1314,7 @@ func (m *MemoryStore) ClaimRecovery(_ context.Context, scope Scope, id string, o
 	scope = m.normalizeScopeLocked(scope)
 	k := tenantKey(scope) + "|" + id
 	run, ok := m.runs[k]
-	if !ok || run.CancelRequested || run.Phase != RunPhaseRunning || !run.UpdatedAt.Equal(observed) {
+	if !ok || run.Phase != RunPhaseRunning || run.CancelRequested || !run.UpdatedAt.Equal(observed) || owner == "" || (!run.ExecutionLeaseAt.IsZero() && now.Sub(run.ExecutionLeaseAt) < RunLeaseDuration) {
 		return Run{}, fmt.Errorf("run %q: %w", id, ErrRecoveryClaimStale)
 	}
 	// Advance the revision even if the recovering replica's clock is behind.
@@ -1156,8 +1323,84 @@ func (m *MemoryStore) ClaimRecovery(_ context.Context, scope Scope, id string, o
 	}
 	run.Attempt++
 	run.UpdatedAt = now.UTC()
+	run.ExecutionOwner = owner
+	run.ExecutionLeaseAt = run.UpdatedAt
 	m.runs[k] = run
 	return run, nil
+}
+
+func (m *MemoryStore) AcquireRunLease(_ context.Context, scope Scope, id, owner string, attempt int, now time.Time) (Run, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.validate(); err != nil {
+		return Run{}, err
+	}
+	if owner == "" {
+		return Run{}, fmt.Errorf("run lease owner is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	k := tenantKey(scope) + "|" + id
+	run, ok := m.runs[k]
+	if !ok || run.Phase != RunPhaseRunning || run.CancelRequested || run.Attempt != attempt {
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunLeaseLost)
+	}
+	if run.ExecutionOwner == owner && !run.ExecutionLeaseAt.IsZero() && now.Sub(run.ExecutionLeaseAt) < RunLeaseDuration {
+		return run, nil
+	}
+	if run.ExecutionOwner != "" || !run.ExecutionLeaseAt.IsZero() {
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunLeaseLost)
+	}
+	run.ExecutionOwner = owner
+	if !now.After(run.UpdatedAt) {
+		now = run.UpdatedAt.Add(time.Microsecond)
+	}
+	run.ExecutionLeaseAt = now.UTC()
+	m.runs[k] = run
+	return run, nil
+}
+
+func (m *MemoryStore) RenewRunLease(_ context.Context, scope Scope, id, owner string, attempt int, now time.Time) (Run, bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.validate(); err != nil {
+		return Run{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	k := tenantKey(scope) + "|" + id
+	run, ok := m.runs[k]
+	if ok && run.ExecutionOwner == owner && run.Attempt == attempt && run.CancelRequested {
+		return Run{}, false, ErrRunCancellationRequested
+	}
+	if !ok || run.Phase != RunPhaseRunning || run.CancelRequested || run.ExecutionOwner != owner || run.Attempt != attempt || run.ExecutionLeaseAt.IsZero() || now.Sub(run.ExecutionLeaseAt) >= RunLeaseDuration {
+		return Run{}, false, nil
+	}
+	if now.Before(run.ExecutionLeaseAt) {
+		now = run.ExecutionLeaseAt
+	}
+	run.ExecutionLeaseAt = now.UTC()
+	m.runs[k] = run
+	return run, true, nil
+}
+
+func (m *MemoryStore) ReleaseRunLease(_ context.Context, scope Scope, id, owner string, attempt int) (bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.validate(); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	k := tenantKey(scope) + "|" + id
+	run, ok := m.runs[k]
+	if !ok || run.ExecutionOwner != owner || run.Attempt != attempt {
+		return false, nil
+	}
+	run.ExecutionOwner = ""
+	run.ExecutionLeaseAt = time.Time{}
+	m.runs[k] = run
+	return true, nil
 }
 
 func (m *MemoryStore) ListRuns(_ context.Context, scope Scope, limit int) ([]Run, error) {
@@ -1233,6 +1476,9 @@ func (m *MemoryStore) QueryRuns(_ context.Context, scope Scope, q RunQuery) (Run
 	var all []Run
 	for k, run := range m.runs {
 		if !hasPrefix(k, prefix) {
+			continue
+		}
+		if q.ID != "" && run.ID != q.ID {
 			continue
 		}
 		if scope.AgentName != "" && run.AgentName != scope.AgentName {
@@ -1639,6 +1885,93 @@ func (m *MemoryStore) AddUsage(_ context.Context, scope Scope, agentName string,
 	return u, nil
 }
 
+func (m *MemoryStore) RecordRunUsageOwned(_ context.Context, scope Scope, runID, owner string, attempt int, total backend.Cost, now time.Time, window time.Duration) (Usage, bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return Usage{}, false, err
+	}
+	if strings.TrimSpace(runID) == "" || owner == "" {
+		return Usage{}, false, fmt.Errorf("owned run usage requires a run ID and owner")
+	}
+	if total.InputTokens < 0 || total.OutputTokens < 0 || total.CostMicros < 0 {
+		return Usage{}, false, fmt.Errorf("run usage totals must not be negative")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	runKey := tenantKey(scope) + "|" + runID
+	run, ok := m.runs[runKey]
+	if !ok || run.AgentName != scope.AgentName || run.Phase != RunPhaseRunning ||
+		run.ExecutionOwner != owner || run.Attempt != attempt || run.ExecutionLeaseAt.IsZero() || now.Sub(run.ExecutionLeaseAt) >= RunLeaseDuration {
+		return Usage{}, false, nil
+	}
+
+	inDelta := max(total.InputTokens-run.InputTokens, 0)
+	outDelta := max(total.OutputTokens-run.OutputTokens, 0)
+	costDelta := max(total.CostMicros-run.USDMicros, 0)
+	run.InputTokens = max(run.InputTokens, total.InputTokens)
+	run.OutputTokens = max(run.OutputTokens, total.OutputTokens)
+	run.USDMicros = max(run.USDMicros, total.CostMicros)
+	// Usage is part of the run checkpoint but must not advance UpdatedAt: that
+	// timestamp is the compare token used by recovery and checkpoint writers.
+	m.runs[runKey] = run
+
+	ws := windowStart(now, window)
+	usageKey := fmt.Sprintf("%s|%s|%d", tenantKey(scope), run.AgentName, ws.Unix())
+	u := m.usage[usageKey]
+	u.AgentName = run.AgentName
+	u.WindowStart = ws
+	u.InputTokens += inDelta
+	u.OutputTokens += outDelta
+	u.USDMicros += costDelta
+	u.UpdatedAt = now.UTC()
+	m.usage[usageKey] = u
+	return u, true, nil
+}
+
+func (m *MemoryStore) AddDelegatedUsage(_ context.Context, parentScope Scope, parentRunID, childRunID string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, bool, error) {
+	parentScope = m.normalizeScope(parentScope)
+	if err := parentScope.withAgent(); err != nil {
+		return Usage{}, false, err
+	}
+	if in < 0 || out < 0 || usdMicros < 0 {
+		return Usage{}, false, fmt.Errorf("delegated usage values must not be negative")
+	}
+	if strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(childRunID) == "" || parentRunID == childRunID {
+		return Usage{}, false, fmt.Errorf("delegated usage needs distinct parent and child run IDs")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	parentScope = m.normalizeScopeLocked(parentScope)
+	tenant := tenantKey(parentScope)
+	parent, parentOK := m.runs[tenant+"|"+parentRunID]
+	childKey := tenant + "|" + childRunID
+	child, childOK := m.runs[childKey]
+	if !parentOK || parent.AgentName != parentScope.AgentName {
+		return Usage{}, false, fmt.Errorf("delegated usage parent run does not match the parent Agent")
+	}
+	if !childOK || child.ParentRunID != parentRunID {
+		return Usage{}, false, fmt.Errorf("delegated usage child is missing or belongs to another parent")
+	}
+	if child.DelegatedUsageRolledUp {
+		return Usage{}, false, nil
+	}
+	child.DelegatedUsageRolledUp = true
+	m.runs[childKey] = child
+	ws := windowStart(now, window)
+	k := fmt.Sprintf("%s|%s|%d", tenant, parentScope.AgentName, ws.Unix())
+	u := m.usage[k]
+	u.AgentName = parentScope.AgentName
+	u.WindowStart = ws
+	u.InputTokens += in
+	u.OutputTokens += out
+	u.USDMicros += usdMicros
+	u.UpdatedAt = now.UTC()
+	m.usage[k] = u
+	return u, true, nil
+}
+
 func (m *MemoryStore) GetUsage(_ context.Context, scope Scope, agentName string, now time.Time, window time.Duration) (Usage, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {
@@ -1828,6 +2161,11 @@ func (m *MemoryStore) SaveRunArtifact(_ context.Context, scope Scope, artifact R
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
+	if artifact.Name == "structured-result.json" {
+		if old, ok := m.artifacts[artifactKey(scope, artifact.RunID, artifact.Name)]; ok && old.artifact.Digest != artifact.Digest {
+			return fmt.Errorf("a different structured result is already recorded")
+		}
+	}
 	// Copy the bytes: the caller's buffer is not this store's to share.
 	artifact.Data = append([]byte(nil), artifact.Data...)
 	artifact.CreatedAt = artifact.CreatedAt.UTC()

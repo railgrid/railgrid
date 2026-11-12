@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -102,4 +103,26 @@ func TestExpandToolsets(t *testing.T) {
 			t.Fatalf("expected dev's families merged despite missing 'nope'; got %v", out.Families)
 		}
 	})
+}
+
+func TestCodeWorkflowCannotSelfSchedule(t *testing.T) {
+	s := &Server{}
+	a := &agentsv1alpha1.Agent{}
+	a.Spec.Tools.Background.Families = []string{"core", "code", "code-write"}
+	a.Spec.Delegates = []string{"reviewer"}
+	deps := tools.Deps{Agent: a, CR: fakeCR{}}
+	set, _, closeTools := s.buildToolset(context.Background(), deps, taskRun{Trigger: "api"})
+	defer closeTools()
+	delegate := false
+	for _, tool := range set {
+		if tool.Name == "delegate" {
+			delegate = true
+		}
+		if strings.HasPrefix(tool.Name, "schedule_") || tool.Name == "wait" {
+			t.Fatalf("workflow exposes %s", tool.Name)
+		}
+	}
+	if !delegate {
+		t.Fatal("delegation removed with scheduling")
+	}
 }

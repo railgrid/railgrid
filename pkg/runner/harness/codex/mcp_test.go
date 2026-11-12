@@ -18,6 +18,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,5 +149,34 @@ func TestMCPOverridesRefuseAKeyThatChangesTheirShape(t *testing.T) {
 	args, _, err := mcpOverrides([]harness.MCPServer{{Name: "a", URL: `https://h.example/x"y`, Token: "t"}})
 	if err != nil || args[1] != `mcp_servers.a.url="https://h.example/x\"y"` {
 		t.Fatalf("a quote in the url was not escaped: %v %v", args, err)
+	}
+}
+
+func TestApprovedMCPToolsAreAllowlistedWithoutChangingNativeApprovals(t *testing.T) {
+	args, _, err := mcpOverrides([]harness.MCPServer{{Name: "agent", URL: testMCPURL, Token: testMCPToken, ApprovedTools: []string{"code_pull_request"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(args, "\n")
+	for _, want := range []string{`mcp_servers.agent.enabled_tools=["code_pull_request"]`, `mcp_servers.agent.default_tools_approval_mode="approve"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing scoped MCP configuration %s", want)
+		}
+	}
+	if strings.Contains(text, "approval_policy") || strings.Contains(text, "approvals_reviewer") {
+		t.Fatal("native approval policy changed")
+	}
+	plain, _, err := mcpOverrides([]harness.MCPServer{{Name: "agent", URL: testMCPURL, Token: testMCPToken}})
+	if err != nil || strings.Contains(strings.Join(plain, "\n"), "approval_mode") {
+		t.Fatal("unapproved MCP tools were automatically approved")
+	}
+}
+func TestUnconfiguredMCPElicitationCannotRemainSilentlyRunning(t *testing.T) {
+	if !isApprovalRequest("mcpServer/elicitation/request") || isRequestUserInput("mcpServer/elicitation/request") {
+		t.Fatal("MCP approval is not a product clarification")
+	}
+	state := runState{sessionID: "thread-1", turnID: "turn-1"}
+	if err := state.handle(wireMessage{ID: json.RawMessage(`1`), Method: "mcpServer/elicitation/request", Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1"}`)}); err == nil {
+		t.Fatal("unsupported MCP approval silently ignored")
 	}
 }

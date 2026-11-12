@@ -169,7 +169,7 @@ func (s *Server) retryRun(ctx context.Context, scope store.Scope, run taskRun, c
 	stored.Message = fmt.Sprintf("attempt %d of %d refused: %s; retrying at %s",
 		attempt, maxAttempts, refused, retryAt.UTC().Format(time.RFC3339))
 	stored.UpdatedAt = at
-	if err := s.saveRun(persistCtx, scope, stored); err != nil {
+	if err := s.saveRunForExecution(persistCtx, scope, stored, run.ExecutionOwner, run.Attempt); err != nil {
 		log.Printf("run %s: handing back to the queue for retry: %v", run.RunID, err)
 		return nil, false
 	}

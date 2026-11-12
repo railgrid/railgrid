@@ -62,6 +62,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/util/retry"
@@ -91,6 +92,35 @@ func (s *Server) saveRun(ctx context.Context, scope store.Scope, run store.Run) 
 		return err
 	}
 	s.projectRun(ctx, scope, run)
+	return nil
+}
+
+func (s *Server) saveRunOwned(ctx context.Context, scope store.Scope, run store.Run, owner string, attempt int) (bool, error) {
+	updated, err := s.store.SaveRunOwned(ctx, scope, run, owner, attempt, time.Now().UTC())
+	if err != nil || !updated {
+		return updated, err
+	}
+	s.projectRun(ctx, scope, run)
+	return true, nil
+}
+
+func (s *Server) saveRunForExecution(ctx context.Context, scope store.Scope, run store.Run, owner string, attempt int) error {
+	if owner == "" {
+		if run.ExecutionOwner != "" {
+			return store.ErrRunLeaseLost
+		}
+		return s.saveRun(ctx, scope, run)
+	}
+	if run.ExecutionOwner != "" && run.ExecutionOwner != owner {
+		return store.ErrRunLeaseLost
+	}
+	updated, err := s.saveRunOwned(ctx, scope, run, owner, attempt)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return store.ErrRunLeaseLost
+	}
 	return nil
 }
 
@@ -310,15 +340,15 @@ func (s *Server) createRunObject(ctx context.Context, dyn dynamic.Interface, run
 			NotifyChannel: d.NotifyChannel,
 		}
 	}
-	if agent, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, run.AgentName, metav1.GetOptions{}); err == nil {
+	if run.AgentUID != "" {
 		object.OwnerReferences = []metav1.OwnerReference{{
 			APIVersion: agentsv1alpha1.SchemeGroupVersion.String(),
 			Kind:       "Agent",
-			Name:       agent.GetName(),
-			UID:        agent.GetUID(),
+			Name:       run.AgentName,
+			UID:        types.UID(run.AgentUID),
 		}}
 	} else {
-		log.Printf("agents: run %s has no owner reference: reading agent %s: %v", run.ID, run.AgentName, err)
+		log.Printf("agents: run %s has no owner reference: its admitted Agent UID is unavailable", run.ID)
 	}
 
 	raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(object)
@@ -350,6 +380,14 @@ func runStatusFor(run store.Run) agentsv1alpha1.RunStatus {
 		Phase:   string(run.Phase),
 		Message: safeTruncate(run.Message, 2048),
 		Retries: int32(run.Retries),
+	}
+	if run.ExecutionOwner != "" && !run.ExecutionLeaseAt.IsZero() {
+		status.Owner = run.ExecutionOwner
+		claimedAt := metav1.NewTime(run.ExecutionLeaseAt)
+		status.ClaimedAt = &claimedAt
+		if run.Delivery == nil {
+			status.Attempt = int32(run.Attempt + 1)
+		}
 	}
 	if run.RetryAt != nil && run.Phase == store.RunPhasePending {
 		// Only a queued run has a wake-up time; the reconciler clears it on the
@@ -420,9 +458,13 @@ func equalStatus(current, next map[string]any) bool {
 	if current == nil {
 		return false
 	}
-	// Owner and conditions are written by the reconciler, not by the
-	// projection, so they are carried over rather than compared.
+	// The reconciler owns these fields unless the store has an authoritative
+	// execution lease. This allows a post-CAS recovery owner to replace the
+	// previous process while preserving unattended claim counts.
 	for _, key := range []string{"owner", "claimedAt", "attempt", "conditions", "deadlineAt", "observedGeneration"} {
+		if _, authoritative := next[key]; authoritative {
+			continue
+		}
 		if value, ok := current[key]; ok {
 			next[key] = value
 		}

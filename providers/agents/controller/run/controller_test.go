@@ -134,6 +134,49 @@ func TestDeadlineIsStampedAndRequeuedAt(t *testing.T) {
 	}
 }
 
+func TestTerminalRunRetriesFailedDescendantCleanup(t *testing.T) {
+	calls := 0
+	r := &Reconciler{ProcessID: "test", ReconcileDescendants: func(context.Context, string, string, string) error {
+		calls++
+		if calls == 1 {
+			return errors.New("injected child stop failure")
+		}
+		return nil
+	}}
+	terminal := newRun("terminal", func(run *agentsv1alpha1.Run) { run.Status.Phase = agentsv1alpha1.RunPhaseAborted })
+	_, result := run(t, r, terminal)
+	if calls != 1 || result.RequeueAfter != descendantReconcileRetry {
+		t.Fatalf("first reconciliation calls=%d requeue=%s", calls, result.RequeueAfter)
+	}
+	_, result = run(t, r, terminal)
+	if calls != 2 || result.RequeueAfter != 0 {
+		t.Fatalf("retry calls=%d requeue=%s", calls, result.RequeueAfter)
+	}
+}
+
+func TestActiveChildRetriesParentReconciliation(t *testing.T) {
+	calls := 0
+	r := &Reconciler{ProcessID: "test", ReconcileParent: func(context.Context, string, string, string) error {
+		calls++
+		if calls == 1 {
+			return errors.New("injected orphan cleanup failure")
+		}
+		return nil
+	}}
+	child := newRun("child", func(run *agentsv1alpha1.Run) {
+		run.Spec.ParentRunRef = "missing-parent"
+		run.Status.Phase = agentsv1alpha1.RunPhasePendingApproval
+	})
+	_, result := run(t, r, child)
+	if calls != 1 || result.RequeueAfter != descendantReconcileRetry {
+		t.Fatalf("first reconciliation calls=%d requeue=%s", calls, result.RequeueAfter)
+	}
+	_, result = run(t, r, child)
+	if calls != 2 || result.RequeueAfter != 0 {
+		t.Fatalf("retry calls=%d requeue=%s", calls, result.RequeueAfter)
+	}
+}
+
 // An agent that asks for more than MaxTimeout does not get it: one agent must
 // not be able to pin a worker indefinitely.
 func TestDeadlineIsCapped(t *testing.T) {
@@ -640,8 +683,86 @@ func TestAStrandedRunningRunIsRecovered(t *testing.T) {
 	}
 }
 
-// A run this process is executing is not stranded, however old its claim looks.
-func TestOurOwnRunningRunIsNotRecovered(t *testing.T) {
+func TestOwnerlessAPIRunUsesStartedAtForRecovery(t *testing.T) {
+	var recovered int
+	r := &Reconciler{
+		Now: func() time.Time { return started }, ProcessID: "pod-a", Dispatch: (&dispatcher{}).dispatch,
+		Recover: func(context.Context, string, string, string) error {
+			recovered++
+			return nil
+		},
+	}
+	object := unattended("r1", func(o *agentsv1alpha1.Run) {
+		o.Status.Phase = agentsv1alpha1.RunPhaseRunning
+		o.Status.StartedAt = &metav1.Time{Time: started.Add(-2 * ClaimGrace)}
+	})
+	run(t, r, object, newAgent(600))
+	if recovered != 1 {
+		t.Fatalf("Recover called %d time(s), want an ownerless API run recovered after ClaimGrace", recovered)
+	}
+}
+
+func TestFreshOwnerlessAPIRunWaitsForClaimGrace(t *testing.T) {
+	var recovered int
+	r := &Reconciler{
+		Now: func() time.Time { return started }, ProcessID: "pod-a", Dispatch: (&dispatcher{}).dispatch,
+		Recover: func(context.Context, string, string, string) error {
+			recovered++
+			return nil
+		},
+	}
+	object := unattended("r1", func(o *agentsv1alpha1.Run) {
+		o.Status.Phase = agentsv1alpha1.RunPhaseRunning
+		o.Status.StartedAt = &metav1.Time{Time: started.Add(-ClaimGrace + time.Second)}
+	})
+	_, result := run(t, r, object, newAgent(600))
+	if recovered != 0 || result.RequeueAfter != time.Second {
+		t.Fatalf("Recover called %d time(s), requeue after %s; want no recovery and 1s grace", recovered, result.RequeueAfter)
+	}
+}
+
+func TestOwnerlessPendingAPIRunRecoversAfterGrace(t *testing.T) {
+	var recovered int
+	r := &Reconciler{
+		Now: func() time.Time { return started }, ProcessID: "pod-a", Dispatch: (&dispatcher{}).dispatch,
+		Recover: func(context.Context, string, string, string) error {
+			recovered++
+			return nil
+		},
+	}
+	object := unattended("r1", func(o *agentsv1alpha1.Run) {
+		o.Spec.Delivery = nil
+		o.Status.Phase = agentsv1alpha1.RunPhasePending
+		o.CreationTimestamp = metav1.Time{Time: started.Add(-2 * ClaimGrace)}
+	})
+	run(t, r, object, newAgent(600))
+	if recovered != 1 {
+		t.Fatalf("Recover called %d time(s), want the abandoned API admission settled", recovered)
+	}
+}
+
+func TestFreshOwnerlessPendingAPIRunWaitsForClaimGrace(t *testing.T) {
+	var recovered int
+	r := &Reconciler{
+		Now: func() time.Time { return started }, ProcessID: "pod-a", Dispatch: (&dispatcher{}).dispatch,
+		Recover: func(context.Context, string, string, string) error {
+			recovered++
+			return nil
+		},
+	}
+	object := unattended("r1", func(o *agentsv1alpha1.Run) {
+		o.Spec.Delivery = nil
+		o.Status.Phase = agentsv1alpha1.RunPhasePending
+		o.CreationTimestamp = metav1.Time{Time: started.Add(-ClaimGrace + time.Second)}
+	})
+	_, result := run(t, r, object, newAgent(600))
+	if recovered != 0 || result.RequeueAfter != time.Second {
+		t.Fatalf("Recover called %d time(s), requeue after %s; want no recovery and 1s grace", recovered, result.RequeueAfter)
+	}
+}
+
+// A fresh owner heartbeat keeps this process's run from recovery.
+func TestOurFreshRunningLeaseIsNotRecovered(t *testing.T) {
 	r := &Reconciler{
 		Now: func() time.Time { return started }, ProcessID: "pod-a",
 		Dispatch: (&dispatcher{}).dispatch,
@@ -653,7 +774,27 @@ func TestOurOwnRunningRunIsNotRecovered(t *testing.T) {
 	object := unattended("r1", func(o *agentsv1alpha1.Run) {
 		o.Status.Phase = agentsv1alpha1.RunPhaseRunning
 		o.Status.Owner = "pod-a"
+		o.Status.ClaimedAt = &metav1.Time{Time: started}
+	})
+	run(t, r, object, newAgent(600))
+}
+
+func TestExpiredOwnRunningLeaseIsRecovered(t *testing.T) {
+	var recovered int
+	r := &Reconciler{
+		Now: func() time.Time { return started }, ProcessID: "pod-a",
+		Recover: func(context.Context, string, string, string) error {
+			recovered++
+			return nil
+		},
+	}
+	object := unattended("r1", func(o *agentsv1alpha1.Run) {
+		o.Status.Phase = agentsv1alpha1.RunPhaseRunning
+		o.Status.Owner = "pod-a"
 		o.Status.ClaimedAt = &metav1.Time{Time: started.Add(-10 * ClaimGrace)}
 	})
 	run(t, r, object, newAgent(600))
+	if recovered != 1 {
+		t.Fatalf("Recover called %d time(s), want the expired local lease recovered", recovered)
+	}
 }

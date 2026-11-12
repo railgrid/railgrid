@@ -48,6 +48,8 @@ const (
 	// coordinator must see it before sending the field: decoding refuses
 	// unknown fields, so an older runner rejects the request outright.
 	RemoteMCPCapability = "remote-mcp-v1"
+	// RemoteMCPApprovedToolsCapability gates the explicit tool allowlist field.
+	RemoteMCPApprovedToolsCapability = "remote-mcp-approved-tools-v1"
 )
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)

@@ -28,12 +28,9 @@ import (
 // not happening. Silence would make each of these a wrong belief rather than a
 // wrong file.
 func UnsupportedFields(agent *agentsv1alpha1.Agent) (reason, message string) {
-	if len(agent.Spec.Tools.Interactive.Families) > 0 || len(agent.Spec.Tools.Interactive.Connections) > 0 ||
-		len(agent.Spec.Tools.Interactive.Toolsets) > 0 || len(agent.Spec.Tools.Interactive.RequireApproval) > 0 ||
-		len(agent.Spec.Tools.Background.Families) > 0 || len(agent.Spec.Tools.Background.Connections) > 0 ||
-		len(agent.Spec.Tools.Background.Toolsets) > 0 || len(agent.Spec.Tools.Background.RequireApproval) > 0 {
+	if unsupportedToolGrant(agent.Spec.Tools.Interactive) || unsupportedToolGrant(agent.Spec.Tools.Background) {
 		return agentsv1alpha1.ReasonMeaninglessForHarness,
-			"spec.tools has no effect on a harness-backed agent: the harness brings its own tools, and a grant here would read as a restriction that is not enforced anywhere. Remove it."
+			"spec.tools has no effect on native harness tools. Only the code family is supported, adding scoped review MCP capabilities without restricting native tools; remove other grants."
 	}
 	switch agent.Spec.Autonomy {
 	case agentsv1alpha1.AutonomySuggest:
@@ -70,4 +67,16 @@ func UnsupportedFields(agent *agentsv1alpha1.Agent) (reason, message string) {
 			"spec.backend.model.fallbacks has no effect on a harness-backed agent: a turn runs on one machine's harness, and there is no second endpoint to fail over to."
 	}
 	return "", ""
+}
+
+func unsupportedToolGrant(grant agentsv1alpha1.ToolGrant) bool {
+	if len(grant.Connections) > 0 || len(grant.Toolsets) > 0 || len(grant.RequireApproval) > 0 {
+		return true
+	}
+	for _, family := range grant.Families {
+		if family != "code" {
+			return true
+		}
+	}
+	return false
 }
