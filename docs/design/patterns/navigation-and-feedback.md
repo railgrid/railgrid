@@ -32,9 +32,8 @@ region was saved. This is a persistence boundary, not permission to place
 multiple competing primary actions in one form or task.
 
 Native checkboxes and radios inherit `accent-color: var(--color-accent)` from
-`body`; do not restyle them with raw blue. Custom toggles use a sharp 3px track
-(`bg-accent` on, `bg-border-default` off) and 2px `bg-text-primary` knob, never
-an iOS pill. Dense composite checkboxes use `.k-checkbox`: 14×14px with zero
+`body`; do not restyle them with raw blue. Custom toggles use a sharp 4px track (`bg-accent` on,
+`surface-overlay` off) and a 3px light knob, never an iOS pill. Dense composite checkboxes use `.k-checkbox`: 14×14px with zero
 min dimensions, native accent color, no ordinary focus shadow, and only a 3px
 `accent-subtle` focus-visible ring. The composite row owns keyboard focus;
 visually present checkboxes may be `tabindex="-1"`/`aria-hidden="true"` and
