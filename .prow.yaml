@@ -6,9 +6,10 @@
 # (hack/ci/prow/image/, tag = hack/ci/prow/image/VERSION). job.sh holds the
 # commands and mirrors the GitHub Actions jobs named in each comment.
 #
-# `optional: true` everywhere: these jobs currently SHADOW GitHub Actions. A
-# red Prow job is reported on the PR but blocks nothing. Remove `optional`
-# job by job as each one proves itself, then retire its Actions counterpart.
+# These jobs are the pull request gate: the CI and E2E workflows no longer run
+# on pull_request (they still run on main after merge), and no job here is
+# `optional`, so Tide does not merge past a red one. An approver can waive a
+# job on one PR with `/override <context>`.
 #
 # Docs-only PRs (docs/ and *.md) start only `contracts`; that is the `docs`
 # selection mode of hack/ci/README.md. The provider-ui mode is decided inside
@@ -33,7 +34,6 @@ presubmits:
   # Repository contracts; runs on every PR, docs-only ones included (ci.yaml `contracts`).
   - name: pull-railgrid-contracts
     always_run: true
-    optional: true
     branches:
       - ^main$
     decoration_config:
@@ -57,7 +57,6 @@ presubmits:
   # make build + verify-codegen (ci.yaml `build`, `verify-codegen`).
   - name: pull-railgrid-build
     skip_if_only_changed: '^docs/|\.md$'
-    optional: true
     branches:
       - ^main$
     decoration_config:
@@ -81,7 +80,6 @@ presubmits:
   # golangci-lint, root module and the App Studio harness (ci.yaml `lint`).
   - name: pull-railgrid-lint
     skip_if_only_changed: '^docs/|\.md$'
-    optional: true
     branches:
       - ^main$
     decoration_config:
@@ -105,7 +103,6 @@ presubmits:
   # Root module tests under -race (ci.yaml `test-modules`, module `.`).
   - name: pull-railgrid-test
     skip_if_only_changed: '^docs/|\.md$'
-    optional: true
     branches:
       - ^main$
     decoration_config:
@@ -129,7 +126,6 @@ presubmits:
   # Every standalone module, then the App Studio store on PostgreSQL (ci.yaml `test-modules`, `test-app-studio-postgres`).
   - name: pull-railgrid-test-providers
     skip_if_only_changed: '^docs/|\.md$'
-    optional: true
     branches:
       - ^main$
     decoration_config:
@@ -153,7 +149,6 @@ presubmits:
   # Root portal and the selected provider portals (ci.yaml `portal`, `provider-portals`).
   - name: pull-railgrid-portals
     skip_if_only_changed: '^docs/|\.md$'
-    optional: true
     branches:
       - ^main$
     decoration_config:
@@ -177,7 +172,6 @@ presubmits:
   # Provider suites on embedded kcp, no Docker (e2e.yaml `e2e-providers`).
   - name: pull-railgrid-e2e-providers
     skip_if_only_changed: '^docs/|\.md$'
-    optional: true
     branches:
       - ^main$
     decoration_config:
@@ -201,7 +195,6 @@ presubmits:
   # kind: standalone suite (e2e.yaml `e2e-standalone`).
   - name: pull-railgrid-e2e-standalone
     skip_if_only_changed: '^docs/|\.md$'
-    optional: true
     branches:
       - ^main$
     labels:
@@ -229,7 +222,6 @@ presubmits:
   # kind: SSH server-mode suite (e2e.yaml `e2e-ssh`).
   - name: pull-railgrid-e2e-ssh
     skip_if_only_changed: '^docs/|\.md$'
-    optional: true
     branches:
       - ^main$
     labels:
@@ -257,7 +249,6 @@ presubmits:
   # kind: OIDC suite with Dex (e2e.yaml `e2e-oidc`).
   - name: pull-railgrid-e2e-oidc
     skip_if_only_changed: '^docs/|\.md$'
-    optional: true
     branches:
       - ^main$
     labels:
@@ -285,7 +276,6 @@ presubmits:
   # kind: kcp via Helm (e2e.yaml `e2e-external-kcp`).
   - name: pull-railgrid-e2e-external-kcp
     skip_if_only_changed: '^docs/|\.md$'
-    optional: true
     branches:
       - ^main$
     labels:
@@ -313,7 +303,6 @@ presubmits:
   # kind: edges data-plane connectivity (e2e.yaml `e2e-edges-connectivity`).
   - name: pull-railgrid-e2e-edges-connectivity
     skip_if_only_changed: '^docs/|\.md$'
-    optional: true
     branches:
       - ^main$
     labels:
@@ -341,7 +330,6 @@ presubmits:
   # kind: railgrid CLI suite (e2e.yaml `e2e-cli`).
   - name: pull-railgrid-e2e-cli
     skip_if_only_changed: '^docs/|\.md$'
-    optional: true
     branches:
       - ^main$
     labels:
