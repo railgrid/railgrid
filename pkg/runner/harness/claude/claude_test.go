@@ -316,6 +316,38 @@ func TestEnsureHomeRejectsAnInteractiveHome(t *testing.T) {
 			t.Errorf("a home with plugins entry %q was accepted", extra)
 		}
 	}
+	// A file with the bookkeeping name must also have the bookkeeping shape: a
+	// small flat object of scalars, never something nested like a manifest.
+	for name, body := range map[string]string{
+		"not-json":     "not json",
+		"array":        `["x"]`,
+		"null":         `null`,
+		"nested":       `{"hooks":{"PreToolUse":[]}}`,
+		"nested-array": `{"commands":["x"]}`,
+		"oversized":    `{"k":"` + strings.Repeat("a", 64<<10) + `"}`,
+	} {
+		home := filepath.Join(base, "plugins-shape-"+name)
+		if err := os.MkdirAll(filepath.Join(home, "plugins", "store"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, "plugins", "store", "cc-plugin-agents-md_builtin-b049b47b3618.json"), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := (&Adapter{cfg: Config{Home: home}}).ensureHome(); err == nil {
+			t.Errorf("a home whose built-in store file is %s was accepted", name)
+		}
+	}
+	realShape := filepath.Join(base, "plugins-real-shape")
+	if err := os.MkdirAll(filepath.Join(realShape, "plugins", "store"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realShape, "plugins", "store", "cc-plugin-agents-md_builtin-b049b47b3618.json"), []byte(`{"usage-rows-queued": "86738c46-c61f-4d57-af7a-310f7cada6d7 claude-md-or-agents-md ok", "n": 1, "ok": true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Adapter{cfg: Config{Home: realShape}}).ensureHome(); err != nil {
+		t.Errorf("a home with real built-in bookkeeping was rejected: %v", err)
+	}
+
 	symlinked := filepath.Join(base, "plugins-symlinked-store")
 	if err := os.MkdirAll(filepath.Join(symlinked, "plugins"), 0700); err != nil {
 		t.Fatal(err)
