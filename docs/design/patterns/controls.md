@@ -6,7 +6,11 @@
 
 The Vue and framework-neutral implementations in the
 [FormSelect component](../components/form-select.md) own the product-consistent
-single-select popup. Native select popups remain sanctioned. Native checkboxes
+single-select popup. For a short, stable set of simple options, prefer a native
+select when the platform popup meets the task, especially on touch. Use
+FormSelect when a shared, viewport-aware popup and consistent option presentation
+matter across providers. Keep native and shared selects visually aligned when
+they appear together. Native checkboxes
 and radios are the baseline; custom styling is reserved for dense composite
 rows and shared toggle recipes.
 
@@ -27,6 +31,37 @@ An error may replace the hint or precede it, but both stay below the control.
 Adjacent fields align at the top; a longer hint must not move a neighboring
 control down. Form-wide instructions can precede a group of fields.
 
+## Validation and recovery
+
+The form owner validates a required FormSelect on submit. Its `required` prop
+announces the requirement but does not block submission: the Vue trigger is a
+button and its optional hidden value input does not participate in native
+constraint validation. Validate both Vue and framework-neutral consumers
+explicitly, prevent the operation when invalid, set `invalid` and associate
+the corrective message with `errorMessage` or associate an existing message with `describedby`. The shared error message uses a danger border and an icon alongside corrective text. On submission failure, focus an
+error summary or the first invalid control. Keep entered values. Clear the
+error after a valid selection, and announce the result without relying on
+color alone. Native required controls retain browser constraint validation.
+
+For no available options, explain why and offer the next action outside the
+popup where possible. Distinguish loading, no matches, and a failed option
+read. An unavailable field must say when and how it becomes available.
+
+## Choosing and finding options
+
+Choose the simplest control that supports the task. A native select is a good
+baseline for short, stable choices and platform-owned touch interaction.
+FormSelect is suitable when the shared popup's presentation or viewport-aware
+placement is needed. The current FormSelect supports arrows,
+Home, End, Enter, Space, and Escape; it does not implement type-ahead or search.
+For a long or frequently changing set, offer a searchable picker with a
+keyboard-accessible results list, loading, no-match, and failure states.
+The cutoff is task-dependent; test finding a known and an unfamiliar item
+rather than enforcing an arbitrary item count. Searchable selection is a
+proposal, not a shipped FormSelect capability.
+
+## Grouping choices
+
 Use a native `fieldset` and `legend` for related radio or checkbox choices.
 The legend is a field label: match the size, weight, color, and sentence case
 of neighboring labels, rather than the uppercase treatment of a section
@@ -34,24 +69,32 @@ heading. Put group help after the choices and associate it with the fieldset.
 An individual choice can carry a description beneath its title within the
 clickable label. Keep the native control aligned with that title.
 
-For a range input, no implementation is currently shipped. When needed, use a
-native `<input type="range">` with `accent-color` first. A custom variant is a
-2px `surface-overlay` track (`rounded-xs`), accent filled portion, and a
-12×12px square 2px-radius `text-primary` thumb matching the toggle knob; focus
-uses the standard ring and readouts use mono `tabular-nums`.
+## Range and date/time input
 
-For date/time input, no custom picker is shipped. Dates are read-only mono
-output via `portal/src/utils/time.ts` (relative plus title absolute). If input
-is needed, use native `date`/`datetime-local` styled as `.k-input`. A range is
-two inputs joined by an en dash, not a popover calendar.
+A native range input with accent color is the current fallback. A custom
+slider is a proposal requiring review in both themes and across keyboard and
+touch input. Give it an accessible name, visible value, bounds and units,
+and a sufficiently large hit target. Do not assume that its thumb must match
+the toggle knob; its geometry and focus treatment need a rendered review.
+
+No custom date/time picker is shipped. Use native `date` or `datetime-local`
+with the shared input styling when appropriate. A local datetime has no
+inherent timezone: show the intended timezone with the field and define how
+it is selected and stored. For scheduled instants, validate nonexistent and
+ambiguous daylight-saving times and offer a clear correction or offset choice.
+Show the timezone and resulting instant in the confirmation. Use two labeled
+inputs for a range and validate their order. These scheduling requirements
+are proposed guidance to validate with an actual scheduling journey.
+
+## Command discovery
 
 The contextual AgentKit slash palette is shipped for Agents and App Studio;
 see the [shared conversation contract](../components/ai-conversation.md#rich-input-ownership).
 It is anchored to its composer and selects enabled skills and resource context.
 
-For a global application command palette, no implementation is shipped. The planned contract is
-a centered 560px, 6px `surface-raised` panel with hairline, heavy elevation,
-and `surface/60` scrim. Its borderless 14px `.k-input` variant carries a mono
-`⌘K` keycap; results use dropdown-menu items with a 10px mono uppercase group
-eyebrow. This is the one larger-feeling chrome surface, but it still has no
-gradients and one accent.
+A global application command palette is an unshipped concept. Before choosing
+its geometry, define the tasks and scope it covers, an observable way to open
+it, platform-appropriate shortcut labels, keyboard focus and dismissal,
+empty and error results, and a narrow-screen layout. Review the experience
+with keyboard and assistive technology in both themes. Earlier 560px and
+`⌘K` values are visual studies rather than a shipped contract.

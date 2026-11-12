@@ -760,6 +760,10 @@ verify-ui-conformance: test-portal-settings-conformance test-create-flow-conform
 	@node hack/verify-ui-conformance.test.mjs
 	@node hack/verify-ui-conformance.mjs
 
+.PHONY: serve-design-review
+serve-design-review: ## Serve the local design book fixtures and source index
+	portal/node_modules/.bin/vite --config hack/design-review/vite.config.mjs
+
 serve-onboarding-visual: ## Serve the isolated real-component onboarding fixture
 	cd portal && npm exec vite -- --config ../hack/onboarding-visual/vite.config.mjs
 

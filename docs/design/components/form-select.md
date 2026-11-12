@@ -15,13 +15,12 @@ what it can.
 
 Use `FormSelect.vue` in Vue portals or the framework-neutral
 `railgrid-form-select` from `form-select.ts` in the Quickstart portal when a
-product-consistent single-select popup is required. Both provide the shared
+a shared, viewport-aware single-select popup and consistent option presentation are required. Both provide the shared
 combobox/listbox behavior instead of relying on a browser popup.
 
 ## Avoid when
 
-Use a native `<select>` when its operating-system popup is acceptable; native
-select popups are sanctioned. Providers must not copy or restyle the shared
+Use a native `<select>` for short, stable choices when the operating-system popup supports the task, especially for platform-owned touch interaction. Use a searchable picker for long or frequently changing choices after testing the task; search is not a shipped FormSelect capability. Providers must not copy or restyle the shared
 `.k-*` recipes.
 
 ## Anatomy and variants
@@ -39,11 +38,18 @@ element accepts `options`, `value`, and optional `placeholder`, `labelledby`, an
 is the selected string. The native `<select>` fallback retains its
 operating-system popup behavior.
 
+The form owner must validate required FormSelect values, prevent submission
+when invalid, set `invalid`, connect the message with `describedby`, and
+focus the first invalid control or an error summary. Pass `errorMessage` for the shared danger border and icon-led corrective message. Keep any separate help text associated with `describedby`. The `required` prop
+announces the requirement; the button and optional hidden input do not provide
+native required-field validation. Retain the draft and clear the error after
+a valid selection.
+
 ## Content
 
 This component documents single-select behavior only. If search or multi-select
 is needed later, compose a `.k-input` trigger, the shared dropdown panel, and
-`.k-badge`-style selected tags; there is no third visual language.
+`.k-badge`-style selected tags; validate search and multi-selection behavior before standardizing an implementation. The current component does not provide type-ahead or search.
 
 ## Layout and responsive behavior
 
