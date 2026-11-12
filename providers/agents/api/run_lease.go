@@ -42,7 +42,7 @@ func (s *Server) acquireRunningLease(ctx context.Context, scope store.Scope, per
 	return nil
 }
 
-func (s *Server) claimFreshRunLease(ctx context.Context, scope store.Scope, runID string) (store.Run, context.Context, func(), error) {
+func (s *Server) claimFreshRunLease(ctx context.Context, scope store.Scope, runID, agentUID string) (store.Run, context.Context, func(), error) {
 	if s.cfg.ProcessID == "" {
 		return store.Run{}, ctx, func() {}, nil
 	}
@@ -51,7 +51,7 @@ func (s *Server) claimFreshRunLease(ctx context.Context, scope store.Scope, runI
 		return store.Run{}, ctx, func() {}, err
 	}
 	owner := newExecutionOwner(s.cfg.ProcessID)
-	started, err := s.store.ClaimFreshRun(ctx, scope, runID, pending.UpdatedAt, owner, time.Now().UTC())
+	started, err := s.store.ClaimFreshRun(ctx, scope, runID, pending.UpdatedAt, owner, agentUID, time.Now().UTC())
 	if err != nil {
 		return store.Run{}, ctx, func() {}, err
 	}

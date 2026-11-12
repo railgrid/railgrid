@@ -1042,7 +1042,7 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	return m.saveRunLocked(scope, run)
 }
 
-func (m *MemoryStore) ClaimFreshRun(_ context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error) {
+func (m *MemoryStore) ClaimFreshRun(_ context.Context, scope Scope, id string, observed time.Time, owner, agentUID string, now time.Time) (Run, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.withAgent(); err != nil {
 		return Run{}, err
@@ -1055,7 +1055,7 @@ func (m *MemoryStore) ClaimFreshRun(_ context.Context, scope Scope, id string, o
 	scope = m.normalizeScopeLocked(scope)
 	key := tenantKey(scope) + "|" + id
 	run, ok := m.runs[key]
-	if !ok || run.Phase != RunPhasePending || run.CancelRequested || !run.UpdatedAt.Equal(observed) || run.ExecutionOwner != "" || !run.ExecutionLeaseAt.IsZero() {
+	if !ok || run.AgentName != scope.AgentName || (run.AgentUID != "" && run.AgentUID != agentUID) || run.Phase != RunPhasePending || run.CancelRequested || !run.UpdatedAt.Equal(observed) || run.ExecutionOwner != "" || !run.ExecutionLeaseAt.IsZero() {
 		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
 	}
 	if !now.After(run.UpdatedAt) {
@@ -1068,6 +1068,7 @@ func (m *MemoryStore) ClaimFreshRun(_ context.Context, scope Scope, id string, o
 		run.StartedAt = &started
 	}
 	run.ExecutionOwner = owner
+	run.AgentUID = agentUID
 	run.ExecutionLeaseAt = run.UpdatedAt
 	m.runs[key] = run
 	return run, nil

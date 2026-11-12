@@ -32,7 +32,7 @@ func TestApprovalResumeUsesFreshExecutionNonce(t *testing.T) {
 	}
 
 	oldOwner := newExecutionOwner(s.cfg.ProcessID)
-	firstClaim, err := st.ClaimFreshRun(ctx, scope, pending.ID, pending.UpdatedAt, oldOwner, now.Add(time.Millisecond))
+	firstClaim, err := st.ClaimFreshRun(ctx, scope, pending.ID, pending.UpdatedAt, oldOwner, pending.AgentUID, now.Add(time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}

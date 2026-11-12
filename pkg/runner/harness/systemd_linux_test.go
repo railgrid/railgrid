@@ -24,7 +24,11 @@ func TestSystemdConnectionRequiresOwnedPrivateRuntimeAndSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer bus.Close()
+	t.Cleanup(func() {
+		if err := bus.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	env, err := systemdEnvironmentAt(root, uint32(os.Geteuid()))
 	if err != nil {
 		t.Fatal(err)

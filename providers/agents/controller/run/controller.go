@@ -279,17 +279,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{RequeueAfter: requeue}, nil
 	}
 
-	if stranded, requeue := r.stranded(&object); stranded {
+	stranded, recoveryWait := r.stranded(&object)
+	if stranded {
 		if err := r.Recover(ctx, clusterID, object.Spec.AgentRef, object.Name); err != nil {
 			klog.FromContext(ctx).Error(err, "recovering a stranded run", "run", object.Name, "cluster", clusterID)
 			return ctrl.Result{RequeueAfter: purgeRetryInterval}, nil
 		}
 		return ctrl.Result{}, nil
-	} else if requeue > 0 {
-		return ctrl.Result{RequeueAfter: requeue}, nil
 	}
 
-	return r.enforceDeadline(ctx, c, &object, clusterID)
+	result, err := r.enforceDeadline(ctx, c, &object, clusterID)
+	if err == nil && recoveryWait > 0 && (result.RequeueAfter == 0 || recoveryWait < result.RequeueAfter) {
+		result.RequeueAfter = recoveryWait
+	}
+	return result, err
 }
 
 func isTerminalPhase(phase string) bool {

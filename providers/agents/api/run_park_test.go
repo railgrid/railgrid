@@ -26,13 +26,21 @@ type parkFailureStore struct {
 	store.Store
 	addInboxErr   error
 	pendingRunErr error
+	cancelOnInbox bool
 }
 
 func (s parkFailureStore) AddInboxItem(ctx context.Context, scope store.Scope, item store.InboxItem) error {
 	if s.addInboxErr != nil {
 		return s.addInboxErr
 	}
-	return s.Store.AddInboxItem(ctx, scope, item)
+	if err := s.Store.AddInboxItem(ctx, scope, item); err != nil {
+		return err
+	}
+	if s.cancelOnInbox {
+		scope.AgentName = item.AgentName
+		return s.RequestCancel(ctx, scope, item.RunID, time.Now(), "reviewer")
+	}
+	return nil
 }
 
 func (s parkFailureStore) SaveRun(ctx context.Context, scope store.Scope, run store.Run) error {
@@ -51,7 +59,9 @@ func TestParkRunPersistenceFailuresStopHarnessAndCloseInbox(t *testing.T) {
 		addInboxErr   error
 		pendingRunErr error
 		wantInbox     store.InboxItemState
+		cancelOnInbox bool
 	}{
+		{name: "cancellation races the owned checkpoint", cancelOnInbox: true, wantInbox: store.InboxStateDenied},
 		{name: "inbox write fails", addInboxErr: addErr},
 		{name: "approval checkpoint write fails", pendingRunErr: checkpointErr, wantInbox: store.InboxStateDenied},
 		{name: "question checkpoint write fails", question: true, pendingRunErr: checkpointErr, wantInbox: store.InboxStateAnswered},
@@ -85,7 +95,7 @@ func TestParkRunPersistenceFailuresStopHarnessAndCloseInbox(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := &Server{
-				store:  parkFailureStore{Store: base, addInboxErr: test.addInboxErr, pendingRunErr: test.pendingRunErr},
+				store:  parkFailureStore{Store: base, addInboxErr: test.addInboxErr, pendingRunErr: test.pendingRunErr, cancelOnInbox: test.cancelOnInbox},
 				events: newEventBus(),
 			}
 			inboxEvents, unsubscribe := s.events.subscribe(scope)
@@ -93,6 +103,12 @@ func TestParkRunPersistenceFailuresStopHarnessAndCloseInbox(t *testing.T) {
 			agent := harnessAgent("edge")
 			agent.Name = "coder"
 			run := taskRun{Scope: scope, Agent: agent, RunID: "run-1", SessionID: "chat", Trigger: "chat"}
+			if test.cancelOnInbox {
+				run.ExecutionOwner = "pod/execution"
+				if _, err := base.AcquireRunLease(ctx, scope, run.RunID, run.ExecutionOwner, run.Attempt, now); err != nil {
+					t.Fatal(err)
+				}
+			}
 			h := &harnessTurn{backend: b, Session: store.HarnessSession{SessionID: "chat", Turns: 1}}
 
 			result, err := s.parkRun(ctx, run, "chat", now, now, newTurnProgressTracker(0), h, out)
@@ -101,6 +117,9 @@ func TestParkRunPersistenceFailuresStopHarnessAndCloseInbox(t *testing.T) {
 			}
 			if dispatcher.cancels != 1 || dispatcher.receipt.Phase != runner.PhaseCancelled {
 				t.Fatalf("failed park left remote permission active: cancels=%d receipt=%+v", dispatcher.cancels, dispatcher.receipt)
+			}
+			if test.cancelOnInbox && !errors.Is(err, store.ErrRunCancellationRequested) {
+				t.Fatalf("park error = %v, want a recorded cancellation", err)
 			}
 			if test.pendingRunErr != nil && !errors.Is(err, checkpointErr) {
 				t.Fatalf("park error = %v, want checkpoint write error", err)

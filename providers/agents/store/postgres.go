@@ -1235,7 +1235,7 @@ func (p *PostgresStore) checkDelegationAdmission(ctx context.Context, mutation *
 	return nil
 }
 
-func (p *PostgresStore) ClaimFreshRun(ctx context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error) {
+func (p *PostgresStore) ClaimFreshRun(ctx context.Context, scope Scope, id string, observed time.Time, owner, agentUID string, now time.Time) (Run, error) {
 	mutation, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return Run{}, err
@@ -1252,11 +1252,13 @@ func (p *PostgresStore) ClaimFreshRun(ctx context.Context, scope Scope, id strin
 		phase=$5, updated_at=GREATEST($6::timestamptz, updated_at + interval '1 microsecond'),
 		started_at=COALESCE(started_at, GREATEST($6::timestamptz, updated_at + interval '1 microsecond')),
 		execution_owner=$7,
+		agent_uid=COALESCE(NULLIF(agent_uid, ''), $9),
 		execution_lease_at=GREATEST($6::timestamptz, updated_at + interval '1 microsecond')
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND updated_at=$4 AND phase=$8
+		  AND agent_name=$10 AND (agent_uid='' OR agent_uid=$9)
 		  AND cancel_requested=FALSE AND execution_owner='' AND execution_lease_at IS NULL
 		RETURNING `+runColumns,
-		scope.OrgUUID, scope.WorkspaceUUID, id, observed.UTC(), string(RunPhaseRunning), now.UTC(), owner, string(RunPhasePending))
+		scope.OrgUUID, scope.WorkspaceUUID, id, observed.UTC(), string(RunPhaseRunning), now.UTC(), owner, string(RunPhasePending), agentUID, scope.AgentName)
 	run, err := scanRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)

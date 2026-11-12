@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
@@ -248,10 +250,33 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 	childScope.AgentName = "" // delegated children may belong to another Agent in this workspace
 	if children, err := s.store.QueryRuns(ctx, childScope, store.RunQuery{ParentRunID: runID, Limit: 50}); err == nil {
 		for _, child := range children.Items {
-			detail.Children = append(detail.Children, summarize(child))
+			if canReadRunChild(ctx, child.ID) {
+				detail.Children = append(detail.Children, summarize(child))
+			}
 		}
 	}
 	return detail, nil
+}
+
+// Gated requests are authorized for the addressed object only. Review each
+// child separately, including same-Agent workers with their own Run objects.
+func canReadRunChild(ctx context.Context, runID string) bool {
+	gate, ok := gateFrom(ctx)
+	if !ok {
+		return true // Internal callers and the workspace-scoped MCP projection.
+	}
+	caller, ok := dataplane.ProxiedIdentityFrom(ctx)
+	if !ok {
+		return false
+	}
+	if caller.IsForeignProvider(gate.request.ClusterID) {
+		return true // Foreign-provider access is scoped by the workspace's claims.
+	}
+	gvr := agentsclient.RunGVR
+	allowed, _ := dataplane.Authorize(ctx, gate.provider, caller, dataplane.ResourceAttributes{
+		Group: gvr.Group, Version: gvr.Version, Resource: gvr.Resource, Name: runID, Verb: "get",
+	})
+	return allowed
 }
 
 // runArtifactRequest is the `artifact` verb's input: which of a repository
@@ -377,6 +402,7 @@ func runCancellable(phase store.RunPhase) bool {
 var (
 	errCancelNotRecorded = errors.New("could not record the cancellation request; retry the cancel")
 	errHarnessStopFailed = errors.New("remote harness cancellation failed; retry the cancel")
+	errCancelNotSettled  = errors.New("could not settle the cancelled run; retry the cancel")
 )
 
 // cancelStoredRun cancels one run: the cancel verb and the channel /cancel
@@ -386,11 +412,15 @@ var (
 // executing here (and so finishes on its own once it observes the cancel).
 func (s *Server) cancelStoredRun(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) (live bool, err error) {
 	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName, ClusterID: id.clusterID}
-	if err := s.store.RequestCancel(ctx, scope, run.ID, time.Now().UTC(), id.user); err != nil {
-		log.Printf("runs: recording cancel for run %s failed", run.ID)
-		return false, errCancelNotRecorded
+	run, err = s.requestRunCancellation(ctx, scope, run.ID, id.user)
+	if err != nil {
+		log.Printf("runs: preparing cancellation: %v", err)
+		return false, err
 	}
-	if s.liveRuns != nil && s.liveRuns.cancel(run.ID) {
+	if !runCancellable(run.Phase) {
+		return false, nil
+	}
+	if run.Phase == store.RunPhaseRunning && s.liveRuns != nil && s.liveRuns.cancel(run.ID) {
 		return true, nil
 	}
 	if run.Backend == agentsv1alpha1.AgentBackendHarness && len(run.Checkpoint) > 0 {
@@ -407,8 +437,24 @@ func (s *Server) cancelStoredRun(ctx context.Context, c *agentsclient.Client, id
 	if strings.HasPrefix(id.user, "parent:") {
 		message = "parent run terminated"
 	}
-	s.closeRunNow(ctx, scope, run, store.RunPhaseAborted, message)
+	if err := s.settleRunNow(ctx, scope, run, store.RunPhaseAborted, message); err != nil {
+		log.Printf("runs: settling cancelled run %s: %v", run.ID, err)
+		return false, errCancelNotSettled
+	}
 	return false, nil
+}
+
+func (s *Server) requestRunCancellation(ctx context.Context, scope store.Scope, runID, actor string) (store.Run, error) {
+	if err := s.store.RequestCancel(ctx, scope, runID, time.Now().UTC(), actor); err != nil {
+		return store.Run{}, errCancelNotRecorded
+	}
+	// RequestCancel fences approval claims and new checkpoints. Re-read the
+	// row for the latest phase and remote stop target after the fence.
+	run, err := s.store.GetRun(ctx, scope, runID)
+	if err != nil {
+		return store.Run{}, errCancelNotSettled
+	}
+	return run, nil
 }
 
 // closeRunNow stamps a terminal phase on a run that is not executing on this
@@ -420,6 +466,12 @@ func (s *Server) cancelStoredRun(ctx context.Context, c *agentsclient.Client, id
 // and nobody local is going to notice", and a second implementation of that
 // would be a second set of timing rules for the same event.
 func (s *Server) closeRunNow(ctx context.Context, scope store.Scope, run store.Run, phase store.RunPhase, message string) {
+	if err := s.settleRunNow(ctx, scope, run, phase, message); err != nil {
+		log.Printf("runs: settling run %s: %v", run.ID, err)
+	}
+}
+
+func (s *Server) settleRunNow(ctx context.Context, scope store.Scope, run store.Run, phase store.RunPhase, message string) error {
 	now := time.Now().UTC()
 	startedAt := run.CreatedAt
 	if run.StartedAt != nil {
@@ -431,19 +483,19 @@ func (s *Server) closeRunNow(ctx context.Context, scope store.Scope, run store.R
 	persistCtx, cancelPersist := boundedPersistContext(ctx)
 	defer cancelPersist()
 	tracker := trackerForStored(run)
+	owner := run.ExecutionOwner
 	if run.CancelRequested && phase == store.RunPhaseAborted {
-		// RequestCancel prevents new leases and fences every non-abort owned
-		// save. Closing from the cancel record itself handles a crashed owner.
-		if !s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}, now) {
-			return
+		// The cancel flag fences new leases and non-abort owned writes.
+		owner = ""
+	}
+	out := runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}
+	if err := s.finishRunWithOwner(persistCtx, scope, run.ID, out, now, owner, run.Attempt, nil); err != nil {
+		if errors.Is(err, store.ErrRunAlreadySettled) {
+			return nil
 		}
-	} else if run.ExecutionOwner != "" {
-		if !s.finishRunOwned(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}, now, run.ExecutionOwner, run.Attempt) {
-			return
-		}
-	} else if !s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}, now) {
-		return
+		return err
 	}
 	s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), effectiveSessionID(run.SessionID, run.Trigger), startedAt, now, tracker, turnStatusForRunPhase(phase), "", message)
 	s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
+	return nil
 }

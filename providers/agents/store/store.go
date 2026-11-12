@@ -975,7 +975,9 @@ type Store interface {
 	// ClaimFreshRun turns an admitted Pending run into Running and installs its
 	// first execution lease atomically. It fences both delayed starters and
 	// recovery of abandoned admissions.
-	ClaimFreshRun(ctx context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error)
+	// agentUID must match the frozen Agent or come from the verified owner
+	// reference for a legacy admission. The claim pins it for recovery.
+	ClaimFreshRun(ctx context.Context, scope Scope, id string, observed time.Time, owner, agentUID string, now time.Time) (Run, error)
 	// FailPendingRun settles an old Pending row only if its admission revision
 	// has not advanced and it has no execution lease.
 	FailPendingRun(ctx context.Context, scope Scope, id string, observed time.Time, olderThan, now time.Time, message string) (Run, bool, error)

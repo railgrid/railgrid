@@ -113,6 +113,29 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 		}
 	})
 
+	t.Run("fresh claim pins legacy Agent and rejects replacement", func(t *testing.T) {
+		seed := leaseTestRun(scope, "legacy-agent-claim", now)
+		seed.Phase = RunPhasePending
+		seed.AgentUID = ""
+		if err := st.SaveRun(ctx, scope, seed); err != nil {
+			t.Fatal(err)
+		}
+		claimed, err := st.ClaimFreshRun(ctx, scope, seed.ID, seed.UpdatedAt, oldOwner, "original-agent", now)
+		if err != nil || claimed.AgentUID != "original-agent" {
+			t.Fatalf("legacy claim did not pin its verified Agent: %+v, %v", claimed, err)
+		}
+		claimed.Phase = RunPhasePending
+		if ok, err := st.SaveRunOwned(ctx, scope, claimed, oldOwner, claimed.Attempt, now); err != nil || !ok {
+			t.Fatalf("returning run to queue: ok=%t err=%v", ok, err)
+		}
+		if ok, err := st.ReleaseRunLease(ctx, scope, seed.ID, oldOwner, claimed.Attempt); err != nil || !ok {
+			t.Fatalf("releasing lease: ok=%t err=%v", ok, err)
+		}
+		if _, err := st.ClaimFreshRun(ctx, scope, seed.ID, claimed.UpdatedAt, newOwner, "replacement-agent", now); !errors.Is(err, ErrRunClaimConflict) {
+			t.Fatalf("replacement Agent claim: %v", err)
+		}
+	})
+
 	t.Run("fresh claim and stale admission settlement race atomically", func(t *testing.T) {
 		seed := leaseTestRun(scope, "fresh-claim-versus-expiry", now)
 		seed.Phase = RunPhasePending
@@ -132,7 +155,7 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, claimErr = st.ClaimFreshRun(ctx, scope, seed.ID, seed.UpdatedAt, newOwner, now)
+			_, claimErr = st.ClaimFreshRun(ctx, scope, seed.ID, seed.UpdatedAt, newOwner, seed.AgentUID, now)
 		}()
 		go func() {
 			defer wg.Done()
@@ -166,7 +189,7 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 			if !settledOK || settled.Phase != RunPhaseFailed || got.Phase != RunPhaseFailed || got.FinishedAt == nil || got.ExecutionOwner != "" || !got.ExecutionLeaseAt.IsZero() {
 				t.Fatalf("stale admission winner left phase=%s owner=%q lease=%v finished=%v settled=%t", got.Phase, got.ExecutionOwner, got.ExecutionLeaseAt, got.FinishedAt, settledOK)
 			}
-			if _, err := st.ClaimFreshRun(ctx, scope, seed.ID, seed.UpdatedAt, newOwner, now.Add(time.Hour)); !errors.Is(err, ErrRunClaimConflict) {
+			if _, err := st.ClaimFreshRun(ctx, scope, seed.ID, seed.UpdatedAt, newOwner, seed.AgentUID, now.Add(time.Hour)); !errors.Is(err, ErrRunClaimConflict) {
 				t.Fatalf("settled admission was revived: %v", err)
 			}
 		}
@@ -190,7 +213,7 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 		if _, ok, err := st.FailPendingRun(ctx, scope, seed.ID, seed.UpdatedAt, now, now.Add(2*time.Second), "duplicate failure"); err != nil || ok {
 			t.Fatalf("stale settlement repeated: settled=%t err=%v", ok, err)
 		}
-		if _, err := st.ClaimFreshRun(ctx, scope, seed.ID, seed.UpdatedAt, newOwner, now.Add(time.Hour)); !errors.Is(err, ErrRunClaimConflict) {
+		if _, err := st.ClaimFreshRun(ctx, scope, seed.ID, seed.UpdatedAt, newOwner, seed.AgentUID, now.Add(time.Hour)); !errors.Is(err, ErrRunClaimConflict) {
 			t.Fatalf("failed admission was revived: %v", err)
 		}
 	})

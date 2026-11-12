@@ -742,3 +742,34 @@ var _ dispatch.Runner = (*parkedCancelDispatcher)(nil)
 var _ dynamic.Interface = (dynamic.Interface)(nil)
 
 func errorsNewParkedCancel(message string) error { return errors.New(message) }
+
+func TestCancelParkedRunWhileLeaseStillHeld(t *testing.T) {
+	ctx := t.Context()
+	now := time.Now().UTC()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "agent"}
+	st := store.NewMemoryStore()
+	s := &Server{store: st, events: newEventBus()}
+	seed := store.Run{ID: "r1", AgentName: scope.AgentName, Phase: store.RunPhaseRunning, CreatedAt: now, UpdatedAt: now}
+	if err := st.SaveRun(ctx, scope, seed); err != nil {
+		t.Fatal(err)
+	}
+	parked, err := st.AcquireRunLease(ctx, scope, seed.ID, "other-pod/execution", seed.Attempt, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked.Phase = store.RunPhasePendingApproval
+	if ok, err := st.SaveRunOwned(ctx, scope, parked, parked.ExecutionOwner, parked.Attempt, now); !ok || err != nil {
+		t.Fatalf("park: %t %v", ok, err)
+	}
+	live, err := s.cancelStoredRun(ctx, nil, identity{orgUUID: scope.OrgUUID, workspaceUUID: scope.WorkspaceUUID, user: "reviewer"}, parked)
+	if live || err != nil {
+		t.Fatalf("cancel: %t %v", live, err)
+	}
+	got, err := st.GetRun(ctx, scope, seed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase != store.RunPhaseAborted {
+		t.Fatalf("cancel reported success but phase is %s and cancelRequested=%t", got.Phase, got.CancelRequested)
+	}
+}

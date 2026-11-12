@@ -220,7 +220,12 @@ func TestPastTheDeadlineTheRunIsReportedNotKilled(t *testing.T) {
 		calls                       int
 	}
 	r := &Reconciler{
-		Now: func() time.Time { return started.Add(time.Hour) },
+		Now:       func() time.Time { return started.Add(time.Hour) },
+		ProcessID: "pod-a",
+		Recover: func(context.Context, string, string, string) error {
+			t.Fatal("a fresh lease should not be recovered")
+			return nil
+		},
 		Stop: func(_ context.Context, clusterID, agentName, runID, reason string) error {
 			got.cluster, got.agent, got.run, got.reason = clusterID, agentName, runID, reason
 			got.calls++
@@ -228,6 +233,8 @@ func TestPastTheDeadlineTheRunIsReportedNotKilled(t *testing.T) {
 		},
 	}
 	object := newRun("r1", func(o *agentsv1alpha1.Run) {
+		o.Status.Owner = "pod-a/execution"
+		o.Status.ClaimedAt = &metav1.Time{Time: r.now().Add(-time.Second)}
 		o.Status.DeadlineAt = &metav1.Time{Time: started.Add(10 * time.Minute)}
 	})
 	c, result := run(t, r, object, newAgent(600))
@@ -238,8 +245,8 @@ func TestPastTheDeadlineTheRunIsReportedNotKilled(t *testing.T) {
 	if !strings.Contains(got.reason, "time limit") {
 		t.Errorf("reason = %q, should name the limit so a reader can tell a deadline from a crash", got.reason)
 	}
-	if result.RequeueAfter != 0 {
-		t.Errorf("a reported timeout requeued after %v; there is nothing left to wait for", result.RequeueAfter)
+	if result.RequeueAfter != ClaimGrace-time.Second {
+		t.Errorf("after requesting stop, requeue = %v, want remaining lease grace", result.RequeueAfter)
 	}
 	after := get(t, c, "r1")
 	if after.Status.Phase != agentsv1alpha1.RunPhaseRunning {

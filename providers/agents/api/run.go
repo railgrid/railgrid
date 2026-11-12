@@ -1222,7 +1222,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 
 	finishFailedTurn := func(cause error) (runResult, error) {
 		phase := store.RunPhaseFailed
-		if out.Status == backend.StatusCancelled {
+		if out.Status == backend.StatusCancelled || errors.Is(cause, store.ErrRunCancellationRequested) {
 			phase = store.RunPhaseAborted
 		}
 		persistCtx, cancelPersist := boundedPersistContext(ctx)
@@ -1277,6 +1277,9 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	if out.Parked != nil {
 		res, parkErr := s.parkRun(ctx, run, sessionID, startedAt, end, tracker, harnessT, out)
 		if parkErr != nil {
+			if errors.Is(parkErr, store.ErrRunLeaseLost) && !errors.Is(parkErr, store.ErrRunCancellationRequested) {
+				return res, parkErr
+			}
 			return finishFailedTurn(parkErr)
 		}
 		return res, nil
@@ -1410,6 +1413,16 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 	if err := s.saveRunForExecution(persistCtx, scope, stored, run.ExecutionOwner, run.Attempt); err != nil {
 		cause := fmt.Errorf("saving run %s's approval checkpoint: %w", runID, err)
 		if errors.Is(err, store.ErrRunLeaseLost) {
+			// A rejected write can mean cancellation or a new owner. Only
+			// clean up the remote attempt when this execution was cancelled.
+			latest, readErr := s.store.GetRun(persistCtx, scope, runID)
+			if readErr == nil && latest.CancelRequested && latest.ExecutionOwner == run.ExecutionOwner && latest.Attempt == run.Attempt {
+				if cleanupErr := s.cleanupFailedPark(persistCtx, run, sessionID, harnessT, requestID); cleanupErr != nil {
+					err = errors.Join(err, cleanupErr)
+				} else {
+					err = store.ErrRunCancellationRequested
+				}
+			}
 			return runResult{RunID: runID, Phase: store.RunPhaseRunning}, err
 		}
 		return runResult{}, s.failPark(ctx, run, sessionID, harnessT, requestID, cause)
@@ -1436,11 +1449,16 @@ func (s *Server) failPark(ctx context.Context, run taskRun, sessionID string, ha
 	}
 	cleanupCtx, cancel := boundedPersistContext(ctx)
 	defer cancel()
+	return errors.Join(cause, s.cleanupFailedPark(cleanupCtx, run, sessionID, harnessT, requestID))
+}
+
+func (s *Server) cleanupFailedPark(cleanupCtx context.Context, run taskRun, sessionID string, harnessT *harnessTurn, requestID string) error {
+	var cleanupErr error
 	if requestID != "" {
 		wsScope := store.Scope{OrgUUID: run.Scope.OrgUUID, WorkspaceUUID: run.Scope.WorkspaceUUID}
 		item, err := s.store.GetInboxItem(cleanupCtx, wsScope, requestID)
 		if err != nil {
-			cause = errors.Join(cause, fmt.Errorf("checking inbox item %s after park failure: %w", requestID, err))
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("checking inbox item %s after park failure: %w", requestID, err))
 		} else if item.RunID == run.RunID && item.AgentName == run.Agent.Name && item.State == store.InboxStatePending {
 			state, response := store.InboxStateDenied, "The run could not save its checkpoint and was stopped."
 			if item.Kind == store.InboxKindQuestion {
@@ -1448,7 +1466,7 @@ func (s *Server) failPark(ctx context.Context, run taskRun, sessionID string, ha
 			}
 			if _, err := s.store.ResolveInboxItem(cleanupCtx, wsScope, requestID, state, response, time.Now().UTC(), store.InboxResolution{PendingOnly: true}); err != nil {
 				if !errors.Is(err, store.ErrInboxAlreadyResolved) {
-					cause = errors.Join(cause, fmt.Errorf("closing inbox item %s after park failure: %w", requestID, err))
+					cleanupErr = errors.Join(cleanupErr, fmt.Errorf("closing inbox item %s after park failure: %w", requestID, err))
 				}
 			} else {
 				s.events.publish(wsScope, "inbox", map[string]any{
@@ -1458,9 +1476,9 @@ func (s *Server) failPark(ctx context.Context, run taskRun, sessionID string, ha
 		}
 	}
 	if err := stopHarnessTurn(cleanupCtx, harnessT, &backend.Run{ID: run.RunID, SessionID: sessionID, Agent: run.Agent.Name, Trigger: run.Trigger}); err != nil {
-		cause = errors.Join(cause, fmt.Errorf("stopping the harness after the run could not be parked: %w", err))
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("stopping the harness after the run could not be parked: %w", err))
 	}
-	return cause
+	return cleanupErr
 }
 
 // executeTask runs a fresh turn: the lifecycle with nothing to continue from.
@@ -1551,7 +1569,7 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 	stopExecutionLease := func() {}
 	phase := store.RunPhasePending
 	if s.cfg.ProcessID != "" {
-		started, leaseCtx, stop, err := s.claimFreshRunLease(ctx, scope, runID)
+		started, leaseCtx, stop, err := s.claimFreshRunLease(ctx, scope, runID, string(agent.UID))
 		if err != nil {
 			return runAdmission{}, fmt.Errorf("claiming the admitted run for execution: %w", err)
 		}
