@@ -19,7 +19,10 @@
 # after an org member comments /ok-to-test: read the diff first, this file and
 # hack/ci/prow/ included.
 #
-# Every job has a CPU limit equal to its request, and a memory limit. Do not
+# Every job has a CPU limit equal to its request, and a memory limit. For the
+# kind suites the limits also cover everything Docker starts inside the pod
+# (image builds, kind nodes): runner.sh parents dockerd under the pod's own
+# cgroup. 4 CPUs is what a GitHub-hosted runner has. Do not
 # remove them: the nodes also run the dev platform and the cluster's single
 # CoreDNS, and on the first run unlimited jobs took 99% of two nodes' CPU and
 # DNS timed out for every pod, the jobs' own included.
@@ -37,7 +40,7 @@ presubmits:
       timeout: 25m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -61,7 +64,7 @@ presubmits:
       timeout: 30m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -85,7 +88,7 @@ presubmits:
       timeout: 30m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -109,7 +112,7 @@ presubmits:
       timeout: 45m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -133,7 +136,7 @@ presubmits:
       timeout: 75m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -157,7 +160,7 @@ presubmits:
       timeout: 45m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -181,7 +184,7 @@ presubmits:
       timeout: 60m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -207,7 +210,7 @@ presubmits:
       timeout: 80m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -221,7 +224,7 @@ presubmits:
               memory: 6Gi
             limits:
               cpu: "4"
-              memory: 8Gi
+              memory: 10Gi
 
   # kind: SSH server-mode suite (e2e.yaml `e2e-ssh`).
   - name: pull-railgrid-e2e-ssh
@@ -235,7 +238,7 @@ presubmits:
       timeout: 55m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -249,7 +252,7 @@ presubmits:
               memory: 6Gi
             limits:
               cpu: "4"
-              memory: 8Gi
+              memory: 10Gi
 
   # kind: OIDC suite with Dex (e2e.yaml `e2e-oidc`).
   - name: pull-railgrid-e2e-oidc
@@ -263,7 +266,7 @@ presubmits:
       timeout: 60m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -277,7 +280,7 @@ presubmits:
               memory: 6Gi
             limits:
               cpu: "4"
-              memory: 8Gi
+              memory: 10Gi
 
   # kind: kcp via Helm (e2e.yaml `e2e-external-kcp`).
   - name: pull-railgrid-e2e-external-kcp
@@ -291,7 +294,7 @@ presubmits:
       timeout: 110m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -305,7 +308,7 @@ presubmits:
               memory: 6Gi
             limits:
               cpu: "4"
-              memory: 8Gi
+              memory: 10Gi
 
   # kind: edges data-plane connectivity (e2e.yaml `e2e-edges-connectivity`).
   - name: pull-railgrid-e2e-edges-connectivity
@@ -319,7 +322,7 @@ presubmits:
       timeout: 45m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -333,7 +336,7 @@ presubmits:
               memory: 6Gi
             limits:
               cpu: "4"
-              memory: 8Gi
+              memory: 10Gi
 
   # kind: railgrid CLI suite (e2e.yaml `e2e-cli`).
   - name: pull-railgrid-e2e-cli
@@ -347,7 +350,7 @@ presubmits:
       timeout: 45m
     spec:
       containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v2
+        - image: ghcr.io/railgrid/railgrid-ci:v3
           command:
             - runner.sh
           args:
@@ -361,4 +364,4 @@ presubmits:
               memory: 6Gi
             limits:
               cpu: "4"
-              memory: 8Gi
+              memory: 10Gi
