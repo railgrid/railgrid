@@ -1,0 +1,320 @@
+# Prow jobs for this repository, served at https://prow-dev.railgrid.ai.
+# Prow reads this file from the pull request's own HEAD, so a PR that changes
+# it is tested with its own version. Runbook: hack/ci/prow/README.md.
+#
+# Every job runs `hack/ci/prow/job.sh <job>` in the CI image
+# (hack/ci/prow/image/, tag = hack/ci/prow/image/VERSION). job.sh holds the
+# commands and mirrors the GitHub Actions jobs named in each comment.
+#
+# `optional: true` everywhere: these jobs currently SHADOW GitHub Actions. A
+# red Prow job is reported on the PR but blocks nothing. Remove `optional`
+# job by job as each one proves itself, then retire its Actions counterpart.
+#
+# Docs-only PRs (docs/ and *.md) start only `contracts`; that is the `docs`
+# selection mode of hack/ci/README.md. The provider-ui mode is decided inside
+# job.sh, which exits 0 for jobs the mode excludes.
+#
+# The kind suites carry the label preset-dind-enabled and run PRIVILEGED on
+# the shared cluster nodes. Prow tests a PR from outside the railgrid org only
+# after an org member comments /ok-to-test: read the diff first, this file and
+# hack/ci/prow/ included.
+#
+# Periodics cannot be defined here; they live in railgrid/ops
+# (cicd/apps/railgrid-dev/prow/config.yaml).
+presubmits:
+  # Repository contracts; runs on every PR, docs-only ones included (ci.yaml `contracts`).
+  - name: pull-railgrid-contracts
+    always_run: true
+    optional: true
+    branches:
+      - ^main$
+    decoration_config:
+      timeout: 25m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - contracts
+          resources:
+            requests:
+              cpu: "2"
+              memory: 3Gi
+
+  # make build + verify-codegen (ci.yaml `build`, `verify-codegen`).
+  - name: pull-railgrid-build
+    skip_if_only_changed: '^docs/|\.md$'
+    optional: true
+    branches:
+      - ^main$
+    decoration_config:
+      timeout: 30m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - build
+          resources:
+            requests:
+              cpu: "4"
+              memory: 4Gi
+
+  # golangci-lint, root module and the App Studio harness (ci.yaml `lint`).
+  - name: pull-railgrid-lint
+    skip_if_only_changed: '^docs/|\.md$'
+    optional: true
+    branches:
+      - ^main$
+    decoration_config:
+      timeout: 30m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - lint
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
+
+  # Root module tests under -race (ci.yaml `test-modules`, module `.`).
+  - name: pull-railgrid-test
+    skip_if_only_changed: '^docs/|\.md$'
+    optional: true
+    branches:
+      - ^main$
+    decoration_config:
+      timeout: 45m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - test
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
+
+  # Every standalone module, then the App Studio store on PostgreSQL (ci.yaml `test-modules`, `test-app-studio-postgres`).
+  - name: pull-railgrid-test-providers
+    skip_if_only_changed: '^docs/|\.md$'
+    optional: true
+    branches:
+      - ^main$
+    decoration_config:
+      timeout: 75m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - test-providers
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
+
+  # Root portal and the selected provider portals (ci.yaml `portal`, `provider-portals`).
+  - name: pull-railgrid-portals
+    skip_if_only_changed: '^docs/|\.md$'
+    optional: true
+    branches:
+      - ^main$
+    decoration_config:
+      timeout: 45m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - portals
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+
+  # Provider suites on embedded kcp, no Docker (e2e.yaml `e2e-providers`).
+  - name: pull-railgrid-e2e-providers
+    skip_if_only_changed: '^docs/|\.md$'
+    optional: true
+    branches:
+      - ^main$
+    decoration_config:
+      timeout: 60m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - e2e-providers
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
+
+  # kind: standalone suite (e2e.yaml `e2e-standalone`).
+  - name: pull-railgrid-e2e-standalone
+    skip_if_only_changed: '^docs/|\.md$'
+    optional: true
+    branches:
+      - ^main$
+    labels:
+      preset-dind-enabled: "true"
+    decoration_config:
+      timeout: 80m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - e2e-standalone
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
+
+  # kind: SSH server-mode suite (e2e.yaml `e2e-ssh`).
+  - name: pull-railgrid-e2e-ssh
+    skip_if_only_changed: '^docs/|\.md$'
+    optional: true
+    branches:
+      - ^main$
+    labels:
+      preset-dind-enabled: "true"
+    decoration_config:
+      timeout: 55m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - e2e-ssh
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
+
+  # kind: OIDC suite with Dex (e2e.yaml `e2e-oidc`).
+  - name: pull-railgrid-e2e-oidc
+    skip_if_only_changed: '^docs/|\.md$'
+    optional: true
+    branches:
+      - ^main$
+    labels:
+      preset-dind-enabled: "true"
+    decoration_config:
+      timeout: 60m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - e2e-oidc
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
+
+  # kind: kcp via Helm (e2e.yaml `e2e-external-kcp`).
+  - name: pull-railgrid-e2e-external-kcp
+    skip_if_only_changed: '^docs/|\.md$'
+    optional: true
+    branches:
+      - ^main$
+    labels:
+      preset-dind-enabled: "true"
+    decoration_config:
+      timeout: 110m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - e2e-external-kcp
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
+
+  # kind: edges data-plane connectivity (e2e.yaml `e2e-edges-connectivity`).
+  - name: pull-railgrid-e2e-edges-connectivity
+    skip_if_only_changed: '^docs/|\.md$'
+    optional: true
+    branches:
+      - ^main$
+    labels:
+      preset-dind-enabled: "true"
+    decoration_config:
+      timeout: 45m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - e2e-edges-connectivity
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
+
+  # kind: railgrid CLI suite (e2e.yaml `e2e-cli`).
+  - name: pull-railgrid-e2e-cli
+    skip_if_only_changed: '^docs/|\.md$'
+    optional: true
+    branches:
+      - ^main$
+    labels:
+      preset-dind-enabled: "true"
+    decoration_config:
+      timeout: 45m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v1
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - e2e-cli
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
