@@ -33,13 +33,13 @@ func testQuestionResolution(t *testing.T, st Store, scope Scope) {
 	if err := st.SaveRun(ctx, scope, run); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimRun(ctx, scope, run.ID, "", now, 0, "old-question"); !errors.Is(err, ErrRunClaimConflict) {
+	if _, err := st.ClaimRun(ctx, scope, run.ID, "stale", now, "old-question"); !errors.Is(err, ErrRunClaimConflict) {
 		t.Fatalf("claim on a different question: %v", err)
 	}
-	if claimed, err := st.ClaimRun(ctx, scope, run.ID, "", now, 0, "question"); err != nil || claimed.Phase != RunPhaseRunning {
+	if claimed, err := st.ClaimRun(ctx, scope, run.ID, "winner", now, "question"); err != nil || claimed.Phase != RunPhaseRunning {
 		t.Fatalf("claim on the parked question: phase=%s err=%v", claimed.Phase, err)
 	}
-	if _, err := st.ClaimRun(ctx, scope, run.ID, "", now, 0, "question"); !errors.Is(err, ErrRunClaimConflict) {
+	if _, err := st.ClaimRun(ctx, scope, run.ID, "loser", now, "question"); !errors.Is(err, ErrRunClaimConflict) {
 		t.Fatalf("duplicate claim: %v", err)
 	}
 

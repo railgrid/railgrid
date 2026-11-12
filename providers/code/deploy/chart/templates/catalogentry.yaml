@@ -43,24 +43,11 @@ data:
       export:
         name: "code.providers.railgrid.ai"
         resources:
-          - name: githubevents
-            apiVersion: code.railgrid.ai/v1alpha1
-            kind: GitHubEvent
-            verbs:
-              - name: context
-                description: Verify a signed forge receipt and observe current actor permissions.
-                readOnly: true
-          - name: pullrequests
-            apiVersion: code.railgrid.ai/v1alpha1
-            kind: PullRequest
-            verbs:
-              - name: operate
-                description: Observe or publish against the admitted PR and its exact expected head.
           - name: repositories
             apiVersion: code.railgrid.ai/v1alpha1
             kind: Repository
-            # Uncatalogued verbs are served by the same actions handler as the catalogued actions.
-            # stage-snapshot and stage-commit-bundle
+            # Two verbs that are NOT actions. stage-snapshot and stage-commit-bundle
+            # are served by the same actions handler as the catalogued actions
             # below, at the same kcp custom-subresource path
             # (/clusters/{id}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/{verb}),
             # but their bodies (a 25 MiB git bundle, a 48 MiB source tree) cannot be
@@ -71,19 +58,15 @@ data:
             # Absent from actions is not the same as absent from the CatalogEntry.
             # The hub's identity policy (pkg/hub/identity/policy.go, clause C) mints
             # `create` on {resource}/{verb} only for a coordinate the owning
-            # provider DECLARES — as an action OR as a verb. Undeclared, these verbs
+            # provider DECLARES — as an action OR as a verb. Undeclared, these two
             # were ungrantable: no consumer identity (an App Studio project, a
-            # trusted coordinator) could ever be given them, so only a caller whose
+            # factory runner) could ever be given them, so only a caller whose
             # workspace RBAC already allowed them could stage an upload at all.
             # Declaring them grants nothing and serves nothing; it makes the
             # coordinate machine-readable so it CAN be granted. kcp authorizes the
             # coordinate and actions/server.go gates on visibility exactly as for a
             # catalogued action.
             verbs:
-              - name: authorize
-                description: "Mint, scope, or revoke Code-signed publication authority for a pinned PullRequest on behalf of a trusted consumer."
-                stream: false
-                readOnly: false
               - name: stage-snapshot
                 description: "Stage a git bundle and return the opaque bundleRef that the catalogued prepare-snapshot and publish-snapshot then name. Uncatalogued large upload; input is not schema-declared, see docs/provider-actions.md §Uncatalogued large-upload verbs."
                 stream: false

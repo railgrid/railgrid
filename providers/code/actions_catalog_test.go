@@ -76,7 +76,7 @@ func TestCodeActionsCatalogParityAndDigests(t *testing.T) {
 		t.Fatalf("unexpected export name %v", name)
 	}
 	resources, ok := export["resources"].([]any)
-	if !ok || len(resources) != 4 {
+	if !ok || len(resources) != 2 {
 		t.Fatalf("unexpected Code export resources: %#v", export["resources"])
 	}
 
@@ -89,10 +89,6 @@ func TestCodeActionsCatalogParityAndDigests(t *testing.T) {
 		// under a grant nobody can be given. The apiVersion and kind are
 		// declared once, here, for every verb and action below.
 		switch resource["name"] {
-		case "githubevents", "pullrequests":
-			if len(resource["verbs"].([]any)) != 1 {
-				t.Fatal("missing native forge capability")
-			}
 		case "repositories":
 			if resource["kind"] != "Repository" {
 				t.Fatalf("repositories is bound to kind %v", resource["kind"])

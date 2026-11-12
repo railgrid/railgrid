@@ -16,13 +16,10 @@ import (
 
 	"time"
 
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"
-	"github.com/railgrid/provider-code/githubworkflow"
 	"github.com/railgrid/provider-code/snapshotstore"
 )
 
@@ -169,96 +166,6 @@ func TestOpenAdoptsAnExistingPullRequest(t *testing.T) {
 	}
 }
 
-type revocableCommandVerifier struct {
-	revoked bool
-	checks  int
-}
-
-func (v *revocableCommandVerifier) CheckPublication(context.Context, string, *codev1alpha1.PullRequest) error {
-	v.checks++
-	if v.revoked {
-		return errors.New("task authorization was revoked")
-	}
-	return nil
-}
-
-func (*revocableCommandVerifier) ReadObservation(context.Context, string, *codev1alpha1.PullRequest) (githubworkflow.Observation, error) {
-	return githubworkflow.Observation{}, nil
-}
-
-type revokeAfterPushForge struct {
-	*reconcileImageForge
-	afterPush func()
-}
-
-func (f *revokeAfterPushForge) PublishSnapshotGuarded(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, input backend.Snapshot, branch, expected string, guard backend.SnapshotPublicationGuard) error {
-	if err := guard(ctx); err != nil {
-		return err
-	}
-	if err := f.PublishSnapshot(ctx, conn, cred, repo, input, branch, expected); err != nil {
-		return err
-	}
-	if f.afterPush != nil {
-		f.afterPush()
-	}
-	return nil
-}
-
-func TestReconcileRechecksCommandBeforeOpeningAfterConcurrentRevoke(t *testing.T) {
-	r, c, host, req, pr := publicationFixture(t)
-	ref := stage(t, r.Snapshots, "tenant", backend.Snapshot{BaseCommit: headB, Commit: headA, Tree: tree, Bundle: []byte("bundle")})
-	pr.Spec.DesiredHead = &codev1alpha1.PullRequestHead{Commit: headA, BaseCommit: headB, Tree: tree, BundleRef: ref}
-	pr.Spec.Command = &codev1alpha1.PullRequestCommand{Task: &codev1alpha1.PullRequestTaskAuthorization{SourceUID: "task-uid"}}
-	pr.Generation++
-	if err := c.Update(t.Context(), pr); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Get(t.Context(), types.NamespacedName{Name: pr.Name}, pr); err != nil {
-		t.Fatal(err)
-	}
-	pr.Status.Head = ""
-	if err := c.Status().Update(t.Context(), pr); err != nil {
-		t.Fatal(err)
-	}
-
-	verifier := &revocableCommandVerifier{}
-	r.Commands = verifier
-	wrapped := &revokeAfterPushForge{reconcileImageForge: host}
-	wrapped.afterPush = func() {
-		verifier.revoked = true
-		current := &codev1alpha1.PullRequest{}
-		if err := c.Get(t.Context(), types.NamespacedName{Name: pr.Name}, current); err != nil {
-			t.Fatal(err)
-		}
-		current.Spec.Command = nil
-		current.Spec.DesiredHead = nil
-		current.Generation++
-		if err := c.Update(t.Context(), current); err != nil {
-			t.Fatal(err)
-		}
-	}
-	registry := backend.NewRegistry()
-	if err := registry.Register(wrapped); err != nil {
-		t.Fatal(err)
-	}
-	r.Backends = registry
-
-	_, _ = r.Reconcile(t.Context(), req)
-	if verifier.checks < 3 {
-		t.Fatalf("publication grant checks = %d, want pre-push, guarded push and pre-open checks", verifier.checks)
-	}
-	if wrapped.created != 0 {
-		t.Fatal("stale reconciliation opened a GitHub PR after the command grant was revoked")
-	}
-	current := &codev1alpha1.PullRequest{}
-	if err := c.Get(t.Context(), types.NamespacedName{Name: pr.Name}, current); err != nil {
-		t.Fatal(err)
-	}
-	if current.Spec.Command != nil || current.Spec.DesiredHead != nil {
-		t.Fatal("simulated revocation did not clear the command and desired head")
-	}
-}
-
 // The conversation is read into the status as the forge reports it — who
 // wrote it, what kind of actor they are, against which head — bounded, and
 // never interpreted.
@@ -301,55 +208,5 @@ func TestObserveIntervalDefaultsAndFloors(t *testing.T) {
 		if got := observeInterval(pr); got != tc.want {
 			t.Errorf("%s: observeInterval = %s, want %s", name, got, tc.want)
 		}
-	}
-}
-
-func TestAdvanceDoesNotWeakenApprovedParentAfterHeadObservation(t *testing.T) {
-	r := &Reconciler{}
-	latest := strings.Repeat("d", 40)
-	pr := resource(nil)
-	pr.Status.Number = 17
-	pr.Status.Head = latest
-	desired := &codev1alpha1.PullRequestHead{Commit: headA, BaseCommit: headB, Tree: tree}
-	forge := &fakeForge{branch: latest}
-	var permanent permanentError
-	if err := r.advance(context.Background(), forge, nil, backend.Credential{}, nil, "cluster", pr, desired); !errors.As(err, &permanent) {
-		t.Fatalf("refreshed head weakened expected-parent check: %v", err)
-	}
-	if len(forge.published) != 0 {
-		t.Fatal("published over an unexpected commit")
-	}
-}
-
-// A PullRequest without a verified command cannot adopt a forge PR by number:
-// adoption would make the existing branch's head this resource's to move.
-func TestNumberAdoptionRequiresAVerifiedCommand(t *testing.T) {
-	r, c, host, req, pr := publicationFixture(t)
-	// Someone else's open PR on an existing branch.
-	host.pr = &backend.PullRequest{Number: 42, Repository: "acme/product", HeadRepository: "acme/product", Head: pr.Spec.Branch, Base: pr.Spec.Base, Commit: headB, State: "open"}
-	pr.Spec.Number = 42
-	pr.Spec.DesiredHead = nil
-	pr.Spec.AttachmentRef = ""
-	pr.Generation++
-	if err := c.Update(t.Context(), pr); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Get(t.Context(), types.NamespacedName{Name: pr.Name}, pr); err != nil {
-		t.Fatal(err)
-	}
-	pr.Status.Head, pr.Status.Number = "", 0
-	if err := c.Status().Update(t.Context(), pr); err != nil {
-		t.Fatal(err)
-	}
-	_, _ = r.Reconcile(t.Context(), req)
-	got := &codev1alpha1.PullRequest{}
-	if err := c.Get(t.Context(), types.NamespacedName{Name: pr.Name}, got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Status.Number != 0 || got.Status.Head != "" || got.Status.Phase != codev1alpha1.PullRequestPhaseFailed {
-		t.Fatalf("adopted without a command: number=%d head=%q phase=%s", got.Status.Number, got.Status.Head, got.Status.Phase)
-	}
-	if cond := apimeta.FindStatusCondition(got.Status.Conditions, codev1alpha1.ConditionReady); cond == nil || !strings.Contains(cond.Message, "only for a verified command") {
-		t.Fatalf("missing the adoption refusal: %+v", cond)
 	}
 }

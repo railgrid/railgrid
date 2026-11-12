@@ -64,7 +64,6 @@ package run
 
 import (
 	"context"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -124,8 +123,6 @@ const (
 // unable to tell a deadline from a crash.
 const deadlineExceededReason = "the run exceeded its time limit (the agent's spec.limits.timeoutSeconds) and was stopped"
 
-const descendantReconcileRetry = 30 * time.Second
-
 // Reconciler enforces run deadlines and purges a run's store data on delete.
 type Reconciler struct {
 	Manager mcmanager.Manager
@@ -138,21 +135,6 @@ type Reconciler struct {
 	// nil (no store configured, or the dev in-memory path) disables the
 	// finalizer entirely rather than adding one nothing would ever clear.
 	PurgeData func(ctx context.Context, clusterID, agentName, runID string) error
-
-	// ReconcileDescendants cancels child Runs after this Run becomes terminal.
-	// A failed or still-running child is retried on a timer, including after a
-	// process restart or when another replica performed the parent transition.
-	ReconcileDescendants func(ctx context.Context, clusterID, agentName, runID string) error
-
-	// ReconcileParent cancels an active child when its parent disappeared or
-	// became terminal. It is retried on a timer if an external harness cannot be
-	// stopped on the first attempt.
-	ReconcileParent func(ctx context.Context, clusterID, agentName, runID string) error
-
-	// ReconcileParked checks that a Run projected as waiting still has that
-	// phase in the store. A process may die after claiming an approval but
-	// before projecting its Running status.
-	ReconcileParked func(ctx context.Context, clusterID, agentName, runID string) error
 
 	// Dispatch hands a claimed run to the provider to execute. The reconciler has
 	// decided WHEN; everything about how a run executes — the virtual-workspace
@@ -206,14 +188,12 @@ func (r *Reconciler) now() time.Time {
 // Runs only — deliberately. An Agent's timeout changing mid-run does not move
 // a deadline that is already written: the run was admitted under the limit in
 // force when it started, and re-deriving it would let an edit shorten work
-// already in flight. The second Run watch maps a child that settles to its
-// parent, which may be waiting on that child to finish its cancellation.
+// already in flight.
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("agents-run").
 		For(&agentsv1alpha1.Run{}).
-		Watches(&agentsv1alpha1.Run{}, parentOfSettledChild(), mcbuilder.WithPredicates(childSettled)).
 		Complete(r)
 }
 
@@ -250,22 +230,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		// the fresh copy rather than the stale one in hand.
 		return ctrl.Result{}, nil
 	}
-	if r.ReconcileParent != nil && object.Spec.ParentRunRef != "" && !isTerminalPhase(object.Status.Phase) {
-		if err := r.ReconcileParent(ctx, clusterID, object.Spec.AgentRef, object.Name); err != nil {
-			klog.FromContext(ctx).Error(err, "reconciling child Run parent", "run", object.Name, "parent", object.Spec.ParentRunRef, "cluster", clusterID)
-			return ctrl.Result{RequeueAfter: descendantReconcileRetry}, nil
-		}
-	}
-	if r.ReconcileDescendants != nil && isTerminalPhase(object.Status.Phase) {
-		if err := r.ReconcileDescendants(ctx, clusterID, object.Spec.AgentRef, object.Name); err != nil {
-			if onlyAwaitingChildren(err) {
-				// Each child that settles enqueues this Run (parentOfSettledChild).
-				return ctrl.Result{}, nil
-			}
-			klog.FromContext(ctx).Error(err, "reconciling terminal run descendants", "run", object.Name, "cluster", clusterID)
-			return ctrl.Result{RequeueAfter: descendantReconcileRetry}, nil
-		}
-	}
 
 	if object.Status.Attempt >= MaxClaims && !agentsv1alpha1.RunIsSettled(object.Status.Phase) && object.Status.Phase == agentsv1alpha1.RunPhasePending {
 		// Picked up its last permitted time and still not started. Close it
@@ -290,38 +254,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{RequeueAfter: requeue}, nil
 	}
 
-	stranded, recoveryWait := r.stranded(&object)
-	if object.Status.Phase == agentsv1alpha1.RunPhasePendingApproval && r.ReconcileParked != nil {
-		if err := r.ReconcileParked(ctx, clusterID, object.Spec.AgentRef, object.Name); err != nil {
-			klog.FromContext(ctx).Error(err, "checking parked Run state", "run", object.Name, "cluster", clusterID)
-			return ctrl.Result{RequeueAfter: purgeRetryInterval}, nil
-		}
-		// Even when the row is still parked, recheck after a lease window:
-		// an unprojected approval claim does not generate a watch event.
-		recoveryWait = ClaimGrace
-	}
-	if stranded {
+	if stranded, requeue := r.stranded(&object); stranded {
 		if err := r.Recover(ctx, clusterID, object.Spec.AgentRef, object.Name); err != nil {
 			klog.FromContext(ctx).Error(err, "recovering a stranded run", "run", object.Name, "cluster", clusterID)
 			return ctrl.Result{RequeueAfter: purgeRetryInterval}, nil
 		}
 		return ctrl.Result{}, nil
+	} else if requeue > 0 {
+		return ctrl.Result{RequeueAfter: requeue}, nil
 	}
 
-	result, err := r.enforceDeadline(ctx, c, &object, clusterID)
-	if err == nil && recoveryWait > 0 && (result.RequeueAfter == 0 || recoveryWait < result.RequeueAfter) {
-		result.RequeueAfter = recoveryWait
-	}
-	return result, err
-}
-
-func isTerminalPhase(phase string) bool {
-	switch phase {
-	case agentsv1alpha1.RunPhaseSucceeded, agentsv1alpha1.RunPhaseFailed, agentsv1alpha1.RunPhaseAborted:
-		return true
-	default:
-		return false
-	}
+	return r.enforceDeadline(ctx, c, &object, clusterID)
 }
 
 // UnattendedKinds are the delivery kinds this reconciler executes: work with
@@ -365,7 +308,7 @@ func (r *Reconciler) claimable(object *agentsv1alpha1.Run) (bool, time.Duration)
 	if object.Status.Owner == "" {
 		return true, 0
 	}
-	if ExecutionOwnerBelongsToProcess(object.Status.Owner, r.ProcessID) {
+	if object.Status.Owner == r.ProcessID {
 		// Our own claim. The dispatch already happened; re-running it because
 		// the object was re-delivered is exactly the double execution the
 		// claim exists to prevent.
@@ -386,65 +329,31 @@ func (r *Reconciler) claimable(object *agentsv1alpha1.Run) (bool, time.Duration)
 // stranded reports whether a run was executing on a process that is gone, and
 // otherwise how long to wait before asking again.
 //
-// "Gone" is inferred, not observed. The persisted owner and heartbeat identify
-// which process last held the lease; the grace separates an expired lease from
-// a fresh claim, and the provider's store CAS is the final authority.
+// "Gone" is inferred, not observed, and the inference is only sound because
+// exactly one process reconciles: an owner that is not this one, on a run that
+// has not settled, is a previous leader. The grace is what separates that from
+// a claim written moments ago by the leader this process just succeeded.
 func (r *Reconciler) stranded(object *agentsv1alpha1.Run) (bool, time.Duration) {
 	if r.Recover == nil || r.ProcessID == "" {
 		return false, 0
 	}
-	// Unattended Pending runs are handled by claimable above. An attended
-	// Pending run has no controller claim path; after ClaimGrace its API starter
-	// is presumed gone and the store recovery CAS either sees Running or closes
-	// the untouched admission.
-	if object.Status.Phase == "" || agentsv1alpha1.RunIsSettled(object.Status.Phase) {
+	// Pending is the claim path's business; settled runs are nobody's.
+	if object.Status.Phase == "" || object.Status.Phase == agentsv1alpha1.RunPhasePending ||
+		agentsv1alpha1.RunIsSettled(object.Status.Phase) {
 		return false, 0
 	}
-	if object.Status.Phase == agentsv1alpha1.RunPhasePending && object.Spec.Delivery != nil && UnattendedKinds[object.Spec.Delivery.Kind] {
+	if object.Status.Owner == "" || object.Status.Owner == r.ProcessID {
+		// Unowned in-flight work predates the claim (or this process is doing
+		// it). Either way, the deadline is what bounds it.
 		return false, 0
 	}
-	claimedAt := object.Status.ClaimedAt
-	if ExecutionOwnerBelongsToProcess(object.Status.Owner, r.ProcessID) {
-		// A fresh heartbeat means this process still owns the execution. If the
-		// heartbeat has expired, the local executor may have exited without a
-		// terminal write; ask the provider to race the same store CAS used for a
-		// remote owner. A still-live lease makes that hook return a bounded retry.
-		if claimedAt == nil {
-			return false, ClaimGrace
-		}
-		if held := r.now().Sub(claimedAt.Time); held < ClaimGrace {
-			return false, ClaimGrace - held
-		}
-		return true, 0
-	}
-	if object.Status.Owner == "" {
-		// Older API-started runs did not have an owner claim at all. Use their
-		// durable start time (or the Run object's creation time if status was
-		// never projected) to bound that legacy state. The store's recovery CAS
-		// still decides whether a fresh execution lease can be transferred.
-		if object.Status.Phase == agentsv1alpha1.RunPhasePending {
-			claimedAt = nil
-		} else {
-			claimedAt = object.Status.StartedAt
-		}
-		if claimedAt == nil && !object.CreationTimestamp.IsZero() {
-			created := object.CreationTimestamp
-			claimedAt = &created
-		}
-	}
-	if claimedAt == nil {
+	if object.Status.ClaimedAt == nil {
 		return false, ClaimGrace
 	}
-	if held := r.now().Sub(claimedAt.Time); held < ClaimGrace {
+	if held := r.now().Sub(object.Status.ClaimedAt.Time); held < ClaimGrace {
 		return false, ClaimGrace - held
 	}
 	return true, 0
-}
-
-// ExecutionOwnerBelongsToProcess reports whether an execution owner was minted
-// by processID: the bare process ID, or "<processID>/<incarnation>".
-func ExecutionOwnerBelongsToProcess(owner, processID string) bool {
-	return owner == processID || processID != "" && strings.HasPrefix(owner, processID+"/")
 }
 
 // claimAndDispatch takes the run and hands it to the provider to execute.
@@ -549,7 +458,7 @@ func (r *Reconciler) handBack(ctx context.Context, c client.Client, object *agen
 		if gerr := c.Get(ctx, client.ObjectKeyFromObject(object), &fresh); gerr != nil {
 			return client.IgnoreNotFound(gerr)
 		}
-		if !ExecutionOwnerBelongsToProcess(fresh.Status.Owner, r.ProcessID) || fresh.Status.Phase != agentsv1alpha1.RunPhasePending {
+		if fresh.Status.Owner != r.ProcessID || fresh.Status.Phase != agentsv1alpha1.RunPhasePending {
 			// Somebody moved it — cancelled, or executing after all. Not ours
 			// to hand back.
 			return nil
@@ -687,14 +596,6 @@ func (r *Reconciler) enforceDeadline(ctx context.Context, c client.Client, objec
 	return ctrl.Result{}, nil
 }
 
-// AgentRunTimeout is the controller's bounded execution window for an Agent.
-func AgentRunTimeout(seconds int32) time.Duration {
-	if seconds <= 0 {
-		return DefaultTimeout
-	}
-	return min(time.Duration(seconds)*time.Second, MaxTimeout)
-}
-
 // deadlineFor is startedAt plus the agent's per-run limit.
 //
 // The limit is read from the Agent at the moment the run starts and then
@@ -707,7 +608,9 @@ func (r *Reconciler) deadlineFor(ctx context.Context, c client.Client, object *a
 	var agent agentsv1alpha1.Agent
 	switch err := c.Get(ctx, client.ObjectKey{Name: object.Spec.AgentRef}, &agent); {
 	case err == nil:
-		timeout = AgentRunTimeout(agent.Spec.Limits.TimeoutSeconds)
+		if seconds := agent.Spec.Limits.TimeoutSeconds; seconds > 0 {
+			timeout = min(time.Duration(seconds)*time.Second, MaxTimeout)
+		}
 	case apierrors.IsNotFound(err):
 		// The agent was deleted while its run was in flight. The run still gets
 		// a deadline; garbage collection of the object is a separate story.

@@ -20,7 +20,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -59,34 +58,6 @@ func TestRepositoryCleanupUsesApprovedConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "cleanup-marker")); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestRepositoryHookRefusesTrackedDiagnosticPath(t *testing.T) {
-	dir, _ := cleanupSource(t)
-	path := filepath.Join(dir, ".railgrid-cleanup.log")
-	if err := os.WriteFile(path, []byte("tracked source"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{{"add", ".railgrid-cleanup.log"}, {"-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "tracked collision"}} {
-		if _, err := gitOutput(t.Context(), dir, args...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	base, err := gitOutput(t.Context(), dir, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = runRepositoryCleanup(dir, base)
-	if err == nil || !strings.Contains(err.Error(), "tracked") {
-		t.Fatalf("tracked diagnostic collision was not refused: %v", err)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil || string(raw) != "tracked source" {
-		t.Fatal("hook overwrote tracked source")
-	}
-	if _, err = os.Stat(filepath.Join(dir, "cleanup-marker")); !os.IsNotExist(err) {
-		t.Fatal("hook ran despite tracked log collision")
 	}
 }
 

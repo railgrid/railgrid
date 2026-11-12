@@ -137,10 +137,7 @@ func Core(d Deps) []engine.Tool {
 	if d.Delegate != nil && len(d.Agent.Spec.Delegates) > 0 {
 		out = append(out, engine.Tool{
 			Name: "delegate",
-			// delegateAndWait keys the child to this exact engine call ID, so
-			// recovery can join the same execution instead of starting another.
-			ReplaySafe: true,
-			Desc:       "Delegate a scoped task to another agent and get its answer. Allowed agents: " + strings.Join(d.Agent.Spec.Delegates, ", ") + ". Max 3 delegations per run; delegated agents cannot delegate further.",
+			Desc: "Delegate a scoped task to another agent and get its answer. Allowed agents: " + strings.Join(d.Agent.Spec.Delegates, ", ") + ". Max 3 delegations per run; delegated agents cannot delegate further.",
 			Params: map[string]engine.Param{
 				"agent": {Type: "string", Desc: "target agent name", Required: true, Enum: d.Agent.Spec.Delegates},
 				"task":  {Type: "string", Desc: "the self-contained task for the target agent", Required: true},

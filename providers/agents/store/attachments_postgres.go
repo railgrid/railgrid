@@ -315,7 +315,6 @@ func (p *PostgresStore) CreateAgentChatRun(ctx context.Context, scope Scope, age
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	run.AgentUID = agentUID
 	mutation, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return err
@@ -401,13 +400,13 @@ func insertAgentChatRun(ctx context.Context, executor scopedExecutor, scope Scop
 	}
 	_, err = executor.ExecContext(ctx, `
 		INSERT INTO agents_runs
-			(id,org_uuid,workspace_uuid,agent_name,session_id,trigger_kind,parent_run_id,phase,attempt,input,output,sources,idempotency_key,delivery,message,checkpoint,input_tokens,output_tokens,usd_micros,created_at,updated_at,started_at,finished_at,worked_duration_ms,backend,attempt_id,harness_session_id,repository,result,retries,retry_at,harness_settings,model_settings,recovery_identity,agent_uid)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)`,
+			(id,org_uuid,workspace_uuid,agent_name,session_id,trigger_kind,parent_run_id,phase,attempt,input,output,sources,idempotency_key,delivery,message,checkpoint,input_tokens,output_tokens,usd_micros,created_at,updated_at,started_at,finished_at,worked_duration_ms,backend,attempt_id,harness_session_id,repository,result,retries,retry_at,harness_settings,model_settings)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)`,
 		run.ID, scope.OrgUUID, scope.WorkspaceUUID, run.AgentName, run.SessionID, run.Trigger, run.ParentRunID,
 		string(run.Phase), run.Attempt, run.Input, run.Output, sources, run.IdempotencyKey, delivery, run.Message,
 		nullBytes(run.Checkpoint), run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), nullInt64(run.WorkedDurationMS),
-		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, run.Retries, nullTime(run.RetryAt), harnessSettings, modelSettings, string(run.RecoveryIdentity), run.AgentUID)
+		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, run.Retries, nullTime(run.RetryAt), harnessSettings, modelSettings)
 	return err
 }
 

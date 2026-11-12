@@ -8,10 +8,7 @@
 
 package api
 
-import (
-	"github.com/railgrid/provider-agents/store"
-	"github.com/railgrid/provider-agents/tools"
-)
+import "github.com/railgrid/provider-agents/store"
 
 // publicTranscriptMessages removes the opaque model continuation state before
 // transcript rows are returned to a chat client. It leaves the structured tool
@@ -21,9 +18,6 @@ func publicTranscriptMessages(messages []store.Message) []store.Message {
 	for index := range out {
 		if content, ok := publicAgentChatText(out[index]); ok {
 			out[index].Content = content
-		}
-		if out[index].Role == "user" {
-			out[index].Content = tools.PublicRunTask(out[index].Content)
 		}
 		if out[index].Metadata == nil {
 			continue

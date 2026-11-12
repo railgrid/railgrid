@@ -116,7 +116,7 @@ func TestConcurrentApprovalVerdictsShareOneResumeClaim(t *testing.T) {
 				return
 			}
 			verdicts <- item.State
-			if _, err := st.ClaimRun(ctx, scope, "run", "", now, 0, "approval"); err == nil {
+			if _, err := st.ClaimRun(ctx, scope, "run", fmt.Sprint(i), now, "approval"); err == nil {
 				claims.Add(1)
 			} else if !errors.Is(err, store.ErrRunClaimConflict) {
 				t.Error(err)

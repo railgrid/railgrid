@@ -50,8 +50,8 @@ const (
 )
 
 // RunIsSettled reports whether a phase is one nothing further happens from.
-// PendingApproval counts because a Run waiting on a human has no execution
-// deadline.
+// PendingApproval counts: the run is waiting on a human and no deadline, no
+// reconcile and no caller should treat it as in flight.
 func RunIsSettled(phase string) bool {
 	switch phase {
 	case RunPhaseSucceeded, RunPhaseFailed, RunPhaseAborted, RunPhasePendingApproval:

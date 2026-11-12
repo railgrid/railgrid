@@ -230,7 +230,7 @@ func TestHarnessRecoveryBillsUsageSinceLastParkNotSinceCheckpoint(t *testing.T) 
 		t.Fatal(err)
 	}
 	total := backend.Cost{Tokens: backend.Tokens{InputTokens: 300, OutputTokens: 30}, CostMicros: 60}
-	delta := unbilledRunUsage(total, backend.Cost{Tokens: backend.Tokens{InputTokens: saved.InputTokens, OutputTokens: saved.OutputTokens}, CostMicros: saved.USDMicros})
+	delta := unbilledHarnessUsage(total, backend.Cost{Tokens: backend.Tokens{InputTokens: saved.InputTokens, OutputTokens: saved.OutputTokens}, CostMicros: saved.USDMicros})
 	if delta.InputTokens != 200 || delta.OutputTokens != 20 || delta.CostMicros != 40 {
 		t.Fatalf("recovered charge = %+v, want 200/20 tokens and 40 micros", delta)
 	}
@@ -241,10 +241,10 @@ func TestHarnessRecoveryBillsUsageSinceLastParkNotSinceCheckpoint(t *testing.T) 
 	if usage.InputTokens != 300 || usage.OutputTokens != 30 || usage.USDMicros != 60 {
 		t.Fatalf("rolling usage = %+v", usage)
 	}
-	if delta := unbilledRunUsage(total, total); delta != (backend.Cost{}) {
+	if delta := unbilledHarnessUsage(total, total); delta != (backend.Cost{}) {
 		t.Fatalf("already billed park charged again: %+v", delta)
 	}
-	if delta := unbilledRunUsage(total, backend.Cost{}); delta != total {
+	if delta := unbilledHarnessUsage(total, backend.Cost{}); delta != total {
 		t.Fatalf("recovery before first park omitted usage: %+v", delta)
 	}
 }

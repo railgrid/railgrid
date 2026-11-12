@@ -12,11 +12,12 @@ package api
 // a REPOSITORY attempt on the agent's harness.
 //
 // A coding coordinator (the Factory provider) names an Agent for its edge,
-// harness and credential, and sends the repository and approved commit.
-// The run record and Run spec keep the repository coordinates. Dispatch
-// reconstructs the clone source from the pinned checkout connection, mints a
-// repository-scoped read-only token, and passes it to the runner for checkout
-// and in the harness environment.
+// harness and credential, and sends the repository, the approved commit and a
+// short-lived clone token with each run. The token is dispatch data exactly
+// like the harness credential — held in memory for the turn, never on the
+// run record, never in a transcript row, never in a log line — and the rest
+// of the block minus the credential is recorded on the run (store.Run.Repository,
+// projected to the Run object's spec.repository) so a reader knows what ran.
 //
 // Validation here mirrors the runner's own (pkg/runner validateStartRequest,
 // validateCloneSource, validateCommitMessage), which are not exported: a
@@ -74,8 +75,8 @@ type invokeVerification struct {
 }
 
 // repositoryAttempt is the validated block as the run lifecycle carries it:
-// the backend's coordinates, the clone source populated at dispatch, and the
-// run's duration limit.
+// the backend's coordinates (token included, for the length of the turn) and
+// the duration the run is bounded to.
 type repositoryAttempt struct {
 	backendharness.Repository
 	MaxDurationSeconds int
@@ -240,14 +241,6 @@ func validateRemoteURL(raw string) error {
 	return nil
 }
 
-func pinnedGitHubRepositoryURL(repository string) (string, error) {
-	owner, name, ok := strings.Cut(repository, "/")
-	if !ok || strings.Contains(name, "/") || !runnerIdentifier.MatchString(owner) || !runnerIdentifier.MatchString(name) {
-		return "", errors.New("repository checkout connection must pin a GitHub repository in owner/name form")
-	}
-	return "https://github.com/" + owner + "/" + name + ".git", nil
-}
-
 // isSCPRemote mirrors the runner's reading of "user@host:path".
 func isSCPRemote(value string) bool {
 	if strings.HasPrefix(strings.ToLower(value), "ext::") {
@@ -327,25 +320,18 @@ func (r *repositoryAttempt) persisted() *store.RunRepository {
 	if r == nil {
 		return nil
 	}
-	return &store.RunRepository{
-		EnvironmentID: r.EnvironmentID, RepositoryID: r.RepositoryID,
-		BaseCommit: r.BaseCommit, CommitMessage: r.CommitMessage,
-		MaxDurationSeconds: r.MaxDurationSeconds,
-	}
+	return &store.RunRepository{EnvironmentID: r.EnvironmentID, RepositoryID: r.RepositoryID, BaseCommit: r.BaseCommit, CommitMessage: r.CommitMessage}
 }
 
-// repositoryAttemptFromStored restores the durable coordinates. A fresh
-// dispatch reconstructs the clone source from the Agent's pinned checkout
-// connection. Rejoining an existing attempt uses the runner's checkout.
+// repositoryAttemptFromStored rebuilds the attempt for a run picked up after
+// the process that started it is gone: the coordinates survive on the record,
+// the clone source does not. A re-join needs none; a fresh start without one
+// fails with backendharness.ErrCloneCredentialUnavailable.
 func repositoryAttemptFromStored(stored *store.RunRepository) *repositoryAttempt {
 	if stored == nil {
 		return nil
 	}
-	return &repositoryAttempt{
-		Repository: backendharness.Repository{
-			EnvironmentID: stored.EnvironmentID, RepositoryID: stored.RepositoryID,
-			BaseCommit: stored.BaseCommit, CommitMessage: stored.CommitMessage,
-		},
-		MaxDurationSeconds: stored.MaxDurationSeconds,
-	}
+	return &repositoryAttempt{Repository: backendharness.Repository{
+		EnvironmentID: stored.EnvironmentID, RepositoryID: stored.RepositoryID, BaseCommit: stored.BaseCommit, CommitMessage: stored.CommitMessage,
+	}}
 }

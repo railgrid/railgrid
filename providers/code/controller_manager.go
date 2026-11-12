@@ -53,11 +53,8 @@ import (
 	"github.com/railgrid/provider-code/controller/repositorybuildstatus"
 	"github.com/railgrid/provider-code/controller/repositorycheckout"
 	"github.com/railgrid/provider-code/controller/repositorycommit"
-	"github.com/railgrid/provider-code/controller/shared"
-	"github.com/railgrid/provider-code/githubworkflow"
 	"github.com/railgrid/provider-code/install"
 	codescheme "github.com/railgrid/provider-code/scheme"
-	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // endpointSliceName is the APIExportEndpointSlice the multicluster provider
@@ -172,12 +169,7 @@ func runControllerManager(ctx context.Context, config *rest.Config, registry *ba
 	if err := (&repositorybuildstatus.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("repositorybuildstatus controller: %w", err)
 	}
-	callers, err := dataplane.NewCallerFactory(config, dataplane.WithProviderConfig(config, install.APIExportName))
-	if err != nil {
-		return err
-	}
-	commands := &githubworkflow.Server{Callers: callers, Credentials: shared.Credentials, Backends: registry, Snapshots: stores.snapshots}
-	if err := (&pullrequest.Reconciler{Backends: registry, Snapshots: stores.snapshots, Commands: commands}).SetupWithManager(mgr); err != nil {
+	if err := (&pullrequest.Reconciler{Backends: registry, Snapshots: stores.snapshots}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("pullrequest controller: %w", err)
 	}
 

@@ -431,9 +431,6 @@ func (r *Reconciler) validate(ctx context.Context, c client.Client, agent *agent
 		{"spec.tools.interactive", agent.Spec.Tools.Interactive},
 		{"spec.tools.background", agent.Spec.Tools.Background},
 	} {
-		if agent.Spec.HarnessBacked() {
-			continue // Supported Code-only grants were checked by harnesspolicy above.
-		}
 		if reason, message := validateFamilies(class.field, class.grant.Families); reason != "" {
 			return reason, message, nil
 		}

@@ -37,7 +37,7 @@ func testClaimRecovery(t *testing.T, st Store, scope Scope) {
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
-			if got, err := st.ClaimRecovery(ctx, scope, seed.ID, at, "recovery-process", at.Add(time.Second)); err == nil {
+			if got, err := st.ClaimRecovery(ctx, scope, seed.ID, at, at.Add(time.Second)); err == nil {
 				winners.Add(1)
 				var checkpoint struct{ Cursor int }
 				_ = json.Unmarshal(got.Checkpoint, &checkpoint)
@@ -60,7 +60,7 @@ func testClaimRecovery(t *testing.T, st Store, scope Scope) {
 		if err := st.SaveRun(ctx, scope, r); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.ClaimRecovery(ctx, scope, r.ID, at, "recovery-process", at.Add(time.Second)); err == nil {
+		if _, err := st.ClaimRecovery(ctx, scope, r.ID, at, at.Add(time.Second)); err == nil {
 			t.Errorf("recovered %s run", phase)
 		}
 	}
@@ -75,7 +75,7 @@ func testClaimRecovery(t *testing.T, st Store, scope Scope) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimRecovery(ctx, scope, seed.ID, cancelled.UpdatedAt, "recovery-process", at.Add(2*time.Second)); !errors.Is(err, ErrRecoveryClaimStale) {
+	if _, err := st.ClaimRecovery(ctx, scope, seed.ID, cancelled.UpdatedAt, at.Add(2*time.Second)); !errors.Is(err, ErrRecoveryClaimStale) {
 		t.Fatal("recovered cancelled run")
 	}
 }
@@ -98,7 +98,7 @@ func testClaimRecoveryClockSkew(t *testing.T, st Store, scope Scope) {
 				t.Fatal(err)
 			}
 			now := observed.Add(offset)
-			got, err := st.ClaimRecovery(ctx, scope, seed.ID, observed, "recovery-process", now)
+			got, err := st.ClaimRecovery(ctx, scope, seed.ID, observed, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,7 +109,7 @@ func testClaimRecoveryClockSkew(t *testing.T, st Store, scope Scope) {
 			if !got.UpdatedAt.Equal(want) || got.Attempt != 1 {
 				t.Fatalf("claim revision=%v attempt=%d; want %v and 1", got.UpdatedAt, got.Attempt, want)
 			}
-			if _, err := st.ClaimRecovery(ctx, scope, seed.ID, observed, "recovery-process", now); !errors.Is(err, ErrRecoveryClaimStale) {
+			if _, err := st.ClaimRecovery(ctx, scope, seed.ID, observed, now); !errors.Is(err, ErrRecoveryClaimStale) {
 				t.Fatalf("duplicate claim: %v", err)
 			}
 		})
