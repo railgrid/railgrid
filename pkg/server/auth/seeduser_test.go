@@ -113,7 +113,7 @@ func userCount(t *testing.T, client *railgridclient.Client) int {
 func TestSeedUserKnownSubjectReturnsExistingUser(t *testing.T) {
 	h, client := newSeedTestHandler(t, nil, boundAlice())
 
-	got, err := h.seedUser(context.Background(), alice(testIssuer, githubSub, true))
+	got, _, err := h.seedUser(context.Background(), alice(testIssuer, githubSub, true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestSeedUserKnownSubjectReturnsExistingUser(t *testing.T) {
 func TestSeedUserNewSubjectWithoutLinkingCreatesUser(t *testing.T) {
 	h, client := newSeedTestHandler(t, nil, boundAlice())
 
-	got, err := h.seedUser(context.Background(), alice(testIssuer, googleSub, true))
+	got, _, err := h.seedUser(context.Background(), alice(testIssuer, googleSub, true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestSeedUserLinksVerifiedEmailFromAllowedIssuer(t *testing.T) {
 	h, client := newSeedTestHandler(t, []string{testIssuer + "/"}, boundAlice())
 	ctx := context.Background()
 
-	got, err := h.seedUser(ctx, alice(testIssuer, googleSub, true))
+	got, _, err := h.seedUser(ctx, alice(testIssuer, googleSub, true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestSeedUserLinksVerifiedEmailFromAllowedIssuer(t *testing.T) {
 			t.Fatalf("FindUserByOIDCSubject(%s) = %v, want %s", sub, u, aliceUserName)
 		}
 	}
-	if _, err := h.seedUser(ctx, alice(testIssuer, googleSub, true)); err != nil {
+	if _, _, err := h.seedUser(ctx, alice(testIssuer, googleSub, true)); err != nil {
 		t.Fatal(err)
 	}
 	user, _ = client.Users().Get(ctx, aliceUserName, metav1.GetOptions{})
@@ -204,7 +204,7 @@ func TestSeedUserLinksAcrossIssuers(t *testing.T) {
 	h, client := newSeedTestHandler(t, []string{otherIssuer}, boundAlice())
 	h.oidcConfig.IssuerURL = otherIssuer
 
-	got, err := h.seedUser(context.Background(), alice(otherIssuer, "auth0|123", true))
+	got, _, err := h.seedUser(context.Background(), alice(otherIssuer, "auth0|123", true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestSeedUserDoesNotLink(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h, client := newSeedTestHandler(t, tt.linkIssuers, tt.users...)
-			got, err := h.seedUser(context.Background(), tt.id)
+			got, _, err := h.seedUser(context.Background(), tt.id)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -299,11 +299,11 @@ func TestSeedUserAdoptsInvitedUserOnlyWhenUnbound(t *testing.T) {
 	h, client := newSeedTestHandler(t, nil, invited)
 	ctx := context.Background()
 
-	got, err := h.seedUser(ctx, alice(testIssuer, githubSub, true))
+	got, firstLogin, err := h.seedUser(ctx, alice(testIssuer, githubSub, true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != invitedUserName {
+	if got != invitedUserName || firstLogin {
 		t.Fatalf("seedUser = %q, want the invited user %q", got, invitedUserName)
 	}
 	user, _ := client.Users().Get(ctx, invitedUserName, metav1.GetOptions{})
@@ -313,12 +313,12 @@ func TestSeedUserAdoptsInvitedUserOnlyWhenUnbound(t *testing.T) {
 
 	// Now bound: a different subject with the same email must not take it
 	// over while linking is off.
-	got, err = h.seedUser(ctx, alice(testIssuer, googleSub, true))
+	got, firstLogin, err = h.seedUser(ctx, alice(testIssuer, googleSub, true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got == invitedUserName {
-		t.Fatal("a bound user was adopted by email")
+	if got == invitedUserName || !firstLogin {
+		t.Fatal("the unknown identity did not create a new user")
 	}
 }
 
@@ -334,7 +334,7 @@ func TestSeedUserRetriesLinkAfterConflict(t *testing.T) {
 		return true, nil, apierrors.NewConflict(railgridclient.UserGVR.GroupResource(), name, fmt.Errorf("the object has been modified"))
 	})
 
-	got, err := h.seedUser(context.Background(), alice(testIssuer, googleSub, true))
+	got, _, err := h.seedUser(context.Background(), alice(testIssuer, googleSub, true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,13 +369,13 @@ func TestSeedUserKeepsStoredEmailSpelling(t *testing.T) {
 	}
 
 	// The primary identity signs in with a lower-case email.
-	if got, err := h.seedUser(ctx, alice(testIssuer, githubSub, true)); err != nil || got != aliceUserName {
+	if got, _, err := h.seedUser(ctx, alice(testIssuer, githubSub, true)); err != nil || got != aliceUserName {
 		t.Fatalf("seedUser = %q, %v", got, err)
 	}
 	assertSpelling("primary sign-in")
 
 	// A new identity with the lower-case email links onto the account.
-	if got, err := h.seedUser(ctx, alice(testIssuer, googleSub, true)); err != nil || got != aliceUserName {
+	if got, _, err := h.seedUser(ctx, alice(testIssuer, googleSub, true)); err != nil || got != aliceUserName {
 		t.Fatalf("seedUser = %q, %v; want the identity linked", got, err)
 	}
 	assertSpelling("linked sign-in")
@@ -388,7 +388,7 @@ func TestSeedUserRecordsIdentityEmail(t *testing.T) {
 	h, client := newSeedTestHandler(t, nil, legacy)
 	ctx := context.Background()
 
-	if _, err := h.seedUser(ctx, alice(testIssuer, githubSub, true)); err != nil {
+	if _, _, err := h.seedUser(ctx, alice(testIssuer, githubSub, true)); err != nil {
 		t.Fatal(err)
 	}
 	user, err := client.Users().Get(ctx, aliceUserName, metav1.GetOptions{})
@@ -406,7 +406,7 @@ func TestSeedUserRecordsIdentityEmail(t *testing.T) {
 	// The identity now presents another email the issuer did not verify:
 	// the account follows it but is no longer a linking target for it.
 	changed := oidcIdentity{Issuer: testIssuer, Subject: githubSub, Email: "alice@new.example", Name: "Alice"}
-	if _, err := h.seedUser(ctx, changed); err != nil {
+	if _, _, err := h.seedUser(ctx, changed); err != nil {
 		t.Fatal(err)
 	}
 	user, _ = client.Users().Get(ctx, aliceUserName, metav1.GetOptions{})
@@ -437,3 +437,26 @@ func TestEmailVerifiedClaim(t *testing.T) {
 }
 
 func ptrBool(b bool) *bool { return &b }
+
+func TestSeedUserFirstLoginLastsUntilAPortalLoginCompletes(t *testing.T) {
+	h, client := newSeedTestHandler(t, nil)
+	ctx := context.Background()
+
+	created, firstLogin, err := h.seedUser(ctx, alice(testIssuer, githubSub, true))
+	if err != nil || !firstLogin {
+		t.Fatalf("new user: firstLogin=%v err=%v", firstLogin, err)
+	}
+	// A callback that failed after seeding, or a first sign-in through the
+	// CLI, has not onboarded the user: the next login is still first.
+	again, firstLogin, err := h.seedUser(ctx, alice(testIssuer, githubSub, true))
+	if err != nil || again != created || !firstLogin {
+		t.Fatalf("retry: user=%q firstLogin=%v err=%v", again, firstLogin, err)
+	}
+	h.clearPortalOnboardingPending(ctx, created)
+	if user, _ := client.Users().Get(ctx, created, metav1.GetOptions{}); user.Annotations[annotationPortalOnboardingPending] != "" {
+		t.Fatalf("marker not cleared: %v", user.Annotations)
+	}
+	if _, firstLogin, err = h.seedUser(ctx, alice(testIssuer, githubSub, true)); err != nil || firstLogin {
+		t.Fatalf("after a completed portal login: firstLogin=%v err=%v", firstLogin, err)
+	}
+}
