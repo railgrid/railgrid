@@ -97,6 +97,7 @@ jobs:
             VERSION=${{ github.ref_name }}
             GIT_COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.release.created_at }}
+            GO_BUILD_GODEBUG=http2client=0
 
   # PR and manual validation of provider Dockerfiles and build contexts, before
   # the split sync reaches a mirror. hack/ci/selection.py picks the images whose
@@ -188,6 +189,7 @@ jobs:
             VERSION=${{ github.ref_name }}
             GIT_COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.release.created_at }}
+            GO_BUILD_GODEBUG=http2client=0
 
   result:
     name: Images result

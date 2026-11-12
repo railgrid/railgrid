@@ -3,16 +3,18 @@ FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 
 ARG TARGETARCH
 ARG TARGETOS=linux
+# GODEBUG for the go commands that fetch modules (CI: http2client=0);
+# hack/go-retry.sh applies it to those commands only and retries them.
 ARG GO_BUILD_GODEBUG
-ENV GODEBUG=$GO_BUILD_GODEBUG
 
 WORKDIR /workspace
+COPY --chmod=0755 hack/go-retry.sh /usr/local/bin/go-retry
 COPY go.mod go.sum ./
 # The provider-sdk is a monorepo submodule pulled in via a local
 # `replace => ./provider-sdk`; go mod download reads its go.mod to resolve
 # the replacement, so it must be present before the download step.
 COPY provider-sdk/go.mod provider-sdk/go.sum provider-sdk/
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go-retry go mod download
 
 COPY . .
 
@@ -21,7 +23,7 @@ ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
 
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go-retry go build \
     -ldflags="-s -w \
       -X github.com/railgrid/railgrid/pkg/version.Version=${VERSION} \
       -X github.com/railgrid/railgrid/pkg/version.GitCommit=${GIT_COMMIT} \

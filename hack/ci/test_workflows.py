@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 import yaml
@@ -215,8 +216,9 @@ class WorkflowTests(unittest.TestCase):
 
     def test_e2e_kind_suites_consume_the_shared_build_artifact(self):
         e2e = self.workflows["e2e"]["jobs"]
-        build_commands = [step["run"] for step in e2e["build"]["steps"] if "run" in step]
-        self.assertTrue(any("make e2e-images" in command for command in build_commands), build_commands)
+        image_build = next(step for step in e2e["build"]["steps"] if step.get("name") == "Build hub and agent images")
+        self.assertEqual(image_build["run"].strip(), "make e2e-images")
+        self.assertEqual(image_build["env"]["GO_BUILD_GODEBUG"], "http2client=0")
         upload = next(step for step in e2e["build"]["steps"] if step.get("uses", "").startswith("actions/upload-artifact"))
         self.assertEqual(upload["with"]["name"], "e2e-build")
         for job, target in [("e2e-standalone", "e2e-standalone-run"), ("e2e-ssh", "e2e-ssh-run"),
@@ -229,6 +231,21 @@ class WorkflowTests(unittest.TestCase):
                 self.assertTrue(any(f"make {target} " in command for command in commands), commands)
                 self.assertTrue(any("docker load -i images.tar" in command for command in commands))
                 self.assertFalse(any("make build" in command or "docker build" in command for command in commands))
+
+    def test_image_go_commands_retry_and_use_http1_in_ci(self):
+        images = self.workflows["images"]["jobs"]
+        for job in ("build-and-push-hub-image", "build-and-push-agent-image"):
+            with self.subTest(job=job):
+                build = next(step for step in images[job]["steps"] if step.get("uses", "").startswith("docker/build-push-action"))
+                self.assertIn("GO_BUILD_GODEBUG=http2client=0", build["with"]["build-args"].splitlines())
+        for dockerfile in ("Dockerfile.hub", "Dockerfile.agent"):
+            with self.subTest(dockerfile=dockerfile):
+                text = (ROOT / "deploy" / dockerfile).read_text()
+                self.assertIn("COPY --chmod=0755 hack/go-retry.sh /usr/local/bin/go-retry", text)
+                self.assertIn("go-retry go mod download", text)
+                self.assertIn("go-retry go build", text)
+                self.assertNotIn(" go build", text.replace("go-retry go build", ""))
+                self.assertNotIn("ENV GODEBUG", text)
 
     def test_image_and_helm_publishing_only_on_original_events(self):
         images = self.workflows["images"]["jobs"]
@@ -265,6 +282,42 @@ class WorkflowTests(unittest.TestCase):
         commands = [step["run"] for step in self.macos["jobs"]["darwin"]["steps"] if "run" in step]
         self.assertEqual(commands, ["make build-macos-agent", "make build-macos-stub", "make test-macos-agent"])
         self.assertEqual(list(steps_using(self.macos, "actions/setup-node")), [])
+
+
+class GoRetryTests(unittest.TestCase):
+    """hack/go-retry.sh retries a failing go command and switches to HTTP/1.1."""
+
+    def run_script(self, fail_times, attempts=3, godebug=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = Path(tmp) / "calls"
+            # Records each call's GODEBUG, then fails the first fail_times calls.
+            fake = ('echo "GODEBUG=${GODEBUG-<unset>}" >> "$CALLS"; '
+                    '[ "$(wc -l < "$CALLS")" -gt "$FAIL_TIMES" ] || exit 7')
+            env = {key: value for key, value in os.environ.items() if key not in ("GODEBUG", "GO_BUILD_GODEBUG")}
+            env.update(CALLS=str(calls), FAIL_TIMES=str(fail_times),
+                       GO_RETRY_ATTEMPTS=str(attempts), GO_RETRY_BACKOFF_SECONDS="0")
+            if godebug is not None:
+                env["GO_BUILD_GODEBUG"] = godebug
+            result = subprocess.run(["sh", str(ROOT / "hack" / "go-retry.sh"), "sh", "-c", fake],
+                                    env=env, capture_output=True, text=True, check=False)
+            return result.returncode, calls.read_text().splitlines(), result.stderr
+
+    def test_success_runs_once_and_leaves_godebug_alone(self):
+        self.assertEqual(self.run_script(fail_times=0)[:2], (0, ["GODEBUG=<unset>"]))
+
+    def test_build_arg_godebug_applies_from_the_first_attempt(self):
+        self.assertEqual(self.run_script(fail_times=0, godebug="http2client=0")[:2], (0, ["GODEBUG=http2client=0"]))
+
+    def test_retry_switches_to_http1(self):
+        code, calls, stderr = self.run_script(fail_times=2)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["GODEBUG=<unset>", "GODEBUG=http2client=0", "GODEBUG=http2client=0"])
+        self.assertIn("retrying over HTTP/1.1", stderr)
+
+    def test_exhaustion_returns_the_command_status(self):
+        code, calls, stderr = self.run_script(fail_times=5)
+        self.assertEqual((code, len(calls)), (7, 3))
+        self.assertIn("failed after 3 attempts", stderr)
 
 
 if __name__ == "__main__":
