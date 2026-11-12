@@ -196,6 +196,9 @@ type Run struct {
 	// never overwrite them.
 	ExecutionOwner   string    `json:"-"`
 	ExecutionLeaseAt time.Time `json:"-"`
+	// ResumeDeadlineAt bounds execution after an approval, excluding time spent
+	// waiting. The approval claim sets it once; lease renewals preserve it.
+	ResumeDeadlineAt *time.Time `json:"-"`
 	// RecoveryIdentity records whether the original authority can be rebuilt
 	// after restart. Caller-scoped and unknown runs fail closed on recovery.
 	RecoveryIdentity RecoveryIdentity `json:"-"`
@@ -652,6 +655,11 @@ const (
 )
 
 // InboxItemState is the lifecycle of an inbox item.
+// pendingRunPrompt identifies inbox entries whose lifetime follows a Run.
+func pendingRunPrompt(item InboxItem) bool {
+	return item.RunID != "" && item.State == InboxStatePending && (item.Kind == InboxKindApproval || item.Kind == InboxKindQuestion)
+}
+
 type InboxItemState string
 
 const (
@@ -991,7 +999,7 @@ type Store interface {
 	// revive work after the cancel flag or terminal phase is recorded. When
 	// supplied, inboxID must match the parked checkpoint atomically. A nonempty
 	// owner takes a fresh execution lease in the same transition.
-	ClaimRun(ctx context.Context, scope Scope, id, owner string, now time.Time, inboxID ...string) (Run, error)
+	ClaimRun(ctx context.Context, scope Scope, id, owner string, now time.Time, resumeTimeout time.Duration, inboxID ...string) (Run, error)
 	// ClaimRecovery claims exactly the observed Running revision and increments its
 	// recovery attempt atomically. It also checks that the execution lease expired,
 	// then transfers the lease to owner. Stale, cancelled and terminal runs are rejected.
@@ -1057,6 +1065,8 @@ type Store interface {
 	AddInboxItem(ctx context.Context, scope Scope, item InboxItem) error
 	GetInboxItem(ctx context.Context, scope Scope, id string) (InboxItem, error)
 	ListInbox(ctx context.Context, scope Scope, state InboxItemState) ([]InboxItem, error)
+	// ClosePendingRunInbox settles approval and question items by durable run ID.
+	ClosePendingRunInbox(ctx context.Context, scope Scope, runID, response string, now time.Time) ([]InboxItem, error)
 	ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, resolution InboxResolution) (InboxItem, error)
 
 	// Harness MCP sessions: the bearer a remote harness turn presents to the

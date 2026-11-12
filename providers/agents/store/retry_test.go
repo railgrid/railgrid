@@ -35,7 +35,7 @@ func TestRunRetryFieldsRoundTripAndStayClaimable(t *testing.T) {
 	if got.Retries != 3 || got.RetryAt == nil || !got.RetryAt.Equal(retryAt) {
 		t.Fatalf("run after save = retries %d retryAt %v; want 3 and %v", got.Retries, got.RetryAt, retryAt)
 	}
-	claimed, err := m.ClaimRun(ctx, scope, "r1", "", now.Add(3*time.Minute))
+	claimed, err := m.ClaimRun(ctx, scope, "r1", "", now.Add(3*time.Minute), 0)
 	if err != nil {
 		t.Fatalf("ClaimRun on a re-queued run: %v", err)
 	}

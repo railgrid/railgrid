@@ -23,6 +23,7 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 // runSummary is the list-view shape of a run. Class derives from the trigger
@@ -130,7 +131,7 @@ func summarize(run store.Run) runSummary {
 		ID: run.ID, Agent: run.AgentName, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger, Class: class,
 		ParentRunID: run.ParentRunID, Phase: string(run.Phase), Attempt: run.Attempt,
 		Retries: run.Retries, RetryAt: run.RetryAt,
-		InputPreview: safeTruncate(strings.Join(strings.Fields(run.Input), " "), 160),
+		InputPreview: safeTruncate(strings.Join(strings.Fields(tools.PublicRunTask(run.Input)), " "), 160),
 		Message:      safeTruncate(run.Message, 500),
 		HasOutput:    run.Output != "",
 		InputTokens:  run.InputTokens, OutputTokens: run.OutputTokens, USDMicros: run.USDMicros,
@@ -195,12 +196,16 @@ func (s *Server) runTrace(w http.ResponseWriter, r *http.Request) {
 // verb, the long-poll `wait`, and a `run` that waited — so every way of asking
 // about a run returns the same shape.
 func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID string) (runDetail, error) {
+	return s.runDetailWithChildAccess(ctx, scope, runID, canReadRunChild)
+}
+
+func (s *Server) runDetailWithChildAccess(ctx context.Context, scope store.Scope, runID string, canReadChild func(context.Context, string) bool) (runDetail, error) {
 	run, err := s.store.GetRun(ctx, scope, runID)
 	if err != nil {
 		return runDetail{}, err
 	}
 	detail := runDetail{
-		runSummary: summarize(run), Input: run.Input,
+		runSummary: summarize(run), Input: tools.PublicRunTask(run.Input),
 		Output: run.Output, Sources: run.Sources,
 		Steps: []runStep{}, Children: []runSummary{},
 	}
@@ -250,7 +255,7 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 	childScope.AgentName = "" // delegated children may belong to another Agent in this workspace
 	if children, err := s.store.QueryRuns(ctx, childScope, store.RunQuery{ParentRunID: runID, Limit: 50}); err == nil {
 		for _, child := range children.Items {
-			if canReadRunChild(ctx, child.ID) {
+			if canReadChild(ctx, child.ID) {
 				detail.Children = append(detail.Children, summarize(child))
 			}
 		}
@@ -263,7 +268,7 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 func canReadRunChild(ctx context.Context, runID string) bool {
 	gate, ok := gateFrom(ctx)
 	if !ok {
-		return true // Internal callers and the workspace-scoped MCP projection.
+		return true // Internal callers without a request.
 	}
 	caller, ok := dataplane.ProxiedIdentityFrom(ctx)
 	if !ok {

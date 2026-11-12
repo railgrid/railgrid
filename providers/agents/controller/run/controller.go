@@ -665,6 +665,14 @@ func (r *Reconciler) enforceDeadline(ctx context.Context, c client.Client, objec
 	return ctrl.Result{}, nil
 }
 
+// AgentRunTimeout is the controller's bounded execution window for an Agent.
+func AgentRunTimeout(seconds int32) time.Duration {
+	if seconds <= 0 {
+		return DefaultTimeout
+	}
+	return min(time.Duration(seconds)*time.Second, MaxTimeout)
+}
+
 // deadlineFor is startedAt plus the agent's per-run limit.
 //
 // The limit is read from the Agent at the moment the run starts and then
@@ -677,9 +685,7 @@ func (r *Reconciler) deadlineFor(ctx context.Context, c client.Client, object *a
 	var agent agentsv1alpha1.Agent
 	switch err := c.Get(ctx, client.ObjectKey{Name: object.Spec.AgentRef}, &agent); {
 	case err == nil:
-		if seconds := agent.Spec.Limits.TimeoutSeconds; seconds > 0 {
-			timeout = min(time.Duration(seconds)*time.Second, MaxTimeout)
-		}
+		timeout = AgentRunTimeout(agent.Spec.Limits.TimeoutSeconds)
 	case apierrors.IsNotFound(err):
 		// The agent was deleted while its run was in flight. The run still gets
 		// a deadline; garbage collection of the object is a separate story.

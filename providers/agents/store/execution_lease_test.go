@@ -228,7 +228,7 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 			t.Fatal(err)
 		}
 
-		claimed, err := st.ClaimRun(ctx, scope, seed.ID, oldOwner, now, "approval-item")
+		claimed, err := st.ClaimRun(ctx, scope, seed.ID, oldOwner, now, 10*time.Minute, "approval-item")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -237,6 +237,9 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 		}
 		if claimed.StartedAt == nil || !claimed.StartedAt.Equal(claimed.UpdatedAt) {
 			t.Fatalf("approval start time = %v; want monotonic claim revision %v", claimed.StartedAt, claimed.UpdatedAt)
+		}
+		if claimed.ResumeDeadlineAt == nil || !claimed.ResumeDeadlineAt.Equal(claimed.UpdatedAt.Add(10*time.Minute)) {
+			t.Fatalf("resume deadline = %v, want ten minutes from the approval claim", claimed.ResumeDeadlineAt)
 		}
 		if claimed.ExecutionOwner != oldOwner || !claimed.ExecutionLeaseAt.Equal(claimed.UpdatedAt) {
 			t.Fatalf("approval claim did not take a lease: owner=%q lease=%v", claimed.ExecutionOwner, claimed.ExecutionLeaseAt)
@@ -247,7 +250,7 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 		if _, err := st.AcquireRunLease(ctx, scope, seed.ID, oldOwner, claimed.Attempt, claimed.UpdatedAt.Add(time.Second)); err != nil {
 			t.Fatalf("approval owner could not start dispatch: %v", err)
 		}
-		if _, err := st.ClaimRun(ctx, scope, seed.ID, "", now.Add(time.Second), "approval-item"); !errors.Is(err, ErrRunClaimConflict) {
+		if _, err := st.ClaimRun(ctx, scope, seed.ID, "", now.Add(time.Second), 0, "approval-item"); !errors.Is(err, ErrRunClaimConflict) {
 			t.Fatalf("approval was claimed twice: %v", err)
 		}
 	})
@@ -401,7 +404,7 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 			t.Fatalf("park run under current lease: ok=%t err=%v", ok, err)
 		}
 
-		claimed, err := st.ClaimRun(ctx, scope, seed.ID, "", now.Add(2*time.Second), "approval-item")
+		claimed, err := st.ClaimRun(ctx, scope, seed.ID, "", now.Add(2*time.Second), 0, "approval-item")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -70,6 +70,7 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 const (
@@ -235,9 +236,21 @@ func (s *Server) writeRunObject(ctx context.Context, dyn dynamic.Interface, run 
 			}
 		}
 
-		// Status is a subresource, so spec is untouched here by construction —
-		// which is what makes "spec is written once" true rather than merely
-		// intended.
+		// Older Runs may already have projected their private envelope. Scrub
+		// the preview once before continuing with ordinary status projection.
+		preview, _, _ := unstructured.NestedString(existing.Object, "spec", "inputPreview")
+		if tools.PublicRunTask(preview) != preview {
+			public := safeTruncate(strings.TrimSpace(tools.PublicRunTask(latest.Input)), runInputPreviewMax)
+			if err := unstructured.SetNestedField(existing.Object, public, "spec", "inputPreview"); err != nil {
+				return err
+			}
+			existing, err = runs.Update(ctx, existing, metav1.UpdateOptions{})
+			if err != nil {
+				return fmt.Errorf("scrubbing the Run input preview: %w", err)
+			}
+		}
+
+		// Normal projection writes only the status subresource.
 		desired := runStatusFor(latest)
 		currentPhase, _, _ := unstructured.NestedString(existing.Object, "status", "phase")
 		if finalRunPhase(currentPhase) && !finalRunPhase(desired.Phase) {
@@ -314,7 +327,7 @@ func (s *Server) createRunObject(ctx context.Context, dyn dynamic.Interface, run
 			SessionID:      effectiveSessionID(run.SessionID, run.Trigger),
 			ParentRunRef:   run.ParentRunID,
 			IdempotencyKey: run.IdempotencyKey,
-			InputPreview:   safeTruncate(strings.TrimSpace(run.Input), runInputPreviewMax),
+			InputPreview:   safeTruncate(strings.TrimSpace(tools.PublicRunTask(run.Input)), runInputPreviewMax),
 		},
 	}
 	if settings := run.HarnessSettings; settings != nil {
@@ -395,6 +408,10 @@ func runStatusFor(run store.Run) agentsv1alpha1.RunStatus {
 		// starts, so the two agree without either carrying the other's copy.
 		at := metav1.NewTime(*run.RetryAt)
 		status.RetryAt = &at
+	}
+	if run.Phase == store.RunPhaseRunning && run.ResumeDeadlineAt != nil {
+		at := metav1.NewTime(*run.ResumeDeadlineAt)
+		status.DeadlineAt = &at
 	}
 	if run.StartedAt != nil {
 		at := metav1.NewTime(*run.StartedAt)

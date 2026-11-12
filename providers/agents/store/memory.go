@@ -1062,6 +1062,7 @@ func (m *MemoryStore) ClaimFreshRun(_ context.Context, scope Scope, id string, o
 		now = run.UpdatedAt.Add(time.Microsecond)
 	}
 	run.Phase = RunPhaseRunning
+	run.ResumeDeadlineAt = nil
 	run.UpdatedAt = now.UTC()
 	if run.StartedAt == nil {
 		started := now.UTC()
@@ -1181,6 +1182,7 @@ func (m *MemoryStore) saveRunLocked(scope Scope, run Run) error {
 		// dedicated atomic methods. A stale SaveRun snapshot cannot restore them.
 		run.ExecutionOwner = old.ExecutionOwner
 		run.ExecutionLeaseAt = old.ExecutionLeaseAt
+		run.ResumeDeadlineAt = old.ResumeDeadlineAt
 		run.RecoveryIdentity = old.RecoveryIdentity
 		run.AgentUID = old.AgentUID
 		resetStart := old.Phase == RunPhaseRunning &&
@@ -1304,7 +1306,7 @@ func (m *MemoryStore) UpdateRunCheckpoint(_ context.Context, scope Scope, id, ow
 	return true, nil
 }
 
-func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, owner string, now time.Time, inboxID ...string) (Run, error) {
+func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, owner string, now time.Time, resumeTimeout time.Duration, inboxID ...string) (Run, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {
 		return Run{}, err
@@ -1328,11 +1330,15 @@ func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, owner string,
 			return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
 		}
 	}
-	run.Phase = RunPhaseRunning
 	if !now.After(run.UpdatedAt) {
 		now = run.UpdatedAt.Add(time.Microsecond)
 	}
 	run.UpdatedAt = now.UTC()
+	if run.Phase == RunPhasePendingApproval && resumeTimeout > 0 {
+		deadline := run.UpdatedAt.Add(resumeTimeout)
+		run.ResumeDeadlineAt = &deadline
+	}
+	run.Phase = RunPhaseRunning
 	run.ExecutionOwner = owner
 	run.ExecutionLeaseAt = time.Time{}
 	if owner != "" {
@@ -1659,6 +1665,12 @@ func (m *MemoryStore) AddInboxItem(_ context.Context, scope Scope, item InboxIte
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
+	if pendingRunPrompt(item) {
+		run, exists := m.runs[tenantKey(scope)+"|"+item.RunID]
+		if exists && (run.AgentName != item.AgentName || run.CancelRequested || terminalRunPhase(run.Phase)) {
+			return ErrRunAlreadySettled
+		}
+	}
 	m.inbox[tenantKey(scope)+"|"+item.ID] = item
 	return nil
 }
@@ -1699,6 +1711,31 @@ func (m *MemoryStore) ListInbox(_ context.Context, scope Scope, state InboxItemS
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
+}
+
+func (m *MemoryStore) ClosePendingRunInbox(_ context.Context, scope Scope, runID, response string, now time.Time) ([]InboxItem, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	prefix := tenantKey(scope) + "|"
+	var closed []InboxItem
+	for key, item := range m.inbox {
+		if !hasPrefix(key, prefix) || item.AgentName != scope.AgentName || item.RunID != runID || !pendingRunPrompt(item) {
+			continue
+		}
+		item.State = InboxStateDenied
+		if item.Kind == InboxKindQuestion {
+			item.State = InboxStateAnswered
+		}
+		item.Response, item.UpdatedAt = response, now.UTC()
+		m.inbox[key] = item
+		closed = append(closed, item)
+	}
+	return closed, nil
 }
 
 func (m *MemoryStore) ResolveInboxItem(_ context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, resolution InboxResolution) (InboxItem, error) {

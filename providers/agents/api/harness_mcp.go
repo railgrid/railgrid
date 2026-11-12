@@ -28,6 +28,7 @@ import (
 
 	"github.com/railgrid/railgrid/pkg/runner"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tools"
@@ -270,7 +271,7 @@ func (s *Server) harnessSessionDeps(ctx context.Context, sess store.HarnessMCPSe
 	}
 	scope := store.Scope{OrgUUID: sess.Scope.OrgUUID, WorkspaceUUID: sess.Scope.WorkspaceUUID, AgentName: agent.Name}
 	deps := tools.Deps{Store: s.store, Scope: scope, Agent: agent, CR: cr, Secrets: vwSecrets{dyn}, RunID: sess.RunID}
-	if run, err := s.store.GetRun(ctx, scope, sess.RunID); err == nil && run.Phase == store.RunPhaseRunning && run.AgentUID == sess.AgentUID {
+	if run, err := s.store.GetRun(ctx, scope, sess.RunID); err == nil && run.Phase == store.RunPhaseRunning && !run.CancelRequested && run.AgentUID == sess.AgentUID && run.Trigger == agentsv1alpha1.RunTriggerDelegation {
 		if code := tools.ParseCodeScope(run.Input); code != nil && code.ReviewOnly && run.ParentRunID != "" {
 			if run.Repository == nil {
 				return tools.Deps{}, fmt.Errorf("review session has no pinned repository")

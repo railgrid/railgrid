@@ -100,12 +100,6 @@ func TestMemoryStoreTenantMappingMigratesSplitHistory(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now.Add(4 * time.Second)}
 	mappedRun := Run{ID: "mapped-run", AgentName: "coder", SessionID: "continuity", Trigger: "chat", Phase: RunPhaseSucceeded,
 		Input: "mapped retry", IdempotencyKey: "same-request", CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(9 * time.Second)}
-	if err := s.SaveRun(ctx, fallback, legacyRun); err != nil {
-		t.Fatalf("save legacy run: %v", err)
-	}
-	if err := s.SaveRun(ctx, mapped, mappedRun); err != nil {
-		t.Fatalf("save mapped duplicate-idempotency run: %v", err)
-	}
 	for _, entry := range []struct {
 		scope Scope
 		item  InboxItem
@@ -116,6 +110,12 @@ func TestMemoryStoreTenantMappingMigratesSplitHistory(t *testing.T) {
 		if err := s.AddInboxItem(ctx, entry.scope, entry.item); err != nil {
 			t.Fatalf("save inbox item %s: %v", entry.item.ID, err)
 		}
+	}
+	if err := s.SaveRun(ctx, fallback, legacyRun); err != nil {
+		t.Fatalf("save legacy run: %v", err)
+	}
+	if err := s.SaveRun(ctx, mapped, mappedRun); err != nil {
+		t.Fatalf("save mapped duplicate-idempotency run: %v", err)
 	}
 	for _, entry := range []struct {
 		scope Scope
@@ -389,12 +389,6 @@ func TestPostgresTenantMappingMigratesSplitHistory(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now.Add(4 * time.Second)}
 	mappedRun := Run{ID: "mapped-run-" + uuid.NewString(), AgentName: "coder", SessionID: "continuity", Trigger: "chat", Phase: RunPhaseSucceeded,
 		Input: "mapped retry", IdempotencyKey: "same-request", CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(9 * time.Second)}
-	if err := ps.SaveRun(ctx, fallback, legacyRun); err != nil {
-		t.Fatalf("save legacy run: %v", err)
-	}
-	if err := ps.SaveRun(ctx, canonical, mappedRun); err != nil {
-		t.Fatalf("save mapped duplicate-idempotency run: %v", err)
-	}
 	for _, entry := range []struct {
 		scope Scope
 		item  InboxItem
@@ -405,6 +399,12 @@ func TestPostgresTenantMappingMigratesSplitHistory(t *testing.T) {
 		if err := ps.AddInboxItem(ctx, entry.scope, entry.item); err != nil {
 			t.Fatalf("save inbox item: %v", err)
 		}
+	}
+	if err := ps.SaveRun(ctx, fallback, legacyRun); err != nil {
+		t.Fatalf("save legacy run: %v", err)
+	}
+	if err := ps.SaveRun(ctx, canonical, mappedRun); err != nil {
+		t.Fatalf("save mapped duplicate-idempotency run: %v", err)
 	}
 	for _, entry := range []struct {
 		scope Scope

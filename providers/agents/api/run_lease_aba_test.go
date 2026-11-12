@@ -53,7 +53,7 @@ func TestApprovalResumeUsesFreshExecutionNonce(t *testing.T) {
 		t.Fatalf("parking with first owner: updated=%t err=%v", updated, err)
 	}
 
-	approvalClaim, err := st.ClaimRun(ctx, scope, pending.ID, "", now.Add(3*time.Millisecond), "approval-request")
+	approvalClaim, err := st.ClaimRun(ctx, scope, pending.ID, "", now.Add(3*time.Millisecond), 0, "approval-request")
 	if err != nil {
 		t.Fatal(err)
 	}

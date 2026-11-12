@@ -537,7 +537,9 @@ type taskRun struct {
 
 	SessionID string
 	Task      string
-	Trigger   string
+	// Only admitted provider invocations and their internal delegates carry Code credentials.
+	allowCodeScope bool
+	Trigger        string
 	// ArtifactOwner and ArtifactRefs are attended-chat inputs. Checkpoints retain
 	// only these pointers so a resumed reader can bind them to the same caller and
 	// recheck source authorization; result bytes and credentials stay out.
@@ -699,6 +701,7 @@ func (r taskRun) delivery() *store.RunDelivery {
 // only a checkpoint that retained an explicit approval marker restores that
 // one grant.
 type continuation struct {
+	DeadlineAt *time.Time
 	Checkpoint runCheckpoint
 	// Billed is the usage durably recorded at the last approval park. A running
 	// checkpoint can include additional consumption that has not been charged.
@@ -854,6 +857,9 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	}
 	if run.Repository != nil && run.Repository.MaxDurationSeconds > 0 {
 		timeout = time.Duration(run.Repository.MaxDurationSeconds)*time.Second + repositoryDeadlineMargin
+	}
+	if cont != nil && cont.DeadlineAt != nil {
+		timeout = min(timeout, time.Until(*cont.DeadlineAt))
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -1027,7 +1033,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// agent's standing instructions and the approved task, with none
 			// of the session's history or the agent's notes — the coordinator
 			// approved the prompt it sent, not the conversation around it.
-			msgs = repositoryTurnMessages(agent, run.Task)
+			msgs = repositoryTurnMessages(agent, tools.PublicRunTask(run.Task))
 			if agent.Spec.HarnessBacked() && skillGuidance != "" {
 				msgs = slices.Insert(msgs, len(msgs)-1, backend.Message{Role: backend.RoleSystem, Content: skillGuidance})
 			}
@@ -1092,7 +1098,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		}
 		message := store.Message{
 			ID: taskMessageID, AgentName: agent.Name, SessionID: sessionID, RunID: runID,
-			Role: "user", Content: run.Task, CreatedAt: startedAt,
+			Role: "user", Content: tools.PublicRunTask(run.Task), CreatedAt: startedAt,
 			Metadata: agentChatTranscriptMetadata(run),
 		}
 		if len(run.AttachmentRefs) > 0 {
@@ -1487,6 +1493,9 @@ func (s *Server) cleanupFailedPark(cleanupCtx context.Context, run taskRun, sess
 // (phase PendingApproval, checkpoint saved) instead of finishing; resolving the
 // approval resumes it.
 func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error) {
+	if !run.allowCodeScope {
+		run.Task = tools.PublicRunTask(run.Task)
+	}
 	if run.RunID == "" {
 		run.RunID = uuid.NewString()
 	}
@@ -1527,6 +1536,9 @@ type runAdmission struct {
 }
 
 func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, tr taskRun, access runAccess) (runAdmission, error) {
+	if !tr.allowCodeScope {
+		tr.Task = tools.PublicRunTask(tr.Task)
+	}
 	runID := uuid.NewString()
 	now := time.Now().UTC()
 	// Save the effective transcript identity before Pending is admitted. The
@@ -1907,8 +1919,6 @@ func (s *Server) finishRunWithOwner(ctx context.Context, scope store.Scope, runI
 	if err != nil {
 		return err
 	}
-	parked := stored
-	parked.Checkpoint = append([]byte(nil), stored.Checkpoint...)
 	if owner != "" {
 		stored.Attempt = attempt
 		stored.ExecutionOwner = owner
@@ -1962,7 +1972,9 @@ func (s *Server) finishRunWithOwner(ctx context.Context, scope store.Scope, runI
 	} else if err := s.saveRun(ctx, scope, stored); err != nil {
 		return err
 	}
-	s.closeParkedInboxItem(ctx, scope, parked, out.Phase, end)
+	if err := s.closeRunInbox(ctx, scope, stored.ID, stored.Phase, end); err != nil {
+		log.Printf("runs: closing inbox for %s; the Run controller will retry: %v", stored.ID, err)
+	}
 	if isTerminalRunPhase(stored.Phase) && ctx.Value(descendantReconcileContextKey{}) != true {
 		descendantCtx, cancelDescendants := boundedPersistContext(ctx)
 		if err := s.reconcileRunDescendants(descendantCtx, scope, stored.ID); err != nil {
@@ -1976,48 +1988,27 @@ func (s *Server) finishRunWithOwner(ctx context.Context, scope store.Scope, runI
 	return nil
 }
 
-// closeParkedInboxItem closes the inbox item a run was parked on when the run
-// ends without it being resolved. A cancel, a deadline or a recovery close all
-// finish the run through finishRun and drop its checkpoint, and the checkpoint
-// is the only thing that names the item — leaving it pending put a card in the
-// portal's "Needs your attention" list with no run left to resume and, for a
-// question, nothing that could ever clear it. Approvals close as denied and
-// questions as answered, the same convention failPark uses, so no resolution
-// path mistakes the closing for a verdict that resumes anything.
-func (s *Server) closeParkedInboxItem(ctx context.Context, scope store.Scope, run store.Run, phase store.RunPhase, now time.Time) {
-	if len(run.Checkpoint) == 0 || !runSettled(phase) {
-		return
-	}
-	var ck runCheckpoint
-	if json.Unmarshal(run.Checkpoint, &ck) != nil || ck.InboxID == "" {
-		return
-	}
-	wsScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}
-	item, err := s.store.GetInboxItem(ctx, wsScope, ck.InboxID)
-	if err != nil {
-		log.Printf("run %s: reading inbox item %s to close it: %v", run.ID, ck.InboxID, err)
-		return
-	}
-	if item.State != store.InboxStatePending || item.RunID != run.ID || item.AgentName != run.AgentName {
-		return
-	}
-	state := store.InboxStateDenied
-	if item.Kind == store.InboxKindQuestion {
-		state = store.InboxStateAnswered
+// closeRunInbox uses the durable run ID, including prompts whose checkpoint
+// never committed. Terminal reconciliation retries any failed cleanup.
+func (s *Server) closeRunInbox(ctx context.Context, scope store.Scope, runID string, phase store.RunPhase, now time.Time) error {
+	if !isTerminalRunPhase(phase) {
+		return nil
 	}
 	response := "The run ended before this was resolved."
 	if phase == store.RunPhaseAborted {
 		response = "The run was cancelled before this was resolved."
 	}
-	if _, err := s.store.ResolveInboxItem(ctx, wsScope, item.ID, state, response, now, store.InboxResolution{PendingOnly: true}); err != nil {
-		if !errors.Is(err, store.ErrInboxAlreadyResolved) {
-			log.Printf("run %s: closing inbox item %s: %v", run.ID, item.ID, err)
-		}
-		return
+	items, err := s.store.ClosePendingRunInbox(ctx, scope, runID, response, now)
+	if err != nil {
+		return err
 	}
-	s.events.publish(wsScope, "inbox", map[string]any{
-		"id": item.ID, "state": string(state), "agent": item.AgentName, "runID": item.RunID,
-	})
+	wsScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}
+	for _, item := range items {
+		s.events.publish(wsScope, "inbox", map[string]any{
+			"id": item.ID, "state": string(item.State), "agent": item.AgentName, "runID": item.RunID,
+		})
+	}
+	return nil
 }
 
 // repositoryDeadlineMargin is how much longer than its own maxDurationSeconds
@@ -2167,7 +2158,7 @@ func refreshAgentSkillCatalog(checkpoint *engine.Checkpoint, prompt string) {
 }
 
 func (s *Server) assembleTurnCtx(ctx context.Context, run taskRun, sessionID, mcpInstructions string, fanOut bool) ([]backend.Message, error) {
-	scope, agent, task, trigger := run.Scope, run.Agent, run.Task, run.Trigger
+	scope, agent, task, trigger := run.Scope, run.Agent, tools.PublicRunTask(run.Task), run.Trigger
 	var msgs []backend.Message
 	// A worker gets a fixed sub-agent preamble above the agent's persona: it is
 	// the same agent, but answering one scoped question as data rather than

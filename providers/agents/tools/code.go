@@ -42,6 +42,18 @@ type CodeScope struct {
 
 const CodeScopePrefix = "railgrid-code-scope:"
 
+// PublicRunTask removes private invocation credentials from a task before it
+// is sent to a model or rendered outside execution storage.
+func PublicRunTask(input string) string {
+	for {
+		line, rest, _ := strings.Cut(input, "\n")
+		if !strings.HasPrefix(strings.TrimSpace(line), CodeScopePrefix) {
+			return input
+		}
+		input = rest
+	}
+}
+
 func ParseCodeScope(input string) *CodeScope {
 	line, _, _ := strings.Cut(input, "\n")
 	if !strings.HasPrefix(line, CodeScopePrefix) {

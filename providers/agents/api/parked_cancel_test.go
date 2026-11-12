@@ -370,11 +370,13 @@ func TestCancelParkedHarnessStopsRemoteAttemptAndLateApprovalCannotRevive(t *tes
 	}
 
 	workspaceScope := store.Scope{OrgUUID: f.scope.OrgUUID, WorkspaceUUID: f.scope.WorkspaceUUID}
-	item, err := f.server.resolveInboxDecision(context.Background(), workspaceScope, "inbox-parked-cancel", store.InboxStateApproved, "", time.Now().UTC())
-	if err != nil {
-		t.Fatalf("resolve late approval: %v", err)
+	if _, err := f.server.resolveInboxDecision(context.Background(), workspaceScope, "inbox-parked-cancel", store.InboxStateApproved, "", time.Now().UTC()); !errors.Is(err, store.ErrInboxAlreadyResolved) {
+		t.Fatalf("resolve late approval: %v, want a closed inbox item", err)
 	}
-	f.server.resumeApprovedRun(t.Context(), workspaceScope, item, runAccess{}, true, "")
+	item, err := f.server.store.GetInboxItem(t.Context(), workspaceScope, "inbox-parked-cancel")
+	if err != nil || item.State != store.InboxStateDenied {
+		t.Fatalf("cancelled inbox item: %+v, %v", item, err)
+	}
 	stored, err = f.server.store.GetRun(context.Background(), f.scope, run.ID)
 	if err != nil || stored.Phase != store.RunPhaseAborted {
 		t.Fatalf("run after late approval = %+v, %v; want it to stay Aborted", stored, err)

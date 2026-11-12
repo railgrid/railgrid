@@ -16,6 +16,7 @@ import (
 
 	"github.com/railgrid/railgrid/pkg/runner"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
 	backendharness "github.com/railgrid/provider-agents/backend/harness"
 	"github.com/railgrid/provider-agents/llm"
@@ -151,5 +152,48 @@ func TestParkRunPersistenceFailuresStopHarnessAndCloseInbox(t *testing.T) {
 				t.Fatalf("cleanup event = %#v, want state %s", closedEvent.Data, test.wantInbox)
 			}
 		})
+	}
+}
+
+type transientParkInboxFailure struct{ parkFailureStore }
+
+func (s transientParkInboxFailure) GetInboxItem(context.Context, store.Scope, string) (store.InboxItem, error) {
+	return store.InboxItem{}, errors.New("transient inbox read failure")
+}
+
+func TestCancelledParkRetriesInboxCleanup(t *testing.T) {
+	ctx := t.Context()
+	base := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "agent"}
+	now := time.Now()
+	seed := store.Run{ID: "run", AgentName: "agent", Phase: store.RunPhaseRunning, CreatedAt: now, UpdatedAt: now}
+	if err := base.SaveRun(ctx, scope, seed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := base.AcquireRunLease(ctx, scope, seed.ID, "pod/owner", 0, now); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: transientParkInboxFailure{parkFailureStore{Store: base, cancelOnInbox: true}}, events: newEventBus()}
+	agent := &agentsv1alpha1.Agent{}
+	agent.Name = "agent"
+	tr := taskRun{Scope: scope, RunID: seed.ID, Agent: agent, SessionID: "chat", ExecutionOwner: "pod/owner"}
+	if _, err := s.parkRun(ctx, tr, "chat", now, now, newTurnProgressTracker(0), nil, backend.Outcome{Parked: &backend.Parked{Question: "Proceed?", State: []byte("{}")}}); !errors.Is(err, store.ErrRunLeaseLost) {
+		t.Fatalf("park did not hit cancellation fence: %v", err)
+	}
+	s.store = base
+	stored, err := base.GetRun(ctx, scope, seed.ID)
+	if err != nil || !stored.CancelRequested {
+		t.Fatalf("cancel was not recorded: %+v %v", stored, err)
+	}
+	bg := &background{server: s}
+	if err := bg.stopCancelledRun(ctx, "", scope, stored, "cancelled by user"); err != nil {
+		t.Fatal(err)
+	}
+	items, err := base.ListInbox(ctx, store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].State != store.InboxStateAnswered {
+		t.Fatalf("after cancellation retry the inbox item remains open: %+v", items)
 	}
 }

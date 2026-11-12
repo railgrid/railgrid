@@ -81,6 +81,7 @@ func (s *Server) delegateAndWait(ctx context.Context, d tools.Deps, target, task
 				return store.Run{}, err
 			}
 			raw, _ := json.Marshal(reviewScope)
+			tr.allowCodeScope = true
 			tr.Task = tools.CodeScopePrefix + string(raw) + "\n" + tr.Task + "\nYou may publish actionable findings directly with code_pull_request through Code; observe first, use the exact assigned expectedHead and a stable key. Zero findings creates no review. Do not post progress comments; Factory maintains one PR status comment."
 		}
 		tr.Repository = repository

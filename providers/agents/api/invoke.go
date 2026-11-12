@@ -26,6 +26,8 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
+	"github.com/railgrid/provider-sdk/dataplane"
 
 	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
 )
@@ -130,6 +132,18 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	hasCodeScope := tools.PublicRunTask(req.Task) != req.Task
+	if hasCodeScope {
+		caller, _ := dataplane.ProxiedIdentityFrom(r.Context())
+		if !caller.IsForeignProvider(id.clusterID) {
+			writeStatus(w, http.StatusForbidden, "Forbidden", "Code-scoped invocations require a provider caller")
+			return
+		}
+		if req.IdempotencyKey == "" || tools.ParseCodeScope(req.Task) == nil || strings.TrimSpace(tools.PublicRunTask(req.Task)) == "" {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "Code-scoped invocations require a valid scope, task and idempotency key")
+			return
+		}
+	}
 	if err := req.Callback.validate(); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
@@ -229,6 +243,7 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		SessionID:       strings.TrimSpace(req.SessionID), Task: req.Task,
 		Trigger:        agentsv1alpha1.RunTriggerAPI,
 		IdempotencyKey: req.IdempotencyKey,
+		allowCodeScope: hasCodeScope,
 		Callback:       req.Callback,
 		Repository:     repository,
 		// SourceName attributes the run to its caller in the activity view. The

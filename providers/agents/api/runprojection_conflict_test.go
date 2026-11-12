@@ -318,30 +318,38 @@ func TestApprovalResumeProjectsClaimedRunningBeforeContinuing(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.projectRun(context.Background(), scope, run)
+	s.cfg.ProcessID = "resume-test"
 	checked := false
-	_, _ = s.resumeRun(context.Background(), scope, run.ID, runAccess{CR: projectionResumeCR{check: func() {
-		checked = true
-		phase, _, _ := unstructured.NestedString(projectedObject(t, dyn, run.ID).Object, "status", "phase")
-		if phase != agentsv1alpha1.RunPhaseRunning {
-			t.Fatalf("resumed phase=%q before continuation; want Running", phase)
-		}
-		page, err := s.store.ListMessages(t.Context(), scope, run.SessionID, 10, "")
-		if err != nil || len(page.Items) != 1 {
-			t.Fatalf("want one permission receipt before continuation, got %+v, %v", page, err)
-		}
-		receipt := page.Items[0]
-		if receipt.ID != "permission-inbox-approval" || receipt.RunID != run.ID ||
-			receipt.Metadata["permissionDecision"] != "approved" || receipt.Metadata["tool"] != "shell" ||
-			receipt.Metadata["args"] != `{"command":"pwd","token":"[redacted]"}` {
-			t.Fatalf("unexpected permission receipt: %+v", receipt)
-		}
-		if len(engineMessagesFromHistory(page.Items)) != 0 {
-			t.Fatal("permission receipt appeared in model history")
-		}
-	}}}, resumeIntent{
+	_, _ = s.resumeRun(context.Background(), scope, run.ID, runAccess{CR: projectionResumeCR{}}, resumeIntent{
 		Approval: true, Approve: true, FromPhase: store.RunPhasePendingApproval,
 		InboxItem: store.InboxItem{ID: "inbox-approval", Kind: store.InboxKindApproval, State: store.InboxStateApproved},
-	})
+		Stream: func(string, map[string]any) {
+			checked = true
+			phase, _, _ := unstructured.NestedString(projectedObject(t, dyn, run.ID).Object, "status", "phase")
+			if phase != agentsv1alpha1.RunPhaseRunning {
+				t.Fatalf("resumed phase=%q before continuation; want Running", phase)
+			}
+			projected := projectedObject(t, dyn, run.ID)
+			start, _, _ := unstructured.NestedString(projected.Object, "status", "startedAt")
+			deadline, _, _ := unstructured.NestedString(projected.Object, "status", "deadlineAt")
+			at, err := time.Parse(time.RFC3339, deadline)
+			if start != projectedStart.Format(time.RFC3339) || err != nil || !at.After(time.Now()) {
+				t.Fatalf("resume start=%s deadline=%s, want original start and a fresh deadline", start, deadline)
+			}
+			page, err := s.store.ListMessages(t.Context(), scope, run.SessionID, 10, "")
+			if err != nil || len(page.Items) != 1 {
+				t.Fatalf("want one permission receipt before continuation, got %+v, %v", page, err)
+			}
+			receipt := page.Items[0]
+			if receipt.ID != "permission-inbox-approval" || receipt.RunID != run.ID ||
+				receipt.Metadata["permissionDecision"] != "approved" || receipt.Metadata["tool"] != "shell" ||
+				receipt.Metadata["args"] != `{"command":"pwd","token":"[redacted]"}` {
+				t.Fatalf("unexpected permission receipt: %+v", receipt)
+			}
+			if len(engineMessagesFromHistory(page.Items)) != 0 {
+				t.Fatal("permission receipt appeared in model history")
+			}
+		}})
 	if !checked {
 		t.Fatal("resume did not reach its continuation boundary")
 	}
@@ -372,9 +380,7 @@ func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
 		}
 	}, check: func() {
 		checked = true
-		if !started {
-			t.Fatal("continuation began before the stream identified the run")
-		}
+
 	}}}
 	ctx, cancel := context.WithCancel(dataplane.WithProxiedIdentity(t.Context(), dataplane.ProxiedIdentity{User: "reviewer"}))
 	cancel()
@@ -397,8 +403,8 @@ func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
 			t.Fatalf("unexpected question reply: %+v", reply)
 		}
 	})
-	if err == nil || !checked {
-		t.Fatalf("question resume did not reach the fixture's failing continuation boundary: %v", err)
+	if err == nil || !checked || !started {
+		t.Fatalf("question resume did not identify the run before reporting the fixture's setup failure: %v", err)
 	}
 }
 
@@ -412,8 +418,10 @@ func (c projectionResumeCR) GetAgent(ctx context.Context, _ string) (*agentsv1al
 	if c.checkContext != nil {
 		c.checkContext(ctx)
 	}
-	c.check()
-	return nil, errors.New("stop test after the projection boundary")
+	if c.check != nil {
+		c.check()
+	}
+	return nil, errors.New("stop test after loading the Agent")
 }
 
 func newProjectionFixture(t *testing.T, dyn dynamic.Interface, phase store.RunPhase) (*Server, store.Scope, store.Run) {
@@ -479,7 +487,7 @@ func TestQuestionGroupResolution(t *testing.T) {
 	if err := s.store.SaveRun(t.Context(), scope, run); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.store.ClaimRun(t.Context(), scope, run.ID, "", time.Now(), item.ID); err == nil {
+	if _, err := s.store.ClaimRun(t.Context(), scope, run.ID, "", time.Now(), 0, item.ID); err == nil {
 		t.Fatal("stale answer claimed a different checkpoint")
 	}
 	if _, err := s.resolveInboxDecision(t.Context(), scope, item.ID, store.InboxStateAnswered, "second reply", time.Now()); !errors.Is(err, store.ErrInboxAlreadyResolved) {
@@ -497,17 +505,14 @@ type answerDuringCleanupStore struct {
 	t *testing.T
 }
 
-func (s answerDuringCleanupStore) GetInboxItem(ctx context.Context, scope store.Scope, id string) (store.InboxItem, error) {
-	item, err := s.Store.GetInboxItem(ctx, scope, id)
-	if err == nil {
-		_, answerErr := s.ResolveInboxItem(ctx, scope, id, store.InboxStateAnswered, "User reply", time.Now(), store.InboxResolution{
-			QuestionPayload: map[string]any{"answers": map[string]string{"a": "User reply"}},
-		})
-		if answerErr != nil {
-			s.t.Fatal(answerErr)
-		}
+func (s answerDuringCleanupStore) ClosePendingRunInbox(ctx context.Context, scope store.Scope, runID, response string, now time.Time) ([]store.InboxItem, error) {
+	_, err := s.ResolveInboxItem(ctx, scope, "race-question", store.InboxStateAnswered, "User reply", time.Now(), store.InboxResolution{
+		QuestionPayload: map[string]any{"answers": map[string]string{"a": "User reply"}},
+	})
+	if err != nil {
+		s.t.Fatal(err)
 	}
-	return item, err
+	return s.Store.ClosePendingRunInbox(ctx, scope, runID, response, now)
 }
 
 func TestClosingParkedQuestionPreservesConcurrentReply(t *testing.T) {
@@ -519,9 +524,43 @@ func TestClosingParkedQuestionPreservesConcurrentReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.store = answerDuringCleanupStore{Store: original, t: t}
-	s.closeParkedInboxItem(t.Context(), scope, run, store.RunPhaseAborted, time.Now())
+	if err := s.closeRunInbox(t.Context(), scope, run.ID, store.RunPhaseAborted, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	got, err := original.GetInboxItem(t.Context(), scope, item.ID)
 	if err != nil || got.Response != "User reply" || got.Payload["answers"] == nil {
 		t.Fatalf("concurrent answer was lost: %+v, %v", got, err)
+	}
+}
+
+func TestRunProjectionKeepsCodeProofPrivate(t *testing.T) {
+	const proof = "example-signed-invocation-proof"
+	const envelope = `railgrid-code-scope:{"mode":"task","proof":"source-proof","scopeProof":"` + proof + `"}`
+	const publicTask = "Review the assigned PR"
+	ctx := t.Context()
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	s := &Server{}
+	run := store.Run{ID: "run", AgentName: "coordinator", Input: envelope + "\n" + publicTask}
+	got, err := s.createRunObject(ctx, dyn, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, _, err := unstructured.NestedString(got.Object, "spec", "inputPreview")
+	if err != nil || preview != publicTask {
+		t.Fatalf("public preview = %q, %v", preview, err)
+	}
+
+	if err := unstructured.SetNestedField(got.Object, run.Input, "spec", "inputPreview"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dyn.Resource(agentsclient.RunGVR).Update(ctx, got, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.writeRunObject(ctx, dyn, run, nil); err != nil {
+		t.Fatal(err)
+	}
+	preview, _, err = unstructured.NestedString(projectedObject(t, dyn, run.ID).Object, "spec", "inputPreview")
+	if err != nil || preview != publicTask {
+		t.Fatalf("scrubbed preview = %q, %v", preview, err)
 	}
 }

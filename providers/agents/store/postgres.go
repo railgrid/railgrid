@@ -197,6 +197,7 @@ var agentsSchema = []string{
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS execution_owner TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS execution_lease_at TIMESTAMPTZ`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS recovery_identity TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS resume_deadline_at TIMESTAMPTZ`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS agent_uid TEXT NOT NULL DEFAULT ''`,
 	// A run handed back to the queue after a transient refusal: how many times,
 	// and when it may be claimed again. Zero / NULL on every row written before
@@ -245,6 +246,8 @@ var agentsSchema = []string{
 		created_at TIMESTAMPTZ NOT NULL,
 		updated_at TIMESTAMPTZ NOT NULL
 	)`,
+	`CREATE INDEX IF NOT EXISTS agents_inbox_pending_run_idx
+		ON agents_inbox (org_uuid, workspace_uuid, agent_name, run_id) WHERE state = 'pending'`,
 	`CREATE INDEX IF NOT EXISTS agents_inbox_scope_idx
 		ON agents_inbox (org_uuid, workspace_uuid, state, created_at DESC)`,
 	`CREATE TABLE IF NOT EXISTS agents_tool_calls (
@@ -1251,7 +1254,7 @@ func (p *PostgresStore) ClaimFreshRun(ctx context.Context, scope Scope, id strin
 	row := mutation.executor.QueryRowContext(ctx, `UPDATE agents_runs SET
 		phase=$5, updated_at=GREATEST($6::timestamptz, updated_at + interval '1 microsecond'),
 		started_at=COALESCE(started_at, GREATEST($6::timestamptz, updated_at + interval '1 microsecond')),
-		execution_owner=$7,
+		execution_owner=$7, resume_deadline_at=NULL,
 		agent_uid=COALESCE(NULLIF(agent_uid, ''), $9),
 		execution_lease_at=GREATEST($6::timestamptz, updated_at + interval '1 microsecond')
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND updated_at=$4 AND phase=$8
@@ -1464,7 +1467,7 @@ func (p *PostgresStore) UpdateRunCheckpoint(ctx context.Context, scope Scope, id
 const runColumns = `id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, output, sources, idempotency_key, delivery, message,
 		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
 		       cancel_requested, cancel_requested_at, cancel_requested_by, backend, attempt_id, harness_session_id, repository, result, retries, retry_at, harness_settings, model_settings, delegated_usage_rolled_up,
-		       execution_owner, execution_lease_at, recovery_identity, agent_uid`
+		       execution_owner, execution_lease_at, recovery_identity, agent_uid, resume_deadline_at`
 
 func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run, error) {
 	scope = p.normalizeScope(ctx, scope)
@@ -1516,7 +1519,7 @@ func (p *PostgresStore) RequestCancel(ctx context.Context, scope Scope, id strin
 	return mutation.commit()
 }
 
-func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, owner string, now time.Time, inboxID ...string) (Run, error) {
+func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, owner string, now time.Time, resumeTimeout time.Duration, inboxID ...string) (Run, error) {
 	mutation, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return Run{}, err
@@ -1531,11 +1534,14 @@ func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, owner str
 			updated_at=GREATEST($5::timestamptz, updated_at + interval '1 microsecond'),
 			started_at=COALESCE(started_at, GREATEST($5::timestamptz, updated_at + interval '1 microsecond')),
 			execution_owner=$8,
+			resume_deadline_at=CASE WHEN phase=$7 AND $9::bigint > 0
+				THEN GREATEST($5::timestamptz, updated_at + interval '1 microsecond') + $9 * interval '1 microsecond'
+				ELSE resume_deadline_at END,
 			execution_lease_at=CASE WHEN $8='' THEN NULL ELSE GREATEST($5::timestamptz, updated_at + interval '1 microsecond') END
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase IN ($6,$7) AND cancel_requested=FALSE`
-	args := []any{scope.OrgUUID, scope.WorkspaceUUID, id, string(RunPhaseRunning), now.UTC(), string(RunPhasePending), string(RunPhasePendingApproval), owner}
+	args := []any{scope.OrgUUID, scope.WorkspaceUUID, id, string(RunPhaseRunning), now.UTC(), string(RunPhasePending), string(RunPhasePendingApproval), owner, resumeTimeout.Microseconds()}
 	if len(inboxID) > 0 && inboxID[0] != "" {
-		query += " AND phase=$7 AND checkpoint->>'inboxID'=$9"
+		query += " AND phase=$7 AND checkpoint->>'inboxID'=$10"
 		args = append(args, inboxID[0])
 	}
 	row := mutation.executor.QueryRowContext(ctx, query+" RETURNING "+runColumns, args...)
@@ -1824,7 +1830,7 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	var modelSettings []byte
 	var phase string
 	var checkpoint, sources, delivery, repository, result, harnessSettings []byte
-	var started, finished, cancelAt, retryAt, leaseAt sql.NullTime
+	var started, finished, cancelAt, retryAt, leaseAt, resumeDeadlineAt sql.NullTime
 	var worked sql.NullInt64
 	dest := []any{}
 	if sc != nil {
@@ -1834,7 +1840,7 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 		&run.Input, &run.Output, &sources, &run.IdempotencyKey, &delivery, &run.Message, &checkpoint, &run.InputTokens, &run.OutputTokens, &run.USDMicros,
 		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked, &run.CancelRequested, &cancelAt, &run.CancelRequestedBy,
 		&run.Backend, &run.AttemptID, &run.HarnessSessionID, &repository, &result, &run.Retries, &retryAt, &harnessSettings, &modelSettings, &run.DelegatedUsageRolledUp,
-		&run.ExecutionOwner, &leaseAt, &run.RecoveryIdentity, &run.AgentUID)
+		&run.ExecutionOwner, &leaseAt, &run.RecoveryIdentity, &run.AgentUID, &resumeDeadlineAt)
 	if err := r.Scan(dest...); err != nil {
 		return Run{}, err
 	}
@@ -1848,6 +1854,10 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	}
 	if leaseAt.Valid {
 		run.ExecutionLeaseAt = leaseAt.Time.UTC()
+	}
+	if resumeDeadlineAt.Valid {
+		t := resumeDeadlineAt.Time.UTC()
+		run.ResumeDeadlineAt = &t
 	}
 	run.Phase = RunPhase(phase)
 	run.Checkpoint = checkpoint
@@ -2029,6 +2039,26 @@ func (p *PostgresStore) AddInboxItem(ctx context.Context, scope Scope, item Inbo
 	if item.ID == "" {
 		return fmt.Errorf("inbox item ID is required")
 	}
+	if pendingRunPrompt(item) {
+		if err := mutation.ensureTransaction(ctx, p.db); err != nil {
+			return err
+		}
+		// Serialize a prompt with cancellation and terminal writes. A
+		// terminal run cannot gain a new pending prompt after cleanup.
+		var agent string
+		var phase RunPhase
+		var cancelled bool
+		err := mutation.executor.QueryRowContext(ctx, `
+			SELECT agent_name, phase, cancel_requested FROM agents_runs
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 FOR UPDATE`,
+			scope.OrgUUID, scope.WorkspaceUUID, item.RunID).Scan(&agent, &phase, &cancelled)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil && (agent != item.AgentName || cancelled || terminalRunPhase(phase)) {
+			return ErrRunAlreadySettled
+		}
+	}
 	payload, err := marshalJSONB(item.Payload)
 	if err != nil {
 		return err
@@ -2110,6 +2140,44 @@ func (p *PostgresStore) ListInbox(ctx context.Context, scope Scope, state InboxI
 		out = append(out, it)
 	}
 	return out, rows.Err()
+}
+
+func (p *PostgresStore) ClosePendingRunInbox(ctx context.Context, scope Scope, runID, response string, now time.Time) ([]InboxItem, error) {
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
+	if err := scope.withAgent(); err != nil {
+		return nil, err
+	}
+	rows, err := mutation.executor.QueryContext(ctx, `
+		UPDATE agents_inbox SET state=CASE WHEN kind=$6 THEN $7 ELSE $8 END,
+			response=$5, updated_at=$9
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND run_id=$4
+		  AND state='pending' AND kind IN ($6,$10)
+		RETURNING id, kind, state`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID, response,
+		InboxKindQuestion, InboxStateAnswered, InboxStateDenied, now.UTC(), InboxKindApproval)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var closed []InboxItem
+	for rows.Next() {
+		item := InboxItem{RunID: runID, AgentName: scope.AgentName, Response: response, UpdatedAt: now.UTC()}
+		if err := rows.Scan(&item.ID, &item.Kind, &item.State); err != nil {
+			return nil, err
+		}
+		closed = append(closed, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := mutation.commit(); err != nil {
+		return nil, err
+	}
+	return closed, nil
 }
 
 func (p *PostgresStore) ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, resolution InboxResolution) (InboxItem, error) {

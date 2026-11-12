@@ -347,7 +347,7 @@ func testHarnessReviewSession(t *testing.T, sc *agentsv1alpha1.AgentSelfConfigur
 	scope := f.scope
 	scope.AgentName = "bob"
 	now := time.Now().UTC()
-	run := store.Run{ID: "run-1", AgentName: "bob", AgentUID: string(a.UID), ParentRunID: "parent", IdempotencyKey: "delegate:parent:call", Input: input, Repository: &store.RunRepository{RepositoryID: "99", BaseCommit: strings.Repeat("a", 40)}, Phase: store.RunPhaseRunning, CreatedAt: now, UpdatedAt: now}
+	run := store.Run{ID: "run-1", AgentName: "bob", AgentUID: string(a.UID), Trigger: agentsv1alpha1.RunTriggerDelegation, ParentRunID: "parent", IdempotencyKey: "delegate:parent:call", Input: input, Repository: &store.RunRepository{RepositoryID: "99", BaseCommit: strings.Repeat("a", 40)}, Phase: store.RunPhaseRunning, CreatedAt: now, UpdatedAt: now}
 	if err := f.mem.SaveRun(t.Context(), scope, run); err != nil {
 		t.Fatal(err)
 	}
@@ -367,6 +367,13 @@ func testHarnessReviewSession(t *testing.T, sc *agentsv1alpha1.AgentSelfConfigur
 	_, isError := callText(t, session, "code_pull_request", map[string]any{"pullRequest": "pr", "input": map[string]any{"op": "publish"}})
 	if !isError {
 		t.Fatal("write family escalated review authority")
+	}
+	if err := f.mem.RequestCancel(t.Context(), scope, run.ID, now, "cancel-caller"); err != nil {
+		t.Fatal(err)
+	}
+	afterCancel, err := session.ListTools(t.Context(), nil)
+	if err == nil && len(afterCancel.Tools) != 0 {
+		t.Fatal("cancelled worker retained Code tools")
 	}
 	run.Phase = store.RunPhaseSucceeded
 	if err := f.mem.SaveRun(t.Context(), scope, run); err != nil {

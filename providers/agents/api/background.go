@@ -71,6 +71,7 @@ import (
 	"github.com/railgrid/provider-agents/internal/webhookpath"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 var sliceGVR = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha1", Resource: "apiexportendpointslices"}
@@ -657,7 +658,7 @@ func (b *background) submitRun(ctx context.Context, job executor.Job) (string, e
 		HarnessSettings: resolveHarnessSettings(agent, nil),
 		ID:              runID, AgentName: job.AgentRef, SessionID: job.SessionID, Trigger: job.Trigger,
 		AgentUID: string(agent.UID), RecoveryIdentity: store.RecoveryIdentityAgent,
-		Phase: store.RunPhasePending, Input: job.Task, CreatedAt: now, UpdatedAt: now,
+		Phase: store.RunPhasePending, Input: tools.PublicRunTask(job.Task), CreatedAt: now, UpdatedAt: now,
 		Delivery: &store.RunDelivery{
 			SourceName: job.SourceName, ReplyTarget: job.ReplyTarget,
 			NotifyChannel: job.NotifyChannel, Kind: string(job.Kind),

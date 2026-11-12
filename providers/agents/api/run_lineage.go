@@ -10,11 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tenant"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 const (
@@ -224,6 +226,22 @@ func (s *Server) reconcileTerminalRunDescendants(ctx context.Context, clusterID,
 		return nil
 	}
 	scope := s.bg.scopeFor(ctx, clusterID, agentName)
+	run, found, err := s.parentRun(ctx, scope, runID)
+	if err != nil {
+		return err
+	}
+	if found {
+		if err := s.closeRunInbox(ctx, scope, run.ID, run.Phase, time.Now().UTC()); err != nil {
+			return err
+		}
+		if isTerminalRunPhase(run.Phase) && tools.PublicRunTask(run.Input) != run.Input {
+			if err := s.projectRunTo(ctx, clusterID, run, func(ctx context.Context) (store.Run, error) {
+				return s.store.GetRun(ctx, scope, run.ID)
+			}); err != nil {
+				return err
+			}
+		}
+	}
 	return s.reconcileRunDescendants(ctx, scope, runID)
 }
 

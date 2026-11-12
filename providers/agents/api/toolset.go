@@ -368,7 +368,10 @@ func (s *Server) wrapTool(t backend.Tool, deps tools.Deps, run taskRun, trigger 
 	t.Exec = nil
 	t.ExecRich = func(ctx context.Context, argsJSON string) (engine.Observation, error) {
 		if needsApproval && !approved.consume(argsJSON) {
-			reqID := s.postApprovalRequest(ctx, deps, trigger, t.Name, argsJSON)
+			reqID, err := s.postApprovalRequest(ctx, deps, trigger, t.Name, argsJSON)
+			if err != nil {
+				return backend.Observation{}, err
+			}
 			_ = s.store.AppendToolCall(ctx, deps.Scope, store.ToolCall{
 				ID: uuid.NewString(), AgentName: deps.Agent.Name, RunID: deps.RunID, Trigger: trigger,
 				Tool: t.Name, Args: redactArgs(argsJSON), Outcome: "pending_approval",
@@ -414,11 +417,11 @@ func (s *Server) wrapTool(t backend.Tool, deps tools.Deps, run taskRun, trigger 
 
 // postApprovalRequest records a pending approval (bound to this run and the
 // exact requested call) and pushes it to the user's primary channel.
-func (s *Server) postApprovalRequest(ctx context.Context, deps tools.Deps, trigger, toolName, argsJSON string) string {
+func (s *Server) postApprovalRequest(ctx context.Context, deps tools.Deps, trigger, toolName, argsJSON string) (string, error) {
 	now := time.Now().UTC()
 	wsScope := store.Scope{OrgUUID: deps.Scope.OrgUUID, WorkspaceUUID: deps.Scope.WorkspaceUUID}
 	id := uuid.NewString()
-	_ = s.store.AddInboxItem(ctx, wsScope, store.InboxItem{
+	if err := s.store.AddInboxItem(ctx, wsScope, store.InboxItem{
 		ID: id, AgentName: deps.Agent.Name, RunID: deps.RunID, Kind: store.InboxKindApproval,
 		State:  store.InboxStatePending,
 		Prompt: "Allow " + deps.Agent.Name + " to run " + toolName + "?",
@@ -426,14 +429,16 @@ func (s *Server) postApprovalRequest(ctx context.Context, deps tools.Deps, trigg
 			"tool": toolName, "args": redactArgs(argsJSON), "trigger": trigger,
 		},
 		CreatedAt: now, UpdatedAt: now,
-	})
+	}); err != nil {
+		return "", fmt.Errorf("filing approval request: %w", err)
+	}
 	s.events.publish(wsScope, "inbox", map[string]any{
 		"id": id, "state": "pending", "agent": deps.Agent.Name, "tool": toolName, "runID": deps.RunID,
 	})
 	// Push the request to the user's channel so it can be answered where they
 	// live: reply /inbox to list, /approve N to allow (which resumes the run).
 	pushInboxNotice(ctx, deps, fmt.Sprintf("⏳ %s wants to run %s. Reply /inbox to review, /approve to allow — the run resumes automatically.", deps.Agent.Name, toolName))
-	return id
+	return id, nil
 }
 
 // pushInboxNotice tells the agent's primary channel that something waits in
