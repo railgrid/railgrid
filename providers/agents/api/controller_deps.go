@@ -20,6 +20,8 @@ import (
 // from the HTTP/background half of the provider. main wires them together;
 // neither side imports the other. Every value is safe for concurrent use.
 type ControllerDeps struct {
+	// ProcessID is the same process-incarnation identity used by API run leases.
+	ProcessID string
 	// Config targets the provider's own kcp workspace (the APIExport and its
 	// endpoint slice live there); the manager's apiexport provider and the
 	// leader-election lease both use it.
@@ -44,11 +46,12 @@ func (s *Server) ControllerDeps() (ControllerDeps, bool) {
 		return ControllerDeps{}, false
 	}
 	return ControllerDeps{
-		Config:   s.bg.base,
-		Submit:   s.bg,
-		Telegram: TelegramBotAPI{},
-		OAuth:    s.OAuthRefresher(),
-		Gateway:  s.bg.discord,
+		ProcessID: s.cfg.ProcessID,
+		Config:    s.bg.base,
+		Submit:    s.bg,
+		Telegram:  TelegramBotAPI{},
+		OAuth:     s.OAuthRefresher(),
+		Gateway:   s.bg.discord,
 	}, true
 }
 

@@ -18,7 +18,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/railgrid/railgrid/pkg/runner"
@@ -26,6 +28,8 @@ import (
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	backendharness "github.com/railgrid/provider-agents/backend/harness"
+	"github.com/railgrid/provider-agents/internal/connsecret"
+	"github.com/railgrid/provider-agents/internal/githubapp"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -161,11 +165,26 @@ func repositoryLifecycleRun(t *testing.T, dispatcher dispatch.Runner) (*Server, 
 	run.Trigger = agentsv1alpha1.RunTriggerAPI
 	run.SessionID = ""
 	run.Task = "implement T-1"
+	run.Agent.Spec.Backend.Harness.GitHubConnectionRef = "checkout"
+	connection := githubConnection("checkout", "")
+	connection.Spec.Auth = "secret"
+	connection.Spec.Config = map[string]string{
+		"credentialType": "github-app", "githubRole": "checkout",
+		"repositoryID": "42", "repository": "railgrid/railgrid",
+	}
+	run.CR = connectionsCR{connections: map[string]*agentsv1alpha1.Connection{"checkout": connection}}
+	run.Creds = repositoryLifecycleCredentials{}
+	s.githubAppTokenMint = func(_ context.Context, policy githubapp.Client, _ map[string][]byte) (string, time.Time, error) {
+		if len(policy.RepositoryIDs) != 1 || policy.RepositoryIDs[0] != 42 || policy.Permissions["contents"] != "read" || policy.Permissions["metadata"] != "read" || len(policy.Permissions) != 2 {
+			t.Fatalf("repository checkout policy widened: repositories=%v permissions=%v", policy.RepositoryIDs, policy.Permissions)
+		}
+		return "ghs_short_lived", time.Now().Add(time.Hour), nil
+	}
 	run.Agent.Spec.SystemPrompt = "You are the coder."
 	run.Repository = &repositoryAttempt{
 		Repository: backendharness.Repository{
-			RepositoryID: "railgrid", BaseCommit: lifecycleBase, CommitMessage: "Implement T-1",
-			Source:               &runner.RepositorySource{RemoteURL: "https://github.com/railgrid/railgrid.git", Token: "ghs_short_lived"},
+			RepositoryID: "42", BaseCommit: lifecycleBase, CommitMessage: "Implement T-1",
+			Source:               &runner.RepositorySource{RemoteURL: "https://github.com/railgrid/railgrid.git", Token: "caller-pat-must-be-replaced"},
 			RequiredCapabilities: []string{"git-fetch-v1", "git-result-v1"},
 			RequiredToolchains:   []string{"git"},
 			ApprovedInput:        json.RawMessage(`{"ticket":"T-1"}`),
@@ -181,6 +200,17 @@ func repositoryLifecycleRun(t *testing.T, dispatcher dispatch.Runner) (*Server, 
 		t.Fatal(err)
 	}
 	return s, run
+}
+
+type repositoryLifecycleCredentials struct{ runLifecycleHarnessCredentials }
+
+func (repositoryLifecycleCredentials) GetSecret(ctx context.Context, namespace, name string) (*corev1.Secret, error) {
+	if name == connsecret.Name("checkout") {
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name}, Data: map[string][]byte{
+			"appID": []byte("1"), "installationID": []byte("2"), "privateKey": []byte("test-only-key"), "token": []byte("caller-pat-must-not-be-used"),
+		}}, nil
+	}
+	return repositoryLifecycleCredentials{}.runLifecycleHarnessCredentials.GetSecret(ctx, namespace, name)
 }
 
 // The whole lifecycle of a repository run: dispatched as a repository attempt
@@ -214,10 +244,10 @@ func TestRepositoryRunLifecycleStoresTheVerifiedResult(t *testing.T) {
 	}
 
 	switch {
-	case req.RepositoryID != "railgrid" || req.BaseCommit != lifecycleBase || !req.ExportGitResult:
+	case req.RepositoryID != "42" || req.BaseCommit != lifecycleBase || !req.ExportGitResult:
 		t.Errorf("start = %+v, want a repository attempt", req)
-	case req.Repository == nil || req.Repository.Token != "ghs_short_lived":
-		t.Error("the clone source with its token goes on the start")
+	case req.Repository == nil || req.Repository.Token != "ghs_short_lived" || req.Repository.RemoteURL != "https://github.com/railgrid/railgrid.git":
+		t.Error("the pinned clone source with its freshly minted token goes on the start")
 	case req.WorkspaceID != "" || req.SessionID != "":
 		t.Errorf("workspace %q session %q, want neither", req.WorkspaceID, req.SessionID)
 	case req.TaskID != run.RunID || req.AttemptID != run.RunID || req.AttemptEpoch != 1:
@@ -249,7 +279,7 @@ func TestRepositoryRunLifecycleStoresTheVerifiedResult(t *testing.T) {
 	if stored.Phase != store.RunPhaseSucceeded || stored.Backend != agentsv1alpha1.AgentBackendHarness || stored.AttemptID != run.RunID {
 		t.Fatalf("stored = %+v", stored)
 	}
-	if stored.Repository == nil || stored.Repository.RepositoryID != "railgrid" || stored.Repository.BaseCommit != lifecycleBase || stored.Repository.CommitMessage != "Implement T-1" {
+	if stored.Repository == nil || stored.Repository.RepositoryID != "42" || stored.Repository.BaseCommit != lifecycleBase || stored.Repository.CommitMessage != "Implement T-1" {
 		t.Fatalf("repository = %+v", stored.Repository)
 	}
 	if stored.Result == nil || stored.Result.Commit != lifecycleCommit || stored.Result.Tree != lifecycleTree || stored.Result.BaseCommit != lifecycleBase || stored.Result.NoChanges {
@@ -295,6 +325,21 @@ func TestRepositoryRunLifecycleStoresTheVerifiedResult(t *testing.T) {
 		}
 	}
 
+	// A recovered attempt keeps the same limit, and the controller gets the
+	// corresponding deadline, including the final-receipt margin.
+	if restored := repositoryAttemptFromStored(stored.Repository); restored == nil || restored.MaxDurationSeconds != 900 {
+		t.Fatalf("restored repository duration = %+v", restored)
+	}
+	if stored.StartedAt == nil {
+		t.Fatal("repository run did not persist a start time")
+	}
+	running := stored
+	running.Phase = store.RunPhaseRunning
+	deadline := runStatusFor(running).DeadlineAt
+	if want := running.StartedAt.Add(17 * time.Minute); deadline == nil || !deadline.Time.Equal(want) {
+		t.Fatalf("repository controller deadline = %v, want %s", deadline, want)
+	}
+
 	// The projection: spec.repository and status.result in the contract's shape.
 	status := runStatusFor(stored)
 	if status.Result == nil || status.Result.Commit != lifecycleCommit || status.Result.BundleDigest != stored.Result.BundleDigest {
@@ -327,6 +372,18 @@ func TestRepositoryRunWithoutAnExportFails(t *testing.T) {
 	}
 }
 
+func TestRepositoryRunRejectsRemoteOutsidePinnedCheckout(t *testing.T) {
+	dispatcher := &repositoryLifecycleDispatcher{bodies: map[string][]byte{}}
+	s, run := repositoryLifecycleRun(t, dispatcher)
+	run.Repository.Source.RemoteURL = "https://attacker.example/collect.git"
+	if _, err := s.runTurn(t.Context(), run, nil); err == nil || !strings.Contains(err.Error(), "does not match its pinned") {
+		t.Fatalf("remote substitution error = %v", err)
+	}
+	if len(dispatcher.starts) != 0 {
+		t.Fatalf("untrusted repository remote was dispatched: %+v", dispatcher.starts)
+	}
+}
+
 // A no-changes export succeeds with no bundle and no commit.
 func TestRepositoryRunWithNoChangesSucceedsWithoutABundle(t *testing.T) {
 	artifacts, bodies := gitResultArtifacts(t, "run-lifecycle", true)
@@ -349,27 +406,21 @@ func TestRepositoryRunWithNoChangesSucceedsWithoutABundle(t *testing.T) {
 }
 
 // A repository run whose Start was never issued before the provider restarted
-// has lost its clone token with the process. It fails with the message the
-// coordinator retries on, and nothing is dispatched.
-func TestRepositoryRunRestartedBeforeStartFailsForRetry(t *testing.T) {
-	dispatcher := &repositoryLifecycleDispatcher{bodies: map[string][]byte{}}
+// rebuilds the canonical remote from its pinned connection and mints a fresh
+// checkout token at dispatch.
+func TestRepositoryRunRestartedBeforeStartRemintsCheckoutToken(t *testing.T) {
+	artifacts, bodies := gitResultArtifacts(t, "run-lifecycle", true)
+	dispatcher := &repositoryLifecycleDispatcher{artifacts: artifacts, bodies: bodies}
 	s, run := repositoryLifecycleRun(t, dispatcher)
-	// Rebuilt from the record, as a restarted process would: no source.
+	// Rebuilt from the record, as a restarted process would: no clone source.
 	run.Repository = repositoryAttemptFromStored(run.Repository.persisted())
 
 	res, err := s.runTurn(t.Context(), run, nil)
-	if !errors.Is(err, backendharness.ErrCloneCredentialUnavailable) {
-		t.Fatalf("err = %v, want ErrCloneCredentialUnavailable", err)
+	if err != nil || res.Phase != store.RunPhaseSucceeded {
+		t.Fatalf("runTurn: %v phase=%s", err, res.Phase)
 	}
-	if res.Phase != store.RunPhaseFailed {
-		t.Fatalf("phase = %s", res.Phase)
-	}
-	stored, _ := s.store.GetRun(t.Context(), run.Scope, run.RunID)
-	if stored.Message != "clone credential not available after restart; retry" {
-		t.Fatalf("message = %q", stored.Message)
-	}
-	if len(dispatcher.starts) != 0 {
-		t.Fatal("nothing must be dispatched without the clone source")
+	if len(dispatcher.starts) != 1 || dispatcher.starts[0].Repository == nil || dispatcher.starts[0].Repository.Token != "ghs_short_lived" || dispatcher.starts[0].Repository.RemoteURL != "https://github.com/railgrid/railgrid.git" {
+		t.Fatalf("recovered checkout dispatches = %+v", dispatcher.starts)
 	}
 }
 

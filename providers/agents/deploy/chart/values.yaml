@@ -58,6 +58,10 @@ triggers:
 mcpApps:
   approvedDigests: {}
 
+# Optional direct Agents MCP endpoint reachable by coding-harness runners.
+# HTTPS is required except for loopback HTTP on colocated runners.
+harnessMCPURL: ""
+
 hub:
   url: "http://railgrid-hub.railgrid.svc.cluster.local:8080"
   # The hub's public address (https://console.example.com). A remote coding

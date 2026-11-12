@@ -32,16 +32,37 @@ func testRunArtifacts(t *testing.T, s Store, sc Scope) {
 	// clone with.
 	if err := s.SaveRun(ctx, sc, Run{
 		ID: runID, AgentName: sc.AgentName, Trigger: "api", Phase: RunPhaseRunning, Backend: "harness",
-		Repository: &RunRepository{RepositoryID: "railgrid", BaseCommit: base, CommitMessage: "Implement T-1"},
+		Repository: &RunRepository{RepositoryID: "railgrid", BaseCommit: base, CommitMessage: "Implement T-1", MaxDurationSeconds: 3600},
 		CreatedAt:  now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("save: %v", err)
+	}
+	for _, artifact := range []RunArtifact{
+		{RunID: runID, Name: StructuredResultArtifact, Digest: "bad-type", MediaType: "text/plain", Size: 2, Data: []byte("{}"), CreatedAt: now},
+		{RunID: runID, Name: StructuredResultArtifact, Digest: "too-large", MediaType: "application/json", Size: MaxStructuredResultBytes + 1, Data: make([]byte, MaxStructuredResultBytes+1), CreatedAt: now},
+		{RunID: runID, Name: "bad-type", Digest: "bad-type", MediaType: "text/", Size: 2, Data: []byte("{}"), CreatedAt: now},
+	} {
+		if err := s.SaveRunArtifact(ctx, sc, artifact); err == nil {
+			t.Fatalf("accepted invalid artifact %q (%s, %d bytes)", artifact.Name, artifact.MediaType, artifact.Size)
+		}
+	}
+	a := RunArtifact{RunID: runID, Name: "structured-result.json", Digest: "one", MediaType: "application/json", Size: 2, Data: []byte("{}"), CreatedAt: now}
+	if err := s.SaveRunArtifact(ctx, sc, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveRunArtifact(ctx, sc, a); err != nil {
+		t.Fatal(err)
+	}
+	a.Digest = "two"
+	a.Data = []byte("[]")
+	if err := s.SaveRunArtifact(ctx, sc, a); err == nil {
+		t.Fatal("structured result was overwritten")
 	}
 	got, err := s.GetRun(ctx, sc, runID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Repository == nil || got.Repository.RepositoryID != "railgrid" || got.Repository.BaseCommit != base || got.Repository.CommitMessage != "Implement T-1" {
+	if got.Repository == nil || got.Repository.RepositoryID != "railgrid" || got.Repository.BaseCommit != base || got.Repository.CommitMessage != "Implement T-1" || got.Repository.MaxDurationSeconds != 3600 {
 		t.Fatalf("repository = %+v", got.Repository)
 	}
 	if got.Result != nil {

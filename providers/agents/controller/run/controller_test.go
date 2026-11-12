@@ -134,6 +134,49 @@ func TestDeadlineIsStampedAndRequeuedAt(t *testing.T) {
 	}
 }
 
+func TestTerminalRunRetriesFailedDescendantCleanup(t *testing.T) {
+	calls := 0
+	r := &Reconciler{ProcessID: "test", ReconcileDescendants: func(context.Context, string, string, string) error {
+		calls++
+		if calls == 1 {
+			return errors.New("injected child stop failure")
+		}
+		return nil
+	}}
+	terminal := newRun("terminal", func(run *agentsv1alpha1.Run) { run.Status.Phase = agentsv1alpha1.RunPhaseAborted })
+	_, result := run(t, r, terminal)
+	if calls != 1 || result.RequeueAfter != descendantReconcileRetry {
+		t.Fatalf("first reconciliation calls=%d requeue=%s", calls, result.RequeueAfter)
+	}
+	_, result = run(t, r, terminal)
+	if calls != 2 || result.RequeueAfter != 0 {
+		t.Fatalf("retry calls=%d requeue=%s", calls, result.RequeueAfter)
+	}
+}
+
+func TestActiveChildRetriesParentReconciliation(t *testing.T) {
+	calls := 0
+	r := &Reconciler{ProcessID: "test", ReconcileParent: func(context.Context, string, string, string) error {
+		calls++
+		if calls == 1 {
+			return errors.New("injected orphan cleanup failure")
+		}
+		return nil
+	}}
+	child := newRun("child", func(run *agentsv1alpha1.Run) {
+		run.Spec.ParentRunRef = "missing-parent"
+		run.Status.Phase = agentsv1alpha1.RunPhasePendingApproval
+	})
+	_, result := run(t, r, child)
+	if calls != 1 || result.RequeueAfter != descendantReconcileRetry {
+		t.Fatalf("first reconciliation calls=%d requeue=%s", calls, result.RequeueAfter)
+	}
+	_, result = run(t, r, child)
+	if calls != 2 || result.RequeueAfter != 0 {
+		t.Fatalf("retry calls=%d requeue=%s", calls, result.RequeueAfter)
+	}
+}
+
 // An agent that asks for more than MaxTimeout does not get it: one agent must
 // not be able to pin a worker indefinitely.
 func TestDeadlineIsCapped(t *testing.T) {
@@ -177,7 +220,12 @@ func TestPastTheDeadlineTheRunIsReportedNotKilled(t *testing.T) {
 		calls                       int
 	}
 	r := &Reconciler{
-		Now: func() time.Time { return started.Add(time.Hour) },
+		Now:       func() time.Time { return started.Add(time.Hour) },
+		ProcessID: "pod-a",
+		Recover: func(context.Context, string, string, string) error {
+			t.Fatal("a fresh lease should not be recovered")
+			return nil
+		},
 		Stop: func(_ context.Context, clusterID, agentName, runID, reason string) error {
 			got.cluster, got.agent, got.run, got.reason = clusterID, agentName, runID, reason
 			got.calls++
@@ -185,6 +233,8 @@ func TestPastTheDeadlineTheRunIsReportedNotKilled(t *testing.T) {
 		},
 	}
 	object := newRun("r1", func(o *agentsv1alpha1.Run) {
+		o.Status.Owner = "pod-a/execution"
+		o.Status.ClaimedAt = &metav1.Time{Time: r.now().Add(-time.Second)}
 		o.Status.DeadlineAt = &metav1.Time{Time: started.Add(10 * time.Minute)}
 	})
 	c, result := run(t, r, object, newAgent(600))
@@ -195,8 +245,8 @@ func TestPastTheDeadlineTheRunIsReportedNotKilled(t *testing.T) {
 	if !strings.Contains(got.reason, "time limit") {
 		t.Errorf("reason = %q, should name the limit so a reader can tell a deadline from a crash", got.reason)
 	}
-	if result.RequeueAfter != 0 {
-		t.Errorf("a reported timeout requeued after %v; there is nothing left to wait for", result.RequeueAfter)
+	if result.RequeueAfter != ClaimGrace-time.Second {
+		t.Errorf("after requesting stop, requeue = %v, want remaining lease grace", result.RequeueAfter)
 	}
 	after := get(t, c, "r1")
 	if after.Status.Phase != agentsv1alpha1.RunPhaseRunning {
@@ -208,11 +258,39 @@ func TestPastTheDeadlineTheRunIsReportedNotKilled(t *testing.T) {
 	}
 }
 
+func TestRepositoryRunKeepsItsProjectedDeadline(t *testing.T) {
+	now := started.Add(15 * time.Minute)
+	deadline := metav1.NewTime(started.Add(62 * time.Minute))
+	r := &Reconciler{
+		Now: func() time.Time { return now },
+		Stop: func(context.Context, string, string, string, string) error {
+			t.Fatal("Agent default cut the repository run short")
+			return nil
+		},
+	}
+	object := newRun("repo", func(o *agentsv1alpha1.Run) {
+		o.Spec.Repository = &agentsv1alpha1.RunRepository{RepositoryID: "42"}
+		o.Status.DeadlineAt = &deadline
+	})
+	_, result := run(t, r, object, newAgent(600))
+	if result.RequeueAfter != deadline.Sub(now)+deadlineSlack {
+		t.Fatalf("requeued after %v, want the remaining projected deadline", result.RequeueAfter)
+	}
+}
+
 // A run waiting on a human has not overrun. PendingApproval is settled from the
 // deadline's point of view, and the stale deadline is cleared so a later resume
 // is measured afresh rather than starting already expired.
 func TestAWaitingRunHasNoDeadline(t *testing.T) {
+	checked := 0
 	r := &Reconciler{
+		ReconcileParked: func(_ context.Context, clusterID, agentName, runID string) error {
+			if clusterID != cluster1 || agentName != "scout" || runID != "r1" {
+				t.Fatalf("unexpected parked lookup: %s/%s/%s", clusterID, agentName, runID)
+			}
+			checked++
+			return nil
+		},
 		Now: func() time.Time { return started.Add(time.Hour) },
 		Stop: func(context.Context, string, string, string, string) error {
 			t.Fatal("a settled run must not time out")
@@ -223,7 +301,10 @@ func TestAWaitingRunHasNoDeadline(t *testing.T) {
 		o.Status.Phase = agentsv1alpha1.RunPhasePendingApproval
 		o.Status.DeadlineAt = &metav1.Time{Time: started.Add(10 * time.Minute)}
 	})
-	c, _ := run(t, r, object, newAgent(600))
+	c, result := run(t, r, object, newAgent(600))
+	if checked != 1 || result.RequeueAfter != ClaimGrace {
+		t.Fatalf("parked checks=%d requeue=%v, want a check and a lease-window retry", checked, result.RequeueAfter)
+	}
 	if got := get(t, c, "r1"); got.Status.DeadlineAt != nil {
 		t.Errorf("deadline = %v, want it cleared while the run waits on a human", got.Status.DeadlineAt)
 	}
@@ -640,8 +721,86 @@ func TestAStrandedRunningRunIsRecovered(t *testing.T) {
 	}
 }
 
-// A run this process is executing is not stranded, however old its claim looks.
-func TestOurOwnRunningRunIsNotRecovered(t *testing.T) {
+func TestOwnerlessAPIRunUsesStartedAtForRecovery(t *testing.T) {
+	var recovered int
+	r := &Reconciler{
+		Now: func() time.Time { return started }, ProcessID: "pod-a", Dispatch: (&dispatcher{}).dispatch,
+		Recover: func(context.Context, string, string, string) error {
+			recovered++
+			return nil
+		},
+	}
+	object := unattended("r1", func(o *agentsv1alpha1.Run) {
+		o.Status.Phase = agentsv1alpha1.RunPhaseRunning
+		o.Status.StartedAt = &metav1.Time{Time: started.Add(-2 * ClaimGrace)}
+	})
+	run(t, r, object, newAgent(600))
+	if recovered != 1 {
+		t.Fatalf("Recover called %d time(s), want an ownerless API run recovered after ClaimGrace", recovered)
+	}
+}
+
+func TestFreshOwnerlessAPIRunWaitsForClaimGrace(t *testing.T) {
+	var recovered int
+	r := &Reconciler{
+		Now: func() time.Time { return started }, ProcessID: "pod-a", Dispatch: (&dispatcher{}).dispatch,
+		Recover: func(context.Context, string, string, string) error {
+			recovered++
+			return nil
+		},
+	}
+	object := unattended("r1", func(o *agentsv1alpha1.Run) {
+		o.Status.Phase = agentsv1alpha1.RunPhaseRunning
+		o.Status.StartedAt = &metav1.Time{Time: started.Add(-ClaimGrace + time.Second)}
+	})
+	_, result := run(t, r, object, newAgent(600))
+	if recovered != 0 || result.RequeueAfter != time.Second {
+		t.Fatalf("Recover called %d time(s), requeue after %s; want no recovery and 1s grace", recovered, result.RequeueAfter)
+	}
+}
+
+func TestOwnerlessPendingAPIRunRecoversAfterGrace(t *testing.T) {
+	var recovered int
+	r := &Reconciler{
+		Now: func() time.Time { return started }, ProcessID: "pod-a", Dispatch: (&dispatcher{}).dispatch,
+		Recover: func(context.Context, string, string, string) error {
+			recovered++
+			return nil
+		},
+	}
+	object := unattended("r1", func(o *agentsv1alpha1.Run) {
+		o.Spec.Delivery = nil
+		o.Status.Phase = agentsv1alpha1.RunPhasePending
+		o.CreationTimestamp = metav1.Time{Time: started.Add(-2 * ClaimGrace)}
+	})
+	run(t, r, object, newAgent(600))
+	if recovered != 1 {
+		t.Fatalf("Recover called %d time(s), want the abandoned API admission settled", recovered)
+	}
+}
+
+func TestFreshOwnerlessPendingAPIRunWaitsForClaimGrace(t *testing.T) {
+	var recovered int
+	r := &Reconciler{
+		Now: func() time.Time { return started }, ProcessID: "pod-a", Dispatch: (&dispatcher{}).dispatch,
+		Recover: func(context.Context, string, string, string) error {
+			recovered++
+			return nil
+		},
+	}
+	object := unattended("r1", func(o *agentsv1alpha1.Run) {
+		o.Spec.Delivery = nil
+		o.Status.Phase = agentsv1alpha1.RunPhasePending
+		o.CreationTimestamp = metav1.Time{Time: started.Add(-ClaimGrace + time.Second)}
+	})
+	_, result := run(t, r, object, newAgent(600))
+	if recovered != 0 || result.RequeueAfter != time.Second {
+		t.Fatalf("Recover called %d time(s), requeue after %s; want no recovery and 1s grace", recovered, result.RequeueAfter)
+	}
+}
+
+// A fresh owner heartbeat keeps this process's run from recovery.
+func TestOurFreshRunningLeaseIsNotRecovered(t *testing.T) {
 	r := &Reconciler{
 		Now: func() time.Time { return started }, ProcessID: "pod-a",
 		Dispatch: (&dispatcher{}).dispatch,
@@ -653,7 +812,27 @@ func TestOurOwnRunningRunIsNotRecovered(t *testing.T) {
 	object := unattended("r1", func(o *agentsv1alpha1.Run) {
 		o.Status.Phase = agentsv1alpha1.RunPhaseRunning
 		o.Status.Owner = "pod-a"
+		o.Status.ClaimedAt = &metav1.Time{Time: started}
+	})
+	run(t, r, object, newAgent(600))
+}
+
+func TestExpiredOwnRunningLeaseIsRecovered(t *testing.T) {
+	var recovered int
+	r := &Reconciler{
+		Now: func() time.Time { return started }, ProcessID: "pod-a",
+		Recover: func(context.Context, string, string, string) error {
+			recovered++
+			return nil
+		},
+	}
+	object := unattended("r1", func(o *agentsv1alpha1.Run) {
+		o.Status.Phase = agentsv1alpha1.RunPhaseRunning
+		o.Status.Owner = "pod-a"
 		o.Status.ClaimedAt = &metav1.Time{Time: started.Add(-10 * ClaimGrace)}
 	})
 	run(t, r, object, newAgent(600))
+	if recovered != 1 {
+		t.Fatalf("Recover called %d time(s), want the expired local lease recovered", recovered)
+	}
 }

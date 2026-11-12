@@ -304,8 +304,9 @@ type runAccess struct {
 	AttachmentCaller string
 	// EdgesEndpoint is the hub mcpserver MCP URL ("" → the edges family is
 	// absent, which it is for anything with no caller credential).
-	EdgesEndpoint string
-	EdgesInsecure bool
+	EdgesEndpoint    string
+	EdgesInsecure    bool
+	RecoveryIdentity store.RecoveryIdentity
 
 	// Notify delivers a finished run's output to the agent channel its
 	// schedule/trigger reports to. Nil where there is nothing to deliver to —
@@ -319,6 +320,7 @@ func (a runAccess) applyTo(tr *taskRun) {
 	tr.ClusterID, tr.HubToken = a.ClusterID, a.HubToken
 	tr.CallerUser = a.CallerUser
 	tr.EdgesEndpoint, tr.EdgesInsecure = a.EdgesEndpoint, a.EdgesInsecure
+	tr.RecoveryIdentity = a.RecoveryIdentity
 }
 
 // inherited is the access a child run of this one gets: a spawned worker, which
@@ -329,7 +331,7 @@ func (a runAccess) applyTo(tr *taskRun) {
 // grantableWorkerFamilies drops the family. Everything else is the parent's, so
 // a child can reach what its parent could and nothing more.
 func (r taskRun) inherited() runAccess {
-	return runAccess{Creds: r.Creds, CR: r.CR, ClusterID: r.ClusterID, HubToken: r.HubToken}
+	return runAccess{Creds: r.Creds, CR: r.CR, ClusterID: r.ClusterID, HubToken: r.HubToken, RecoveryIdentity: r.RecoveryIdentity}
 }
 
 // callerAccess is the access a request-driven run executes with: the client the
@@ -339,11 +341,12 @@ func (r taskRun) inherited() runAccess {
 func (s *Server) callerAccess(ctx context.Context, c *agentsclient.Client, id identity) runAccess {
 	return runAccess{
 		Creds: c, CR: clientCR{c},
-		ClusterID:     id.clusterID,
-		CallerUser:    id.user,
-		HubToken:      id.token,
-		EdgesEndpoint: s.aggregateMCPEndpoint(ctx, id),
-		EdgesInsecure: s.cfg.HubInsecure,
+		ClusterID:        id.clusterID,
+		CallerUser:       id.user,
+		HubToken:         id.token,
+		EdgesEndpoint:    s.aggregateMCPEndpoint(ctx, id),
+		EdgesInsecure:    s.cfg.HubInsecure,
+		RecoveryIdentity: store.RecoveryIdentityCaller,
 		Notify: func(ctx context.Context, agent *agentsv1alpha1.Agent, role, prefix, text string) {
 			s.deliverToNotifyChannel(ctx, c, agent, role, prefix, text)
 		},
@@ -517,19 +520,26 @@ func resumeArtifactReferences(checkpoint runCheckpoint, callerUser string) (stri
 // caller wants. ParentRunID links sub-agent (delegation) runs.
 type taskRun struct {
 	// CallerUser attributes only this attended task, never inherited child tasks.
-	CallerUser string
-	Creds      llm.CredentialResolver
-	CR         tools.CRAccess
-	Scope      store.Scope
-	Agent      *agentsv1alpha1.Agent
+	CallerUser       string
+	RecoveryIdentity store.RecoveryIdentity
+	Creds            llm.CredentialResolver
+	CR               tools.CRAccess
+	Scope            store.Scope
+	Agent            *agentsv1alpha1.Agent
 
 	// RunID pre-assigns the run's ID (async run-now, chat's SSE start event,
 	// resume). Empty → generated.
-	RunID string
+	RunID          string
+	ExecutionOwner string
+	// executionLeaseManaged is set by startRun while it holds the lease across
+	// the asynchronous handoff and fresh-turn setup.
+	executionLeaseManaged bool
 
 	SessionID string
 	Task      string
-	Trigger   string
+	// Only admitted provider invocations and their internal delegates carry Code credentials.
+	allowCodeScope bool
+	Trigger        string
 	// ArtifactOwner and ArtifactRefs are attended-chat inputs. Checkpoints retain
 	// only these pointers so a resumed reader can bind them to the same caller and
 	// recheck source authorization; result bytes and credentials stay out.
@@ -555,6 +565,13 @@ type taskRun struct {
 	// Carried here because the lifecycle rewrites the run record from scratch and
 	// would otherwise drop what the pre-write stored.
 	IdempotencyKey string
+	// Attempt is the durable recovery epoch captured when this executor takes
+	// ownership. Checkpoint writers compare it before persisting work so a
+	// stale executor cannot accept a later recovery claim's revision.
+	Attempt int
+	// Backend records the backend pinned to an already-running attempt. Empty
+	// for a fresh admission before its first turn is saved.
+	Backend string
 
 	// NotifyChannel is the agent-channel role a paused/resumed background run
 	// delivers to (recorded in the checkpoint for resume delivery).
@@ -582,8 +599,8 @@ type taskRun struct {
 	// Repository, when non-nil, makes this a REPOSITORY attempt on a
 	// harness-backed agent (see api/repository.go): a fresh clone of an approved
 	// commit, no history, no harness session, a Git result on completion. The
-	// clone source it carries is dispatch data — held here for the turn and
-	// never persisted; a run rebuilt from its record carries none.
+	// clone source is dispatch data. Fresh dispatches of rebuilt runs
+	// populate it from the pinned checkout connection.
 	Repository      *repositoryAttempt
 	ModelSettings   *store.ModelSettings
 	HarnessSettings *store.HarnessSettings
@@ -679,10 +696,12 @@ func (r taskRun) delivery() *store.RunDelivery {
 // checkpoint, when the run started, the work it had already done, and — for an
 // approval resume — the user's verdict on the call it parked on.
 //
-// A recovery resume carries no verdict: its checkpoint holds no pending call
-// (see engine.Callbacks.OnCheckpoint), so there is nothing to approve or deny
-// and the turn simply carries on.
+// An ordinary recovery checkpoint carries no verdict and simply re-asks the
+// model. A replay-safe checkpoint can carry the exact pending idempotent call;
+// only a checkpoint that retained an explicit approval marker restores that
+// one grant.
 type continuation struct {
+	DeadlineAt *time.Time
 	Checkpoint runCheckpoint
 	// Billed is the usage durably recorded at the last approval park. A running
 	// checkpoint can include additional consumption that has not been charged.
@@ -737,6 +756,66 @@ const backendCancelTimeout = 30 * time.Second
 // way of starting work: a bug fixed here is fixed for all of them.
 func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (runResult, error) {
 	scope, agent := run.Scope, run.Agent
+	if errors.Is(context.Cause(ctx), store.ErrRunLeaseLost) {
+		return runResult{RunID: run.RunID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
+	}
+	if run.Repository != nil && (!agent.Spec.HarnessBacked() || (run.Backend != "" && run.Backend != agentsv1alpha1.AgentBackendHarness)) {
+		return runResult{}, fmt.Errorf("repository Run requires its original harness backend; the current configuration cannot dispatch it")
+	}
+	if run.ParentRunID != "" {
+		var active bool
+		var err error
+		if cont != nil {
+			childScope := scope
+			childScope.AgentName = agent.Name
+			child, getErr := s.store.GetRun(ctx, childScope, run.RunID)
+			if getErr != nil {
+				return runResult{}, fmt.Errorf("reading child Run before resume: %w", getErr)
+			}
+			active, err = s.parentRunAllowsResume(ctx, scope, child)
+		} else {
+			active, err = s.parentRunActive(ctx, scope, run.ParentRunID)
+		}
+		if err != nil {
+			return runResult{}, fmt.Errorf("verifying parent Run before child dispatch: %w", err)
+		}
+		if !active {
+			childScope := scope
+			childScope.AgentName = agent.Name
+			child, err := s.store.GetRun(ctx, childScope, run.RunID)
+			if err != nil {
+				return runResult{}, fmt.Errorf("reading child Run before parent cancellation: %w", err)
+			}
+			if err := s.cancelDescendantRun(ctx, scope, run.ParentRunID, child); err != nil {
+				return runResult{}, err
+			}
+			return runResult{RunID: run.RunID, Phase: store.RunPhaseAborted}, nil
+		}
+	}
+	runID := run.RunID
+	if runID == "" {
+		runID = uuid.NewString()
+	}
+	run.RunID = runID
+	releaseLease := func() {}
+	defer func() { releaseLease() }()
+	if cont != nil && s.cfg.ProcessID != "" && !run.executionLeaseManaged {
+		stored, err := s.store.GetRun(ctx, scope, runID)
+		if err != nil {
+			return runResult{RunID: runID, Phase: store.RunPhaseRunning}, fmt.Errorf("reading run before taking its execution lease: %w", err)
+		}
+		if stored.Attempt != run.Attempt {
+			return runResult{RunID: runID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
+		}
+		stored.ExecutionOwner = run.ExecutionOwner
+		leased, leaseCtx, stop, err := s.startRunLease(ctx, scope, stored)
+		if err != nil {
+			return runResult{RunID: runID, Phase: store.RunPhaseRunning}, err
+		}
+		run.Attempt = leased.Attempt
+		run.ExecutionOwner = leased.ExecutionOwner
+		ctx, releaseLease = leaseCtx, stop
+	}
 	if err := s.resolveChatModelSettings(ctx, &run); err != nil {
 		return runResult{}, err
 	}
@@ -749,6 +828,12 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		agent.Spec.SetModelCredential(llm.PurposeChat, run.ModelSettings.ModelCredential)
 	}
 	run.HarnessSettings = resolveHarnessSettings(agent, run.HarnessSettings)
+	// Enforce the budget before resolving or constructing a model backend. A
+	// refused run must settle as a budget refusal even when its model credential
+	// is unavailable; setup must not mask the policy gate or dispatch work.
+	if err := s.checkBudget(ctx, scope, agent, time.Now().UTC()); err != nil {
+		return runResult{}, err
+	}
 	// A status condition alone cannot enforce unsupported tool restrictions:
 	// direct API callers and background triggers may run before reconciliation.
 	if agent.Spec.HarnessBacked() {
@@ -759,19 +844,9 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 
 	// Before every turn, resumed ones included: a run that parked on an approval
 	// spends from the same rolling window a fresh one does.
-	if err := s.checkBudget(ctx, scope, agent, time.Now().UTC()); err != nil {
-		return runResult{}, err
-	}
-
 	purpose := turnPurpose(run)
 
 	sessionID := effectiveSessionID(run.SessionID, run.Trigger) // e.g. schedules share a per-trigger session
-	runID := run.RunID
-	if runID == "" {
-		runID = uuid.NewString()
-	}
-	run.RunID = runID
-
 	// spec.limits.timeoutSeconds bounds the run's wall clock (default 1h). A
 	// repository attempt that named its own bound runs to that instead, with a
 	// margin so the runner's limit — which produces a failed receipt with a
@@ -781,7 +856,10 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		timeout = time.Duration(v) * time.Second
 	}
 	if run.Repository != nil && run.Repository.MaxDurationSeconds > 0 {
-		timeout = time.Duration(run.Repository.MaxDurationSeconds)*time.Second + repositoryDeadlineMargin
+		timeout = repositoryRunTimeout(run.Repository.MaxDurationSeconds)
+	}
+	if cont != nil && cont.DeadlineAt != nil {
+		timeout = min(timeout, time.Until(*cont.DeadlineAt))
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -863,7 +941,11 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	// agent's timeout expired. Those paths must stop work on the runner too.
 	// Stop the callback before the lifecycle's own deferred cancel so a
 	// successful park does not cancel its deliberately waiting permission.
-	stopOnContextDone := context.AfterFunc(ctx, stopRemote)
+	stopOnContextDone := context.AfterFunc(ctx, func() {
+		if !errors.Is(context.Cause(ctx), store.ErrRunLeaseLost) {
+			stopRemote()
+		}
+	})
 	s.liveRuns.register(runID, func() {
 		cancel()
 		stopRemote()
@@ -874,7 +956,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		// raced the unregister, this catches it; if the callback already began,
 		// stopRemote's once guard deduplicates the call.
 		stopOnContextDone()
-		if ctx.Err() != nil {
+		if ctx.Err() != nil && !errors.Is(context.Cause(ctx), store.ErrRunLeaseLost) {
 			stopRemote()
 		}
 		cancel()
@@ -887,6 +969,9 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		cancel()
 	}
 	if err := ctx.Err(); err != nil {
+		if errors.Is(context.Cause(ctx), store.ErrRunLeaseLost) {
+			return runResult{RunID: runID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
+		}
 		// A cancellation landed after a resume claimed the row but before it
 		// registered locally. The caller already recorded the terminal phase;
 		// return before Continue can dispatch another request to the runner.
@@ -909,7 +994,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		toolset, mcpInstructions, closeTools = s.buildToolset(ctx, tools.Deps{
 			Store: s.store, Scope: scope, Agent: agent, CR: run.CR,
 			Secrets: run.Creds, ConnSecretName: connectionSecretName,
-			RunID:     runID,
+			RunID: runID, RecoveryIdentity: run.RecoveryIdentity,
 			DataPlane: s.dataPlaneFor(run),
 		}, run)
 		toolset = append(toolset, skillTools...)
@@ -948,7 +1033,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// agent's standing instructions and the approved task, with none
 			// of the session's history or the agent's notes — the coordinator
 			// approved the prompt it sent, not the conversation around it.
-			msgs = repositoryTurnMessages(agent, run.Task)
+			msgs = repositoryTurnMessages(agent, tools.PublicRunTask(run.Task))
 			if agent.Spec.HarnessBacked() && skillGuidance != "" {
 				msgs = slices.Insert(msgs, len(msgs)-1, backend.Message{Role: backend.RoleSystem, Content: skillGuidance})
 			}
@@ -986,6 +1071,8 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		}
 		running := store.Run{
 			ID: runID, AgentName: agent.Name, SessionID: sessionID, Trigger: run.Trigger,
+			ExecutionOwner: run.ExecutionOwner,
+			AgentUID:       string(agent.UID), RecoveryIdentity: run.RecoveryIdentity,
 			ParentRunID: run.ParentRunID, IdempotencyKey: run.IdempotencyKey,
 			Delivery: run.delivery(),
 			// Where this run executed, recorded up front so a resume or a
@@ -999,6 +1086,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// How many times this run was already handed back to the queue; the
 			// bound on retrying it again is counted from here.
 			Retries: run.Retries,
+			Attempt: run.Attempt,
 			Phase:   store.RunPhaseRunning, Input: run.Task, CreatedAt: startedAt, UpdatedAt: startedAt, StartedAt: &startedAt,
 		}
 		if agent.Spec.HarnessBacked() {
@@ -1010,7 +1098,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		}
 		message := store.Message{
 			ID: taskMessageID, AgentName: agent.Name, SessionID: sessionID, RunID: runID,
-			Role: "user", Content: run.Task, CreatedAt: startedAt,
+			Role: "user", Content: tools.PublicRunTask(run.Task), CreatedAt: startedAt,
 			Metadata: agentChatTranscriptMetadata(run),
 		}
 		if len(run.AttachmentRefs) > 0 {
@@ -1021,17 +1109,32 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			if err := admission.CreateAgentChatRun(ctx, scope, string(agent.UID), message, running, run.AttachmentRefs, run.AttachmentOwner, startedAt); err != nil {
 				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("accepting Agent chat input: %w", err))
 			}
-			// The transaction wrote the durable Run and transcript anchor together;
-			// projection is reporting, after the authoritative admission boundary.
-			s.projectRun(ctx, scope, running)
+			// The transaction wrote the Run and transcript anchor together. Take
+			// its execution lease before projecting Running or dispatching a model.
+			if !run.executionLeaseManaged {
+				if err := s.acquireRunningLease(ctx, scope, &running, &run, &ctx, &releaseLease); err != nil {
+					return runResult{RunID: runID, Phase: store.RunPhaseRunning}, err
+				}
+			}
 		} else {
 			if err := s.store.AppendMessage(ctx, scope, message); err != nil {
 				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persist agent task message: %w", err))
 			}
-			if err := s.saveRun(ctx, scope, running); err != nil {
+			var persistErr error
+			if run.executionLeaseManaged {
+				persistErr = s.saveRunForExecution(ctx, scope, running, run.ExecutionOwner, run.Attempt)
+			} else {
+				persistErr = s.store.SaveRun(ctx, scope, running)
+			}
+			if persistErr != nil {
 				// The runner is an external process. Do not dispatch it unless its
 				// attempt coordinates and safe cancel target are already durable.
-				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persisting the running record before dispatch: %w", err))
+				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persisting the running record before dispatch: %w", persistErr))
+			}
+			if !run.executionLeaseManaged {
+				if err := s.acquireRunningLease(ctx, scope, &running, &run, &ctx, &releaseLease); err != nil {
+					return runResult{RunID: runID, Phase: store.RunPhaseRunning}, err
+				}
 			}
 		}
 		var priorHistory []backend.Message
@@ -1071,7 +1174,6 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			Tools: toolset, Limits: limits,
 		}
 	}
-
 	sink := s.turnSink(ctx, run, sessionID, startedAt, agent.Spec.BackendType(), tracker)
 	var out backend.Outcome
 	if cont == nil {
@@ -1081,7 +1183,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	}
 	sink.progress.flushPending()
 	end := time.Now().UTC()
-	if harnessT != nil && run.Repository == nil {
+	if harnessT != nil && run.Repository == nil && !leaseWasLost(ctx) {
 		// The next chat reads the session row, not this run's display metadata.
 		// Save the receipt's session even on a park or cancellation so a later
 		// turn can resume the actual Codex thread instead of replaying history
@@ -1093,26 +1195,40 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	// A backend can return useful usage together with an error (for example, a
 	// runner event stream can fail after reporting token usage). Bill that work
 	// and retain the run total on every terminal path, including cancellation.
-	if harnessT != nil && cont != nil {
+	if cont != nil {
 		// A continuation can fail before the backend restores its snapshot
 		// (for example, an Inspect failure), and then report no usage at all.
 		// The parked run's stored totals are still authoritative in that case.
 		out.Usage.Total.InputTokens = max(out.Usage.Total.InputTokens, cont.Billed.InputTokens)
 		out.Usage.Total.OutputTokens = max(out.Usage.Total.OutputTokens, cont.Billed.OutputTokens)
 		out.Usage.Total.CostMicros = max(out.Usage.Total.CostMicros, cont.Billed.CostMicros)
-		out.Usage.Billed = unbilledHarnessUsage(out.Usage.Total, cont.Billed)
+		out.Usage.Billed = unbilledRunUsage(out.Usage.Total, cont.Billed)
 	}
 	usageCtx, cancelUsage := boundedPersistContext(ctx)
-	window, usageErr := s.store.AddUsage(usageCtx, scope, agent.Name,
-		out.Usage.Billed.InputTokens, out.Usage.Billed.OutputTokens, out.Usage.Billed.CostMicros, end, budgetWindow(agent.Spec.Budget))
+	var window store.Usage
+	var usageErr error
+	if run.ExecutionOwner != "" {
+		var recorded bool
+		window, recorded, usageErr = s.store.RecordRunUsageOwned(usageCtx, scope, runID, run.ExecutionOwner, run.Attempt,
+			out.Usage.Total, end, budgetWindow(agent.Spec.Budget))
+		if usageErr == nil && !recorded {
+			usageErr = store.ErrRunLeaseLost
+		}
+	} else {
+		window, usageErr = s.store.AddUsage(usageCtx, scope, agent.Name,
+			out.Usage.Billed.InputTokens, out.Usage.Billed.OutputTokens, out.Usage.Billed.CostMicros, end, budgetWindow(agent.Spec.Budget))
+	}
 	cancelUsage()
+	if leaseWasLost(ctx) || errors.Is(usageErr, store.ErrRunLeaseLost) {
+		return runResult{RunID: runID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
+	}
 	if usageErr != nil {
 		log.Printf("run %s: recording usage: %v", runID, usageErr)
 	}
 
 	finishFailedTurn := func(cause error) (runResult, error) {
 		phase := store.RunPhaseFailed
-		if out.Status == backend.StatusCancelled {
+		if out.Status == backend.StatusCancelled || errors.Is(cause, store.ErrRunCancellationRequested) {
 			phase = store.RunPhaseAborted
 		}
 		persistCtx, cancelPersist := boundedPersistContext(ctx)
@@ -1129,11 +1245,13 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 				return runResult{RunID: runID, Phase: store.RunPhasePending, StartedAt: &startedAt}, requeued
 			}
 		}
-		terminal := s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), cause.Error())
-		s.finishRun(persistCtx, scope, runID, runOutcome{
+		if !s.finishRunOwned(persistCtx, scope, runID, runOutcome{
 			Phase: phase, Message: cause.Error(), Usage: out.Usage.Total.Tokens,
 			CostMicros: out.Usage.Total.CostMicros, WorkedDurationMS: tracker.workedDurationMS(), Harness: harnessT,
-		}, end)
+		}, end, run.ExecutionOwner, run.Attempt) {
+			return runResult{RunID: runID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
+		}
+		terminal := s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), cause.Error())
 		s.recordAgentRun(persistCtx, run.CR, agent, end, &window)
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 		res := runResult{RunID: runID, Content: tracker.partialText(), Phase: phase,
@@ -1165,29 +1283,15 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	if out.Parked != nil {
 		res, parkErr := s.parkRun(ctx, run, sessionID, startedAt, end, tracker, harnessT, out)
 		if parkErr != nil {
+			if errors.Is(parkErr, store.ErrRunLeaseLost) && !errors.Is(parkErr, store.ErrRunCancellationRequested) {
+				return res, parkErr
+			}
 			return finishFailedTurn(parkErr)
 		}
 		return res, nil
 	}
 
 	finalContent := tracker.finalText(out.Final)
-	// A run whose answer could not be written down did not succeed. Reporting it
-	// as succeeded would leave a terminal phase pointing at a transcript that
-	// never received the reply.
-	if werr := s.appendTurnFinal(ctx, scope, run, sessionID, startedAt, end, tracker, finalContent); werr != nil {
-		writeErr := fmt.Errorf("persist final assistant message: %w", werr)
-		persistCtx, cancelPersist := boundedPersistContext(ctx)
-		defer cancelPersist()
-		s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(store.RunPhaseFailed), "", writeErr.Error())
-		s.finishRun(persistCtx, scope, runID, runOutcome{
-			Phase: store.RunPhaseFailed, Message: writeErr.Error(),
-			Usage: out.Usage.Total.Tokens, CostMicros: out.Usage.Total.CostMicros,
-			WorkedDurationMS: tracker.workedDurationMS(), Harness: harnessT,
-		}, end)
-		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
-		return runResult{RunID: runID, Content: out.Text, FinalContent: finalContent, Phase: store.RunPhaseFailed,
-			StartedAt: &startedAt, FinishedAt: &end, DurationMS: tracker.durationMS()}, writeErr
-	}
 	// A repository run's result is its artifacts, and they are stored BEFORE
 	// the run is reported as succeeded: a Succeeded run whose bundle cannot be
 	// fetched is a result nobody can use, so a failed store write fails the
@@ -1214,11 +1318,18 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	// of a spawned worker, GET /api/runs/{id}) finds the result where it found the
 	// phase instead of having to locate the session and dig out its last message.
 	persistCtx, cancelPersist := boundedPersistContext(ctx)
-	s.finishRun(persistCtx, scope, runID, runOutcome{
+	final := turnFinalMessage(run, sessionID, startedAt, end, tracker, finalContent)
+	if err := s.finishRunWithOwner(persistCtx, scope, runID, runOutcome{
 		Phase: store.RunPhaseSucceeded, Usage: out.Usage.Total.Tokens, CostMicros: out.Usage.Total.CostMicros,
 		Output: out.Output, Sources: out.Sources, WorkedDurationMS: tracker.workedDurationMS(),
 		Harness: harnessT, Result: runResultFor(out.Result),
-	}, end)
+	}, end, run.ExecutionOwner, run.Attempt, &final); err != nil {
+		cancelPersist()
+		if errors.Is(err, store.ErrRunLeaseLost) || errors.Is(err, store.ErrRunAlreadySettled) {
+			return runResult{RunID: runID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
+		}
+		return finishFailedTurn(fmt.Errorf("completing run: %w", err))
+	}
 	s.recordAgentRun(persistCtx, run.CR, agent, end, &window)
 	cancelPersist()
 	s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseSucceeded})
@@ -1305,8 +1416,21 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 	stored.USDMicros = out.Usage.Total.CostMicros
 	stored.WorkedDurationMS = tracker.workedDurationMS()
 	stored.UpdatedAt = end
-	if err := s.saveRun(persistCtx, scope, stored); err != nil {
+	if err := s.saveRunForExecution(persistCtx, scope, stored, run.ExecutionOwner, run.Attempt); err != nil {
 		cause := fmt.Errorf("saving run %s's approval checkpoint: %w", runID, err)
+		if errors.Is(err, store.ErrRunLeaseLost) {
+			// A rejected write can mean cancellation or a new owner. Only
+			// clean up the remote attempt when this execution was cancelled.
+			latest, readErr := s.store.GetRun(persistCtx, scope, runID)
+			if readErr == nil && latest.CancelRequested && latest.ExecutionOwner == run.ExecutionOwner && latest.Attempt == run.Attempt {
+				if cleanupErr := s.cleanupFailedPark(persistCtx, run, sessionID, harnessT, requestID); cleanupErr != nil {
+					err = errors.Join(err, cleanupErr)
+				} else {
+					err = store.ErrRunCancellationRequested
+				}
+			}
+			return runResult{RunID: runID, Phase: store.RunPhaseRunning}, err
+		}
 		return runResult{}, s.failPark(ctx, run, sessionID, harnessT, requestID, cause)
 	}
 	s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(store.RunPhasePendingApproval), "", "")
@@ -1326,13 +1450,21 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 // lifecycle mark the run terminal instead of claiming it is waiting for an
 // approval nobody can safely resume.
 func (s *Server) failPark(ctx context.Context, run taskRun, sessionID string, harnessT *harnessTurn, requestID string, cause error) error {
+	if leaseWasLost(ctx) {
+		return errors.Join(cause, store.ErrRunLeaseLost)
+	}
 	cleanupCtx, cancel := boundedPersistContext(ctx)
 	defer cancel()
+	return errors.Join(cause, s.cleanupFailedPark(cleanupCtx, run, sessionID, harnessT, requestID))
+}
+
+func (s *Server) cleanupFailedPark(cleanupCtx context.Context, run taskRun, sessionID string, harnessT *harnessTurn, requestID string) error {
+	var cleanupErr error
 	if requestID != "" {
 		wsScope := store.Scope{OrgUUID: run.Scope.OrgUUID, WorkspaceUUID: run.Scope.WorkspaceUUID}
 		item, err := s.store.GetInboxItem(cleanupCtx, wsScope, requestID)
 		if err != nil {
-			cause = errors.Join(cause, fmt.Errorf("checking inbox item %s after park failure: %w", requestID, err))
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("checking inbox item %s after park failure: %w", requestID, err))
 		} else if item.RunID == run.RunID && item.AgentName == run.Agent.Name && item.State == store.InboxStatePending {
 			state, response := store.InboxStateDenied, "The run could not save its checkpoint and was stopped."
 			if item.Kind == store.InboxKindQuestion {
@@ -1340,7 +1472,7 @@ func (s *Server) failPark(ctx context.Context, run taskRun, sessionID string, ha
 			}
 			if _, err := s.store.ResolveInboxItem(cleanupCtx, wsScope, requestID, state, response, time.Now().UTC(), store.InboxResolution{PendingOnly: true}); err != nil {
 				if !errors.Is(err, store.ErrInboxAlreadyResolved) {
-					cause = errors.Join(cause, fmt.Errorf("closing inbox item %s after park failure: %w", requestID, err))
+					cleanupErr = errors.Join(cleanupErr, fmt.Errorf("closing inbox item %s after park failure: %w", requestID, err))
 				}
 			} else {
 				s.events.publish(wsScope, "inbox", map[string]any{
@@ -1350,9 +1482,9 @@ func (s *Server) failPark(ctx context.Context, run taskRun, sessionID string, ha
 		}
 	}
 	if err := stopHarnessTurn(cleanupCtx, harnessT, &backend.Run{ID: run.RunID, SessionID: sessionID, Agent: run.Agent.Name, Trigger: run.Trigger}); err != nil {
-		cause = errors.Join(cause, fmt.Errorf("stopping the harness after the run could not be parked: %w", err))
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("stopping the harness after the run could not be parked: %w", err))
 	}
-	return cause
+	return cleanupErr
 }
 
 // executeTask runs a fresh turn: the lifecycle with nothing to continue from.
@@ -1361,6 +1493,9 @@ func (s *Server) failPark(ctx context.Context, run taskRun, sessionID string, ha
 // (phase PendingApproval, checkpoint saved) instead of finishing; resolving the
 // approval resumes it.
 func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error) {
+	if !run.allowCodeScope {
+		run.Task = tools.PublicRunTask(run.Task)
+	}
 	if run.RunID == "" {
 		run.RunID = uuid.NewString()
 	}
@@ -1401,6 +1536,9 @@ type runAdmission struct {
 }
 
 func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, tr taskRun, access runAccess) (runAdmission, error) {
+	if !tr.allowCodeScope {
+		tr.Task = tools.PublicRunTask(tr.Task)
+	}
 	runID := uuid.NewString()
 	now := time.Now().UTC()
 	// Save the effective transcript identity before Pending is admitted. The
@@ -1417,6 +1555,9 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 
 	if err := s.saveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: tr.SessionID, Trigger: tr.Trigger,
+		AgentUID: string(agent.UID), RecoveryIdentity: tr.RecoveryIdentity,
+		Attempt:        tr.Attempt,
+		ParentRunID:    tr.ParentRunID,
 		IdempotencyKey: tr.IdempotencyKey,
 		// What a repository run is asked to run against is part of the REQUEST,
 		// so it is on the first record: the Run object is projected from this
@@ -1436,8 +1577,22 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 		}
 		return runAdmission{}, fmt.Errorf("persisting run before execution: %w", err)
 	}
+	executionCtx := ctx
+	stopExecutionLease := func() {}
+	phase := store.RunPhasePending
+	if s.cfg.ProcessID != "" {
+		started, leaseCtx, stop, err := s.claimFreshRunLease(ctx, scope, runID, string(agent.UID))
+		if err != nil {
+			return runAdmission{}, fmt.Errorf("claiming the admitted run for execution: %w", err)
+		}
+		executionCtx, stopExecutionLease = leaseCtx, stop
+		tr.ExecutionOwner = started.ExecutionOwner
+		tr.executionLeaseManaged = true
+		phase = store.RunPhaseRunning
+	}
 	go func() {
-		res, err := s.executeTask(ctx, tr)
+		defer stopExecutionLease()
+		res, err := s.executeTask(executionCtx, tr)
 		if err != nil {
 			log.Printf("agents: run %s on agent %s failed: %v", runID, agent.Name, err)
 		}
@@ -1445,7 +1600,7 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 			// The outcome is on the run record (approvals resume separately), but a
 			// caller that asked to be told must hear about a failure or a pause too —
 			// otherwise it waits forever for a callback that never comes.
-			s.deliverRunCallback(ctx, scope, runID, tr.Callback)
+			s.deliverRunCallback(executionCtx, scope, runID, tr.Callback)
 			return
 		}
 		// An API-invoked run answers its caller, which polls, waits, or named a
@@ -1453,15 +1608,15 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 		// about work they did not ask to hear about; run-now for a schedule/trigger
 		// is the opposite — its whole point is the channel delivery.
 		if tr.Trigger == agentsv1alpha1.RunTriggerAPI || access.Notify == nil {
-			s.deliverRunCallback(ctx, scope, runID, tr.Callback)
+			s.deliverRunCallback(executionCtx, scope, runID, tr.Callback)
 			return
 		}
 		if !agent.Spec.PostsRunOutput(false) {
 			return
 		}
-		access.Notify(ctx, agent, tr.NotifyChannel, tr.SourceName, res.Content)
+		access.Notify(executionCtx, agent, tr.NotifyChannel, tr.SourceName, res.Content)
 	}()
-	return runAdmission{ID: runID, Phase: store.RunPhasePending}, nil
+	return runAdmission{ID: runID, Phase: phase}, nil
 }
 
 // dataPlaneFor describes how instance-backed tools reach tenant workloads for
@@ -1488,15 +1643,32 @@ func (s *Server) failBeforeStart(ctx context.Context, scope store.Scope, run tas
 		existing.Phase = store.RunPhaseFailed
 		existing.Message = cause.Error()
 		existing.Checkpoint = nil
+		// Setup failed before any model or harness work began. The admission
+		// lease may have marked the row Running, but that is not a started turn.
+		existing.StartedAt = nil
 		existing.UpdatedAt = at
 		existing.FinishedAt = &at
-		if err := s.saveRun(persistCtx, scope, existing); err != nil {
-			cause = errors.Join(cause, fmt.Errorf("persisting failed run: %w", err))
+		var saveErr error
+		if existing.ExecutionOwner != "" || run.ExecutionOwner != "" {
+			saveErr = s.saveRunForExecution(persistCtx, scope, existing, run.ExecutionOwner, run.Attempt)
+		} else {
+			saveErr = s.saveRun(persistCtx, scope, existing)
+		}
+		if saveErr != nil {
+			if errors.Is(saveErr, store.ErrRunLeaseLost) {
+				return runResult{RunID: run.RunID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
+			}
+			cause = errors.Join(cause, fmt.Errorf("persisting failed run: %w", saveErr))
 		}
 	} else {
+		agentUID := ""
+		if run.Agent != nil {
+			agentUID = string(run.Agent.UID)
+		}
 		record := store.Run{
 			ID: run.RunID, AgentName: scope.AgentName, SessionID: sessionID,
 			Trigger: run.Trigger, ParentRunID: run.ParentRunID,
+			AgentUID: agentUID, RecoveryIdentity: run.RecoveryIdentity,
 			IdempotencyKey: run.IdempotencyKey, Delivery: run.delivery(),
 			Phase: store.RunPhaseFailed, Input: run.Task, Message: cause.Error(),
 			CreatedAt: at, UpdatedAt: at, FinishedAt: &at,
@@ -1515,8 +1687,8 @@ func (s *Server) failBeforeStart(ctx context.Context, scope store.Scope, run tas
 // SSE stream) asked to see.
 //
 // Complete model responses that led to a tool call are persisted immediately as
-// commentary; the final response is persisted by the lifecycle after the run
-// reaches a terminal phase, so it can carry authoritative timing.
+// commentary. The lifecycle persists the final response with the successful
+// run transition so it carries authoritative timing.
 type turnSink struct {
 	s           *Server
 	ctx         context.Context
@@ -1695,6 +1867,10 @@ func safeToolPresentation(in *store.ProviderPresentation) *store.ProviderPresent
 
 func (k *turnSink) Checkpoint(state json.RawMessage) { k.record(state) }
 
+func (k *turnSink) ReplaySafeCheckpoint(state json.RawMessage, approvedPending bool) error {
+	return k.s.persistReplaySafeCheckpoint(k.ctx, k.run, k.backendType, k.tracker.durationMS(), state, approvedPending)
+}
+
 func (k *turnSink) Aborted(ctx context.Context) error {
 	if err := k.run.transcriptWrites.failure(); err != nil {
 		return err
@@ -1721,16 +1897,34 @@ type runOutcome struct {
 	Result *store.RunResult
 }
 
-// finishRun stamps a run's terminal phase, result, usage, and timestamps, and
-// clears any checkpoint.
-func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time) {
+// finishRun stamps an administrative terminal phase, result, usage, and
+// timestamps. Active executors use finishRunOwned so a stale epoch cannot
+// settle a run after recovery transferred its lease.
+func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time) bool {
+	return s.finishRunWithOwner(ctx, scope, runID, out, end, "", 0, nil) == nil
+}
+
+func (s *Server) finishRunOwned(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time, owner string, attempt int) bool {
+	if owner == "" {
+		if latest, err := s.store.GetRun(ctx, scope, runID); err != nil || latest.ExecutionOwner != "" {
+			return false
+		}
+		return s.finishRun(ctx, scope, runID, out, end)
+	}
+	return s.finishRunWithOwner(ctx, scope, runID, out, end, owner, attempt, nil) == nil
+}
+
+func (s *Server) finishRunWithOwner(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time, owner string, attempt int, final *store.Message) error {
 	stored, err := s.store.GetRun(ctx, scope, runID)
 	if err != nil {
-		return
+		return err
+	}
+	if owner != "" {
+		stored.Attempt = attempt
+		stored.ExecutionOwner = owner
 	}
 	stored.Phase = out.Phase
 	stored.Message = out.Message
-	s.closeParkedInboxItem(ctx, scope, stored, out.Phase, end)
 	stored.Checkpoint = nil
 	if out.Output != "" {
 		stored.Output = safeTruncate(out.Output, maxStoredOutput)
@@ -1739,11 +1933,11 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 		stored.Sources = out.Sources
 	}
 	if out.Usage.InputTokens > 0 || out.Usage.OutputTokens > 0 {
-		stored.InputTokens = out.Usage.InputTokens
-		stored.OutputTokens = out.Usage.OutputTokens
+		stored.InputTokens = max(stored.InputTokens, out.Usage.InputTokens)
+		stored.OutputTokens = max(stored.OutputTokens, out.Usage.OutputTokens)
 	}
 	if out.CostMicros > 0 {
-		stored.USDMicros = out.CostMicros
+		stored.USDMicros = max(stored.USDMicros, out.CostMicros)
 	}
 	if out.WorkedDurationMS != nil {
 		value := *out.WorkedDurationMS
@@ -1758,61 +1952,72 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	}
 	stored.UpdatedAt = end
 	stored.FinishedAt = &end
-	if err := s.saveRun(ctx, scope, stored); err != nil {
-		return
+	if final != nil {
+		updated, err := s.store.CompleteRun(ctx, scope, stored, owner, attempt, time.Now().UTC(), *final)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return store.ErrRunLeaseLost
+		}
+		s.projectRun(ctx, scope, stored)
+	} else if owner != "" {
+		updated, err := s.saveRunOwned(ctx, scope, stored, owner, attempt)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return store.ErrRunLeaseLost
+		}
+	} else if err := s.saveRun(ctx, scope, stored); err != nil {
+		return err
+	}
+	if err := s.closeRunInbox(ctx, scope, stored.ID, stored.Phase, end); err != nil {
+		log.Printf("runs: closing inbox for %s; the Run controller will retry: %v", stored.ID, err)
+	}
+	if isTerminalRunPhase(stored.Phase) && ctx.Value(descendantReconcileContextKey{}) != true {
+		descendantCtx, cancelDescendants := boundedPersistContext(ctx)
+		if err := s.reconcileRunDescendants(descendantCtx, scope, stored.ID); err != nil {
+			log.Printf("runs: reconciling descendants of terminal run %s failed; the Run controller will retry: %v", stored.ID, err)
+		}
+		cancelDescendants()
 	}
 	// The runner slot this run held is free. Give it to the oldest run waiting
 	// in the queue rather than leaving it idle until that run's own wake-up.
 	s.wakeNextQueued(ctx, scope, stored.AgentName, end)
+	return nil
 }
 
-// closeParkedInboxItem closes the inbox item a run was parked on when the run
-// ends without it being resolved. A cancel, a deadline or a recovery close all
-// finish the run through finishRun and drop its checkpoint, and the checkpoint
-// is the only thing that names the item — leaving it pending put a card in the
-// portal's "Needs your attention" list with no run left to resume and, for a
-// question, nothing that could ever clear it. Approvals close as denied and
-// questions as answered, the same convention failPark uses, so no resolution
-// path mistakes the closing for a verdict that resumes anything.
-func (s *Server) closeParkedInboxItem(ctx context.Context, scope store.Scope, run store.Run, phase store.RunPhase, now time.Time) {
-	if len(run.Checkpoint) == 0 || !runSettled(phase) {
-		return
-	}
-	var ck runCheckpoint
-	if json.Unmarshal(run.Checkpoint, &ck) != nil || ck.InboxID == "" {
-		return
-	}
-	wsScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}
-	item, err := s.store.GetInboxItem(ctx, wsScope, ck.InboxID)
-	if err != nil {
-		log.Printf("run %s: reading inbox item %s to close it: %v", run.ID, ck.InboxID, err)
-		return
-	}
-	if item.State != store.InboxStatePending || item.RunID != run.ID || item.AgentName != run.AgentName {
-		return
-	}
-	state := store.InboxStateDenied
-	if item.Kind == store.InboxKindQuestion {
-		state = store.InboxStateAnswered
+// closeRunInbox uses the durable run ID, including prompts whose checkpoint
+// never committed. Terminal reconciliation retries any failed cleanup.
+func (s *Server) closeRunInbox(ctx context.Context, scope store.Scope, runID string, phase store.RunPhase, now time.Time) error {
+	if !isTerminalRunPhase(phase) {
+		return nil
 	}
 	response := "The run ended before this was resolved."
 	if phase == store.RunPhaseAborted {
 		response = "The run was cancelled before this was resolved."
 	}
-	if _, err := s.store.ResolveInboxItem(ctx, wsScope, item.ID, state, response, now, store.InboxResolution{PendingOnly: true}); err != nil {
-		if !errors.Is(err, store.ErrInboxAlreadyResolved) {
-			log.Printf("run %s: closing inbox item %s: %v", run.ID, item.ID, err)
-		}
-		return
+	items, err := s.store.ClosePendingRunInbox(ctx, scope, runID, response, now)
+	if err != nil {
+		return err
 	}
-	s.events.publish(wsScope, "inbox", map[string]any{
-		"id": item.ID, "state": string(state), "agent": item.AgentName, "runID": item.RunID,
-	})
+	wsScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}
+	for _, item := range items {
+		s.events.publish(wsScope, "inbox", map[string]any{
+			"id": item.ID, "state": string(item.State), "agent": item.AgentName, "runID": item.RunID,
+		})
+	}
+	return nil
 }
 
 // repositoryDeadlineMargin is how much longer than its own maxDurationSeconds
 // a repository run's context lives, so the runner's limit reports first.
 const repositoryDeadlineMargin = 2 * time.Minute
+
+func repositoryRunTimeout(seconds int) time.Duration {
+	return time.Duration(seconds)*time.Second + repositoryDeadlineMargin
+}
 
 // repositoryTurnMessages is the prompt a repository attempt gets: the agent's
 // persona, when it has one, and the approved task. No history, no notes.
@@ -1957,7 +2162,7 @@ func refreshAgentSkillCatalog(checkpoint *engine.Checkpoint, prompt string) {
 }
 
 func (s *Server) assembleTurnCtx(ctx context.Context, run taskRun, sessionID, mcpInstructions string, fanOut bool) ([]backend.Message, error) {
-	scope, agent, task, trigger := run.Scope, run.Agent, run.Task, run.Trigger
+	scope, agent, task, trigger := run.Scope, run.Agent, tools.PublicRunTask(run.Task), run.Trigger
 	var msgs []backend.Message
 	// A worker gets a fixed sub-agent preamble above the agent's persona: it is
 	// the same agent, but answering one scoped question as data rather than

@@ -87,6 +87,10 @@ func mcpOverrides(servers []harness.MCPServer) (args, env []string, err error) {
 			"-c", "mcp_servers."+server.Name+".url="+string(url),
 			"-c", "mcp_servers."+server.Name+`.bearer_token_env_var="`+variable+`"`,
 		)
+		if len(server.ApprovedTools) > 0 {
+			allowed, _ := json.Marshal(server.ApprovedTools)
+			args = append(args, "-c", "mcp_servers."+server.Name+".enabled_tools="+string(allowed), "-c", "mcp_servers."+server.Name+`.default_tools_approval_mode="approve"`)
+		}
 		env = append(env, variable+"="+server.Token)
 	}
 	return args, env, nil
