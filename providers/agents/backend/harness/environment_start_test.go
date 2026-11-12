@@ -115,3 +115,23 @@ func TestEnvironmentTurnStillVerifiesSnapshotAfterStartRetry(t *testing.T) {
 		})
 	}
 }
+
+func TestEnvironmentStartWindowReturnsTheRefusal(t *testing.T) {
+	window := environmentStartWindow
+	environmentStartWindow = 30 * time.Millisecond
+	t.Cleanup(func() { environmentStartWindow = window })
+	refusal := &runner.Error{Code: runner.ErrorBusy, Retryable: true, Message: "runner busy"}
+	calls := 0
+	r := environmentStartRunner{fakeRunner: &fakeRunner{}, start: func(ctx context.Context, _ runner.StartRequest) (runner.Receipt, error) {
+		calls++
+		// The window must not become the deadline of an in-flight Start.
+		if _, ok := ctx.Deadline(); ok {
+			t.Error("Start was given the retry window as its deadline")
+		}
+		return runner.Receipt{}, refusal
+	}}
+	_, err := New(Config{Runner: r}).startWithEnvironmentRetry(t.Context(), runner.StartRequest{EnvironmentID: "warm"})
+	if !errors.Is(err, refusal) || errors.Is(err, context.DeadlineExceeded) || calls < 2 {
+		t.Fatalf("spent window must surface the refusal for the run-level retry: calls=%d error=%v", calls, err)
+	}
+}

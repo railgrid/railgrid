@@ -206,12 +206,14 @@ func (r *Reconciler) now() time.Time {
 // Runs only — deliberately. An Agent's timeout changing mid-run does not move
 // a deadline that is already written: the run was admitted under the limit in
 // force when it started, and re-deriving it would let an edit shorten work
-// already in flight.
+// already in flight. The second Run watch maps a child that settles to its
+// parent, which may be waiting on that child to finish its cancellation.
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("agents-run").
 		For(&agentsv1alpha1.Run{}).
+		Watches(&agentsv1alpha1.Run{}, parentOfSettledChild(), mcbuilder.WithPredicates(childSettled)).
 		Complete(r)
 }
 
@@ -256,6 +258,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	if r.ReconcileDescendants != nil && isTerminalPhase(object.Status.Phase) {
 		if err := r.ReconcileDescendants(ctx, clusterID, object.Spec.AgentRef, object.Name); err != nil {
+			if onlyAwaitingChildren(err) {
+				// Each child that settles enqueues this Run (parentOfSettledChild).
+				return ctrl.Result{}, nil
+			}
 			klog.FromContext(ctx).Error(err, "reconciling terminal run descendants", "run", object.Name, "cluster", clusterID)
 			return ctrl.Result{RequeueAfter: descendantReconcileRetry}, nil
 		}
@@ -359,7 +365,7 @@ func (r *Reconciler) claimable(object *agentsv1alpha1.Run) (bool, time.Duration)
 	if object.Status.Owner == "" {
 		return true, 0
 	}
-	if executionOwnerBelongsToProcess(object.Status.Owner, r.ProcessID) {
+	if ExecutionOwnerBelongsToProcess(object.Status.Owner, r.ProcessID) {
 		// Our own claim. The dispatch already happened; re-running it because
 		// the object was re-delivered is exactly the double execution the
 		// claim exists to prevent.
@@ -398,7 +404,7 @@ func (r *Reconciler) stranded(object *agentsv1alpha1.Run) (bool, time.Duration) 
 		return false, 0
 	}
 	claimedAt := object.Status.ClaimedAt
-	if executionOwnerBelongsToProcess(object.Status.Owner, r.ProcessID) {
+	if ExecutionOwnerBelongsToProcess(object.Status.Owner, r.ProcessID) {
 		// A fresh heartbeat means this process still owns the execution. If the
 		// heartbeat has expired, the local executor may have exited without a
 		// terminal write; ask the provider to race the same store CAS used for a
@@ -435,7 +441,9 @@ func (r *Reconciler) stranded(object *agentsv1alpha1.Run) (bool, time.Duration) 
 	return true, 0
 }
 
-func executionOwnerBelongsToProcess(owner, processID string) bool {
+// ExecutionOwnerBelongsToProcess reports whether an execution owner was minted
+// by processID: the bare process ID, or "<processID>/<incarnation>".
+func ExecutionOwnerBelongsToProcess(owner, processID string) bool {
 	return owner == processID || processID != "" && strings.HasPrefix(owner, processID+"/")
 }
 
@@ -541,7 +549,7 @@ func (r *Reconciler) handBack(ctx context.Context, c client.Client, object *agen
 		if gerr := c.Get(ctx, client.ObjectKeyFromObject(object), &fresh); gerr != nil {
 			return client.IgnoreNotFound(gerr)
 		}
-		if !executionOwnerBelongsToProcess(fresh.Status.Owner, r.ProcessID) || fresh.Status.Phase != agentsv1alpha1.RunPhasePending {
+		if !ExecutionOwnerBelongsToProcess(fresh.Status.Owner, r.ProcessID) || fresh.Status.Phase != agentsv1alpha1.RunPhasePending {
 			// Somebody moved it — cancelled, or executing after all. Not ours
 			// to hand back.
 			return nil

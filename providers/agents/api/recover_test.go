@@ -20,10 +20,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/store"
 )
@@ -745,5 +748,57 @@ func TestAbandonedPendingAPIRunFailsClosedAndCannotBeReopened(t *testing.T) {
 	lateStarter.UpdatedAt = now
 	if err := f.s.store.SaveRun(ctx, f.scope, lateStarter); !errors.Is(err, store.ErrRunAlreadySettled) {
 		t.Fatalf("late API starter reopened the settled admission: %v", err)
+	}
+}
+
+// A run admitted before the run row recorded its Agent UID is still verified on
+// recovery, against the frozen incarnation in its Run owner reference.
+func TestRecoveryVerifiesLegacyRunsByOwnerReference(t *testing.T) {
+	object := func(kind, name, uid string, owners ...metav1.OwnerReference) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetAPIVersion(agentsv1alpha1.SchemeGroupVersion.String())
+		u.SetKind(kind)
+		u.SetName(name)
+		u.SetUID(types.UID(uid))
+		u.SetOwnerReferences(owners)
+		return u
+	}
+	for name, tc := range map[string]struct {
+		ownerUID, liveUID, want string
+	}{
+		// The owner reference stood in for the missing UID, so the live Agent
+		// was compared against it.
+		"replaced agent":     {"incarnation-1", "incarnation-2", "was replaced"},
+		"no owner reference": {"", "incarnation-1", "no frozen Agent UID"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newRecoverFixture(t)
+			f.s.cfg.ProcessID = "recovery-process"
+			at := time.Now().UTC().Add(-time.Hour)
+			run := store.Run{
+				ID: "legacy-" + strings.ReplaceAll(name, " ", "-"), AgentName: "scout", SessionID: "chat",
+				Trigger: agentsv1alpha1.RunTriggerChat, Phase: store.RunPhaseRunning, Input: "do the thing",
+				CreatedAt: at, UpdatedAt: at, StartedAt: &at, RecoveryIdentity: store.RecoveryIdentityAgent,
+			}
+			if err := f.s.store.SaveRun(ctx, f.scope, run); err != nil {
+				t.Fatal(err)
+			}
+			if stored, _ := f.s.store.GetRun(ctx, f.scope, run.ID); stored.AgentUID != "" {
+				t.Fatalf("fixture is not a legacy run: AgentUID=%q", stored.AgentUID)
+			}
+			var owners []metav1.OwnerReference
+			if tc.ownerUID != "" {
+				owners = append(owners, metav1.OwnerReference{APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "Agent", Name: "scout", UID: types.UID(tc.ownerUID)})
+			}
+			dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+				agentsclient.RunGVR: "RunList", agentsclient.AgentGVR: "AgentList",
+			}, object("Run", run.ID, "run-uid", owners...), object("Agent", "scout", tc.liveUID))
+			bg := &background{server: f.s, scopedFn: func(context.Context, string) (dynamic.Interface, error) { return dyn, nil }}
+			err := bg.resumeRecoveredRun(ctx, store.ScopedRun{Scope: f.scope, Run: run}, "cluster-1")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want an error containing %q", err, tc.want)
+			}
+		})
 	}
 }
