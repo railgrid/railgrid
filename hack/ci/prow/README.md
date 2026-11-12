@@ -26,9 +26,6 @@ Still on Actions for pull requests: the image builds (`images.yaml`), the
 infrastructure example and template workflows, and macOS. Releases and image
 publishing stay on Actions as well.
 
-A pull request to the `ssh` branch gets no CI: Prow's jobs target `main`
-only. Add the branch to `branches` in `.prow.yaml` if that is needed.
-
 ## Working with it
 
 | Comment on a PR | Effect |
