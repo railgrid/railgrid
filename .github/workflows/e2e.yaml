@@ -2,12 +2,12 @@ name: E2E
 
 # Pull requests are validated by Prow (/.prow.yaml, hack/ci/prow/README.md),
 # which runs the same suites through hack/ci/prow/job.sh. This workflow no
-# longer runs on pull_request: it is the post-merge run (Prow has no
+# longer runs on pull_request: it is the post-merge run on main (Prow has no
 # postsubmits yet). Keep the steps here and the matching case in job.sh in
 # step.
 on:
   push:
-    branches: [main, ssh]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
