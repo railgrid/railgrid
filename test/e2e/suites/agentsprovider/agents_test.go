@@ -123,12 +123,12 @@ func TestAProvisioning(t *testing.T) {
 	}
 	found := false
 	for _, c := range agents.Serving.UI.Children {
-		if c.DisplayName == "Webhooks" && c.BuiltinRoute == "webhooks" {
+		if c.DisplayName == "Activity" && c.BuiltinRoute == "activity" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("agents serving.ui.children = %+v, want a Webhooks/webhooks entry", agents.Serving.UI.Children)
+		t.Errorf("agents serving.ui.children = %+v, want an Activity/activity entry", agents.Serving.UI.Children)
 	}
 }
 
