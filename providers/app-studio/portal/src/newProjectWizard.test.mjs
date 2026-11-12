@@ -133,6 +133,12 @@ test('wizard uses the shared route-owned creation skeleton with progress inside 
   assert.match(wizardSource, /type Step = 'describe' \| 'prepare' \| 'confirm'/)
 })
 
+test('completed review hands focus to a fresh heading with native scrolling enabled', () => {
+  const focusWatcher = wizardSource.slice(wizardSource.indexOf('watch(step,'), wizardSource.indexOf('onMounted(async'))
+  assert.match(focusWatcher, /await nextTick\(\)[\s\S]*if \(current === 'confirm'\) \{[\s\S]*stepHeading\.value\?\.focus\(\)/)
+  assert.match(wizardSource, /<h2 id="new-project-details-title" :key="step" ref="stepHeading" tabindex="-1"/)
+})
+
 test('planning failures remain honest and retain retry/edit affordances for a submitted idea', async () => {
   const originalPlanProject = api.planProject
   api.planProject = () => {

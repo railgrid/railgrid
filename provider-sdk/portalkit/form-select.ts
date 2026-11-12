@@ -22,6 +22,7 @@ export class FormSelectElement extends HTMLElement {
   private trigger: HTMLButtonElement | null = null
   private valueNode: HTMLSpanElement | null = null
   private hiddenInput: HTMLInputElement | null = null
+  private errorNode: HTMLParagraphElement | null = null
   private panel: HTMLDivElement | null = null
   private activeIndex = -1
   private isOpen = false
@@ -31,6 +32,7 @@ export class FormSelectElement extends HTMLElement {
   private currentDisabled = false
   private currentRequired = false
   private currentInvalid = false
+  private currentErrorMessage = ''
   private currentDescribedby = ''
   private currentLabelledby = ''
   private currentName = ''
@@ -71,6 +73,9 @@ export class FormSelectElement extends HTMLElement {
   get invalid(): boolean { return this.currentInvalid }
   set invalid(value: boolean) { this.currentInvalid = Boolean(value); this.syncControl() }
 
+  get errorMessage(): string { return this.currentErrorMessage }
+  set errorMessage(value: string) { this.currentErrorMessage = value || ''; this.syncControl() }
+
   get describedby(): string { return this.currentDescribedby }
   set describedby(value: string) { this.currentDescribedby = value || ''; this.syncControl() }
 
@@ -103,6 +108,7 @@ export class FormSelectElement extends HTMLElement {
 
   private get listboxID(): string { return `${this.instanceID}-listbox` }
   private get valueID(): string { return `${this.instanceID}-value` }
+  private get errorID(): string { return `${this.instanceID}-error` }
   private optionID(index: number): string { return `${this.listboxID}-option-${index}` }
   private get accessibleLabelledby(): string {
     return [this.currentLabelledby, this.valueID].filter(Boolean).join(' ')
@@ -153,7 +159,29 @@ export class FormSelectElement extends HTMLElement {
     this.trigger.setAttribute('aria-expanded', this.isOpen ? 'true' : 'false')
     this.trigger.setAttribute('aria-labelledby', this.accessibleLabelledby)
     this.setOptionalAttribute(this.trigger, 'aria-activedescendant', this.isOpen && this.activeIndex >= 0 ? this.optionID(this.activeIndex) : '')
-    this.setOptionalAttribute(this.trigger, 'aria-describedby', this.currentDescribedby)
+    const showError = this.currentInvalid && !!this.currentErrorMessage
+    if (showError && !this.errorNode) {
+      this.errorNode = document.createElement('p')
+      this.errorNode.id = this.errorID
+      this.errorNode.className = 'k-form-select__error'
+      this.errorNode.setAttribute('role', 'alert')
+      const icon = document.createElement('span')
+      icon.innerHTML = ic('alert-circle')
+      const svg = icon.firstElementChild
+      if (svg) this.errorNode.append(svg)
+      this.errorNode.append(document.createElement('span'))
+      this.root.append(this.errorNode)
+    }
+    if (showError && this.errorNode) {
+      const message = this.errorNode.lastElementChild
+      if (message && message.textContent !== this.currentErrorMessage) {
+        message.textContent = this.currentErrorMessage
+      }
+    } else if (this.errorNode) {
+      this.errorNode.remove()
+      this.errorNode = null
+    }
+    this.setOptionalAttribute(this.trigger, 'aria-describedby', [this.currentDescribedby, showError ? this.errorID : ''].filter(Boolean).join(' '))
     this.setOptionalAttribute(this.trigger, 'aria-required', this.currentRequired ? 'true' : '')
     this.setOptionalAttribute(this.trigger, 'aria-invalid', this.currentInvalid ? 'true' : '')
     this.syncHiddenInput()

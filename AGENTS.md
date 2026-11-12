@@ -838,6 +838,9 @@ or the other — both bind `:9443` and share `.kcp/`.
 
 ## 8. UI & design standards (portal + provider micro-frontends)
 
+Use the [Violet Circuit skill](skills/violet-circuit/SKILL.md) to set observable
+expectations before editing and critique the resulting diff and UI before handoff.
+
 The main portal and provider micro-frontends share one design system and must
 read as one product. The structured knowledge base at
 [`docs/design/README.md`](docs/design/README.md) is the operational entrypoint;

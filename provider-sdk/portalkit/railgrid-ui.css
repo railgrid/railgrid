@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 48;
+  --railgrid-ui-core-version: 49;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -979,6 +979,30 @@ railgrid-form-select {
   min-width: 0;
   text-align: start;
 }
+/* Invalid controls retain a distinct focus ring and do not glow red. */
+.k-form-select.is-invalid .k-form-select__trigger {
+  border-color: var(--color-danger, #ff5d5d);
+}
+.k-form-select.is-invalid .k-form-select__trigger:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+.k-form-select__error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 5px 0 0;
+  color: var(--color-danger, #ff5d5d);
+  font-size: 12px;
+  font-weight: 400;
+}
+.k-form-select__error svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+}
+
 .k-form-select__trigger:disabled {
   cursor: not-allowed;
 }
