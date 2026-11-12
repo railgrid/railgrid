@@ -6,6 +6,7 @@ export const routes = [
     path: ORGANIZATION_ROUTE + '/workspaces', name: 'workspace-chooser',
     component: () => import('@/pages/WorkspaceChooserPage.vue'),
   },
+  { path: '/onboarding', name: 'onboarding', component: () => import('@/pages/OnboardingPage.vue') },
   { path: '/', name: 'landing', component: () => import('@/pages/NotFoundPage.vue') },
   { path: ORGANIZATION_ROUTE + '/providers', name: 'org-providers', component: () => import('@/pages/ProvidersPage.vue') },
   {

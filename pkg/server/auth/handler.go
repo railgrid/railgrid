@@ -351,7 +351,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// patches User.spec.DefaultCluster itself once the Workspace is
 	// Ready. The auth handler just needs to write the User CR; the
 	// controller does the rest asynchronously.
-	userID, err := h.seedUser(ctx, oidcIdentity{
+	userID, firstLogin, err := h.seedUser(ctx, oidcIdentity{
 		Issuer:        h.oidcConfig.IssuerURL,
 		Subject:       claims.Sub,
 		Email:         claims.Email,
@@ -364,11 +364,14 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read DefaultCluster after seeding — the org bootstrap controller may
-	// have set it on a previous login; on first login it will still be
-	// empty, in which case the issued kubeconfig points at the bare hub
-	// and the user re-logs after the controller catches up.
-	clusterName := h.lookupDefaultCluster(ctx, userID)
+	// A new portal user can choose an organization while the personal
+	// workspace is provisioning. CLI kubeconfigs still wait for a cluster.
+	var clusterName string
+	callback, _ := url.Parse(authCode.RedirectURL)
+	portalCallback := callback != nil && strings.HasSuffix(callback.Path, apiurl.PathAuthCallback)
+	if !firstLogin || !portalCallback {
+		clusterName = h.lookupDefaultCluster(ctx, userID)
+	}
 
 	// Generate kubeconfig using exec credential plugin for automatic token refresh.
 	kubeconfigBytes, err := h.generateKubeconfig(userID, clusterName, claims.Email)
@@ -385,6 +388,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:    token.Expiry.Unix(),
 		Email:        claims.Email,
 		UserID:       userID,
+		FirstLogin:   firstLogin,
 		IDToken:      rawIDToken,
 		RefreshToken: token.RefreshToken,
 		IssuerURL:    h.oidcConfig.IssuerURL,
@@ -410,8 +414,36 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if firstLogin && portalCallback {
+		// The portal now holds a session and the firstLogin flag. Until this
+		// point a failed callback, or a first sign-in through the CLI, leaves
+		// the marker in place so the next portal login still onboards.
+		h.clearPortalOnboardingPending(ctx, userID)
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+// annotationPortalOnboardingPending marks a User whose first portal sign-in
+// has not completed yet. seedUser sets it on creation, whichever client
+// created the User; the portal callback clears it once it has issued the
+// session that carries firstLogin.
+const annotationPortalOnboardingPending = "tenancy.railgrid.ai/portal-onboarding-pending"
+
+func (h *Handler) clearPortalOnboardingPending(ctx context.Context, userID string) {
+	user, err := h.railgridClient.Users().Get(ctx, userID, metav1.GetOptions{})
+	if err != nil {
+		h.logger.Error(err, "failed to read user to record portal onboarding", "user", userID)
+		return
+	}
+	if _, pending := user.Annotations[annotationPortalOnboardingPending]; !pending {
+		return
+	}
+	delete(user.Annotations, annotationPortalOnboardingPending)
+	if _, err := h.railgridClient.Users().Update(ctx, user, metav1.UpdateOptions{}); err != nil {
+		// The next portal login offers onboarding again, which is harmless.
+		h.logger.Error(err, "failed to record portal onboarding", "user", userID)
+	}
 }
 
 // HandleRefresh handles token refresh requests.
@@ -794,13 +826,13 @@ func (h *Handler) bindIdentity(ctx context.Context, id oidcIdentity, subHash str
 }
 
 // seedUser creates or updates a User CRD based on OIDC claims.
-func (h *Handler) seedUser(ctx context.Context, id oidcIdentity) (string, error) {
+func (h *Handler) seedUser(ctx context.Context, id oidcIdentity) (string, bool, error) {
 	subHash := identity.OIDCSubjectHash(id.Issuer, id.Subject)
 	email, name := id.Email, id.Name
 
 	user, err := h.bindIdentity(ctx, id, subHash)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	now := metav1.Now()
@@ -829,7 +861,7 @@ func (h *Handler) seedUser(ctx context.Context, id oidcIdentity) (string, error)
 		if changed {
 			updatedSpec, err := h.railgridClient.Users().Update(ctx, user, metav1.UpdateOptions{})
 			if err != nil {
-				return "", fmt.Errorf("updating user spec: %w", err)
+				return "", false, fmt.Errorf("updating user spec: %w", err)
 			}
 			user = updatedSpec
 		}
@@ -839,9 +871,9 @@ func (h *Handler) seedUser(ctx context.Context, id oidcIdentity) (string, error)
 		user.Status.LastLogin = &now
 		updated, err := h.railgridClient.Users().UpdateStatus(ctx, user, metav1.UpdateOptions{})
 		if err != nil {
-			return "", fmt.Errorf("updating user status: %w", err)
+			return "", false, fmt.Errorf("updating user status: %w", err)
 		}
-		return updated.Name, nil
+		return updated.Name, updated.Annotations[annotationPortalOnboardingPending] == "true", nil
 	}
 
 	// Create new user.
@@ -850,6 +882,9 @@ func (h *Handler) seedUser(ctx context.Context, id oidcIdentity) (string, error)
 			GenerateName: "user-",
 			Labels: map[string]string{
 				identity.LabelSubject: subHash,
+			},
+			Annotations: map[string]string{
+				annotationPortalOnboardingPending: "true",
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{
@@ -865,7 +900,7 @@ func (h *Handler) seedUser(ctx context.Context, id oidcIdentity) (string, error)
 
 	created, err := h.railgridClient.Users().Create(ctx, user, metav1.CreateOptions{})
 	if err != nil {
-		return "", fmt.Errorf("creating user: %w", err)
+		return "", false, fmt.Errorf("creating user: %w", err)
 	}
 
 	// Update status.
@@ -875,7 +910,7 @@ func (h *Handler) seedUser(ctx context.Context, id oidcIdentity) (string, error)
 		h.logger.Error(err, "failed to update new user status", "user", created.Name)
 	}
 
-	return created.Name, nil
+	return created.Name, true, nil
 }
 
 // lookupDefaultCluster returns the User's spec.defaultCluster, polling

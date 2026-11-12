@@ -409,7 +409,7 @@
     {
       "rule": "pill-radius",
       "path": "portal/src/pages/AuthCallback.vue",
-      "line": 64,
+      "line": 65,
       "column": 77,
       "match": "rounded-full",
       "reference": "design.quality.exceptions",

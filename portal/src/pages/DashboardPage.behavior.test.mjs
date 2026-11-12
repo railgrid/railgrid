@@ -82,6 +82,7 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
     '@/stores/auth': { useAuthStore: () => ({ user: { userId: 'test-user' } }) },
     '@/lib/firstWelcome': { welcomeIdentity: auth => auth.user?.userId || '', claimFirstWelcome: () => { if (welcomeSeen) return false; welcomeSeen = true; return true } },
     '@/composables/gettingStartedFocus': { useGettingStartedFocus() {} },
+    'vue-router': { useRoute: () => ({ query: {} }), useRouter: () => ({ replace() {} }) },
     vue: Vue, pinia: { storeToRefs: Vue.toRefs },
     '@/composables/useScopedNavigation': { useScopedNavigation: () => ({ scopePath: p => `/${tenant.orgUUID}/${tenant.workspaceUUID}${p}` }) },
     '@/stores/providers': { useProvidersStore: () => providers },

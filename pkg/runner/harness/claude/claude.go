@@ -106,6 +106,7 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -553,6 +554,9 @@ func (a *Adapter) ensureHome() error {
 		return fmt.Errorf("reading claude runner home: %w", err)
 	}
 	for _, entry := range entries {
+		if strings.EqualFold(entry.Name(), "plugins") && entry.IsDir() && builtinPluginBookkeepingOnly(filepath.Join(home, entry.Name())) {
+			continue
+		}
 		if _, unsafe := unsafeHomeEntries[strings.ToLower(entry.Name())]; unsafe {
 			return fmt.Errorf("claude runner home contains interactive configuration %q; use a dedicated worker home", entry.Name())
 		}
@@ -561,6 +565,76 @@ func (a *Adapter) ensureHome() error {
 		}
 	}
 	return nil
+}
+
+// builtinPluginBookkeepingOnly reports whether a home's plugins directory holds
+// nothing but the state Claude Code writes for its own built-in plugins during
+// a session: plugins/store/<name>_builtin-<hash>.json, regular files only, each
+// a small flat JSON object of scalar values (observed: a usage-queue marker).
+// No installed or marketplace plugin can live there, so the home stays
+// dedicated to the runner; anything else under plugins (a cache, a
+// marketplace, a symlink, another file, or a store file shaped like a manifest
+// with nested hooks, commands or servers) is still refused by the caller.
+func builtinPluginBookkeepingOnly(dir string) bool {
+	top, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range top {
+		if entry.Name() != "store" || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return false
+		}
+		files, err := os.ReadDir(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return false
+		}
+		for _, f := range files {
+			if !f.Type().IsRegular() || !builtinPluginStatePattern.MatchString(f.Name()) {
+				return false
+			}
+			if !flatScalarJSONFile(filepath.Join(dir, entry.Name(), f.Name())) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+var builtinPluginStatePattern = regexp.MustCompile(`^[a-z0-9-]+_builtin-[0-9a-f]+\.json$`) //nolint:gochecknoglobals // immutable worker-home policy
+
+// maxBuiltinPluginStateBytes bounds a built-in bookkeeping file; the real ones
+// are under a hundred bytes.
+const maxBuiltinPluginStateBytes = 64 << 10
+
+// flatScalarJSONFile reports whether path holds a bounded JSON object whose
+// values are all strings, numbers, booleans or null — the bookkeeping shape —
+// rather than anything nested that could describe plugin behaviour.
+func flatScalarJSONFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxBuiltinPluginStateBytes+1))
+	if err != nil || len(data) > maxBuiltinPluginStateBytes {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil || obj == nil {
+		return false
+	}
+	for _, v := range obj {
+		var scalar any
+		if err := json.Unmarshal(v, &scalar); err != nil {
+			return false
+		}
+		switch scalar.(type) {
+		case string, float64, bool, nil:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // validateWorkdir requires the launch directory to be a managed task checkout

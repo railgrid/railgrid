@@ -457,6 +457,7 @@ func (k *keyedMutex) Lock(key string) func() {
 //
 // Effective routes:
 //
+//	GET    /api/billing/plans              the sellable plan catalog (any signed-in user)
 //	GET    /api/orgs                       list orgs the caller is in
 //	POST   /api/orgs                       create a new Org
 //	GET    /api/users/me                   the caller's own identity
@@ -464,6 +465,7 @@ func (k *keyedMutex) Lock(key string) func() {
 //	DELETE /api/users/me                   soft-delete self (O-8)
 //	POST   /api/users/me/undelete          undelete self (O-8)
 func (h *Handler) RegisterUserOnly(r *mux.Router) {
+	r.HandleFunc("/billing/plans", h.getBillingPlans).Methods(http.MethodGet)
 	r.HandleFunc("/orgs", h.listOrgs).Methods(http.MethodGet)
 	r.HandleFunc("/orgs", h.createOrg).Methods(http.MethodPost)
 	r.HandleFunc("/users/me", h.getSelfUser).Methods(http.MethodGet)

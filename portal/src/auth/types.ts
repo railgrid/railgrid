@@ -3,6 +3,7 @@ export interface LoginResponse {
   expiresAt?: number
   email?: string
   userId?: string
+  firstLogin?: boolean
   idToken?: string
   refreshToken?: string
   issuerUrl?: string
