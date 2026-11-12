@@ -656,8 +656,8 @@ func taskPublishAllowed(grant *api.PullRequestTaskAuthorization, op string) bool
 }
 
 func (s *Server) operateTask(ctx context.Context, dyn dynamic.Interface, cluster string, prRecord *api.PullRequest, in Operation, identity dataplane.ProxiedIdentity) (any, error) {
-	if !identity.IsForeignProvider(cluster) || in.EventUID != "" || in.PullRequestUID != string(prRecord.UID) {
-		return nil, errors.New("task PR operations require a foreign consumer and the admitted PR UID")
+	if !trustedTaskConsumer(identity, cluster, in) || in.EventUID != "" || in.PullRequestUID != string(prRecord.UID) {
+		return nil, errors.New("task PR operations require a trusted consumer identity and the admitted PR UID")
 	}
 	fresh, b, err := s.activeTaskAuthorization(ctx, dyn, cluster, prRecord)
 	if err != nil {

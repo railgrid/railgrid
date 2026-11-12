@@ -65,6 +65,9 @@ func defaultFamilies(_ bool) []string {
 func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun) ([]backend.Tool, string, func()) {
 	trigger := run.Trigger
 	deps.CodeScope = tools.ParseCodeScope(run.Task)
+	if deps.CodeScope != nil {
+		deps.CodeOperator = s.codeOperatorFor(run.ClusterID, deps.RunID)
+	}
 	deps.InvocationKey = run.IdempotencyKey
 	if run.Repository != nil {
 		deps.CodeReviewHead = run.Repository.BaseCommit

@@ -43,25 +43,29 @@ type ReviewComment struct {
 }
 
 type Operation struct {
-	Comments           []ReviewComment   `json:"comments,omitempty"`
-	ReviewOnly         bool              `json:"reviewOnly,omitempty"`
-	Delegate           *ReviewDelegate   `json:"delegate,omitempty"`
-	InvocationAgent    string            `json:"invocationAgent"`
-	InvocationAgentUID string            `json:"invocationAgentUID"`
-	ScopeProof         string            `json:"scopeProof"`
-	InvocationKey      string            `json:"invocationKey"`
-	EventUID           string            `json:"eventUID"`
-	SourceUID          string            `json:"sourceUID,omitempty"`
-	SourceDigest       string            `json:"sourceDigest,omitempty"`
-	GrantRef           string            `json:"grantRef,omitempty"`
-	SourceProof        string            `json:"sourceProof,omitempty"`
-	Op                 string            `json:"op"`
-	PullRequestUID     string            `json:"pullRequestUID"`
-	ExpectedHead       string            `json:"expectedHead,omitempty"`
-	Key                string            `json:"key,omitempty"`
-	Body               string            `json:"body,omitempty"`
-	FindingsCount      *int              `json:"findingsCount,omitempty"`
-	Snapshot           *backend.Snapshot `json:"snapshot,omitempty"`
+	Comments           []ReviewComment `json:"comments,omitempty"`
+	ReviewOnly         bool            `json:"reviewOnly,omitempty"`
+	Delegate           *ReviewDelegate `json:"delegate,omitempty"`
+	InvocationAgent    string          `json:"invocationAgent"`
+	InvocationAgentUID string          `json:"invocationAgentUID"`
+	// InvocationRun and InvocationRunUID name the Agents Run whose hub-minted
+	// identity makes the call (see trustedTaskConsumer).
+	InvocationRun    string            `json:"invocationRun,omitempty"`
+	InvocationRunUID string            `json:"invocationRunUID,omitempty"`
+	ScopeProof       string            `json:"scopeProof"`
+	InvocationKey    string            `json:"invocationKey"`
+	EventUID         string            `json:"eventUID"`
+	SourceUID        string            `json:"sourceUID,omitempty"`
+	SourceDigest     string            `json:"sourceDigest,omitempty"`
+	GrantRef         string            `json:"grantRef,omitempty"`
+	SourceProof      string            `json:"sourceProof,omitempty"`
+	Op               string            `json:"op"`
+	PullRequestUID   string            `json:"pullRequestUID"`
+	ExpectedHead     string            `json:"expectedHead,omitempty"`
+	Key              string            `json:"key,omitempty"`
+	Body             string            `json:"body,omitempty"`
+	FindingsCount    *int              `json:"findingsCount,omitempty"`
+	Snapshot         *backend.Snapshot `json:"snapshot,omitempty"`
 }
 
 func validPublication(prRecord *api.PullRequest, e *api.GitHubEvent, pr PullRequest, in Operation) error {

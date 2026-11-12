@@ -192,7 +192,8 @@ func TestDelegatedRepositoryChecksAdmittedCheckout(t *testing.T) {
 				Agent: coordinator, CR: cr,
 				CodeScope: &tools.CodeScope{Mode: "task", PullRequest: "pr", PullRequestUID: "pr-uid", Repository: "org/repo",
 					RepositoryUID: tc.taskRepoUID, ConnectionUID: "code-connection-uid", ScopeProof: tc.taskRepoUID},
-				DataPlane: tools.DataPlane{ClusterID: "tenant", Callers: fakeVerbCaller{endpoint: code.URL}},
+				DataPlane:    tools.DataPlane{ClusterID: "tenant"},
+				CodeOperator: httpCodeOperator{endpoint: code.URL},
 			}, child)
 			if tc.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantError) || repo != nil {

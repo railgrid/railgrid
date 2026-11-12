@@ -12,6 +12,7 @@ import (
 
 	api "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-sdk/identityclient"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -154,5 +155,61 @@ func TestTaskStatusCommentRequiresAnOpenedPullRequest(t *testing.T) {
 	raw, _ := json.Marshal(op)
 	if _, err := f.s.Operate(t.Context(), f.dyn, "tenant", stored, raw, issuer); err == nil || !strings.Contains(err.Error(), "has not been opened yet") {
 		t.Fatalf("status comment on an unopened PR: %v", err)
+	}
+}
+
+// An Agents Run reaches Code as its own hub-minted identity in the tenant
+// workspace, not as a foreign provider. Code accepts exactly that account, for
+// the Run the operation names, and no other tenant-local principal.
+func TestTaskOperationAcceptsOnlyTheInvokingRunIdentity(t *testing.T) {
+	f, repo, input, issuer := taskTestFixture(t)
+	allowTaskCallerSAR(f, true, nil)
+	issued, err := authorizeTaskTest(t, f, repo, input, issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := issued.(TaskAuthorizationResult)
+	scope := input
+	scope.Op, scope.GrantRef, scope.Proof = "scope", grant.GrantRef, grant.Proof
+	scope.InvocationKey, scope.InvocationAgent, scope.InvocationAgentUID = "task:run:1", "coordinator", "coordinator-uid"
+	scoped, err := authorizeTaskTest(t, f, repo, scope, issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.dyn.Resource(PullRequests).Get(t.Context(), "task-pr", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runAccount := identityclient.ServiceAccountName(identityclient.Owner{Provider: "agents", Group: "agents.railgrid.ai", Kind: "Run", Name: "run-1", UID: "run-uid"})
+	tenantSA := func(name string) dataplane.ProxiedIdentity {
+		return dataplane.ProxiedIdentity{User: "system:serviceaccount:default:" + name, Extra: map[string][]string{dataplane.ClusterNameExtra: {"tenant"}}}
+	}
+	operate := func(identity dataplane.ProxiedIdentity, run, runUID string) error {
+		op := Operation{Op: "delegate-review", PullRequestUID: string(stored.GetUID()), SourceUID: input.SourceUID, SourceDigest: input.SourceDigest,
+			GrantRef: grant.GrantRef, SourceProof: grant.Proof, InvocationKey: scope.InvocationKey, InvocationAgent: scope.InvocationAgent,
+			InvocationAgentUID: scope.InvocationAgentUID, InvocationRun: run, InvocationRunUID: runUID, ScopeProof: scoped.(TaskAuthorizationResult).ScopeProof,
+			Delegate: &ReviewDelegate{InvocationKey: "task:run:1:review", Agent: "reviewer", AgentUID: "reviewer-uid"}}
+		raw, _ := json.Marshal(op)
+		_, err := f.s.Operate(t.Context(), f.dyn, "tenant", stored, raw, identity)
+		return err
+	}
+	if err := operate(tenantSA(runAccount), "run-1", "run-uid"); err != nil {
+		t.Fatalf("the invoking Run's identity was refused: %v", err)
+	}
+	unclustered := dataplane.ProxiedIdentity{User: "system:serviceaccount:default:" + runAccount}
+	for name, tc := range map[string]struct {
+		identity    dataplane.ProxiedIdentity
+		run, runUID string
+	}{
+		"another tenant account":      {tenantSA("someone"), "run-1", "run-uid"},
+		"a recreated Run":             {tenantSA(runAccount), "run-1", "other-uid"},
+		"another Run's name":          {tenantSA(runAccount), "run-2", "run-uid"},
+		"no Run named":                {tenantSA(runAccount), "", ""},
+		"the account with no cluster": {unclustered, "run-1", "run-uid"},
+		"a user":                      {dataplane.ProxiedIdentity{User: "alice"}, "run-1", "run-uid"},
+	} {
+		if err := operate(tc.identity, tc.run, tc.runUID); err == nil || !strings.Contains(err.Error(), "trusted consumer identity") {
+			t.Errorf("%s: operation was not refused for its identity: %v", name, err)
+		}
 	}
 }

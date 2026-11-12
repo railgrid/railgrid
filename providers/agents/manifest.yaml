@@ -201,15 +201,10 @@ spec:
   # tenant's workspace. There is no tokenreviews entry either: service callers
   # use the same verbs and gates as everyone else.
   requires:
-    # Code is a provider-level prerequisite because the catalog contract has
-    # no optional dependency or optional claim mode. Its tools remain opt-in
-    # per Agent through Toolset grants.
-    - provider: code
-      group: code.railgrid.ai
-      resources:
-        - name: pullrequests
-          verbs: ["get"]
-        - name: pullrequests/operate
+    # There is deliberately no entry for Code. A requirement naming a provider
+    # is a dependency edge, and Agents must enable without Code. The Code tool
+    # calls pullrequests/{name}/operate as each Run's own hub-minted identity,
+    # scoped to that PullRequest (api/code_operator.go).
     # Naming a provider makes this a dependency edge as well as a claim: the hub
     # refuses to enable agents in a workspace where infrastructure is not
     # enabled yet.
