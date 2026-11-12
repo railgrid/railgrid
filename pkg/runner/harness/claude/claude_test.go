@@ -280,6 +280,53 @@ func TestEnsureHomeRejectsAnInteractiveHome(t *testing.T) {
 		}
 	}
 
+	// Claude Code writes bookkeeping for its own built-in plugins into the home
+	// during a session; that alone must not disqualify the home on the next
+	// attempt, while anything else under plugins still does.
+	builtin := filepath.Join(base, "builtin-plugin-state")
+	if err := os.MkdirAll(filepath.Join(builtin, "plugins", "store"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(builtin, "plugins", "store", "cc-plugin-agents-md_builtin-b049b47b3618.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Adapter{cfg: Config{Home: builtin}}).ensureHome(); err != nil {
+		t.Errorf("a home holding only built-in plugin bookkeeping was rejected: %v", err)
+	}
+	for name, extra := range map[string]string{
+		"marketplace":     filepath.Join("plugins", "marketplaces", "x.json"),
+		"installed":       filepath.Join("plugins", "installed_plugins.json"),
+		"non-builtin":     filepath.Join("plugins", "store", "someone-plugin.json"),
+		"nested-in-store": filepath.Join("plugins", "store", "sub", "a_builtin-ab.json"),
+	} {
+		home := filepath.Join(base, "plugins-"+name)
+		if err := os.MkdirAll(filepath.Join(home, "plugins", "store"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, "plugins", "store", "cc-plugin-agents-md_builtin-b049b47b3618.json"), []byte("{}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(home, extra)), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, extra), []byte("{}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := (&Adapter{cfg: Config{Home: home}}).ensureHome(); err == nil {
+			t.Errorf("a home with plugins entry %q was accepted", extra)
+		}
+	}
+	symlinked := filepath.Join(base, "plugins-symlinked-store")
+	if err := os.MkdirAll(filepath.Join(symlinked, "plugins"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(base, filepath.Join(symlinked, "plugins", "store")); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Adapter{cfg: Config{Home: symlinked}}).ensureHome(); err == nil {
+		t.Error("a home whose plugins/store is a symlink was accepted")
+	}
+
 	if err := (&Adapter{cfg: Config{Home: "relative/home"}}).ensureHome(); err == nil {
 		t.Error("a relative home was accepted")
 	}

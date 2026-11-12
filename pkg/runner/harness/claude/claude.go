@@ -553,6 +553,9 @@ func (a *Adapter) ensureHome() error {
 		return fmt.Errorf("reading claude runner home: %w", err)
 	}
 	for _, entry := range entries {
+		if strings.EqualFold(entry.Name(), "plugins") && entry.IsDir() && builtinPluginBookkeepingOnly(filepath.Join(home, entry.Name())) {
+			continue
+		}
 		if _, unsafe := unsafeHomeEntries[strings.ToLower(entry.Name())]; unsafe {
 			return fmt.Errorf("claude runner home contains interactive configuration %q; use a dedicated worker home", entry.Name())
 		}
@@ -562,6 +565,36 @@ func (a *Adapter) ensureHome() error {
 	}
 	return nil
 }
+
+// builtinPluginBookkeepingOnly reports whether a home's plugins directory holds
+// nothing but the state Claude Code writes for its own built-in plugins during
+// a session: plugins/store/<name>_builtin-<hash>.json, regular files only. No
+// installed or marketplace plugin can live there, so the home stays dedicated
+// to the runner; anything else under plugins (a cache, a marketplace, a
+// symlink, another file) is still refused by the caller.
+func builtinPluginBookkeepingOnly(dir string) bool {
+	top, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range top {
+		if entry.Name() != "store" || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return false
+		}
+		files, err := os.ReadDir(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return false
+		}
+		for _, f := range files {
+			if !f.Type().IsRegular() || !builtinPluginStatePattern.MatchString(f.Name()) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+var builtinPluginStatePattern = regexp.MustCompile(`^[a-z0-9-]+_builtin-[0-9a-f]+\.json$`) //nolint:gochecknoglobals // immutable worker-home policy
 
 // validateWorkdir requires the launch directory to be a managed task checkout
 // under WorktreeRoot when a root is configured. Library callers that leave the
