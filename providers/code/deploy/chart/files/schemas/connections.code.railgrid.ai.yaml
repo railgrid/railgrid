@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260609-fc69fa2.connections.code.railgrid.ai
+  name: v261108-aafad9fce.connections.code.railgrid.ai
 spec:
   group: code.railgrid.ai
   names:
@@ -74,6 +74,33 @@ spec:
                 targets the provider's public SaaS endpoint.
               maxLength: 2048
               type: string
+            githubWebhook:
+              description: GitHubWebhookBinding pins the only repository whose signed
+                events are accepted.
+              properties:
+                botLogin:
+                  description: BotLogin pins the App identity used to recover uncertain
+                    publication responses.
+                  maxLength: 100
+                  minLength: 1
+                  type: string
+                repositoryID:
+                  format: int64
+                  minimum: 1
+                  type: integer
+                repositoryRef:
+                  maxLength: 253
+                  type: string
+                source:
+                  enum:
+                  - app
+                  - repository
+                  type: string
+              required:
+              - botLogin
+              - repositoryID
+              - repositoryRef
+              type: object
             owner:
               description: |-
                 Owner is the org or user under which repositories created via this

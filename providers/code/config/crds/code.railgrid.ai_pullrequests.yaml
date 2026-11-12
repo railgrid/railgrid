@@ -41,7 +41,7 @@ spec:
           PullRequest is one pull request on a managed Repository, as a resource:
           what the forge should show (spec) and what it does show (status).
 
-          A coordinator such as Factory states intent — the branch, the base, the
+          A trusted coordinator states intent — the branch, the base, the
           public title and body, and the exact commit the branch should be at, as a
           verified snapshot it staged — and Code makes the forge agree: it advances
           the branch under an expected-head lease, opens the pull request once, and
@@ -90,6 +90,124 @@ spec:
                 maxLength: 255
                 minLength: 1
                 type: string
+              command:
+                description: Command limits Code publication to this verified command.
+                properties:
+                  deadline:
+                    format: date-time
+                    type: string
+                  eventRef:
+                    maxLength: 253
+                    type: string
+                  eventUID:
+                    maxLength: 128
+                    type: string
+                  task:
+                    description: |-
+                      Task is a Code-signed authorization for one existing coordinator task to
+                      operate on this PR. Code treats sourceUID as opaque and never reads or
+                      depends on the issuer's task API.
+                    properties:
+                      base:
+                        maxLength: 255
+                        type: string
+                      branch:
+                        maxLength: 255
+                        type: string
+                      caller:
+                        maxLength: 253
+                        type: string
+                      callerGroups:
+                        items:
+                          type: string
+                        maxItems: 64
+                        type: array
+                      callerUID:
+                        maxLength: 128
+                        type: string
+                      connectionUID:
+                        maxLength: 128
+                        type: string
+                      deadline:
+                        format: date-time
+                        type: string
+                      grantRef:
+                        description: GrantRef is a deterministic, opaque idempotency
+                          key for this grant.
+                        pattern: ^[a-f0-9]{64}$
+                        type: string
+                      issuerCluster:
+                        maxLength: 253
+                        type: string
+                      issuerIdentityDigest:
+                        pattern: ^[a-f0-9]{64}$
+                        type: string
+                      issuerUser:
+                        description: |-
+                          IssuerUser and IssuerCluster are stamped from the authenticated
+                          requestheader identity; callers cannot choose the grant issuer.
+                        maxLength: 253
+                        type: string
+                      mode:
+                        enum:
+                        - review-fix
+                        type: string
+                      proof:
+                        description: Proof is a Code-generated HMAC over the frozen
+                          scope and issuer identity.
+                        pattern: ^[a-f0-9]{64}$
+                        type: string
+                      pullRequestRef:
+                        maxLength: 253
+                        type: string
+                      pullRequestUID:
+                        maxLength: 128
+                        type: string
+                      repository:
+                        maxLength: 256
+                        type: string
+                      repositoryID:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      repositoryRef:
+                        maxLength: 253
+                        type: string
+                      repositoryUID:
+                        maxLength: 128
+                        type: string
+                      sourceDigest:
+                        pattern: ^[a-f0-9]{64}$
+                        type: string
+                      sourceUID:
+                        maxLength: 128
+                        type: string
+                    required:
+                    - base
+                    - branch
+                    - caller
+                    - connectionUID
+                    - deadline
+                    - grantRef
+                    - issuerCluster
+                    - issuerIdentityDigest
+                    - issuerUser
+                    - mode
+                    - proof
+                    - pullRequestRef
+                    - pullRequestUID
+                    - repository
+                    - repositoryID
+                    - repositoryRef
+                    - repositoryUID
+                    - sourceDigest
+                    - sourceUID
+                    type: object
+                required:
+                - deadline
+                - eventRef
+                - eventUID
+                type: object
               desiredHead:
                 description: |-
                   DesiredHead is the commit the head branch should be at: a verified
@@ -129,6 +247,10 @@ spec:
                 - commit
                 - tree
                 type: object
+              number:
+                description: Number adopts an existing PR instead of creating one.
+                minimum: 1
+                type: integer
               observeInterval:
                 description: |-
                   ObserveInterval is how often Code re-reads an open pull request from
@@ -145,6 +267,59 @@ spec:
                 maxLength: 253
                 minLength: 1
                 type: string
+              taskAuthorizationRevocations:
+                description: |-
+                  TaskAuthorizationRevocations are Code-owned cancellation tombstones. They
+                  close the race between a lost grant response and a retry after task cancel.
+                items:
+                  description: |-
+                    PullRequestTaskRevocation is the durable cancellation marker for one opaque
+                    coordinator source UID. It prevents a late/retried grant from restoring a
+                    task the issuer already canceled.
+                  properties:
+                    connectionUID:
+                      maxLength: 128
+                      type: string
+                    issuerCluster:
+                      maxLength: 253
+                      type: string
+                    issuerIdentityDigest:
+                      pattern: ^[a-f0-9]{64}$
+                      type: string
+                    issuerUser:
+                      maxLength: 253
+                      type: string
+                    pullRequestUID:
+                      maxLength: 128
+                      type: string
+                    repositoryUID:
+                      maxLength: 128
+                      type: string
+                    revokedAt:
+                      format: date-time
+                      type: string
+                    sourceDigest:
+                      pattern: ^[a-f0-9]{64}$
+                      type: string
+                    sourceUID:
+                      maxLength: 128
+                      type: string
+                  required:
+                  - connectionUID
+                  - issuerCluster
+                  - issuerIdentityDigest
+                  - issuerUser
+                  - pullRequestUID
+                  - repositoryUID
+                  - revokedAt
+                  - sourceDigest
+                  - sourceUID
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-map-keys:
+                - sourceUID
+                x-kubernetes-list-type: map
               title:
                 description: |-
                   Title and Body are the pull request's public text. They are the
@@ -164,6 +339,16 @@ spec:
               attachmentRepositoryUID:
                 description: AttachmentRepositoryUID binds upload receipts to their
                   destination repository.
+                type: string
+              baseCurrent:
+                description: BaseCurrent is true only when the observed base is an
+                  ancestor of the observed PR head.
+                type: boolean
+              baseHead:
+                maxLength: 40
+                type: string
+              ciState:
+                maxLength: 32
                 type: string
               comments:
                 description: |-
@@ -265,6 +450,9 @@ spec:
                 format: date-time
                 type: string
               mergeCommit:
+                type: string
+              mergeableState:
+                maxLength: 32
                 type: string
               merged:
                 type: boolean

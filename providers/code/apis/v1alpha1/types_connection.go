@@ -78,8 +78,26 @@ const (
 	CredentialTypeOAuth ConnectionCredentialType = "oauth"
 )
 
+// GitHubWebhookBinding pins the only repository whose signed events are accepted.
+type GitHubWebhookBinding struct {
+	// BotLogin pins the App identity used to recover uncertain publication responses.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=100
+	BotLogin string `json:"botLogin"`
+	// +kubebuilder:validation:MaxLength=253
+	RepositoryRef string `json:"repositoryRef"`
+	// +kubebuilder:validation:Minimum=1
+	RepositoryID int64 `json:"repositoryID"`
+	// +optional
+	// +kubebuilder:validation:Enum=app;repository
+	Source string `json:"source,omitempty"`
+}
+
 // ConnectionSpec is the desired state.
 type ConnectionSpec struct {
+	// +optional
+	GitHubWebhook *GitHubWebhookBinding `json:"githubWebhook,omitempty"`
+
 	// Provider names the git hosting sub-provider. v1: github.
 	// +required
 	Provider GitProvider `json:"provider"`
