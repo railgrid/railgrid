@@ -280,6 +280,7 @@ func (s *Server) harnessSessionDeps(ctx context.Context, sess store.HarnessMCPSe
 			deps.CodeScope = code
 			deps.InvocationKey = run.IdempotencyKey
 			deps.DataPlane = s.dataPlaneFor(taskRun{ClusterID: sess.ClusterID})
+			deps.CodeOperator = s.codeOperatorFor(sess.ClusterID, sess.RunID)
 		}
 	}
 	if review, _ := ctx.Value(harnessMCPReviewSessionKey{}).(bool); review && deps.CodeScope == nil {

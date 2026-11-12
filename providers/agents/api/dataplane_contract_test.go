@@ -367,11 +367,14 @@ func TestDataPlaneVerbsMatchManifest(t *testing.T) {
 	}
 }
 
-func TestCodeToolRequirementRemainsDeclared(t *testing.T) {
+// TestCodeIsNotAPrerequisite: a requirement naming a provider is a dependency
+// edge, so declaring Code here would stop Agents from being enabled in any
+// workspace without Code. The Code tool calls Code as each Run's hub-minted
+// identity instead (code_operator.go).
+func TestCodeIsNotAPrerequisite(t *testing.T) {
 	requires := readSpecBlock(t, "../manifest.yaml", "requires")
-	want := "- provider: code\n      group: code.railgrid.ai\n      resources:\n        - name: pullrequests\n          verbs: [\"get\"]\n        - name: pullrequests/operate"
-	if !strings.Contains(requires, want) {
-		t.Fatalf("Code dependency and operate claim must remain declared together:\n%s", requires)
+	if strings.Contains(requires, "provider: code") || strings.Contains(requires, "group: code.railgrid.ai") {
+		t.Fatalf("spec.requires names Code, which makes it a prerequisite for enabling Agents:\n%s", requires)
 	}
 }
 

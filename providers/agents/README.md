@@ -464,20 +464,22 @@ the values remain inspectable.
 The optional `code` tool family exposes `code_pull_request`, a capability adapter
 to Code's existing PullRequest resource, for observations and COMMENT publication.
 The separate `code-write` grant additionally permits snapshot publication;
-the adapter rejects code publication without that grant. Calls act as this
-provider through its declared claim; GitHub App
-credentials remain in Code. A trusted coordinator owns admission and its task
+the adapter rejects code publication without that grant. Each call acts as the
+executing Run's own hub-minted identity, owned by the Run and limited to `get`
+and `operate` on the one admitted PullRequest; GitHub App credentials remain in
+Code. A trusted coordinator owns admission and its task
 lifecycle.
 Agents retains execution, child Run lineage, transcripts, checkpoints and usage.
 The delegation cap is checked against existing child Runs, so rebuilding tools
 after recovery does not reset it. Each delegated invocation gets a fresh scoped
 conversation, including independent re-reviews.
 
-Code is a provider-level prerequisite for enabling or upgrading Agents because
-the catalog contract has no optional provider-dependency or optional-claim mode.
-The `code` tool family itself stays opt-in per Agent: grant it through that
-Agent's Toolset to expose the tool. Agents without that grant do not receive
-Code operations.
+Agents does not require Code. Its CatalogEntry declares no requirement on Code,
+because a requirement naming a provider makes it a prerequisite for enabling
+Agents. Where Code is not enabled, the hub refuses to mint the Run's Code
+identity and only `code_pull_request` fails, with that reason. The `code` tool
+family stays opt-in per Agent: grant it through that Agent's Toolset to expose
+the tool.
 
 PR workflow invocations carry an immutable `railgrid-code-scope:` header in
 Run input. Event-backed scopes pin the admitted event; task-backed scopes pin a

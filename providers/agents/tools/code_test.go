@@ -8,6 +8,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -87,7 +89,7 @@ func TestCodeAdapterOverridesModelCommandBinding(t *testing.T) {
 		_, _ = w.Write([]byte(`{"result":{}}`))
 	}))
 	defer server.Close()
-	d := Deps{Agent: &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "coordinator", UID: "agent-uid"}}, InvocationKey: "factory:run:1", CodeScope: &CodeScope{PullRequest: "pr", PullRequestUID: "uid", EventUID: "admitted-event", Proof: "signed-proof"}, DataPlane: DataPlane{ClusterID: "cluster", Callers: fakeVerbCaller{endpoint: server.URL}}}
+	d := Deps{Agent: &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "coordinator", UID: "agent-uid"}}, InvocationKey: "factory:run:1", CodeScope: &CodeScope{PullRequest: "pr", PullRequestUID: "uid", EventUID: "admitted-event", Proof: "signed-proof"}, CodeOperator: httpCodeOperator{endpoint: server.URL}}
 	_, err := Code(d, true)[0].Exec(t.Context(), `{"pullRequest":"pr","input":{"op":"observe","pullRequestUID":"uid","eventUID":"foreign-event"}}`)
 	if err != nil || calls != 1 {
 		t.Fatalf("bound request failed: %v calls=%d", err, calls)
@@ -126,7 +128,7 @@ func TestCodeAdapterOverridesTaskGrantAndInvocationBinding(t *testing.T) {
 		Repository: "railgrid/example", RepositoryUID: "repo-uid", ConnectionUID: "conn-uid",
 		PullRequest: "pr", PullRequestUID: "pr-uid", Proof: "source-proof", ScopeProof: "invocation-proof",
 	}
-	d := Deps{Agent: &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "reviewer", UID: "reviewer-uid"}}, InvocationKey: "factory:run:7", CodeScope: scope, DataPlane: DataPlane{ClusterID: "cluster", Callers: fakeVerbCaller{endpoint: server.URL}}}
+	d := Deps{Agent: &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "reviewer", UID: "reviewer-uid"}}, InvocationKey: "factory:run:7", CodeScope: scope, CodeOperator: httpCodeOperator{endpoint: server.URL}}
 	args := `{"pullRequest":"pr","input":{"op":"observe","sourceUID":"forged","sourceDigest":"forged","grantRef":"forged","sourceProof":"forged","scopeProof":"forged","eventUID":"forged"}}`
 	if _, err := Code(d, true)[0].Exec(t.Context(), args); err != nil || calls != 1 {
 		t.Fatalf("task-scoped request failed: %v calls=%d", err, calls)
@@ -178,7 +180,7 @@ func TestWorkerCodeToolBindsCoordinatesOutsideModelArguments(t *testing.T) {
 		_, _ = w.Write([]byte(`{"result":{"recorded":true}}`))
 	}))
 	defer server.Close()
-	d := Deps{Agent: &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "reviewer", UID: "agent-uid"}}, InvocationKey: "delegate:parent:call", CodeReviewHead: strings.Repeat("a", 40), CodeScope: &CodeScope{ReviewOnly: true, PullRequest: "pr", PullRequestUID: "uid", EventUID: "event", Proof: "signed"}, DataPlane: DataPlane{ClusterID: "cluster", Callers: fakeVerbCaller{endpoint: server.URL}}}
+	d := Deps{Agent: &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "reviewer", UID: "agent-uid"}}, InvocationKey: "delegate:parent:call", CodeReviewHead: strings.Repeat("a", 40), CodeScope: &CodeScope{ReviewOnly: true, PullRequest: "pr", PullRequestUID: "uid", EventUID: "event", Proof: "signed"}, CodeOperator: httpCodeOperator{endpoint: server.URL}}
 	tool := Code(d, false)[0]
 	for _, args := range []string{`{"input":{"op":"observe"}}`, `{"input":{"op":"observe","pullRequest":"pr"}}`, `{"input":{"op":"review","key":"finding","body":"Defect","findingsCount":1,"comments":[{"path":"src/a.go","line":12,"side":"RIGHT","body":"Return upper."}]}}`} {
 		if _, err := tool.Exec(t.Context(), args); err != nil {
@@ -192,5 +194,40 @@ func TestWorkerCodeToolBindsCoordinatesOutsideModelArguments(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("unexpected calls %d", calls)
+	}
+}
+
+// httpCodeOperator posts an operation the way the api package's Run-identity
+// operator does, to a test server standing in for Code.
+type httpCodeOperator struct{ endpoint string }
+
+func (o httpCodeOperator) Operate(ctx context.Context, _ string, input map[string]any) (string, error) {
+	raw, err := json.Marshal(map[string]any{"input": input})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.endpoint, strings.NewReader(string(raw)))
+	if err != nil {
+		return "", err
+	}
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("Code refused operation: %s", body)
+	}
+	return string(body), nil
+}
+
+func TestCodeToolWithoutARunIdentityFailsBeforeAnyCall(t *testing.T) {
+	d := Deps{Agent: &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "a", UID: "u"}}, CodeScope: &CodeScope{PullRequest: "pr", PullRequestUID: "uid", EventUID: "event", Proof: "proof"}}
+	if _, err := Code(d, true)[0].Exec(t.Context(), `{"pullRequest":"pr","input":{"op":"observe"}}`); err == nil || !strings.Contains(err.Error(), "no Run identity") {
+		t.Fatalf("Code tool without an operator: %v", err)
 	}
 }

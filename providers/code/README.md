@@ -653,6 +653,11 @@ The grant and invocation scope are signed with a domain-separated key derived
 from the GitHub App webhook secret already bound to the repository. The scope
 proof binds the task grant, invocation key, and frozen Agent name and UID. Agents copies
 those values from immutable Run input and overwrites model-supplied authority.
+Task operations are accepted only from a trusted consumer: another provider's
+ServiceAccount acting through its own export, or the scoped identity the hub
+minted for the Agents Run the operation names (`invocationRun` and
+`invocationRunUID`). Code recognizes that identity by its ServiceAccount name,
+which the hub derives from the Run (`identityclient.ServiceAccountName`).
 The worker can observe the admitted PR, publish COMMENT reviews on its exact
 current head, or publish a verified snapshot to its pinned branch and base; it
 cannot merge or approve.

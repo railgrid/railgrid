@@ -6,17 +6,12 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 
 	"github.com/railgrid/provider-agents/engine"
-	"github.com/railgrid/provider-sdk/dataplane"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -71,6 +66,18 @@ func ParseCodeScope(input string) *CodeScope {
 		return nil
 	}
 	return &scope
+}
+
+// CodeOperator calls Code's pullrequests/{name}/operate verb for one Run.
+//
+// The call is made as the Run's own hub-minted identity, name-scoped to the
+// one PullRequest, not as this provider. Agents therefore holds no permission
+// claim on Code, and enabling Agents does not require Code. Where Code is not
+// enabled, the hub refuses to mint the identity and the tool reports why.
+// Operate adds the Run's name and UID to input, so Code can recognize that
+// identity, and returns Code's response body.
+type CodeOperator interface {
+	Operate(ctx context.Context, pullRequest string, input map[string]any) (string, error)
 }
 
 // Code exposes Code-owned forge operations. No GitHub credential, PR lifecycle
@@ -177,8 +184,11 @@ func codeTools(d Deps, writable, delegate bool) []engine.Tool {
 			// The resource UID is an immutable part of the approved invocation.
 			// Make it optional for the model, then always send the scoped value.
 			payload["pullRequestUID"] = d.CodeScope.PullRequestUID
-			if len(validation.IsDNS1123Subdomain(in.PullRequest)) != 0 || !d.DataPlane.Available() {
-				return "", fmt.Errorf("valid pullRequest and provider data plane required")
+			if len(validation.IsDNS1123Subdomain(in.PullRequest)) != 0 {
+				return "", fmt.Errorf("valid pullRequest required")
+			}
+			if d.CodeOperator == nil {
+				return "", fmt.Errorf("Code operations are unavailable in this run: it has no Run identity to call Code with")
 			}
 			// Override rather than accept model-supplied command authority.
 			if d.CodeScope.Mode == "task" {
@@ -199,37 +209,7 @@ func codeTools(d Deps, writable, delegate bool) []engine.Tool {
 			}
 			payload["invocationAgent"] = d.Agent.Name
 			payload["invocationAgentUID"] = string(d.Agent.UID)
-			in.Input, _ = json.Marshal(payload)
-			u, err := d.DataPlane.Callers.ExportVerbURL(ctx, schema.GroupVersionResource{Group: "code.railgrid.ai", Version: "v1alpha1", Resource: "pullrequests"}, dataplane.Request{ClusterID: d.DataPlane.ClusterID, Resource: "pullrequests", Name: in.PullRequest, Verb: "operate"})
-			if err != nil {
-				return "", err
-			}
-			raw, err := json.Marshal(map[string]any{"input": in.Input})
-			if err != nil {
-				return "", err
-			}
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(raw))
-			if err != nil {
-				return "", err
-			}
-			req.Header.Set("Content-Type", "application/json")
-			client, err := d.DataPlane.HTTPClient()
-			if err != nil {
-				return "", err
-			}
-			response, err := client.Do(req)
-			if err != nil {
-				return "", fmt.Errorf("Code operation unavailable")
-			}
-			defer func() { _ = response.Body.Close() }()
-			body, err := io.ReadAll(io.LimitReader(response.Body, 128<<10))
-			if err != nil {
-				return "", err
-			}
-			if response.StatusCode < 200 || response.StatusCode >= 300 {
-				return "", fmt.Errorf("Code refused operation: %s", body)
-			}
-			return string(body), nil
+			return d.CodeOperator.Operate(ctx, in.PullRequest, payload)
 		}}}
 }
 

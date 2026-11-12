@@ -62,7 +62,6 @@ spec:
   claims:
   - claimer: agents.railgrid.ai
     groups:
-    - code.railgrid.ai
     - edges.railgrid.ai
     - infrastructure.railgrid.ai
   - claimer: ai.railgrid.ai
