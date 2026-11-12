@@ -181,7 +181,7 @@ not one of these classes is a deviation, even when it authorizes correctly.
 | **(d) Browser OAuth** | `/oauth/{provider}/{start,callback,config}` | signed state; the popup may `postMessage` to its opener | code `oauthgithub/oauth.go` |
 | **(e) Hub-only** | `/workload-identities/*` | refused by the proxy for callers | `pkg/hub/providers/proxy.go` |
 | **(f) Agent tunnel** | `/agent/clusters/{clusterID}/{resource}/{name}/proxy` | join token or edge ServiceAccount + SAR | edges `agent_proxy_builder_v2.go` |
-| **(g) Signed inbound webhook** | `/webhooks/{kind}/{clusterID}/{name}/{token}` | HMAC token; acts as the provider ServiceAccount | agents `api/server.go` |
+| **(g) Signed inbound webhook** | Provider-specific paths under `/webhooks/`: agents `/webhooks/{kind}/{clusterID}/{name}/{token}`; Code `/webhooks/github/{clusterID}/{connection}` | Agents validates its URL token; Code verifies the body HMAC in `X-Hub-Signature-256`. Both act as the provider ServiceAccount | agents `api/server.go`; code `githubworkflow/server.go` |
 
 Agent ingress follows the addressed workspace's actual Edges APIBinding,
 including when its organization has installed a different copy. The hub verifies

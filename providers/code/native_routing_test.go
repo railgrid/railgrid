@@ -40,3 +40,35 @@ func TestProductionDataPlaneReachesNativeAuthorization(t *testing.T) {
 		t.Fatalf("native=%d actions=%d", nativeCalls, actionCalls)
 	}
 }
+
+func TestWebhookRouteMounted(t *testing.T) {
+	var cluster, name, signature string
+	webhook := func(w http.ResponseWriter, r *http.Request) {
+		cluster, name = r.PathValue("cluster"), r.PathValue("name")
+		signature = r.Header.Get("X-Hub-Signature-256")
+		w.WriteHeader(http.StatusNoContent)
+	}
+	handler, err := serve.New(serve.Options{Name: "code", Readiness: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }), Extra: codeWebhookRoutes(webhook)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		method, path string
+		status       int
+	}{
+		{http.MethodPost, "/webhooks/github/c1/app", http.StatusNoContent},
+		{http.MethodGet, "/webhooks/github/c1/app", http.StatusMethodNotAllowed},
+		{http.MethodPost, "/webhooks/other", http.StatusNotFound},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader("{}"))
+		req.Header.Set("X-Hub-Signature-256", "sha256=test")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		if response.Code != tc.status {
+			t.Errorf("%s %s: got %d, want %d", tc.method, tc.path, response.Code, tc.status)
+		}
+	}
+	if cluster != "c1" || name != "app" || signature != "sha256=test" {
+		t.Fatalf("webhook received cluster=%q name=%q signature=%q", cluster, name, signature)
+	}
+}

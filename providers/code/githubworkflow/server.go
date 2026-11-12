@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -167,12 +168,14 @@ func (s *Server) Webhook(w http.ResponseWriter, r *http.Request) {
 	cluster, name := r.PathValue("cluster"), r.PathValue("name")
 	dyn, err := s.Callers.AsProvider(cluster)
 	if err != nil {
-		reply(w, 503, map[string]string{"error": "workspace unavailable"})
+		log.Printf("github webhook %q/%q: workspace: %v", cluster, name, err)
+		reply(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
 	b, err := s.binding(ctx, dyn, name, false)
 	if err != nil {
-		reply(w, 404, map[string]string{"error": "connection unavailable"})
+		log.Printf("github webhook %q/%q: binding: %v", cluster, name, err)
+		reply(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
@@ -181,7 +184,7 @@ func (s *Server) Webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !Verify(b.data["webhookSecret"], raw, r.Header.Get("X-Hub-Signature-256")) {
-		reply(w, 403, map[string]string{"error": "invalid signature"})
+		reply(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
 	if r.Header.Get("X-GitHub-Event") == "ping" {
