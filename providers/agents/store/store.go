@@ -289,9 +289,8 @@ type Run struct {
 	DelegatedUsageRolledUp bool `json:"-"`
 }
 
-// RunRepository is what a repository run was asked to run against. The same
-// shape is projected onto the Run object's spec.repository, so a reader of
-// either knows what ran without being able to clone it.
+// RunRepository stores the admitted repository coordinates and runner limit.
+// The Run object projects the checkout coordinates and the effective deadline.
 type RunRepository struct {
 	// EnvironmentID identifies an opt-in reusable development checkout.
 	// +optional
@@ -301,6 +300,8 @@ type RunRepository struct {
 	RepositoryID  string `json:"repositoryID"`
 	BaseCommit    string `json:"baseCommit"`
 	CommitMessage string `json:"commitMessage,omitempty"`
+	// MaxDurationSeconds retains the admitted runner limit across retries and recovery.
+	MaxDurationSeconds int `json:"maxDurationSeconds,omitempty"`
 }
 
 // RunResult is a repository run's verified Git result: the snapshot commit on

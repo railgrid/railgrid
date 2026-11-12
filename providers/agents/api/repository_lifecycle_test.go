@@ -325,6 +325,21 @@ func TestRepositoryRunLifecycleStoresTheVerifiedResult(t *testing.T) {
 		}
 	}
 
+	// A recovered attempt keeps the same limit, and the controller gets the
+	// corresponding deadline, including the final-receipt margin.
+	if restored := repositoryAttemptFromStored(stored.Repository); restored == nil || restored.MaxDurationSeconds != 900 {
+		t.Fatalf("restored repository duration = %+v", restored)
+	}
+	if stored.StartedAt == nil {
+		t.Fatal("repository run did not persist a start time")
+	}
+	running := stored
+	running.Phase = store.RunPhaseRunning
+	deadline := runStatusFor(running).DeadlineAt
+	if want := running.StartedAt.Add(17 * time.Minute); deadline == nil || !deadline.Time.Equal(want) {
+		t.Fatalf("repository controller deadline = %v, want %s", deadline, want)
+	}
+
 	// The projection: spec.repository and status.result in the contract's shape.
 	status := runStatusFor(stored)
 	if status.Result == nil || status.Result.Commit != lifecycleCommit || status.Result.BundleDigest != stored.Result.BundleDigest {

@@ -258,11 +258,39 @@ func TestPastTheDeadlineTheRunIsReportedNotKilled(t *testing.T) {
 	}
 }
 
+func TestRepositoryRunKeepsItsProjectedDeadline(t *testing.T) {
+	now := started.Add(15 * time.Minute)
+	deadline := metav1.NewTime(started.Add(62 * time.Minute))
+	r := &Reconciler{
+		Now: func() time.Time { return now },
+		Stop: func(context.Context, string, string, string, string) error {
+			t.Fatal("Agent default cut the repository run short")
+			return nil
+		},
+	}
+	object := newRun("repo", func(o *agentsv1alpha1.Run) {
+		o.Spec.Repository = &agentsv1alpha1.RunRepository{RepositoryID: "42"}
+		o.Status.DeadlineAt = &deadline
+	})
+	_, result := run(t, r, object, newAgent(600))
+	if result.RequeueAfter != deadline.Sub(now)+deadlineSlack {
+		t.Fatalf("requeued after %v, want the remaining projected deadline", result.RequeueAfter)
+	}
+}
+
 // A run waiting on a human has not overrun. PendingApproval is settled from the
 // deadline's point of view, and the stale deadline is cleared so a later resume
 // is measured afresh rather than starting already expired.
 func TestAWaitingRunHasNoDeadline(t *testing.T) {
+	checked := 0
 	r := &Reconciler{
+		ReconcileParked: func(_ context.Context, clusterID, agentName, runID string) error {
+			if clusterID != cluster1 || agentName != "scout" || runID != "r1" {
+				t.Fatalf("unexpected parked lookup: %s/%s/%s", clusterID, agentName, runID)
+			}
+			checked++
+			return nil
+		},
 		Now: func() time.Time { return started.Add(time.Hour) },
 		Stop: func(context.Context, string, string, string, string) error {
 			t.Fatal("a settled run must not time out")
@@ -273,7 +301,10 @@ func TestAWaitingRunHasNoDeadline(t *testing.T) {
 		o.Status.Phase = agentsv1alpha1.RunPhasePendingApproval
 		o.Status.DeadlineAt = &metav1.Time{Time: started.Add(10 * time.Minute)}
 	})
-	c, _ := run(t, r, object, newAgent(600))
+	c, result := run(t, r, object, newAgent(600))
+	if checked != 1 || result.RequeueAfter != ClaimGrace {
+		t.Fatalf("parked checks=%d requeue=%v, want a check and a lease-window retry", checked, result.RequeueAfter)
+	}
 	if got := get(t, c, "r1"); got.Status.DeadlineAt != nil {
 		t.Errorf("deadline = %v, want it cleared while the run waits on a human", got.Status.DeadlineAt)
 	}

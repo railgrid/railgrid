@@ -409,9 +409,16 @@ func runStatusFor(run store.Run) agentsv1alpha1.RunStatus {
 		at := metav1.NewTime(*run.RetryAt)
 		status.RetryAt = &at
 	}
-	if run.Phase == store.RunPhaseRunning && run.ResumeDeadlineAt != nil {
-		at := metav1.NewTime(*run.ResumeDeadlineAt)
-		status.DeadlineAt = &at
+	if run.Phase == store.RunPhaseRunning {
+		switch {
+		case run.ResumeDeadlineAt != nil:
+			at := metav1.NewTime(*run.ResumeDeadlineAt)
+			status.DeadlineAt = &at
+		case run.StartedAt != nil && run.Repository != nil && run.Repository.MaxDurationSeconds > 0:
+			// Give the runner time to report its own timeout and final receipt.
+			at := metav1.NewTime(run.StartedAt.Add(repositoryRunTimeout(run.Repository.MaxDurationSeconds)))
+			status.DeadlineAt = &at
+		}
 	}
 	if run.StartedAt != nil {
 		at := metav1.NewTime(*run.StartedAt)

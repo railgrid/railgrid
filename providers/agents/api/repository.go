@@ -327,7 +327,11 @@ func (r *repositoryAttempt) persisted() *store.RunRepository {
 	if r == nil {
 		return nil
 	}
-	return &store.RunRepository{EnvironmentID: r.EnvironmentID, RepositoryID: r.RepositoryID, BaseCommit: r.BaseCommit, CommitMessage: r.CommitMessage}
+	return &store.RunRepository{
+		EnvironmentID: r.EnvironmentID, RepositoryID: r.RepositoryID,
+		BaseCommit: r.BaseCommit, CommitMessage: r.CommitMessage,
+		MaxDurationSeconds: r.MaxDurationSeconds,
+	}
 }
 
 // repositoryAttemptFromStored restores the durable coordinates. A fresh
@@ -337,7 +341,11 @@ func repositoryAttemptFromStored(stored *store.RunRepository) *repositoryAttempt
 	if stored == nil {
 		return nil
 	}
-	return &repositoryAttempt{Repository: backendharness.Repository{
-		EnvironmentID: stored.EnvironmentID, RepositoryID: stored.RepositoryID, BaseCommit: stored.BaseCommit, CommitMessage: stored.CommitMessage,
-	}}
+	return &repositoryAttempt{
+		Repository: backendharness.Repository{
+			EnvironmentID: stored.EnvironmentID, RepositoryID: stored.RepositoryID,
+			BaseCommit: stored.BaseCommit, CommitMessage: stored.CommitMessage,
+		},
+		MaxDurationSeconds: stored.MaxDurationSeconds,
+	}
 }

@@ -149,6 +149,11 @@ type Reconciler struct {
 	// stopped on the first attempt.
 	ReconcileParent func(ctx context.Context, clusterID, agentName, runID string) error
 
+	// ReconcileParked checks that a Run projected as waiting still has that
+	// phase in the store. A process may die after claiming an approval but
+	// before projecting its Running status.
+	ReconcileParked func(ctx context.Context, clusterID, agentName, runID string) error
+
 	// Dispatch hands a claimed run to the provider to execute. The reconciler has
 	// decided WHEN; everything about how a run executes — the virtual-workspace
 	// client, the agent's identity, the toolset — belongs to the provider and
@@ -280,6 +285,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	stranded, recoveryWait := r.stranded(&object)
+	if object.Status.Phase == agentsv1alpha1.RunPhasePendingApproval && r.ReconcileParked != nil {
+		if err := r.ReconcileParked(ctx, clusterID, object.Spec.AgentRef, object.Name); err != nil {
+			klog.FromContext(ctx).Error(err, "checking parked Run state", "run", object.Name, "cluster", clusterID)
+			return ctrl.Result{RequeueAfter: purgeRetryInterval}, nil
+		}
+		// Even when the row is still parked, recheck after a lease window:
+		// an unprojected approval claim does not generate a watch event.
+		recoveryWait = ClaimGrace
+	}
 	if stranded {
 		if err := r.Recover(ctx, clusterID, object.Spec.AgentRef, object.Name); err != nil {
 			klog.FromContext(ctx).Error(err, "recovering a stranded run", "run", object.Name, "cluster", clusterID)

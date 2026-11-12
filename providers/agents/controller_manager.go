@@ -213,6 +213,7 @@ type runExecution interface {
 	StopRun(ctx context.Context, clusterID, agentName, runID, reason string) error
 	ReconcileRunDescendants(ctx context.Context, clusterID, agentName, runID string) error
 	ReconcileRunParent(ctx context.Context, clusterID, agentName, runID string) error
+	ReconcileParkedRun(ctx context.Context, clusterID, agentName, runID string) error
 	PurgeRunData(ctx context.Context, clusterID, agentName, runID string) error
 }
 
@@ -239,6 +240,7 @@ func newRunReconciler(deps api.ControllerDeps) *runctl.Reconciler {
 	r.Stop = execution.StopRun
 	r.ReconcileDescendants = execution.ReconcileRunDescendants
 	r.ReconcileParent = execution.ReconcileRunParent
+	r.ReconcileParked = execution.ReconcileParkedRun
 	r.PurgeData = execution.PurgeRunData
 	return r
 }

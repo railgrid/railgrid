@@ -109,6 +109,46 @@ func TestRecoveryRepairsTerminalStoreOutcomeWithoutExecuting(t *testing.T) {
 	}
 }
 
+func TestParkedProjectionFindsUnprojectedApprovalClaim(t *testing.T) {
+	ctx := t.Context()
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	s, scope, run := newProjectionFixture(t, dyn, store.RunPhasePendingApproval)
+	s.cfg.ProcessID = "recovery-process"
+	s.events = newEventBus()
+	s.projectRun(ctx, scope, run)
+	project := func() error {
+		return s.bg.ReconcileParkedRun(ctx, scope.ClusterID, scope.AgentName, run.ID)
+	}
+	if err := project(); err != nil {
+		t.Fatal(err)
+	}
+	if phase, _, _ := unstructured.NestedString(projectedObject(t, dyn, run.ID).Object, "status", "phase"); phase != string(store.RunPhasePendingApproval) {
+		t.Fatalf("unclaimed approval changed phase to %s", phase)
+	}
+	// The approval commits and its process dies before the Running projection.
+	claimAt := time.Now().Add(-2 * store.RunLeaseDuration)
+	claimed, err := s.store.ClaimRun(ctx, scope, run.ID, "dead-process/owner", claimAt, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project(); err != nil {
+		t.Fatal(err)
+	}
+	object := projectedObject(t, dyn, run.ID)
+	phase, _, _ := unstructured.NestedString(object.Object, "status", "phase")
+	owner, _, _ := unstructured.NestedString(object.Object, "status", "owner")
+	if phase != string(store.RunPhaseRunning) || owner != claimed.ExecutionOwner {
+		t.Fatalf("repaired projection phase=%s owner=%s", phase, owner)
+	}
+	if err := s.bg.RecoverRun(ctx, scope.ClusterID, scope.AgentName, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := s.store.GetRun(ctx, scope, run.ID)
+	if err != nil || recovered.Attempt != claimed.Attempt+1 || recovered.Phase != store.RunPhaseFailed {
+		t.Fatalf("stranded caller run was not settled by recovery: %+v, %v", recovered, err)
+	}
+}
+
 func TestRunProjectionConflictAdoptsTheCurrentTerminalRow(t *testing.T) {
 	for _, phase := range []store.RunPhase{store.RunPhaseSucceeded, store.RunPhaseFailed, store.RunPhaseAborted} {
 		t.Run(string(phase), func(t *testing.T) {

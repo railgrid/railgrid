@@ -32,7 +32,7 @@ func testRunArtifacts(t *testing.T, s Store, sc Scope) {
 	// clone with.
 	if err := s.SaveRun(ctx, sc, Run{
 		ID: runID, AgentName: sc.AgentName, Trigger: "api", Phase: RunPhaseRunning, Backend: "harness",
-		Repository: &RunRepository{RepositoryID: "railgrid", BaseCommit: base, CommitMessage: "Implement T-1"},
+		Repository: &RunRepository{RepositoryID: "railgrid", BaseCommit: base, CommitMessage: "Implement T-1", MaxDurationSeconds: 3600},
 		CreatedAt:  now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("save: %v", err)
@@ -62,7 +62,7 @@ func testRunArtifacts(t *testing.T, s Store, sc Scope) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Repository == nil || got.Repository.RepositoryID != "railgrid" || got.Repository.BaseCommit != base || got.Repository.CommitMessage != "Implement T-1" {
+	if got.Repository == nil || got.Repository.RepositoryID != "railgrid" || got.Repository.BaseCommit != base || got.Repository.CommitMessage != "Implement T-1" || got.Repository.MaxDurationSeconds != 3600 {
 		t.Fatalf("repository = %+v", got.Repository)
 	}
 	if got.Result != nil {

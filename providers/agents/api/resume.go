@@ -143,6 +143,9 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		}
 		timeout = runctrl.AgentRunTimeout(agent.Spec.Limits.TimeoutSeconds)
 	}
+	if run.Repository != nil && run.Repository.MaxDurationSeconds > 0 {
+		timeout = repositoryRunTimeout(run.Repository.MaxDurationSeconds)
+	}
 
 	// Claim so only one resolver resumes (double /approve, portal + channel).
 	var claimed store.Run

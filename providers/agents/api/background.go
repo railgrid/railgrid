@@ -957,6 +957,26 @@ func (b *background) RecoverRun(ctx context.Context, clusterID, agentName, runID
 	return nil
 }
 
+// ReconcileParkedRun repairs an approval claim whose Running status never
+// reached the Run object. Once projected, the ordinary lease recovery path
+// decides whether the executor is still live or the checkpoint needs recovery.
+func (b *background) ReconcileParkedRun(ctx context.Context, clusterID, agentName, runID string) error {
+	scope := b.scopeFor(ctx, clusterID, agentName)
+	run, err := b.server.store.GetRun(ctx, scope, runID)
+	if err != nil {
+		return err
+	}
+	if run.Phase == store.RunPhasePendingApproval {
+		if run.CancelRequested {
+			return b.stopCancelledRun(ctx, clusterID, scope, run, "cancelled by user")
+		}
+		return nil
+	}
+	return b.server.projectRunTo(ctx, clusterID, run, func(ctx context.Context) (store.Run, error) {
+		return b.server.store.GetRun(ctx, scope, runID)
+	})
+}
+
 // ReconcileRunDescendants retries parent cleanup from the Run controller. The
 // controller calls it for terminal Run objects, including ones another
 // replica terminalized before this process restarted.

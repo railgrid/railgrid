@@ -856,7 +856,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		timeout = time.Duration(v) * time.Second
 	}
 	if run.Repository != nil && run.Repository.MaxDurationSeconds > 0 {
-		timeout = time.Duration(run.Repository.MaxDurationSeconds)*time.Second + repositoryDeadlineMargin
+		timeout = repositoryRunTimeout(run.Repository.MaxDurationSeconds)
 	}
 	if cont != nil && cont.DeadlineAt != nil {
 		timeout = min(timeout, time.Until(*cont.DeadlineAt))
@@ -2014,6 +2014,10 @@ func (s *Server) closeRunInbox(ctx context.Context, scope store.Scope, runID str
 // repositoryDeadlineMargin is how much longer than its own maxDurationSeconds
 // a repository run's context lives, so the runner's limit reports first.
 const repositoryDeadlineMargin = 2 * time.Minute
+
+func repositoryRunTimeout(seconds int) time.Duration {
+	return time.Duration(seconds)*time.Second + repositoryDeadlineMargin
+}
 
 // repositoryTurnMessages is the prompt a repository attempt gets: the agent's
 // persona, when it has one, and the approved task. No history, no notes.
