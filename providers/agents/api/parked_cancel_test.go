@@ -370,11 +370,13 @@ func TestCancelParkedHarnessStopsRemoteAttemptAndLateApprovalCannotRevive(t *tes
 	}
 
 	workspaceScope := store.Scope{OrgUUID: f.scope.OrgUUID, WorkspaceUUID: f.scope.WorkspaceUUID}
-	item, err := f.server.resolveInboxDecision(context.Background(), workspaceScope, "inbox-parked-cancel", store.InboxStateApproved, "", time.Now().UTC())
-	if err != nil {
-		t.Fatalf("resolve late approval: %v", err)
+	if _, err := f.server.resolveInboxDecision(context.Background(), workspaceScope, "inbox-parked-cancel", store.InboxStateApproved, "", time.Now().UTC()); !errors.Is(err, store.ErrInboxAlreadyResolved) {
+		t.Fatalf("resolve late approval: %v, want a closed inbox item", err)
 	}
-	f.server.resumeApprovedRun(t.Context(), workspaceScope, item, runAccess{}, true, "")
+	item, err := f.server.store.GetInboxItem(t.Context(), workspaceScope, "inbox-parked-cancel")
+	if err != nil || item.State != store.InboxStateDenied {
+		t.Fatalf("cancelled inbox item: %+v, %v", item, err)
+	}
 	stored, err = f.server.store.GetRun(context.Background(), f.scope, run.ID)
 	if err != nil || stored.Phase != store.RunPhaseAborted {
 		t.Fatalf("run after late approval = %+v, %v; want it to stay Aborted", stored, err)
@@ -742,3 +744,34 @@ var _ dispatch.Runner = (*parkedCancelDispatcher)(nil)
 var _ dynamic.Interface = (dynamic.Interface)(nil)
 
 func errorsNewParkedCancel(message string) error { return errors.New(message) }
+
+func TestCancelParkedRunWhileLeaseStillHeld(t *testing.T) {
+	ctx := t.Context()
+	now := time.Now().UTC()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "agent"}
+	st := store.NewMemoryStore()
+	s := &Server{store: st, events: newEventBus()}
+	seed := store.Run{ID: "r1", AgentName: scope.AgentName, Phase: store.RunPhaseRunning, CreatedAt: now, UpdatedAt: now}
+	if err := st.SaveRun(ctx, scope, seed); err != nil {
+		t.Fatal(err)
+	}
+	parked, err := st.AcquireRunLease(ctx, scope, seed.ID, "other-pod/execution", seed.Attempt, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked.Phase = store.RunPhasePendingApproval
+	if ok, err := st.SaveRunOwned(ctx, scope, parked, parked.ExecutionOwner, parked.Attempt, now); !ok || err != nil {
+		t.Fatalf("park: %t %v", ok, err)
+	}
+	live, err := s.cancelStoredRun(ctx, nil, identity{orgUUID: scope.OrgUUID, workspaceUUID: scope.WorkspaceUUID, user: "reviewer"}, parked)
+	if live || err != nil {
+		t.Fatalf("cancel: %t %v", live, err)
+	}
+	got, err := st.GetRun(ctx, scope, seed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase != store.RunPhaseAborted {
+		t.Fatalf("cancel reported success but phase is %s and cancelRequested=%t", got.Phase, got.CancelRequested)
+	}
+}

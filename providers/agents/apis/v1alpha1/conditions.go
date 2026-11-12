@@ -284,6 +284,8 @@ const (
 // is one of them rather than implicit: toolset assembly wires the core tools
 // only when the resolved grant names it.
 var KnownToolFamilies = map[string]bool{
+	"code-write":    true,
+	"code":          true,
 	"core":          true,
 	"web":           true,
 	"github":        true,

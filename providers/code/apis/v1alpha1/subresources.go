@@ -390,6 +390,7 @@ func init() {
 			&CommentsRequest{},
 			&CommitRequest{},
 			&CreatePullRequestRequest{},
+			&AuthorizeRequest{},
 			&FeedbackRequest{},
 			&FindPullRequestRequest{},
 			&MintCloneTokenRequest{},
@@ -404,4 +405,61 @@ func init() {
 		)
 		return nil
 	})
+}
+
+// ContextRequest is the payload of the "context" custom subresource on repositories.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=context,scope=Cluster
+type ContextRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
+// OperateRequest is the payload of the "operate" custom subresource on repositories.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=operate,scope=Cluster
+type OperateRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
+// AuthorizeRequest is the payload of the "authorize" custom subresource on repositories.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=authorize,scope=Cluster
+type AuthorizeRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
 }

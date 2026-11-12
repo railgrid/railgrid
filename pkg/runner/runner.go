@@ -185,6 +185,9 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 	verificationCapabilities = appendUnique(verificationCapabilities, clarificationCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, permissionPromptCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, RemoteMCPCapability)
+	if info.Name == "codex" {
+		verificationCapabilities = appendUnique(verificationCapabilities, RemoteMCPApprovedToolsCapability)
+	}
 	verificationCapabilities = appendUnique(verificationCapabilities, "cancel-unseen-v1")
 	verificationCapabilities = appendUnique(verificationCapabilities, "warm-environments-v1")
 	verificationCapabilities = appendUnique(verificationCapabilities, InputFilesCapability)
@@ -932,7 +935,7 @@ func (r *Runner) startExecutionLocked(attemptID, instructions, model string) err
 		instructions += screenshotInstructions(attempt.Receipt.Workdir)
 	}
 	if env := r.state.Environments[attempt.Start.EnvironmentID]; env != nil && env.AttemptID == attemptID {
-		instructions += "\n\nWarm development environment lease: this checkout is exclusively assigned to this attempt. Leave a healthy stack running at completion; the runner owns idle cleanup. During active work (never while awaiting a user answer), you may repair or recreate this checkout's failed disposable development resources using the repository's documented ownership-checked cleanup and startup commands. This is recovery, not end-of-run cleanup. Preserve checkout files, logs, and screenshots; never delete ownership records, infer cleanup targets from the active Kubernetes context, or touch shared/unrelated resources. Follow only the repository-documented command sequence, stopping at the first failing command. Try at most one scoped teardown/recreate cycle per runner attempt; record it in your progress log and do not repeat it after a context reset. Report any reset of development data, recreate task-required records, rerun readiness, and capture fresh browser evidence. If ownership cannot be verified or recovery still fails, report the concrete blocker and incomplete verification. Keep screenshots in artifacts/screenshots.\n"
+		instructions += "\n\nWarm development environment lease: this checkout is exclusively assigned to this attempt. The runner-owned .railgrid-prepare.log and .railgrid-cleanup.log files are private diagnostics excluded from exported Git snapshots, even when untracked. Their presence alone is not a source edit. Leave them for diagnostics; do not commit or publish their contents. Leave a healthy stack running at completion; the runner owns idle cleanup. During active work (never while awaiting a user answer), you may repair or recreate this checkout's failed disposable development resources using the repository's documented ownership-checked cleanup and startup commands. This is recovery, not end-of-run cleanup. Preserve checkout files, logs, and screenshots; never delete ownership records, infer cleanup targets from the active Kubernetes context, or touch shared/unrelated resources. Follow only the repository-documented command sequence, stopping at the first failing command. Try at most one scoped teardown/recreate cycle per runner attempt; record it in your progress log and do not repeat it after a context reset. Report any reset of development data, recreate task-required records, rerun readiness, and capture fresh browser evidence. If ownership cannot be verified or recovery still fails, report the concrete blocker and incomplete verification. Keep screenshots in artifacts/screenshots.\n"
 	}
 	launch := harness.Launch{
 		AttemptID:       attemptID,
@@ -1704,6 +1707,11 @@ func harnessCredentialOf(value *HarnessCredential) (harness.Credential, error) {
 	if err != nil {
 		return harness.Credential{}, err
 	}
+	for _, server := range servers {
+		if len(server.ApprovedTools) > 0 && kind != harness.CredentialCodexAuth {
+			return harness.Credential{}, errors.New("approved MCP tools require the Codex harness")
+		}
+	}
 	return harness.Credential{Kind: kind, Value: raw, Environment: environment, MCPServers: servers}, nil
 }
 
@@ -1826,7 +1834,22 @@ func credentialMCPServersOf(servers []MCPServer) ([]harness.MCPServer, error) {
 				return nil, fmt.Errorf("harnessCredential mcpServers %s token contains invalid whitespace", name)
 			}
 		}
-		out = append(out, harness.MCPServer{Name: name, URL: server.URL, Token: server.Token})
+		if len(server.ApprovedTools) > 32 {
+			return nil, errors.New("too many approved MCP tools")
+		}
+		seenTools := map[string]bool{}
+		for _, tool := range server.ApprovedTools {
+			if len(tool) == 0 || len(tool) > 128 || seenTools[tool] {
+				return nil, errors.New("invalid approved MCP tool allowlist")
+			}
+			for _, character := range tool {
+				if unicode.IsControl(character) || unicode.IsSpace(character) {
+					return nil, errors.New("invalid approved MCP tool name")
+				}
+			}
+			seenTools[tool] = true
+		}
+		out = append(out, harness.MCPServer{Name: name, URL: server.URL, Token: server.Token, ApprovedTools: append([]string(nil), server.ApprovedTools...)})
 	}
 	return out, nil
 }

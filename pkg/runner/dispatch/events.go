@@ -603,18 +603,20 @@ func toolItem(data json.RawMessage) (harnessItem, bool) {
 	}
 	var rec struct {
 		Item *struct {
-			ID               string `json:"id"`
-			Type             string `json:"type"`
-			Name             string `json:"name"`
-			Tool             string `json:"tool"`
-			Command          string `json:"command"`
-			Status           string `json:"status"`
-			Output           string `json:"output"`
-			Result           string `json:"result"`
-			AggregatedOutput string `json:"aggregatedOutput"`
-			ExitCode         *int64 `json:"exitCode"`
-			CLIExitCode      *int64 `json:"exit_code"`
-			DurationMS       *int64 `json:"durationMs"`
+			ID               string          `json:"id"`
+			Type             string          `json:"type"`
+			Name             string          `json:"name"`
+			Tool             string          `json:"tool"`
+			Command          string          `json:"command"`
+			Status           string          `json:"status"`
+			Output           string          `json:"output"`
+			Result           json.RawMessage `json:"result"`
+			Arguments        json.RawMessage `json:"arguments"`
+			Error            json.RawMessage `json:"error"`
+			AggregatedOutput string          `json:"aggregatedOutput"`
+			ExitCode         *int64          `json:"exitCode"`
+			CLIExitCode      *int64          `json:"exit_code"`
+			DurationMS       *int64          `json:"durationMs"`
 		} `json:"item"`
 	}
 	if json.Unmarshal(data, &rec) != nil || rec.Item == nil {
@@ -623,11 +625,42 @@ func toolItem(data json.RawMessage) (harnessItem, bool) {
 	if !toolItemTypes[rec.Item.Type] {
 		return harnessItem{}, false
 	}
+	resultText := ""
+	_ = json.Unmarshal(rec.Item.Result, &resultText)
+	var mcpResult struct {
+		IsError bool `json:"isError"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if len(rec.Item.Result) > 0 && string(rec.Item.Result) != "null" {
+		if json.Unmarshal(rec.Item.Result, &mcpResult) == nil {
+			var chunks []string
+			for _, content := range mcpResult.Content {
+				if content.Type == "text" {
+					chunks = append(chunks, content.Text)
+				}
+			}
+			if resultText == "" {
+				resultText = strings.Join(chunks, "\n")
+			}
+		}
+		if resultText == "" {
+			resultText = string(rec.Item.Result)
+		}
+	}
+	arguments := ""
+	if len(rec.Item.Arguments) > 0 && string(rec.Item.Arguments) != "null" {
+		arguments = string(rec.Item.Arguments)
+	}
 	item := harnessItem{
 		ID:       strings.TrimSpace(rec.Item.ID),
 		Name:     firstNonEmpty(rec.Item.Name, rec.Item.Tool, rec.Item.Type),
-		Args:     strings.TrimSpace(rec.Item.Command),
-		Result:   firstNonBlank(rec.Item.AggregatedOutput, rec.Item.Output, rec.Item.Result),
+		Args:     firstNonBlank(rec.Item.Command, arguments),
+		Result:   firstNonBlank(rec.Item.AggregatedOutput, rec.Item.Output, resultText),
+		Done:     mcpResult.IsError,
+		Failed:   mcpResult.IsError,
 		Duration: durationFromMillis(rec.Item.DurationMS),
 	}
 	if item.ID == "" {
@@ -642,6 +675,13 @@ func toolItem(data json.RawMessage) (harnessItem, bool) {
 		item.Done = true
 	case "failed", "error", "aborted":
 		item.Done, item.Failed = true, true
+	}
+	if len(rec.Item.Error) > 0 && string(rec.Item.Error) != "null" && string(rec.Item.Error) != `""` {
+		item.Done = true
+		item.Failed = true
+		if item.Result == "" {
+			item.Result = string(rec.Item.Error)
+		}
 	}
 	if rec.Item.Type == "commandExecution" || rec.Item.Type == "command_execution" {
 		item.ExitCode = rec.Item.ExitCode

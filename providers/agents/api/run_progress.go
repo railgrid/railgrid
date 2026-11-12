@@ -233,7 +233,7 @@ func turnStatusForRunPhase(phase store.RunPhase) string {
 func taskRunForStored(run store.Run) taskRun {
 	agent := &agentsv1alpha1.Agent{}
 	agent.Name = run.AgentName
-	return taskRun{RunID: run.ID, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger, Agent: agent}
+	return taskRun{RunID: run.ID, Attempt: run.Attempt, Backend: run.Backend, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger, Agent: agent}
 }
 
 func (s *Server) appendTurnTerminal(ctx context.Context, scope store.Scope, run taskRun, sessionID string, startedAt, createdAt time.Time, tracker *turnProgressTracker, status string, content, turnError string) map[string]any {
@@ -269,7 +269,7 @@ func (s *Server) appendTurnTerminal(ctx context.Context, scope store.Scope, run 
 	return metadata
 }
 
-func (s *Server) appendTurnFinal(ctx context.Context, scope store.Scope, run taskRun, sessionID string, startedAt, createdAt time.Time, tracker *turnProgressTracker, content string) error {
+func turnFinalMessage(run taskRun, sessionID string, startedAt, createdAt time.Time, tracker *turnProgressTracker, content string) store.Message {
 	if tracker == nil {
 		tracker = newTurnProgressTracker(0)
 	}
@@ -281,10 +281,10 @@ func (s *Server) appendTurnFinal(ctx context.Context, scope store.Scope, run tas
 	if tracker.continuation != nil {
 		metadata[backend.ContinuationMetadataEnvelopeKey] = tracker.continuation.Clone()
 	}
-	return s.appendProgressMessage(ctx, scope, store.Message{
+	return store.Message{
 		ID: uuid.NewString(), AgentName: agentName, SessionID: sessionID, RunID: run.RunID,
 		Role: "assistant", Content: safeTruncate(content, maxStoredOutput),
 		Metadata:  metadata,
 		CreatedAt: createdAt,
-	})
+	}
 }

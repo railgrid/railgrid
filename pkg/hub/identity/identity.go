@@ -51,6 +51,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/railgrid/provider-sdk/identityclient"
+
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
@@ -66,10 +68,10 @@ const (
 	// all of which never expire at all.
 	DefaultProviderTTL = time.Hour
 
-	// serviceAccountPrefix distinguishes provider-asserted identities from the
-	// workload ones (railgrid-wi-), which keep their own deterministic name so
-	// existing App Studio runtimes keep the account they already have.
-	serviceAccountPrefix = "railgrid-si-"
+	// Provider-asserted identities are named identityclient.ServiceAccountPrefix
+	// (railgrid-si-), distinct from workload ones (railgrid-wi-), which keep
+	// their own deterministic name so existing App Studio runtimes keep the
+	// account they already have.
 
 	// recordPrefix is the ScopedIdentity object name prefix.
 	recordPrefix = "si-"
@@ -221,10 +223,9 @@ func New(opts Options) *Service {
 // not be reflected in cluster-wide RBAC object names — and it includes the UID
 // so a deleted-and-recreated owner never inherits its predecessor's identity.
 func ServiceAccountName(owner Owner) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{
-		owner.Provider, owner.Group, owner.Kind, owner.Name, owner.UID,
-	}, "\x00")))
-	return serviceAccountPrefix + hex.EncodeToString(sum[:20])
+	return identityclient.ServiceAccountName(identityclient.Owner{
+		Provider: owner.Provider, Group: owner.Group, Kind: owner.Kind, Name: owner.Name, UID: owner.UID,
+	})
 }
 
 // RecordName is the deterministic ScopedIdentity object name: the tenant

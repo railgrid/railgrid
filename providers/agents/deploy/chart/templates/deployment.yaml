@@ -99,6 +99,10 @@ spec:
             - name: RAILGRID_HUB_PUBLIC_URL
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.harnessMCPURL }}
+            - name: RAILGRID_HARNESS_MCP_URL
+              value: {{ . | quote }}
+            {{- end }}
             - name: RAILGRID_PROVIDER_NAME
               value: "agents"
             # Provider kubeconfig — used for the kcp front-proxy host + TLS

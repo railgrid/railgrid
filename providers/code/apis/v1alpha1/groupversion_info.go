@@ -65,6 +65,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&PackageList{},
 		&PullRequest{},
 		&PullRequestList{},
+		&GitHubEvent{}, &GitHubEventList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

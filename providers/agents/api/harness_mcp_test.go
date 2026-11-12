@@ -10,6 +10,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
@@ -27,6 +29,7 @@ import (
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 // fakeCapabilities is a runner client that answers only Capabilities.
@@ -36,7 +39,7 @@ func (f fakeCapabilities) Capabilities(context.Context) (runner.Capabilities, er
 	return runner.Capabilities{Verification: f.verification}, nil
 }
 
-var currentRunner = fakeCapabilities{verification: []string{runner.RemoteMCPCapability}}
+var currentRunner = fakeCapabilities{verification: []string{runner.RemoteMCPCapability, runner.RemoteMCPApprovedToolsCapability}}
 
 type harnessMCPFixture struct {
 	server *Server
@@ -142,6 +145,24 @@ func TestHarnessSelfMCPServersAttachOnlyWhenTheyCanWork(t *testing.T) {
 	if len(got) != 1 || got[0].Name != "agent" || got[0].URL != "https://hub.example/services/providers/agents/mcp" ||
 		!strings.HasPrefix(got[0].Token, harnessMCPTokenPrefix) {
 		t.Fatalf("servers = %+v", got)
+	}
+}
+
+func TestHarnessReviewRequiresExplicitRunnerCapability(t *testing.T) {
+	f := newHarnessMCPFixture(t, nil)
+	agent := f.agent(t)
+	agent.Spec.Tools.Background.Families = []string{"code"}
+	run := taskRun{
+		Agent: agent, Scope: f.scope, ClusterID: "tenant", Trigger: agentsv1alpha1.RunTriggerDelegation,
+		Task: `railgrid-code-scope:{"reviewOnly":true,"proof":"signed","eventUID":"event","pullRequest":"pr","pullRequestUID":"uid"}`,
+	}
+	for _, dispatcher := range []any{struct{}{}, fakeCapabilities{verification: []string{runner.RemoteMCPCapability}}} {
+		if got := f.server.harnessSelfMCPServers(t.Context(), run, "run", dispatcher); len(got) != 0 {
+			t.Fatal("attached an approved tool to a runner without the capability")
+		}
+	}
+	if got := f.server.harnessSelfMCPServers(t.Context(), run, "run", currentRunner); len(got) != 1 || len(got[0].ApprovedTools) != 1 {
+		t.Fatal("did not attach the approved tool to a capable runner")
 	}
 }
 
@@ -303,5 +324,86 @@ func TestHarnessSessionTokenChecks(t *testing.T) {
 	}
 	if len(list.Tools) != 0 {
 		t.Fatalf("a recreated agent's old session still lists %d tools", len(list.Tools))
+	}
+}
+
+func TestHarnessReviewSessionWorksWithoutSelfConfigurationAndEndsWithRun(t *testing.T) {
+	testHarnessReviewSession(t, nil)
+}
+func TestEndedReviewSessionCannotGainSelfConfigurationTools(t *testing.T) {
+	testHarnessReviewSession(t, &agentsv1alpha1.AgentSelfConfiguration{Enabled: true})
+}
+func testHarnessReviewSession(t *testing.T, sc *agentsv1alpha1.AgentSelfConfiguration) {
+	f := newHarnessMCPFixture(t, sc)
+	a := f.agent(t)
+	a.Spec.Tools.Background.Families = []string{"code"}
+	raw, _ := json.Marshal(a)
+	var object map[string]any
+	_ = json.Unmarshal(raw, &object)
+	if _, err := f.dyn.Resource(agentsv1alpha1.SchemeGroupVersion.WithResource("agents")).Update(t.Context(), &unstructured.Unstructured{Object: object}, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	input := tools.CodeScopePrefix + `{"reviewOnly":true,"pullRequest":"pr","pullRequestUID":"pr-uid","eventUID":"event-uid","proof":"signed"}` + "\nReview only"
+	scope := f.scope
+	scope.AgentName = "bob"
+	now := time.Now().UTC()
+	run := store.Run{ID: "run-1", AgentName: "bob", AgentUID: string(a.UID), Trigger: agentsv1alpha1.RunTriggerDelegation, ParentRunID: "parent", IdempotencyKey: "delegate:parent:call", Input: input, Repository: &store.RunRepository{RepositoryID: "99", BaseCommit: strings.Repeat("a", 40)}, Phase: store.RunPhaseRunning, CreatedAt: now, UpdatedAt: now}
+	if err := f.mem.SaveRun(t.Context(), scope, run); err != nil {
+		t.Fatal(err)
+	}
+	tr := taskRun{Agent: a, Scope: scope, ClusterID: "tenant", Task: input, Trigger: agentsv1alpha1.RunTriggerDelegation}
+	servers := f.server.harnessSelfMCPServers(t.Context(), tr, "run-1", currentRunner)
+	if len(servers) != 1 {
+		t.Fatal("missing review MCP session")
+	}
+	session := f.connect(t, servers[0].Token)
+	listed, err := session.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Tools) != 1 || listed.Tools[0].Name != "code_pull_request" {
+		t.Fatalf("unexpected worker tools: %+v", listed.Tools)
+	}
+	_, isError := callText(t, session, "code_pull_request", map[string]any{"pullRequest": "pr", "input": map[string]any{"op": "publish"}})
+	if !isError {
+		t.Fatal("write family escalated review authority")
+	}
+	if err := f.mem.RequestCancel(t.Context(), scope, run.ID, now, "cancel-caller"); err != nil {
+		t.Fatal(err)
+	}
+	afterCancel, err := session.ListTools(t.Context(), nil)
+	if err == nil && len(afterCancel.Tools) != 0 {
+		t.Fatal("cancelled worker retained Code tools")
+	}
+	run.Phase = store.RunPhaseSucceeded
+	if err := f.mem.SaveRun(t.Context(), scope, run); err != nil {
+		t.Fatal(err)
+	}
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "code_pull_request", Arguments: map[string]any{"pullRequest": "pr", "input": map[string]any{"op": "observe"}}})
+	if err == nil && !result.IsError {
+		t.Fatal("completed worker retained tools")
+	}
+	remaining, listErr := session.ListTools(t.Context(), nil)
+	if listErr == nil && len(remaining.Tools) > 0 {
+		t.Fatal("ended review session gained other capabilities")
+	}
+
+}
+
+func TestHarnessMCPExplicitEndpointDoesNotRequireHubCallerToken(t *testing.T) {
+	f := newHarnessMCPFixture(t, &agentsv1alpha1.AgentSelfConfiguration{Enabled: true})
+	f.server.cfg.HubPublicURL = ""
+	for _, endpoint := range []string{"http://127.0.0.1:8087/mcp", "https://agents.example/mcp"} {
+		f.server.cfg.HarnessMCPURL = endpoint
+		servers := f.mint(t, agentsv1alpha1.RunTriggerChat)
+		if len(servers) != 1 || servers[0].URL != endpoint {
+			t.Fatalf("explicit endpoint not used: %v", servers)
+		}
+	}
+	for _, endpoint := range []string{"http://remote.example/mcp", "https://user:secret@agents.example/mcp", "https://agents.example/mcp?token=secret"} {
+		f.server.cfg.HarnessMCPURL = endpoint
+		if servers := f.mint(t, agentsv1alpha1.RunTriggerChat); len(servers) != 0 {
+			t.Fatal("unsafe MCP endpoint accepted")
+		}
 	}
 }

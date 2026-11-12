@@ -598,3 +598,19 @@ func TestValidatedIsIdempotent(t *testing.T) {
 		t.Fatalf("a settled connection was written again (rv %s -> %s)", first.ResourceVersion, second.ResourceVersion)
 	}
 }
+
+func TestGitHubAppConnectionCannotValidateWithOnlyPersonalToken(t *testing.T) {
+	conn := connection("github", false)
+	conn.Spec.Auth = "secret"
+	conn.Spec.Config = map[string]string{"credentialType": "github-app", "githubRole": "fixer"}
+	h := newHarness(t, conn, secret(map[string]string{"token": "personal-secret"}))
+	h.reconcile(t)
+	var got agentsv1alpha1.Connection
+	if err := h.c.Get(context.Background(), types.NamespacedName{Name: testConn}, &got); err != nil {
+		t.Fatal(err)
+	}
+	condition := meta.FindStatusCondition(got.Status.Conditions, agentsv1alpha1.ConditionValidated)
+	if condition == nil || condition.Status != metav1.ConditionFalse || strings.Contains(condition.Message, "personal-secret") {
+		t.Fatal("app accepted personal token or exposed it")
+	}
+}
