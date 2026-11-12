@@ -14,7 +14,9 @@ import { isConfirmedAdmin, onboardingStorageKey, persistOnboardingState, restore
 const { scopePath } = useScopedNavigation()
 const router = useRouter()
 const emit = defineEmits<{ dismiss: [] }>()
-const props = defineProps<{ startAtGoal?: boolean; firstTask?: boolean }>()
+// firstTask is the audience the onboarding page already established, so the
+// guide skips "About you" and starts at the goal for that audience.
+const props = defineProps<{ startAtGoal?: boolean; firstTask?: '' | 'personal' | 'team' }>()
 const providers = useProvidersStore()
 const tenant = useTenantStore()
 const auth = useAuthStore()
@@ -218,7 +220,7 @@ function restore() {
   let raw: string | null = null
   try { if (storageKey.value) raw = localStorage.getItem(storageKey.value) } catch { /* Storage can be disabled; setup remains usable. */ }
   const state = props.firstTask
-    ? { step: 1, audience: 'personal', goal: defaultGoalForAudience('personal'), goalExplicit: false }
+    ? { step: 1, audience: props.firstTask, goal: defaultGoalForAudience(props.firstTask), goalExplicit: false }
     : restoreOnboardingState(raw, props.startAtGoal)
   step.value = state.step
   audience.value = state.audience

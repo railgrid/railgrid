@@ -368,7 +368,8 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// workspace is provisioning. CLI kubeconfigs still wait for a cluster.
 	var clusterName string
 	callback, _ := url.Parse(authCode.RedirectURL)
-	if !firstLogin || callback == nil || !strings.HasSuffix(callback.Path, apiurl.PathAuthCallback) {
+	portalCallback := callback != nil && strings.HasSuffix(callback.Path, apiurl.PathAuthCallback)
+	if !firstLogin || !portalCallback {
 		clusterName = h.lookupDefaultCluster(ctx, userID)
 	}
 
@@ -413,8 +414,36 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if firstLogin && portalCallback {
+		// The portal now holds a session and the firstLogin flag. Until this
+		// point a failed callback, or a first sign-in through the CLI, leaves
+		// the marker in place so the next portal login still onboards.
+		h.clearPortalOnboardingPending(ctx, userID)
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+// annotationPortalOnboardingPending marks a User whose first portal sign-in
+// has not completed yet. seedUser sets it on creation, whichever client
+// created the User; the portal callback clears it once it has issued the
+// session that carries firstLogin.
+const annotationPortalOnboardingPending = "tenancy.railgrid.ai/portal-onboarding-pending"
+
+func (h *Handler) clearPortalOnboardingPending(ctx context.Context, userID string) {
+	user, err := h.railgridClient.Users().Get(ctx, userID, metav1.GetOptions{})
+	if err != nil {
+		h.logger.Error(err, "failed to read user to record portal onboarding", "user", userID)
+		return
+	}
+	if _, pending := user.Annotations[annotationPortalOnboardingPending]; !pending {
+		return
+	}
+	delete(user.Annotations, annotationPortalOnboardingPending)
+	if _, err := h.railgridClient.Users().Update(ctx, user, metav1.UpdateOptions{}); err != nil {
+		// The next portal login offers onboarding again, which is harmless.
+		h.logger.Error(err, "failed to record portal onboarding", "user", userID)
+	}
 }
 
 // HandleRefresh handles token refresh requests.
@@ -844,7 +873,7 @@ func (h *Handler) seedUser(ctx context.Context, id oidcIdentity) (string, bool, 
 		if err != nil {
 			return "", false, fmt.Errorf("updating user status: %w", err)
 		}
-		return updated.Name, false, nil
+		return updated.Name, updated.Annotations[annotationPortalOnboardingPending] == "true", nil
 	}
 
 	// Create new user.
@@ -853,6 +882,9 @@ func (h *Handler) seedUser(ctx context.Context, id oidcIdentity) (string, bool, 
 			GenerateName: "user-",
 			Labels: map[string]string{
 				identity.LabelSubject: subHash,
+			},
+			Annotations: map[string]string{
+				annotationPortalOnboardingPending: "true",
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{

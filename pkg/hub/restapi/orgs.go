@@ -124,11 +124,30 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, newValidationError("displayName is required"))
 		return
 	}
+	wc := req.WorkspaceCreation
+	if wc == "" {
+		wc = tenancyv1alpha1.WorkspaceCreationMembers
+	}
+	// Provider registration authorizes org-wide provider code and a restricted
+	// runtime credential. Keep it with admins by default; an Org can explicitly
+	// opt members into registration.
+	cec := req.CatalogEntryCreation
+	if cec == "" {
+		cec = tenancyv1alpha1.CatalogEntryCreationAdmin
+	}
+
 	orgUUID := uuid.NewString()
 	if req.RequestID != "" {
 		id, err := uuid.Parse(req.RequestID)
-		if err != nil || id.Version() != 4 || id.String() != req.RequestID {
-			writeError(w, newValidationError("requestId must be a version 4 UUID"))
+		if err != nil || id.Version() != 7 || id.String() != req.RequestID {
+			writeError(w, newValidationError("requestId must be a version 7 UUID"))
+			return
+		}
+		// The key resolves to a deterministic organization ID, so it must not
+		// outlive the organization it created: a replay after the purge would
+		// recreate it under the same ID. See requestIDFresh.
+		if !requestIDFresh(id, time.Now(), h.mgr.SoftDeleteGracePeriod()) {
+			writeError(w, newValidationError("requestId has expired; start a new request"))
 			return
 		}
 		// Scope the retry key to the authenticated creator. The hub owns
@@ -148,7 +167,8 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if existing.Spec.Personal || existing.Labels[tenancyv1alpha1.OrganizationCreatorLabel] != user ||
-				existing.Spec.DisplayName != req.DisplayName || !existing.DeletionTimestamp.IsZero() || existing.Status.DeletionRequestedAt != nil {
+				existing.Spec.DisplayName != req.DisplayName || existing.Spec.WorkspaceCreation != wc || existing.Spec.CatalogEntryCreation != cec ||
+				!existing.DeletionTimestamp.IsZero() || existing.Status.DeletionRequestedAt != nil {
 				writeStatus(w, http.StatusConflict, "RequestConflict", "organization creation request already used")
 				return
 			}
@@ -166,18 +186,6 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	wc := req.WorkspaceCreation
-	if wc == "" {
-		wc = tenancyv1alpha1.WorkspaceCreationMembers
-	}
-	// Provider registration authorizes org-wide provider code and a restricted
-	// runtime credential. Keep it with admins by default; an Org can explicitly
-	// opt members into registration.
-	cec := req.CatalogEntryCreation
-	if cec == "" {
-		cec = tenancyv1alpha1.CatalogEntryCreationAdmin
-	}
-
 	org := &tenancyv1alpha1.Organization{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        orgUUID,
@@ -199,6 +207,23 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.waitForCreatedOrg(w, r, created.Name, "")
+}
+
+// orgRequestIDSkew is how far ahead of the hub a client's clock may run when
+// it mints a request ID.
+const orgRequestIDSkew = time.Hour
+
+// requestIDFresh reports whether a version 7 request ID may still be replayed.
+// An organization is purged no sooner than one grace period after it was
+// created, and a key minted by a clock running up to orgRequestIDSkew ahead
+// can carry a time that late after creation. Accepting keys no older than
+// grace-skew therefore keeps every accepted key younger than the
+// organization it could resolve to, while a client clock that runs behind is
+// tolerated for most of the (default 30-day) grace period.
+func requestIDFresh(id uuid.UUID, now time.Time, grace time.Duration) bool {
+	sec, nsec := id.Time().UnixTime()
+	minted := time.Unix(sec, nsec)
+	return minted.After(now.Add(orgRequestIDSkew-grace)) && !minted.After(now.Add(orgRequestIDSkew))
 }
 
 func (h *Handler) waitForCreatedOrg(w http.ResponseWriter, r *http.Request, orgUUID, replayUser string) {

@@ -32,6 +32,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -747,7 +749,13 @@ func TestCreateOrg_ValidatesAndPersists(t *testing.T) {
 	_ = resp.Body.Close()
 
 	// A retried onboarding request returns the same organization.
-	const requestID = "df093ac1-ea4b-4386-a7ce-9417b184855b"
+	requestID := uuid.Must(uuid.NewV7()).String()
+	stale, _ := json.Marshal(CreateOrgRequest{DisplayName: "acme", RequestID: "df093ac1-ea4b-4386-a7ce-9417b184855b"})
+	resp, _ = http.Post(srv.URL+"/api/orgs", "application/json", jsonBody(stale))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("version 4 request ID: got %d, want 400", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
 	body, _ = json.Marshal(CreateOrgRequest{DisplayName: "acme", RequestID: requestID})
 	resp, _ = http.Post(srv.URL+"/api/orgs", "application/json", jsonBody(body))
 	if resp.StatusCode != http.StatusCreated {
@@ -783,6 +791,16 @@ func TestCreateOrg_ValidatesAndPersists(t *testing.T) {
 	_ = replay.Body.Close()
 	if replay.StatusCode != http.StatusCreated || replayed.UUID != view.UUID {
 		t.Fatalf("create replay: status %d, organization %#v", replay.StatusCode, replayed)
+	}
+	// The same key asking for different policies did not get them.
+	changed, _ := json.Marshal(CreateOrgRequest{DisplayName: "acme", RequestID: requestID, CatalogEntryCreation: tenancyv1alpha1.CatalogEntryCreationMembers})
+	conflict, err := http.Post(srv.URL+"/api/orgs", "application/json", jsonBody(changed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conflict.Body.Close()
+	if conflict.StatusCode != http.StatusConflict {
+		t.Fatalf("replay with different policies: got %d, want 409", conflict.StatusCode)
 	}
 	created, err := mgr.client.Organizations().Get(context.Background(), view.UUID, metav1.GetOptions{})
 	if err != nil {

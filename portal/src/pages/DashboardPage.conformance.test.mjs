@@ -62,7 +62,7 @@ test('first-run guide waits for authoritative scoped reads and remains latched a
   assert.doesNotMatch(page, /welcomeOpen\.value = false[\s\S]{0,120}enabledCount/)
   assert.match(page, /\[currentScope, welcomeUser, \(\) => tenant\.workspaceMode\][\s\S]*guideForced\.value = false[\s\S]*welcomeOpen\.value = false/)
   assert.match(page, /async function dismissWelcome\(\)[\s\S]*gettingStartedTrigger\.value\?\.focus\(\)/)
-  assert.match(page, /:start-at-goal="guideForced \|\| firstTask"/)
+  assert.match(page, /:start-at-goal="guideForced \|\| !!firstTask"/)
   assert.match(page, /useGettingStartedFocus\(computed\(\(\) => showWelcome\.value && guideVisible\.value\)\)/)
 })
 

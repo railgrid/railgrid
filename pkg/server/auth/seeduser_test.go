@@ -437,3 +437,26 @@ func TestEmailVerifiedClaim(t *testing.T) {
 }
 
 func ptrBool(b bool) *bool { return &b }
+
+func TestSeedUserFirstLoginLastsUntilAPortalLoginCompletes(t *testing.T) {
+	h, client := newSeedTestHandler(t, nil)
+	ctx := context.Background()
+
+	created, firstLogin, err := h.seedUser(ctx, alice(testIssuer, githubSub, true))
+	if err != nil || !firstLogin {
+		t.Fatalf("new user: firstLogin=%v err=%v", firstLogin, err)
+	}
+	// A callback that failed after seeding, or a first sign-in through the
+	// CLI, has not onboarded the user: the next login is still first.
+	again, firstLogin, err := h.seedUser(ctx, alice(testIssuer, githubSub, true))
+	if err != nil || again != created || !firstLogin {
+		t.Fatalf("retry: user=%q firstLogin=%v err=%v", again, firstLogin, err)
+	}
+	h.clearPortalOnboardingPending(ctx, created)
+	if user, _ := client.Users().Get(ctx, created, metav1.GetOptions{}); user.Annotations[annotationPortalOnboardingPending] != "" {
+		t.Fatalf("marker not cleared: %v", user.Annotations)
+	}
+	if _, firstLogin, err = h.seedUser(ctx, alice(testIssuer, githubSub, true)); err != nil || firstLogin {
+		t.Fatalf("after a completed portal login: firstLogin=%v err=%v", firstLogin, err)
+	}
+}

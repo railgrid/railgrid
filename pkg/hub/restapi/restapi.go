@@ -457,6 +457,7 @@ func (k *keyedMutex) Lock(key string) func() {
 //
 // Effective routes:
 //
+//	GET    /api/billing/plans              the sellable plan catalog (any signed-in user)
 //	GET    /api/orgs                       list orgs the caller is in
 //	POST   /api/orgs                       create a new Org
 //	GET    /api/users/me                   the caller's own identity

@@ -123,7 +123,9 @@ const welcomeUser = computed(() => welcomeIdentity(auth))
 const welcomeOpen = ref(false)
 const gettingStartedTrigger = ref<HTMLButtonElement | null>(null)
 const guideForced = ref(false)
-const firstTask = ref(false)
+// The audience chosen on the onboarding page; empty when the guide was not
+// opened as that page's first task.
+const firstTask = ref<'' | 'personal' | 'team'>('')
 const showWelcome = computed(() => welcomeOpen.value || guideForced.value)
 
 const guideShownScope = ref<string | null>(null)
@@ -149,10 +151,14 @@ const initializing = computed(() => providers.loading && !showWelcome.value && !
 watch(
   [gettingStartedStatus, welcomeUser, currentScope, () => route.query.firstTask] as const,
   ([status, user, _scope, request]) => {
-    if (status === 'ready' && user && request === '1') {
-      claimFirstWelcome(user)
-      firstTask.value = true
-      welcomeOpen.value = true
+    if (status === 'ready' && user && (request === 'personal' || request === 'team')) {
+      // The query only says which audience to start in. Whether the guide
+      // opens at all is still the once-per-user latch, so a bookmarked or
+      // history URL cannot reopen a guide that was already dismissed.
+      if (claimFirstWelcome(user)) {
+        firstTask.value = request
+        welcomeOpen.value = true
+      }
       const query = { ...route.query }
       delete query.firstTask
       void router.replace({ query })
@@ -188,7 +194,7 @@ function openGettingStarted() {
 async function dismissWelcome() {
   welcomeOpen.value = false
   guideForced.value = false
-  firstTask.value = false
+  firstTask.value = ''
   await nextTick()
   gettingStartedTrigger.value?.focus()
 }
@@ -199,7 +205,7 @@ watch(
     guideForced.value = false
     welcomeOpen.value = false
     guideShownScope.value = null
-    firstTask.value = false
+    firstTask.value = ''
   },
   { flush: 'sync' },
 )
@@ -277,7 +283,7 @@ function onGridSelectStart(event: Event) {
         v-if="showWelcome"
         :key="`${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}`"
         v-show="guideVisible"
-        :start-at-goal="guideForced || firstTask"
+        :start-at-goal="guideForced || !!firstTask"
         :first-task="firstTask"
         @dismiss="dismissWelcome"
       />

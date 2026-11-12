@@ -21,6 +21,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { authFetch } from '@/auth/session'
 import { authSessionRevision } from '@/auth/token'
 import { allowancesPending, planPrice, priceAvailable, priceInterval, subscriptionActivated } from '@/lib/billing-flow'
+import { requestIdV7, reusableRequestId } from '@/lib/requestId'
 import FormSelect, { type FormSelectOption } from '@/portalkit/FormSelect.vue'
 import { UUID_PATTERN } from '@/portalkit/navigation'
 import { readOrganizationWorkspace } from '@/router/landingPreference'
@@ -153,9 +154,12 @@ async function readOnboardingList<T>(path: string, message: string, headers?: He
   throw new Error(message)
 }
 
-async function openWorkspace(org: string) {
+type FirstTaskAudience = 'personal' | 'team'
+
+// The first-task guide opens in the audience the user just chose here, and
+// every wait on this page shares one budget rather than nesting its own.
+async function openWorkspace(org: string, audience: FirstTaskAudience, deadline = Date.now() + 60_000) {
   status.value = 'Preparing your workspace…'
-  const deadline = Date.now() + 60_000
   const remembered = readOrganizationWorkspace(auth.user, org)
   while (current() && Date.now() < deadline) {
     const workspaces = await readOnboardingList<WorkspaceRow>(
@@ -171,7 +175,7 @@ async function openWorkspace(org: string) {
       const destination = workspace
         ? { name: 'dashboard', params: { orgID: org, workspaceID: workspace.uuid } }
         : { name: 'workspace-chooser', params: { orgID: org } }
-      const failure = await router.replace({ ...destination, query: { firstTask: '1' } })
+      const failure = await router.replace({ ...destination, query: { firstTask: audience } })
       if (failure && current()) throw new Error('Unable to open your workspace. Try again.')
       return !failure
     }
@@ -193,7 +197,7 @@ async function openPersonalWorkspace() {
     if (!current()) return
     const personal = organizations.find(org => org.personal && !org.deletionRequestedAt)
     if (personal) {
-      await openWorkspace(personal.uuid)
+      await openWorkspace(personal.uuid, 'personal', deadline)
       return
     }
     await delay()
@@ -216,7 +220,7 @@ async function submit() {
     }
     if (!createdOrg.value) {
       status.value = 'Creating your organization…'
-      const requestId = draft.value?.name === organizationName ? draft.value.requestId : crypto.randomUUID()
+      const requestId = (draft.value?.name === organizationName && reusableRequestId(draft.value.requestId)) || requestIdV7()
       saveDraft({ name: organizationName, requestId, plan: plan.value })
       const org = await tenant.createOrg(organizationName, requestId)
       if (!current()) return
@@ -233,10 +237,14 @@ async function submit() {
       }
       return
     }
-    const opened = await openWorkspace(createdOrg.value)
+    const opened = await openWorkspace(createdOrg.value, 'team')
     if (opened && authSessionRevision() === session) saveDraft(null)
   } catch (err) {
-    if (current()) error.value = err instanceof Error ? err.message : 'Unable to continue. Try again.'
+    if (!current()) return
+    error.value = err instanceof Error ? err.message : 'Unable to continue. Try again.'
+    if (createdOrg.value && !canceled && !(await draftOrgUsable(createdOrg.value)) && current()) {
+      startOver('That organization is no longer available. Start again to create a new one.')
+    }
   } finally {
     if (current() && !leavingForCheckout) {
       status.value = ''
@@ -254,10 +262,16 @@ async function checkActivation() {
   try {
     while (current() && Date.now() < deadline) {
       const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(12_000)])
-      const billing = await tenant.fetchOrgBilling(checkoutOrg, signal)
+      let billing: Awaited<ReturnType<typeof tenant.fetchOrgBilling>> | undefined
+      try {
+        billing = await tenant.fetchOrgBilling(checkoutOrg, signal)
+      } catch {
+        // The webhook may still be landing; a failed read is retried within
+        // the same window rather than ending the confirmation.
+      }
       if (!current()) return
-      if (subscriptionActivated(billing, returnedPlan, allowancesPending(billing))) {
-        const opened = await openWorkspace(checkoutOrg)
+      if (billing && subscriptionActivated(billing, returnedPlan, allowancesPending(billing))) {
+        const opened = await openWorkspace(checkoutOrg, 'team', deadline)
         if (opened && authSessionRevision() === session) saveDraft(null)
         return
       }
@@ -269,6 +283,30 @@ async function checkActivation() {
   } finally {
     if (current()) busy.value = false
   }
+}
+
+// A recorded organization locks the form only while it is still usable: it
+// may have been deleted elsewhere, or its creator may no longer administer it.
+async function draftOrgUsable(org: string): Promise<boolean> {
+  try {
+    const response = await authFetch(`/api/orgs/${encodeURIComponent(org)}`, {
+      headers: { 'X-Railgrid-Org': org },
+      signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(12_000)]),
+    })
+    if (response.status === 403 || response.status === 404) return false
+    if (!response.ok) return true
+    const row = await response.json() as OrgRow
+    return row.uuid === org && row.role === 'admin' && !row.deletionRequestedAt
+  } catch {
+    // Unknown is not gone: keep the draft and let the user retry.
+    return true
+  }
+}
+
+function startOver(message = '') {
+  saveDraft(null)
+  createdOrg.value = ''
+  error.value = message
 }
 
 async function restoreCanceledCheckout() {
@@ -297,6 +335,12 @@ onMounted(() => {
   else {
     void loadPrices()
     if (canceled) void restoreCanceledCheckout()
+    else if (createdOrg.value) {
+      const org = createdOrg.value
+      void draftOrgUsable(org).then(usable => {
+        if (!usable && current() && createdOrg.value === org) startOver('That organization is no longer available. Start again to create a new one.')
+      })
+    }
   }
 })
 </script>
@@ -359,7 +403,8 @@ onMounted(() => {
 
           <p role="status" class="sr-only">{{ status }}</p>
           <p v-if="error" role="alert" class="text-sm text-danger">{{ error }}</p>
-          <div class="flex justify-end">
+          <div class="flex flex-wrap justify-end gap-2">
+            <button v-if="createdOrg && !canceled && error && !busy" type="button" class="k-btn k-btn--text min-h-11" @click="startOver()">Start over</button>
             <button v-if="canceled && !createdOrg" type="button" class="k-btn k-btn--primary min-h-11" :disabled="busy" @click="restoreCanceledCheckout">Try again</button>
             <a v-else-if="enterprise" class="k-btn k-btn--primary min-h-11" href="https://railgrid.ai/contact/" target="_blank" rel="noopener noreferrer">
               Contact sales <ExternalLink class="h-4 w-4" aria-hidden="true" /><span class="sr-only"> (opens in a new tab)</span>
