@@ -282,6 +282,12 @@ watch(() => props.authCompatibleOnly, (enabled) => {
 watch(step, async (current, previous) => {
   if (current === previous) return
   await nextTick()
+  if (current === 'confirm') {
+    // The review can make the portal scrollable for the first time. Let the
+    // browser bring the new heading into view as part of the focus handoff.
+    stepHeading.value?.focus()
+    return
+  }
   stepHeading.value?.focus({ preventScroll: true })
 })
 
@@ -392,7 +398,7 @@ onMounted(async () => {
     >
       <div class="k-create-body gap-5 p-5 sm:p-6">
         <header>
-          <h2 id="new-project-details-title" ref="stepHeading" tabindex="-1" class="k-create-title">
+          <h2 id="new-project-details-title" :key="step" ref="stepHeading" tabindex="-1" class="k-create-title">
             {{ step === 'confirm' ? `Review ${plan?.displayName || 'your project'}` : 'Preparing review' }}
           </h2>
           <slot name="review-progress" />
