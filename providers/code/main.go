@@ -218,6 +218,8 @@ func runServe() {
 		log.Fatalf("subresource routes: %v", err)
 	}
 
+	webhooks := http.NewServeMux()
+	webhooks.HandleFunc("POST /webhooks/github/{cluster}/{name}", workflow.Webhook)
 	dataPlane := codeDataPlaneHandler(workflow, codeActions)
 	srv, err := serve.New(serve.Options{
 		Name:         "code",
@@ -226,6 +228,7 @@ func runServe() {
 		MCP:          mcpHandler,
 		Actions:      codeActions,
 		DataPlane:    dataPlane,
+		Extra:        []serve.Route{{Prefix: serve.WebhooksPrefix, Class: serve.ClassWebhook, Handler: webhooks}},
 		OAuth:        oauthRoutes,
 		Subresources: subresources,
 	})
