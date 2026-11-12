@@ -203,3 +203,35 @@ func TestOrgBilling_WithoutMetering(t *testing.T) {
 		}
 	}
 }
+
+func TestOnboardingBillingUsesLiveOffersAndScopedReturns(t *testing.T) {
+	fake := &fakeBilling{
+		summary: metering.OrgBilling{Enabled: true, Plan: "org-private", Plans: []metering.PlanOffer{{
+			Name: "team", Sellable: true, Price: &metering.SubscriptionPrice{ID: "price_team"},
+		}}},
+		checkout: func(org, plan, successURL, cancelURL string) (string, error) {
+			const base = "https://hub.example/ui/onboarding?org=org-a"
+			if org != "org-a" || plan != "team" ||
+				successURL != base+"&billing=success&billingPlan=team" ||
+				cancelURL != base+"&billing=canceled&billingPlan=team" {
+				t.Errorf("onboarding checkout: %q %q %q %q", org, plan, successURL, cancelURL)
+			}
+			return "https://checkout.example/team", nil
+		},
+	}
+	srv := billingServer(t, fake, adminTC("alice", "org-a", ""))
+	code, body := billingCall(t, srv, http.MethodGet, "/api/billing/plans", "")
+	if raw := bodyString(body, "_raw"); code != http.StatusOK || !strings.Contains(raw, "price_team") || strings.Contains(raw, "org-private") {
+		t.Fatalf("catalog: %d %s", code, raw)
+	}
+	if len(fake.calls) != 1 || fake.calls[0] != "summary " {
+		t.Fatalf("catalog must be fetched without an organization: %v", fake.calls)
+	}
+	if code, _ := billingCall(t, srv, http.MethodPost, "/api/orgs/org-a/billing/checkout", `{"plan":"team","onboarding":true}`); code != http.StatusBadRequest {
+		t.Fatalf("onboarding checkout without a reviewed price: %d", code)
+	}
+	code, body = billingCall(t, srv, http.MethodPost, "/api/orgs/org-a/billing/checkout", `{"plan":"team","priceID":"price_team","onboarding":true}`)
+	if code != http.StatusOK || fake.reviewedPrice != "price_team" {
+		t.Fatalf("reviewed onboarding checkout: %d %v", code, body)
+	}
+}

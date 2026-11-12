@@ -32,7 +32,11 @@ let started = 0
 async function enter(workspace: WorkspaceRow) {
   if (!isWorkspaceUsable(workspace) || loading.value || error.value) return
   try {
-    await router.replace({ name: 'dashboard', params: { orgID: orgID.value, workspaceID: workspace.uuid } })
+    await router.replace({
+      name: 'dashboard',
+      params: { orgID: orgID.value, workspaceID: workspace.uuid },
+      ...(route.query.firstTask === '1' ? { query: { firstTask: '1' } } : {}),
+    })
   } catch { error.value = 'Unable to open this workspace. Try again.' }
 }
 

@@ -31,12 +31,15 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 	"github.com/railgrid/railgrid/pkg/hub/quota"
+	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
 // CreateOrgRequest is the POST /api/orgs body.
 type CreateOrgRequest struct {
 	DisplayName          string `json:"displayName"`
+	RequestID            string `json:"requestId,omitempty"`
 	WorkspaceCreation    string `json:"workspaceCreation,omitempty"`    // "members" | "admin"; default "members"
 	CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"` // "members" | "admin"; default "admin"
 }
@@ -121,10 +124,38 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, newValidationError("displayName is required"))
 		return
 	}
-	// Hold the user's create lock from the quota check through the Create,
-	// so two requests at cap-1 do not both pass. The wait for the controller
-	// below runs unlocked.
+	orgUUID := uuid.NewString()
+	if req.RequestID != "" {
+		id, err := uuid.Parse(req.RequestID)
+		if err != nil || id.Version() != 4 || id.String() != req.RequestID {
+			writeError(w, newValidationError("requestId must be a version 4 UUID"))
+			return
+		}
+		// Scope the retry key to the authenticated creator. The hub owns
+		// the resulting organization ID even when clients choose a key.
+		orgUUID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("railgrid:org-create:"+user+":"+id.String())).String()
+	}
+
+	// Hold the user's create lock through the quota check and Create. A replay
+	// resumes the same organization even if the first request timed out.
 	unlock := h.orgCreate.Lock(user)
+	if req.RequestID != "" {
+		existing, err := h.mgr.client.Organizations().Get(r.Context(), orgUUID, metav1.GetOptions{})
+		if !apierrors.IsNotFound(err) {
+			unlock()
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			if existing.Spec.Personal || existing.Labels[tenancyv1alpha1.OrganizationCreatorLabel] != user ||
+				existing.Spec.DisplayName != req.DisplayName || !existing.DeletionTimestamp.IsZero() || existing.Status.DeletionRequestedAt != nil {
+				writeStatus(w, http.StatusConflict, "RequestConflict", "organization creation request already used")
+				return
+			}
+			h.waitForCreatedOrg(w, r, existing.Name, user)
+			return
+		}
+	}
 	if err := h.checkOrgQuota(r.Context(), user); err != nil {
 		unlock()
 		var qe *quota.QuotaExceededError
@@ -147,7 +178,6 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		cec = tenancyv1alpha1.CatalogEntryCreationAdmin
 	}
 
-	orgUUID := uuid.NewString()
 	org := &tenancyv1alpha1.Organization{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        orgUUID,
@@ -168,6 +198,11 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.waitForCreatedOrg(w, r, created.Name, "")
+}
+
+func (h *Handler) waitForCreatedOrg(w http.ResponseWriter, r *http.Request, orgUUID, replayUser string) {
+	var ready *tenancyv1alpha1.Organization
 	// The controller exclusively owns initial access writes. Waiting here is
 	// read-only: an overlapping POST must not regrant access after the
 	// controller has handed membership ownership over to normal management.
@@ -176,14 +211,28 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return false, err
 		}
-		return apimeta.IsStatusConditionTrue(latest.Status.Conditions, tenancyv1alpha1.OrganizationConditionMembershipReady) &&
-			apimeta.IsStatusConditionTrue(latest.Status.Conditions, tenancyv1alpha1.OrganizationConditionIndexSynced), nil
+		if !latest.DeletionTimestamp.IsZero() || latest.Status.DeletionRequestedAt != nil {
+			return false, apierrors.NewNotFound(railgridclient.OrganizationGVR.GroupResource(), orgUUID)
+		}
+		if !apimeta.IsStatusConditionTrue(latest.Status.Conditions, tenancyv1alpha1.OrganizationConditionMembershipReady) ||
+			!apimeta.IsStatusConditionTrue(latest.Status.Conditions, tenancyv1alpha1.OrganizationConditionIndexSynced) {
+			return false, nil
+		}
+		ready = latest
+		return true, nil
 	}); err != nil {
 		writeError(w, err)
 		return
 	}
 
-	view := projectOrg(created)
+	// Read the current role on replay. The creator label records provenance
+	// and survives a membership removal or demotion.
+	if replayUser != "" && !h.requireOrgAdminMembership(w, r, tenant.TenantContext{
+		User: replayUser, OrgUUID: orgUUID,
+	}, "this request requires current organization admin access") {
+		return
+	}
+	view := projectOrg(ready)
 	// The controller has seeded the creator's org access.
 	view.Role = tenancyv1alpha1.MembershipRoleAdmin
 	writeJSON(w, http.StatusCreated, view)

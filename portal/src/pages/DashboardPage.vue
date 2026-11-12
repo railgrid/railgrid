@@ -5,6 +5,7 @@ import { claimFirstWelcome, welcomeIdentity } from '@/lib/firstWelcome'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRoute, useRouter } from 'vue-router'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import DashboardTile from '@/components/DashboardTile.vue'
@@ -18,6 +19,8 @@ import { Puzzle, RotateCcw, Check, LayoutDashboard, LayoutGrid, Plus, Rocket } f
 import { gettingStartedReadState } from '@/lib/gettingStarted'
 
 const { scopePath } = useScopedNavigation()
+const route = useRoute()
+const router = useRouter()
 
 // The dashboard iterates the catalog and mounts one <DashboardTile> per
 // ready provider. Each provider may register a
@@ -120,6 +123,7 @@ const welcomeUser = computed(() => welcomeIdentity(auth))
 const welcomeOpen = ref(false)
 const gettingStartedTrigger = ref<HTMLButtonElement | null>(null)
 const guideForced = ref(false)
+const firstTask = ref(false)
 const showWelcome = computed(() => welcomeOpen.value || guideForced.value)
 
 const guideShownScope = ref<string | null>(null)
@@ -143,8 +147,17 @@ const retrying = ref(false)
 const initializing = computed(() => providers.loading && !showWelcome.value && !retrying.value && gettingStartedStatus.value !== 'unscoped')
 
 watch(
-  [gettingStartedStatus, welcomeUser, currentScope] as const,
-  ([status, user]) => {
+  [gettingStartedStatus, welcomeUser, currentScope, () => route.query.firstTask] as const,
+  ([status, user, _scope, request]) => {
+    if (status === 'ready' && user && request === '1') {
+      claimFirstWelcome(user)
+      firstTask.value = true
+      welcomeOpen.value = true
+      const query = { ...route.query }
+      delete query.firstTask
+      void router.replace({ query })
+      return
+    }
     if (status === 'ready' && claimFirstWelcome(user)) welcomeOpen.value = true
   },
   { immediate: true },
@@ -175,6 +188,7 @@ function openGettingStarted() {
 async function dismissWelcome() {
   welcomeOpen.value = false
   guideForced.value = false
+  firstTask.value = false
   await nextTick()
   gettingStartedTrigger.value?.focus()
 }
@@ -185,6 +199,7 @@ watch(
     guideForced.value = false
     welcomeOpen.value = false
     guideShownScope.value = null
+    firstTask.value = false
   },
   { flush: 'sync' },
 )
@@ -262,7 +277,8 @@ function onGridSelectStart(event: Event) {
         v-if="showWelcome"
         :key="`${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}`"
         v-show="guideVisible"
-        :start-at-goal="guideForced"
+        :start-at-goal="guideForced || firstTask"
+        :first-task="firstTask"
         @dismiss="dismissWelcome"
       />
 
