@@ -13,12 +13,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	runctrl "github.com/railgrid/provider-agents/controller/run"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -164,5 +164,5 @@ func newExecutionOwner(processID string) string {
 }
 
 func executionOwnerBelongsToProcess(owner, processID string) bool {
-	return owner == processID || processID != "" && strings.HasPrefix(owner, processID+"/")
+	return runctrl.ExecutionOwnerBelongsToProcess(owner, processID)
 }

@@ -1245,11 +1245,16 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 				return runResult{RunID: runID, Phase: store.RunPhasePending, StartedAt: &startedAt}, requeued
 			}
 		}
-		if !s.finishRunOwned(persistCtx, scope, runID, runOutcome{
+		if finishErr := s.finishRunOwnedRetrying(persistCtx, scope, runID, runOutcome{
 			Phase: phase, Message: cause.Error(), Usage: out.Usage.Total.Tokens,
 			CostMicros: out.Usage.Total.CostMicros, WorkedDurationMS: tracker.workedDurationMS(), Harness: harnessT,
-		}, end, run.ExecutionOwner, run.Attempt) {
-			return runResult{RunID: runID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
+		}, end, run.ExecutionOwner, run.Attempt); finishErr != nil {
+			// The run stays Running for recovery either way; callers treat
+			// that as a lost lease. Keep the real reasons in the error.
+			if !errors.Is(finishErr, store.ErrRunLeaseLost) {
+				log.Printf("run %s: could not record its %s outcome (%v); recovery will settle it: %v", runID, phase, cause, finishErr)
+			}
+			return runResult{RunID: runID, Phase: store.RunPhaseRunning}, errors.Join(store.ErrRunLeaseLost, finishErr)
 		}
 		terminal := s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), cause.Error())
 		s.recordAgentRun(persistCtx, run.CR, agent, end, &window)
@@ -1583,7 +1588,7 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 	if s.cfg.ProcessID != "" {
 		started, leaseCtx, stop, err := s.claimFreshRunLease(ctx, scope, runID, string(agent.UID))
 		if err != nil {
-			return runAdmission{}, fmt.Errorf("claiming the admitted run for execution: %w", err)
+			return s.settleUnclaimedAdmission(ctx, scope, runID, err)
 		}
 		executionCtx, stopExecutionLease = leaseCtx, stop
 		tr.ExecutionOwner = started.ExecutionOwner
@@ -1617,6 +1622,32 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 		access.Notify(executionCtx, agent, tr.NotifyChannel, tr.SourceName, res.Content)
 	}()
 	return runAdmission{ID: runID, Phase: phase}, nil
+}
+
+// settleUnclaimedAdmission handles a Pending row this request recorded but
+// could not claim. Left alone, the row would be returned to an idempotent
+// retry as Reused while nothing executes it. When another executor already
+// claimed it (or the claim succeeded and only the lease failed, so recovery
+// owns it), the run is genuinely admitted and the caller is told so. Otherwise
+// it is failed now with the real cause.
+func (s *Server) settleUnclaimedAdmission(ctx context.Context, scope store.Scope, runID string, cause error) (runAdmission, error) {
+	persistCtx, cancel := boundedPersistContext(ctx)
+	defer cancel()
+	stored, err := s.store.GetRun(persistCtx, scope, runID)
+	if err != nil {
+		return runAdmission{}, fmt.Errorf("claiming the admitted run for execution: %w", errors.Join(cause, err))
+	}
+	if stored.Phase != store.RunPhasePending || stored.ExecutionOwner != "" || !stored.ExecutionLeaseAt.IsZero() {
+		return runAdmission{ID: stored.ID, Phase: stored.Phase}, nil
+	}
+	message := "the run could not be started: " + cause.Error()
+	failed, settled, err := s.store.FailPendingRun(persistCtx, scope, runID, stored.UpdatedAt, time.Now().UTC(), time.Now().UTC(), message)
+	if err == nil && settled {
+		s.projectRun(persistCtx, scope, failed)
+	} else if err != nil {
+		cause = errors.Join(cause, err)
+	}
+	return runAdmission{}, fmt.Errorf("claiming the admitted run for execution: %w", cause)
 }
 
 // dataPlaneFor describes how instance-backed tools reach tenant workloads for
@@ -1905,13 +1936,53 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 }
 
 func (s *Server) finishRunOwned(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time, owner string, attempt int) bool {
+	return s.finishRunOwnedErr(ctx, scope, runID, out, end, owner, attempt) == nil
+}
+
+// finishRunOwnedErr is finishRunOwned with the reason kept: store.ErrRunLeaseLost
+// when this executor no longer owns the run, any other error when the write
+// itself failed.
+func (s *Server) finishRunOwnedErr(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time, owner string, attempt int) error {
 	if owner == "" {
-		if latest, err := s.store.GetRun(ctx, scope, runID); err != nil || latest.ExecutionOwner != "" {
-			return false
+		latest, err := s.store.GetRun(ctx, scope, runID)
+		if err != nil {
+			return err
 		}
-		return s.finishRun(ctx, scope, runID, out, end)
+		if latest.ExecutionOwner != "" {
+			return store.ErrRunLeaseLost
+		}
 	}
-	return s.finishRunWithOwner(ctx, scope, runID, out, end, owner, attempt, nil) == nil
+	return s.finishRunWithOwner(ctx, scope, runID, out, end, owner, attempt, nil)
+}
+
+// finishRunOwnedRetries is how long a terminal write waits between attempts
+// after a transient store failure. The executor still holds the lease, so
+// settling the run now beats leaving it Running for recovery to guess at.
+var finishRunOwnedRetries = []time.Duration{200 * time.Millisecond, 800 * time.Millisecond} //nolint:gochecknoglobals // test seam
+
+// finishRunOwnedRetrying writes a terminal outcome, retrying failures that are
+// not a lost lease. A retry that finds the lease gone checks whether an
+// earlier attempt committed despite reporting an error before giving up.
+func (s *Server) finishRunOwnedRetrying(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time, owner string, attempt int) error {
+	err := s.finishRunOwnedErr(ctx, scope, runID, out, end, owner, attempt)
+	for _, wait := range finishRunOwnedRetries {
+		if err == nil || errors.Is(err, store.ErrRunLeaseLost) {
+			break
+		}
+		log.Printf("run %s: recording the %s outcome failed; retrying: %v", runID, out.Phase, err)
+		select {
+		case <-ctx.Done():
+			return errors.Join(err, ctx.Err())
+		case <-time.After(wait):
+		}
+		err = s.finishRunOwnedErr(ctx, scope, runID, out, end, owner, attempt)
+		if errors.Is(err, store.ErrRunLeaseLost) {
+			if latest, getErr := s.store.GetRun(ctx, scope, runID); getErr == nil && latest.Phase == out.Phase {
+				return nil
+			}
+		}
+	}
+	return err
 }
 
 func (s *Server) finishRunWithOwner(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time, owner string, attempt int, final *store.Message) error {

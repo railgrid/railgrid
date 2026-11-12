@@ -73,7 +73,9 @@ const (
 	RecoveryIdentityCaller  RecoveryIdentity = "caller"
 )
 
-func terminalRunPhase(phase RunPhase) bool {
+// TerminalRunPhase reports whether a run has reached an outcome. A run parked
+// for approval has not: it continues in place.
+func TerminalRunPhase(phase RunPhase) bool {
 	return phase == RunPhaseSucceeded || phase == RunPhaseFailed || phase == RunPhaseAborted
 }
 

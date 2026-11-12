@@ -391,7 +391,7 @@ func (s *Server) backgroundScoped(ctx context.Context, clusterID string) (dynami
 // every late/retried admission returns it without executing.
 func (s *Server) fenceInvocation(ctx context.Context, scope store.Scope, key string) (store.Run, error) {
 	now := time.Now().UTC()
-	record := store.Run{ID: uuid.NewString(), AgentName: scope.AgentName, Trigger: "api", IdempotencyKey: key, Phase: store.RunPhaseAborted, Message: "cancelled before invocation acceptance was confirmed", CreatedAt: now, UpdatedAt: now, FinishedAt: &now}
+	record := store.Run{ID: uuid.NewString(), AgentName: scope.AgentName, Trigger: agentsv1alpha1.RunTriggerAPI, IdempotencyKey: key, Phase: store.RunPhaseAborted, Message: "cancelled before invocation acceptance was confirmed", CreatedAt: now, UpdatedAt: now, FinishedAt: &now}
 	if err := s.saveRun(ctx, scope, record); err != nil {
 		existing, found, lookupErr := s.store.FindRunByIdempotencyKey(ctx, scope, key)
 		if lookupErr != nil {

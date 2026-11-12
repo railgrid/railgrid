@@ -89,7 +89,11 @@ func (s *Server) delegateAndWait(ctx context.Context, d tools.Deps, target, task
 			tr.SessionID = ""
 			tr.Task += "\nThe runner has checked out the assigned base already. Work only in its current repository. Do not clone, commit, create bundles or push: the runner exports the canonical result after you finish. Return your findings and verification as your final answer."
 		}
-		admitted, err := s.startRun(ctx, scope, child, tr, runAccess{Creds: d.Secrets, CR: d.CR, ClusterID: d.DataPlane.ClusterID, RecoveryIdentity: d.RecoveryIdentity})
+		// The child executes on its own lease, not inside the parent's tool
+		// call: a parent that times out or loses its lease must not take the
+		// child's execution with it. Stopping the child when the parent is
+		// cancelled is explicit, below.
+		admitted, err := s.startRun(context.WithoutCancel(ctx), scope, child, tr, runAccess{Creds: d.Secrets, CR: d.CR, ClusterID: d.DataPlane.ClusterID, RecoveryIdentity: d.RecoveryIdentity})
 		if err != nil {
 			return store.Run{}, err
 		}

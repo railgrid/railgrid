@@ -36,6 +36,32 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 	const oldOwner = "provider-a-incarnation-1"
 	const newOwner = "provider-b-incarnation-1"
 
+	t.Run("a run handed back to the queue is unowned and claimable", func(t *testing.T) {
+		seed := leaseTestRun(scope, "handed-back", now)
+		if err := st.SaveRun(ctx, scope, seed); err != nil {
+			t.Fatal(err)
+		}
+		leased, err := st.AcquireRunLease(ctx, scope, seed.ID, oldOwner, seed.Attempt, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		queued := leased
+		queued.Phase = RunPhasePending
+		queued.StartedAt = nil
+		queued.UpdatedAt = now.Add(time.Second)
+		if ok, err := st.SaveRunOwned(ctx, scope, queued, oldOwner, seed.Attempt, now.Add(time.Second)); err != nil || !ok {
+			t.Fatalf("hand back: ok=%t err=%v", ok, err)
+		}
+		// No ReleaseRunLease: the handback alone must leave the row claimable.
+		pending, err := st.GetRun(ctx, scope, seed.ID)
+		if err != nil || pending.Phase != RunPhasePending || pending.ExecutionOwner != "" || !pending.ExecutionLeaseAt.IsZero() {
+			t.Fatalf("handed-back row still owned: phase=%s owner=%q lease=%v err=%v", pending.Phase, pending.ExecutionOwner, pending.ExecutionLeaseAt, err)
+		}
+		if _, err := st.ClaimFreshRun(ctx, scope, seed.ID, pending.UpdatedAt, newOwner, pending.AgentUID, now.Add(2*time.Second)); err != nil {
+			t.Fatalf("handed-back run could not be claimed: %v", err)
+		}
+	})
+
 	t.Run("successful completion commits the final message with the run", func(t *testing.T) {
 		seed := leaseTestRun(scope, "owned-final", now)
 		if err := st.SaveRun(ctx, scope, seed); err != nil {
@@ -128,8 +154,10 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 		if ok, err := st.SaveRunOwned(ctx, scope, claimed, oldOwner, claimed.Attempt, now); err != nil || !ok {
 			t.Fatalf("returning run to queue: ok=%t err=%v", ok, err)
 		}
-		if ok, err := st.ReleaseRunLease(ctx, scope, seed.ID, oldOwner, claimed.Attempt); err != nil || !ok {
-			t.Fatalf("releasing lease: ok=%t err=%v", ok, err)
+		// The handback itself released the lease; the deferred release the
+		// executor still issues is a harmless no-op.
+		if ok, err := st.ReleaseRunLease(ctx, scope, seed.ID, oldOwner, claimed.Attempt); err != nil || ok {
+			t.Fatalf("releasing an already released lease: ok=%t err=%v", ok, err)
 		}
 		if _, err := st.ClaimFreshRun(ctx, scope, seed.ID, claimed.UpdatedAt, newOwner, "replacement-agent", now); !errors.Is(err, ErrRunClaimConflict) {
 			t.Fatalf("replacement Agent claim: %v", err)
