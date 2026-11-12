@@ -78,6 +78,33 @@ spec:
                   targets the provider's public SaaS endpoint.
                 maxLength: 2048
                 type: string
+              githubWebhook:
+                description: GitHubWebhookBinding pins the only repository whose signed
+                  events are accepted.
+                properties:
+                  botLogin:
+                    description: BotLogin pins the App identity used to recover uncertain
+                      publication responses.
+                    maxLength: 100
+                    minLength: 1
+                    type: string
+                  repositoryID:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  repositoryRef:
+                    maxLength: 253
+                    type: string
+                  source:
+                    enum:
+                    - app
+                    - repository
+                    type: string
+                required:
+                - botLogin
+                - repositoryID
+                - repositoryRef
+                type: object
               owner:
                 description: |-
                   Owner is the org or user under which repositories created via this

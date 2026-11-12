@@ -40,6 +40,7 @@ import (
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"
 	"github.com/railgrid/provider-code/controller/shared"
+	"github.com/railgrid/provider-code/githubworkflow"
 	"github.com/railgrid/provider-code/snapshotstore"
 )
 
@@ -64,11 +65,21 @@ const (
 
 // Reconciler drives PullRequest resources.
 type Reconciler struct {
+	Commands commandVerifier
 	Manager  mcmanager.Manager
 	Backends *backend.Registry
 	// Snapshots is where the stage-snapshot verb keeps staged bundles.
 	Snapshots snapshotstore.Store
 	Now       func() time.Time
+}
+
+// commandVerifier rechecks command authority at each external write boundary.
+// The concrete implementation is owned by the githubworkflow package; this
+// narrow seam also lets the reconciler prove revocation behavior without a
+// live forge or provider API.
+type commandVerifier interface {
+	CheckPublication(context.Context, string, *codev1alpha1.PullRequest) error
+	ReadObservation(context.Context, string, *codev1alpha1.PullRequest) (githubworkflow.Observation, error)
 }
 
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -85,10 +96,21 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 // observeInterval is how long to wait before re-reading pr from the forge.
 func observeInterval(pr *codev1alpha1.PullRequest) time.Duration {
-	if pr.Spec.ObserveInterval == nil || pr.Spec.ObserveInterval.Duration <= 0 {
-		return defaultObserveInterval
+	return observeIntervalAt(pr, time.Now())
+}
+
+func observeIntervalAt(pr *codev1alpha1.PullRequest, now time.Time) time.Duration {
+	interval := defaultObserveInterval
+	if pr.Spec.ObserveInterval != nil && pr.Spec.ObserveInterval.Duration > 0 {
+		interval = max(pr.Spec.ObserveInterval.Duration, minObserveInterval)
 	}
-	return max(pr.Spec.ObserveInterval.Duration, minObserveInterval)
+	// A retired command no longer needs the active coordinator cadence. Keep
+	// observing the PR, but do not exhaust the installation quota on history.
+	if (pr.Spec.Command != nil && !pr.Spec.Command.Deadline.After(now)) ||
+		(pr.Spec.Command == nil && len(pr.Spec.TaskAuthorizationRevocations) > 0) {
+		interval = max(interval, defaultObserveInterval)
+	}
+	return interval
 }
 
 func (r *Reconciler) now() time.Time {
@@ -156,15 +178,33 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	next := pr.DeepCopy()
-	next.Status.ObservedGeneration = pr.Generation
+	if pr.Spec.Command == nil {
+		next.Status.ObservedGeneration = pr.Generation
+	}
 	if adoptTextBaseline {
 		next.Status.PublishedTextDigest = digest
 	}
 
 	// 1. The branch: advance it to the desired head when it is not there.
+	if pr.Status.Number == 0 && pr.Spec.Number > 0 {
+		next.Status.Number = pr.Spec.Number
+		textChanged = false
+		next.Status.PublishedTextDigest = digest
+	}
+	if pr.Spec.Command != nil {
+		textChanged = false
+	}
 	pushed := false
 	if head := pr.Spec.DesiredHead; head != nil && pr.Status.Head != head.Commit {
 		pushed = true
+		if pr.Spec.Command != nil {
+			if r.Commands == nil {
+				return ctrl.Result{}, r.fail(ctx, c, &pr, "command verifier unavailable")
+			}
+			if err := r.Commands.CheckPublication(ctx, string(req.ClusterName), &pr); err != nil {
+				return ctrl.Result{}, r.fail(ctx, c, &pr, err.Error())
+			}
+		}
 		if err := r.advance(ctx, host, conn, cred, repo, string(req.ClusterName), &pr, head); err != nil {
 			var permanent permanentError
 			if errors.As(err, &permanent) {
@@ -181,7 +221,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	// 2. The pull request: open it once there is something to review.
 	if pr.Status.Number == 0 && pr.Spec.DesiredHead != nil {
-		opened, err := r.open(ctx, host, conn, cred, repo, &pr, body)
+		var guard backend.SnapshotPublicationGuard
+		if pr.Spec.Command != nil {
+			if r.Commands == nil {
+				return ctrl.Result{}, r.fail(ctx, c, &pr, "command verifier unavailable")
+			}
+			guard = func(guardCtx context.Context) error {
+				return r.Commands.CheckPublication(guardCtx, string(req.ClusterName), &pr)
+			}
+		}
+		opened, err := r.openGuarded(ctx, host, conn, cred, repo, &pr, body, guard)
 		if err != nil {
 			shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, err.Error(), pr.Generation)
 			if updateErr := updateStatusIfChanged(ctx, c, &pr, next); updateErr != nil {
@@ -205,7 +254,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		if updateErr := updateStatusIfChanged(ctx, c, &pr, next); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
-		return ctrl.Result{RequeueAfter: observeInterval(&pr)}, nil
+		return ctrl.Result{RequeueAfter: observeIntervalAt(&pr, r.now())}, nil
 	}
 	if observed.Head != pr.Spec.Branch || observed.Base != pr.Spec.Base || !strings.EqualFold(observed.HeadRepository, observed.Repository) {
 		return ctrl.Result{}, r.fail(ctx, c, &pr, "the pull request on the forge is not the one this resource describes")
@@ -256,6 +305,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	next.Status.URL = observed.URL
 	next.Status.Head = observed.Commit
+	next.Status.ObservedGeneration = pr.Generation
 	next.Status.State = strings.ToLower(observed.State)
 	next.Status.Merged = observed.Merged
 	next.Status.MergeCommit = observed.MergeCommit
@@ -277,6 +327,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// The conversation: reviews against the current head, and the comments.
 	// A read that fails leaves the previous view in place and says so.
 	conversationErr := r.observeConversation(ctx, host, conn, cred, repo, next)
+	if pr.Spec.Command != nil && r.Commands != nil {
+		next.Status.BaseCurrent = nil
+		next.Status.CIState = "unknown"
+		next.Status.BaseHead = ""
+		next.Status.MergeableState = "unknown"
+		observation, observationErr := r.Commands.ReadObservation(ctx, string(req.ClusterName), &pr)
+		if observationErr != nil {
+			conversationErr = errors.Join(conversationErr, observationErr)
+		} else if observation.Head == next.Status.Head {
+			next.Status.BaseCurrent = observation.BaseCurrent
+			next.Status.CIState = observation.CIState
+			next.Status.BaseHead = observation.BaseHead
+			next.Status.MergeableState = observation.MergeableState
+		}
+	}
+
 	stamp := metav1.NewTime(r.now())
 	next.Status.LastObserved = &stamp
 	applied := pr.Spec.DesiredHead == nil || observed.Commit == pr.Spec.DesiredHead.Commit
@@ -297,7 +363,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 	if next.Status.Phase == codev1alpha1.PullRequestPhaseOpen || !applied {
-		return ctrl.Result{RequeueAfter: observeInterval(&pr)}, nil
+		return ctrl.Result{RequeueAfter: observeIntervalAt(&pr, r.now())}, nil
 	}
 	logger.V(3).Info("pull request settled", "phase", next.Status.Phase)
 	return ctrl.Result{}, nil
@@ -320,6 +386,9 @@ func (r *Reconciler) advance(ctx context.Context, host forge, conn *codev1alpha1
 		return nil
 	}
 	expected := pr.Status.Head
+	if pr.Status.Number != 0 && head.BaseCommit != expected {
+		return permanentError{errors.New("snapshot parent differs from the observed head; refusing publication against a newer observation")}
+	}
 	if current != expected {
 		if expected == "" && pr.Status.Number == 0 && current != "" {
 			return permanentError{fmt.Errorf("the head branch %q already exists at %s; it is not this pull request's to move", pr.Spec.Branch, current)}
@@ -336,8 +405,20 @@ func (r *Reconciler) advance(ctx context.Context, host forge, conn *codev1alpha1
 		return permanentError{errors.New("the staged snapshot is not the desired head")}
 	}
 	snapshot.Message = head.Message
-	if err := host.PublishSnapshot(ctx, conn, cred, repo, snapshot, pr.Spec.Branch, expected); err != nil {
-		return fmt.Errorf("advancing the head branch: %w", err)
+	var publishErr error
+	if pr.Spec.Command != nil {
+		guarded, ok := host.(backend.GuardedSnapshotPublisher)
+		if !ok || r.Commands == nil {
+			return errors.New("guarded command publication is unavailable")
+		}
+		publishErr = guarded.PublishSnapshotGuarded(ctx, conn, cred, repo, snapshot, pr.Spec.Branch, expected, func(guardCtx context.Context) error {
+			return r.Commands.CheckPublication(guardCtx, cluster, pr)
+		})
+	} else {
+		publishErr = host.PublishSnapshot(ctx, conn, cred, repo, snapshot, pr.Spec.Branch, expected)
+	}
+	if publishErr != nil {
+		return fmt.Errorf("advancing the head branch: %w", publishErr)
 	}
 	return nil
 }
@@ -345,6 +426,13 @@ func (r *Reconciler) advance(ctx context.Context, host forge, conn *codev1alpha1
 // open creates the pull request, or adopts the one the forge already has for
 // this head branch (a create whose answer was lost).
 func (r *Reconciler) open(ctx context.Context, host forge, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, pr *codev1alpha1.PullRequest, body string) (*backend.PullRequest, error) {
+	return r.openGuarded(ctx, host, conn, cred, repo, pr, body, nil)
+}
+
+// openGuarded adopts an existing forge PR without a write. When opening a new
+// PR, it rechecks command authority after the lookup and immediately before
+// the external create request, because revocation may race with branch push.
+func (r *Reconciler) openGuarded(ctx context.Context, host forge, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, pr *codev1alpha1.PullRequest, body string, guard backend.SnapshotPublicationGuard) (*backend.PullRequest, error) {
 	input := backend.PullRequestInput{Head: pr.Spec.Branch, Base: pr.Spec.Base, Commit: pr.Spec.DesiredHead.Commit, Title: pr.Spec.Title, Body: body}
 	existing, err := host.FindPullRequest(ctx, conn, cred, repo, input)
 	if err != nil {
@@ -352,6 +440,11 @@ func (r *Reconciler) open(ctx context.Context, host forge, conn *codev1alpha1.Co
 	}
 	if existing != nil {
 		return existing, nil
+	}
+	if guard != nil {
+		if err := guard(ctx); err != nil {
+			return nil, err
+		}
 	}
 	created, err := host.CreatePullRequest(ctx, conn, cred, repo, input)
 	if err != nil {
@@ -410,6 +503,9 @@ func bounded(value string) string {
 func (r *Reconciler) fail(ctx context.Context, c client.Client, pr *codev1alpha1.PullRequest, message string) error {
 	next := pr.DeepCopy()
 	next.Status.ObservedGeneration = pr.Generation
+	if pr.Spec.Command != nil && pr.Status.ObservedGeneration != pr.Generation {
+		next.Status.Head = ""
+	}
 	next.Status.Phase = codev1alpha1.PullRequestPhaseFailed
 	shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonError, message, pr.Generation)
 	return updateStatusIfChanged(ctx, c, pr, next)

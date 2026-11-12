@@ -180,4 +180,18 @@ func TestSnapshotPushUsesAtomicAbsentAndExpectedHeadLeases(t *testing.T) {
 	if got := snapshotCommand(t, remoteDir, "", "rev-parse", "refs/heads/feature"); got != second {
 		t.Fatalf("unexpected remote head %s", got)
 	}
+	guardCalled := false
+	err = g.advanceGuarded(ctx, remote, third, "feature", second, func(context.Context) error {
+		guardCalled = true
+		// Simulate a concurrent authority check followed by a branch update
+		// between that check and receive-pack. The atomic lease must stop it.
+		snapshotCommand(t, remoteDir, "", "update-ref", "refs/heads/feature", first)
+		return nil
+	})
+	if err == nil || !guardCalled {
+		t.Fatalf("guarded push err=%v guardCalled=%v", err, guardCalled)
+	}
+	if got := snapshotCommand(t, remoteDir, "", "rev-parse", "refs/heads/feature"); got != first {
+		t.Fatalf("guarded push overwrote concurrent branch update: %s", got)
+	}
 }
