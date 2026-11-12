@@ -10,11 +10,19 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
+	"github.com/railgrid/provider-agents/internal/connsecret"
+	"github.com/railgrid/provider-agents/internal/githubapp"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tools"
 )
@@ -134,5 +142,74 @@ func TestNativeDelegationNoChangesStillReturnsChildEvidence(t *testing.T) {
 	}
 	if got["runId"] != "review-run" || got["baseCommit"] != "base" || got["noChanges"] != true || got["report"] != "No actionable findings." {
 		t.Fatalf("no-change delegated result = %s", raw)
+	}
+}
+
+func TestDelegatedRepositoryChecksAdmittedCheckout(t *testing.T) {
+	const head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for _, tc := range []struct {
+		name, repository, repositoryID, taskRepoUID, wantError string
+	}{
+		{name: "matching connection", repository: "org/repo", repositoryID: "42", taskRepoUID: "repo-uid"},
+		{name: "renamed repository", repository: "org/renamed", repositoryID: "42", taskRepoUID: "repo-uid", wantError: "does not match admitted repository"},
+		{name: "swapped repository ID", repository: "org/repo", repositoryID: "43", taskRepoUID: "repo-uid", wantError: "does not match admitted repository"},
+		{name: "missing task repository UID", repository: "org/repo", repositoryID: "42", wantError: "does not match admitted repository"},
+		{name: "task repository UID changed in Code", repository: "org/repo", repositoryID: "42", taskRepoUID: "other-uid", wantError: "task repository UID mismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Input map[string]any
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if request.Input["op"] != "observe" || request.Input["pullRequestUID"] != "pr-uid" {
+					t.Error("observe request lost its PR binding")
+				}
+				// Code validates the live UIDs against the task's signed proof.
+				if request.Input["scopeProof"] == "other-uid" {
+					http.Error(w, "task repository UID mismatch", http.StatusForbidden)
+					return
+				}
+				_, _ = fmt.Fprintf(w, `{"result":{"repository":"org/repo","repositoryID":42,"observation":{"head":%q}}}`, head)
+			}))
+			defer code.Close()
+			conn := githubConnection("checkout", "")
+			conn.Spec.Auth = "secret"
+			conn.Spec.Config = map[string]string{"credentialType": "github-app", "githubRole": "checkout", "repository": tc.repository, "repositoryID": tc.repositoryID}
+			cr := connectionsCR{connections: map[string]*agentsv1alpha1.Connection{"checkout": conn}}
+			child := &agentsv1alpha1.Agent{}
+			child.Spec.Backend = agentsv1alpha1.AgentBackendSpec{Type: agentsv1alpha1.AgentBackendHarness, Harness: &agentsv1alpha1.AgentHarnessBackend{GitHubConnectionRef: conn.Name}}
+			server := &Server{githubAppTokenMint: func(_ context.Context, _ githubapp.Client, _ map[string][]byte) (string, time.Time, error) {
+				return "minted-checkout-token", time.Time{}, nil
+			}}
+			coordinator := &agentsv1alpha1.Agent{}
+			coordinator.Name, coordinator.UID = "coordinator", "coordinator-uid"
+			repo, err := server.delegatedRepository(t.Context(), tools.Deps{
+				Agent: coordinator, CR: cr,
+				CodeScope: &tools.CodeScope{Mode: "task", PullRequest: "pr", PullRequestUID: "pr-uid", Repository: "org/repo",
+					RepositoryUID: tc.taskRepoUID, ConnectionUID: "code-connection-uid", ScopeProof: tc.taskRepoUID},
+				DataPlane: tools.DataPlane{ClusterID: "tenant", Callers: fakeVerbCaller{endpoint: code.URL}},
+			}, child)
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) || repo != nil {
+					t.Fatalf("delegatedRepository = %+v, %v; want %q", repo, err, tc.wantError)
+				}
+				return
+			}
+			if err != nil || repo == nil || repo.RepositoryID != "42" || repo.BaseCommit != head || repo.Source.RemoteURL != "https://github.com/org/repo.git" {
+				t.Fatalf("delegated repository did not pin Code's observation: %+v, %v", repo, err)
+			}
+			secretName := connsecret.Name(conn.Name)
+			run := taskRun{Repository: repo, CR: cr, Creds: fakeCreds{secrets: map[string]*corev1.Secret{secretName: tokenSecret(secretName, "unused-personal-token")}}}
+			env, err := server.harnessEnvironmentForRepository(t.Context(), run, child.Spec.Harness(), repo.RepositoryID)
+			if err != nil || run.Repository.Source.Token != "minted-checkout-token" ||
+				len(env) != 2 || env[0].Value != "minted-checkout-token" || env[1].Value != "minted-checkout-token" {
+				t.Fatal("the delegated clone source and harness environment must receive the minted App token")
+			}
+		})
 	}
 }

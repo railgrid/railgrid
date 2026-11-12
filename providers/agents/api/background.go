@@ -1031,10 +1031,9 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 			executionOwner = claimed.ExecutionOwner
 			defer stop()
 		}
-		// A repository run picked up here never has its clone source any
-		// more — that died with the process that accepted it — so a fresh
-		// dispatch of one fails with the retry message rather than
-		// starting a workspace turn in its place.
+		// Restore the stored repository coordinates. At dispatch, the Agent's
+		// pinned checkout connection reconstructs the clone source and mints
+		// a fresh read-only token.
 		repository = repositoryAttemptFromStored(stored.Repository)
 		harnessSettings = stored.HarnessSettings
 		modelSettings = stored.ModelSettings

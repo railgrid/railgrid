@@ -303,10 +303,10 @@ func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if _, err := ps.ClaimRun(ctx, sc, runID, "r1", now); err != nil {
+	if _, err := ps.ClaimRun(ctx, sc, runID, "", now); err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
-	if _, err := ps.ClaimRun(ctx, sc, runID, "r2", now); err == nil {
+	if _, err := ps.ClaimRun(ctx, sc, runID, "", now); err == nil {
 		t.Fatal("second claim should fail")
 	}
 	runs, err := ps.ListRuns(ctx, sc, 10)
@@ -453,7 +453,7 @@ func TestPostgres_RunClaimRejectsCancelledAndTerminalRuns(t *testing.T) {
 					t.Fatalf("request cancel: %v", err)
 				}
 			}
-			if _, err := ps.ClaimRun(ctx, sc, id, "late-approval", now); err == nil {
+			if _, err := ps.ClaimRun(ctx, sc, id, "", now); err == nil {
 				t.Fatal("ClaimRun succeeded for a cancelled or terminal run")
 			}
 			stored, err := ps.GetRun(ctx, sc, id)

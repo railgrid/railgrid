@@ -30,7 +30,6 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/schema"
-	"github.com/google/uuid"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
@@ -140,7 +139,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		claimed = run
 	} else {
 		var claimErr error
-		claimed, claimErr = s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC(), intent.InboxItem.ID)
+		claimed, claimErr = s.store.ClaimRun(ctx, agentScope, run.ID, newExecutionOwner(s.cfg.ProcessID), time.Now().UTC(), intent.InboxItem.ID)
 		if claimErr != nil {
 			log.Printf("resume: run %s: %v", run.ID, claimErr)
 			if errors.Is(claimErr, store.ErrRunClaimConflict) {
@@ -148,6 +147,15 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 			}
 			return runResult{}, claimErr
 		}
+	}
+	leaseManaged := false
+	if claimed.ExecutionOwner != "" && s.cfg.ProcessID != "" {
+		leased, leaseCtx, stop, err := s.startRunLease(ctx, agentScope, claimed)
+		if err != nil {
+			return runResult{}, err
+		}
+		defer stop()
+		claimed, ctx, leaseManaged = leased, leaseCtx, true
 	}
 	if run.ParentRunID != "" {
 		active, err := s.parentRunAllowsResume(ctx, agentScope, claimed)
@@ -219,7 +227,9 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, inputErr.Error())
 		return runResult{}, inputErr
 	}
-	s.projectRun(ctx, agentScope, claimed)
+	if !leaseManaged {
+		s.projectRun(ctx, agentScope, claimed)
+	}
 	legacyRun := run
 	legacyRun.SessionID = effectiveSessionID(run.SessionID, run.Trigger)
 	s.upgradeLegacyImageCheckpoint(ctx, agentScope, legacyRun, &ck.Engine)
@@ -229,7 +239,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	if err != nil {
 		// The run has been announced Running, so it cannot just be abandoned.
 		log.Printf("resume: run %s: loading agent %s: %v", run.ID, run.AgentName, err)
-		s.closeRunNow(ctx, agentScope, run, store.RunPhaseFailed, fmt.Sprintf("loading agent: %v", err))
+		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, fmt.Sprintf("loading agent: %v", err))
 		return runResult{}, err
 	}
 	if len(attachmentRefs) > 0 {
@@ -249,8 +259,8 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	used := false
 	tr := taskRun{
 		Scope: agentScope, Agent: agent, Task: run.Input, IdempotencyKey: run.IdempotencyKey,
-		ExecutionOwner: claimed.ExecutionOwner,
-		RunID:          run.ID, Attempt: run.Attempt, Backend: run.Backend, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger,
+		ExecutionOwner: claimed.ExecutionOwner, executionLeaseManaged: leaseManaged,
+		RunID: run.ID, Attempt: run.Attempt, Backend: run.Backend, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger,
 		ParentRunID: run.ParentRunID,
 		SourceName:  ck.SourceName, NotifyChannel: ck.NotifyChannel,
 		ArtifactOwner: artifactOwner, ArtifactRefs: artifactRefs,
@@ -296,7 +306,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 			// The turn never started — no budget left, no model to resolve — so
 			// nothing was recorded. Close the run, which is already Running as far
 			// as everyone watching is concerned.
-			s.closeRunNow(ctx, agentScope, run, store.RunPhaseFailed, err.Error())
+			s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, err.Error())
 		}
 		return res, err
 	}

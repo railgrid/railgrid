@@ -494,8 +494,11 @@ For worker checkout, a GitHub App Connection may use
 `config.githubRole: checkout` and a required numeric `config.repositoryID`.
 The minted token is restricted to that repository with only contents/metadata
 read permission. Both reviewers and fixers use this role; Code retains forge
-publication authority. Tokens are renewed at dispatch and never persisted in
-Run input or checkpoints.
+publication authority. Agents mints a fresh token at dispatch and supplies it
+both to the runner's clone source and to the harness as `GH_TOKEN` and
+`GITHUB_TOKEN`. The agent and commands it runs can read these environment
+variables. Run input and checkpoints store repository coordinates without the
+token.
 
 Code-bound delegation reuses the existing native repository attempt. Code's
 observation supplies the admitted repository and current head; the worker's

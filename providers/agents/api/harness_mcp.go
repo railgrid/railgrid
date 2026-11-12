@@ -125,7 +125,12 @@ func (s *Server) harnessSelfMCPServers(ctx context.Context, run taskRun, runID s
 		log.Printf("harness MCP endpoint is invalid; refusing session attachment")
 		return nil
 	}
-	if caps, ok := dispatcher.(capabilityReader); ok {
+	caps, canReadCapabilities := dispatcher.(capabilityReader)
+	if reviewEnabled && !canReadCapabilities {
+		log.Printf("harness review MCP requires runner capability %s", runner.RemoteMCPApprovedToolsCapability)
+		return nil
+	}
+	if canReadCapabilities {
 		c, err := caps.Capabilities(ctx)
 		if err != nil {
 			log.Printf("harness self-configuration: reading runner capabilities for agent %s: %v", agent.Name, err)

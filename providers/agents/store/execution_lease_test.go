@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -34,6 +35,83 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	const oldOwner = "provider-a-incarnation-1"
 	const newOwner = "provider-b-incarnation-1"
+
+	t.Run("successful completion commits the final message with the run", func(t *testing.T) {
+		seed := leaseTestRun(scope, "owned-final", now)
+		if err := st.SaveRun(ctx, scope, seed); err != nil {
+			t.Fatal(err)
+		}
+		leased, err := st.AcquireRunLease(ctx, scope, seed.ID, oldOwner, seed.Attempt, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stale := seed
+		stale.Output = "unowned update"
+		if err := st.SaveRun(ctx, scope, stale); !errors.Is(err, ErrRunLeaseLost) {
+			t.Fatalf("unowned save modified a leased run: %v", err)
+		}
+		leased.Phase = RunPhaseSucceeded
+		final := Message{ID: scope.OrgUUID + "-final", RunID: seed.ID, AgentName: scope.AgentName, SessionID: "owned-final", Role: "assistant", Content: "answer", CreatedAt: now}
+		if ok, err := st.CompleteRun(ctx, scope, leased, newOwner, seed.Attempt, now, final); err != nil || ok {
+			t.Fatalf("foreign owner completed the run: ok=%t err=%v", ok, err)
+		}
+		if _, postgres := st.(*PostgresStore); postgres {
+			// Force a transcript write error after the run update, then verify
+			// the transaction rolled back both sides.
+			invalid := final
+			invalid.Metadata = map[string]any{"unserializable": make(chan int)}
+			if ok, err := st.CompleteRun(ctx, scope, leased, oldOwner, seed.Attempt, now, invalid); err == nil || ok {
+				t.Fatalf("completed with invalid final message: ok=%t err=%v", ok, err)
+			}
+		}
+		current, err := st.GetRun(ctx, scope, seed.ID)
+		if err != nil || current.Phase != RunPhaseRunning {
+			t.Fatalf("failed completion changed phase: %s, %v", current.Phase, err)
+		}
+		if rows, err := st.LoadRecentMessages(ctx, scope, final.SessionID, 10); err != nil || len(rows) != 0 {
+			t.Fatalf("failed completion wrote a transcript row: %+v, %v", rows, err)
+		}
+		if ok, err := st.CompleteRun(ctx, scope, leased, oldOwner, seed.Attempt, now, final); err != nil || !ok {
+			t.Fatalf("could not complete with final message: ok=%t err=%v", ok, err)
+		}
+		current, err = st.GetRun(ctx, scope, seed.ID)
+		if err != nil || current.Phase != RunPhaseSucceeded {
+			t.Fatalf("run did not succeed: %s, %v", current.Phase, err)
+		}
+		if rows, err := st.LoadRecentMessages(ctx, scope, final.SessionID, 10); err != nil || len(rows) != 1 || rows[0].Content != final.Content {
+			t.Fatalf("missing final answer: %+v, %v", rows, err)
+		}
+	})
+
+	t.Run("concurrent child admission respects the delegation cap across agents", func(t *testing.T) {
+		const callers = 8
+		start := make(chan struct{})
+		results := make(chan error, callers)
+		for i := range callers {
+			go func() {
+				<-start
+				childScope := scope
+				childScope.AgentName = fmt.Sprintf("worker-%d", i)
+				results <- st.SaveRun(ctx, childScope, Run{
+					ID: scope.OrgUUID + "-" + childScope.AgentName, AgentName: childScope.AgentName,
+					ParentRunID: "fan-out-parent", Phase: RunPhasePending, Trigger: "delegation", CreatedAt: now, UpdatedAt: now,
+				})
+			}()
+		}
+		close(start)
+		admitted := 0
+		for range callers {
+			switch err := <-results; {
+			case err == nil:
+				admitted++
+			case !errors.Is(err, ErrDelegationLimit):
+				t.Errorf("unexpected child admission error: %v", err)
+			}
+		}
+		if admitted != MaxDelegatedRuns {
+			t.Fatalf("admitted %d children, want %d", admitted, MaxDelegatedRuns)
+		}
+	})
 
 	t.Run("fresh claim and stale admission settlement race atomically", func(t *testing.T) {
 		seed := leaseTestRun(scope, "fresh-claim-versus-expiry", now)
@@ -127,7 +205,7 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 			t.Fatal(err)
 		}
 
-		claimed, err := st.ClaimRun(ctx, scope, seed.ID, "approval-request", now, "approval-item")
+		claimed, err := st.ClaimRun(ctx, scope, seed.ID, oldOwner, now, "approval-item")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -137,10 +215,16 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 		if claimed.StartedAt == nil || !claimed.StartedAt.Equal(claimed.UpdatedAt) {
 			t.Fatalf("approval start time = %v; want monotonic claim revision %v", claimed.StartedAt, claimed.UpdatedAt)
 		}
-		if claimed.ExecutionOwner != "" || !claimed.ExecutionLeaseAt.IsZero() {
-			t.Fatalf("approval claim retained parked lease: owner=%q lease=%v", claimed.ExecutionOwner, claimed.ExecutionLeaseAt)
+		if claimed.ExecutionOwner != oldOwner || !claimed.ExecutionLeaseAt.Equal(claimed.UpdatedAt) {
+			t.Fatalf("approval claim did not take a lease: owner=%q lease=%v", claimed.ExecutionOwner, claimed.ExecutionLeaseAt)
 		}
-		if _, err := st.ClaimRun(ctx, scope, seed.ID, "approval-request", now.Add(time.Second), "approval-item"); !errors.Is(err, ErrRunClaimConflict) {
+		if _, err := st.ClaimRecovery(ctx, scope, seed.ID, claimed.UpdatedAt, newOwner, claimed.UpdatedAt.Add(time.Second)); !errors.Is(err, ErrRecoveryClaimStale) {
+			t.Fatalf("recovery stole the approval claim before dispatch: %v", err)
+		}
+		if _, err := st.AcquireRunLease(ctx, scope, seed.ID, oldOwner, claimed.Attempt, claimed.UpdatedAt.Add(time.Second)); err != nil {
+			t.Fatalf("approval owner could not start dispatch: %v", err)
+		}
+		if _, err := st.ClaimRun(ctx, scope, seed.ID, "", now.Add(time.Second), "approval-item"); !errors.Is(err, ErrRunClaimConflict) {
 			t.Fatalf("approval was claimed twice: %v", err)
 		}
 	})
@@ -294,7 +378,7 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 			t.Fatalf("park run under current lease: ok=%t err=%v", ok, err)
 		}
 
-		claimed, err := st.ClaimRun(ctx, scope, seed.ID, "approval-request", now.Add(2*time.Second), "approval-item")
+		claimed, err := st.ClaimRun(ctx, scope, seed.ID, "", now.Add(2*time.Second), "approval-item")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -450,14 +534,26 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 		finished := now.Add(3 * time.Second)
 		canceled.FinishedAt = &finished
 		canceled.UpdatedAt = finished
-		if ok, err := st.SaveRunOwned(ctx, guardScope, canceled, oldOwner, seed.Attempt, finished); err != nil || !ok {
-			t.Fatalf("current owner could not settle canceled run: ok=%t err=%v", ok, err)
+		// Another replica settles the cancellation before the executor receives
+		// its final token count. The executor can report that count repeatedly.
+		if err := st.SaveRun(ctx, guardScope, canceled); err != nil {
+			t.Fatalf("remote replica could not settle canceled run: %v", err)
+		}
+		finalUsage := backend.Cost{Tokens: backend.Tokens{InputTokens: 15, OutputTokens: 2}, CostMicros: 3}
+		if _, ok, err := st.RecordRunUsageOwned(ctx, guardScope, seed.ID, newOwner, seed.Attempt, finalUsage, finished, 24*time.Hour); err != nil || ok {
+			t.Fatalf("foreign owner could bill a canceled run: ok=%t err=%v", ok, err)
+		}
+		for range 2 {
+			usage, ok, err := st.RecordRunUsageOwned(ctx, guardScope, seed.ID, oldOwner, seed.Attempt, finalUsage, finished, 24*time.Hour)
+			if err != nil || !ok || usage.InputTokens != 15 || usage.OutputTokens != 2 || usage.USDMicros != 3 {
+				t.Fatalf("final canceled usage = %+v, ok=%t err=%v", usage, ok, err)
+			}
 		}
 		settled, err := st.GetRun(ctx, guardScope, seed.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if settled.Phase != RunPhaseAborted || settled.InputTokens != 10 {
+		if settled.Phase != RunPhaseAborted || settled.InputTokens != 15 {
 			t.Fatalf("canceled run settled as phase %q with %d input tokens", settled.Phase, settled.InputTokens)
 		}
 
@@ -477,7 +573,7 @@ func testRunExecutionLeaseContract(t *testing.T, st Store, scope Scope) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if usage.InputTokens != 10 || usage.OutputTokens != 0 || usage.USDMicros != 0 {
+		if usage.InputTokens != 15 || usage.OutputTokens != 2 || usage.USDMicros != 3 {
 			t.Fatalf("expired owner changed usage: %+v", usage)
 		}
 	})

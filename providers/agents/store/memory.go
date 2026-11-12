@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
 )
 
@@ -644,14 +645,18 @@ func (m *MemoryStore) AppendMessage(_ context.Context, scope Scope, msg Message)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
-	k := sessionKey(scope, msg.SessionID)
 	if msg.CreatedAt.IsZero() {
 		return fmt.Errorf("message CreatedAt is required")
 	}
+	m.appendMessageLocked(scope, msg)
+	return nil
+}
+
+func (m *MemoryStore) appendMessageLocked(scope Scope, msg Message) {
+	k := sessionKey(scope, msg.SessionID)
 	m.messageSequence++
 	msg.Sequence = m.messageSequence
 	m.messages[k] = append(m.messages[k], msg)
-	return nil
 }
 
 func cloneSessionSummary(s SessionSummary) SessionSummary {
@@ -1014,11 +1019,24 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
 	if current, ok := m.runs[tenantKey(scope)+"|"+run.ID]; ok {
+		if current.AgentName != run.AgentName {
+			return ErrRunClaimConflict
+		}
 		if terminalRunPhase(current.Phase) && current.Phase != run.Phase {
 			return ErrRunAlreadySettled
 		}
 		if current.ExecutionOwner != "" && (!current.CancelRequested || run.Phase != RunPhaseAborted) {
 			return ErrRunLeaseLost
+		}
+	} else if run.Phase == RunPhasePending && run.ParentRunID != "" && run.Trigger == agentsv1alpha1.RunTriggerDelegation {
+		children := 0
+		for key, existing := range m.runs {
+			if hasPrefix(key, tenantKey(scope)+"|") && existing.ParentRunID == run.ParentRunID && existing.Trigger == run.Trigger {
+				children++
+				if children >= MaxDelegatedRuns {
+					return ErrDelegationLimit
+				}
+			}
 		}
 	}
 	return m.saveRunLocked(scope, run)
@@ -1082,6 +1100,20 @@ func (m *MemoryStore) FailPendingRun(_ context.Context, scope Scope, id string, 
 }
 
 func (m *MemoryStore) SaveRunOwned(_ context.Context, scope Scope, run Run, owner string, attempt int, now time.Time) (bool, error) {
+	if owner == "" {
+		return false, fmt.Errorf("owned run save requires an owner")
+	}
+	return m.saveRunningRun(scope, run, owner, attempt, now, nil)
+}
+
+func (m *MemoryStore) CompleteRun(_ context.Context, scope Scope, run Run, owner string, attempt int, now time.Time, final Message) (bool, error) {
+	if err := validateRunCompletion(run, final); err != nil {
+		return false, err
+	}
+	return m.saveRunningRun(scope, run, owner, attempt, now, &final)
+}
+
+func (m *MemoryStore) saveRunningRun(scope Scope, run Run, owner string, attempt int, now time.Time, final *Message) (bool, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.withAgent(); err != nil {
 		return false, err
@@ -1094,7 +1126,9 @@ func (m *MemoryStore) SaveRunOwned(_ context.Context, scope Scope, run Run, owne
 	if run.ID == "" {
 		return false, fmt.Errorf("run ID is required")
 	}
-	if !ok || current.Phase != RunPhaseRunning || (current.CancelRequested && run.Phase != RunPhaseAborted) || current.ExecutionOwner != owner || current.Attempt != attempt || run.Attempt != attempt || current.ExecutionLeaseAt.IsZero() || now.Sub(current.ExecutionLeaseAt) >= RunLeaseDuration {
+	leaseValid := current.ExecutionLeaseAt.IsZero() && owner == "" ||
+		!current.ExecutionLeaseAt.IsZero() && now.Sub(current.ExecutionLeaseAt) < RunLeaseDuration
+	if !ok || current.AgentName != scope.AgentName || current.Phase != RunPhaseRunning || (current.CancelRequested && run.Phase != RunPhaseAborted) || current.ExecutionOwner != owner || current.Attempt != attempt || run.Attempt != attempt || !leaseValid {
 		return false, nil
 	}
 	run.InputTokens = max(run.InputTokens, current.InputTokens)
@@ -1114,6 +1148,9 @@ func (m *MemoryStore) SaveRunOwned(_ context.Context, scope Scope, run Run, owne
 		updated.StartedAt = &started
 	}
 	m.runs[key] = updated
+	if final != nil {
+		m.appendMessageLocked(scope, *final)
+	}
 	return true, nil
 }
 
@@ -1133,6 +1170,9 @@ func (m *MemoryStore) saveRunLocked(scope Scope, run Run) error {
 		if terminalRunPhase(old.Phase) && run.Phase != old.Phase {
 			return ErrRunAlreadySettled
 		}
+		run.InputTokens = max(run.InputTokens, old.InputTokens)
+		run.OutputTokens = max(run.OutputTokens, old.OutputTokens)
+		run.USDMicros = max(run.USDMicros, old.USDMicros)
 		run.progress = old.progress
 		run.DelegatedUsageRolledUp = run.DelegatedUsageRolledUp || old.DelegatedUsageRolledUp
 		run.Attempt = max(run.Attempt, old.Attempt)
@@ -1263,7 +1303,7 @@ func (m *MemoryStore) UpdateRunCheckpoint(_ context.Context, scope Scope, id, ow
 	return true, nil
 }
 
-func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID string, now time.Time, inboxID ...string) (Run, error) {
+func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, owner string, now time.Time, inboxID ...string) (Run, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {
 		return Run{}, err
@@ -1292,10 +1332,11 @@ func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID str
 		now = run.UpdatedAt.Add(time.Microsecond)
 	}
 	run.UpdatedAt = now.UTC()
-	// A parked approval no longer owns the active execution lease. The process
-	// claiming the resumed turn acquires a fresh lease before dispatch.
-	run.ExecutionOwner = ""
+	run.ExecutionOwner = owner
 	run.ExecutionLeaseAt = time.Time{}
+	if owner != "" {
+		run.ExecutionLeaseAt = run.UpdatedAt
+	}
 	if run.StartedAt == nil {
 		t := now.UTC()
 		run.StartedAt = &t
@@ -1902,8 +1943,9 @@ func (m *MemoryStore) RecordRunUsageOwned(_ context.Context, scope Scope, runID,
 	scope = m.normalizeScopeLocked(scope)
 	runKey := tenantKey(scope) + "|" + runID
 	run, ok := m.runs[runKey]
-	if !ok || run.AgentName != scope.AgentName || run.Phase != RunPhaseRunning ||
-		run.ExecutionOwner != owner || run.Attempt != attempt || run.ExecutionLeaseAt.IsZero() || now.Sub(run.ExecutionLeaseAt) >= RunLeaseDuration {
+	active := run.Phase == RunPhaseRunning && !run.ExecutionLeaseAt.IsZero() && now.Sub(run.ExecutionLeaseAt) < RunLeaseDuration
+	cancelled := run.Phase == RunPhaseAborted && run.CancelRequested
+	if !ok || run.AgentName != scope.AgentName || run.ExecutionOwner != owner || run.Attempt != attempt || (!active && !cancelled) {
 		return Usage{}, false, nil
 	}
 

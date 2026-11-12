@@ -479,7 +479,7 @@ func TestQuestionGroupResolution(t *testing.T) {
 	if err := s.store.SaveRun(t.Context(), scope, run); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.store.ClaimRun(t.Context(), scope, run.ID, "retry", time.Now(), item.ID); err == nil {
+	if _, err := s.store.ClaimRun(t.Context(), scope, run.ID, "", time.Now(), item.ID); err == nil {
 		t.Fatal("stale answer claimed a different checkpoint")
 	}
 	if _, err := s.resolveInboxDecision(t.Context(), scope, item.ID, store.InboxStateAnswered, "second reply", time.Now()); !errors.Is(err, store.ErrInboxAlreadyResolved) {

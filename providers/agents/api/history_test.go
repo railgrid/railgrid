@@ -205,7 +205,7 @@ func TestToolResultPersistenceFailureStopsRunBeforeNextToolAndModel(t *testing.T
 	}
 }
 
-func TestFinalTranscriptPersistenceFailureLeavesRunResultAvailable(t *testing.T) {
+func TestFinalTranscriptPersistenceFailureFailsRun(t *testing.T) {
 	f := newCompactFixture(t, 0, 0, "gpt-4o")
 	baseStore := f.s.store
 	failingStore := &failRoleAppendStore{Store: baseStore, failRole: "assistant"}
@@ -214,25 +214,25 @@ func TestFinalTranscriptPersistenceFailureLeavesRunResultAvailable(t *testing.T)
 		Creds: f.creds, CR: fakeCR{}, Scope: f.scope, Agent: f.agent,
 		SessionID: "chat", Task: "answer once", Trigger: agentsv1alpha1.RunTriggerChat,
 	})
-	if err != nil {
-		t.Fatalf("executeTask error = %v, want the durable run result to remain available", err)
+	if err == nil || !strings.Contains(err.Error(), "injected transcript append failure") {
+		t.Fatalf("executeTask error = %v, want the transcript write failure", err)
 	}
-	if result.Phase != store.RunPhaseSucceeded || result.RunID == "" || result.FinalContent == "" {
-		t.Fatalf("result = %#v, want a succeeded run with its final content", result)
+	if result.Phase != store.RunPhaseFailed || result.RunID == "" {
+		t.Fatalf("result = %#v, want a failed run", result)
 	}
 	run, err := baseStore.GetRun(context.Background(), f.scope, result.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Phase != store.RunPhaseSucceeded || run.Output == "" {
-		t.Fatalf("stored run = phase %s output %q, want a succeeded durable result", run.Phase, run.Output)
+	if run.Phase != store.RunPhaseFailed || run.Output != "" {
+		t.Fatalf("stored run = phase %s output %q, want a failed run without a result", run.Phase, run.Output)
 	}
 	rows, err := baseStore.LoadRecentMessages(context.Background(), f.scope, "chat", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, row := range rows {
-		if row.RunID == result.RunID && row.Metadata["kind"] == "final" {
+		if row.RunID == result.RunID && row.Metadata["turnPhase"] == "final" {
 			t.Fatalf("injected transcript failure unexpectedly persisted final row: %#v", row)
 		}
 	}
@@ -636,6 +636,14 @@ func (s *failRoleAppendStore) AppendMessage(ctx context.Context, scope store.Sco
 		return errors.New("injected transcript append failure")
 	}
 	return s.Store.AppendMessage(ctx, scope, message)
+}
+
+func (s *failRoleAppendStore) CompleteRun(ctx context.Context, scope store.Scope, run store.Run, owner string, attempt int, now time.Time, message store.Message) (bool, error) {
+	if message.Role == s.failRole && !s.failed {
+		s.failed = true
+		return false, errors.New("injected transcript append failure")
+	}
+	return s.Store.CompleteRun(ctx, scope, run, owner, attempt, now, message)
 }
 
 type countingScheduleCR struct {

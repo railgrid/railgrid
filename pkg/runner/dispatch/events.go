@@ -634,7 +634,7 @@ func toolItem(data json.RawMessage) (harnessItem, bool) {
 			Text string `json:"text"`
 		} `json:"content"`
 	}
-	if resultText == "" && len(rec.Item.Result) > 0 && string(rec.Item.Result) != "null" {
+	if len(rec.Item.Result) > 0 && string(rec.Item.Result) != "null" {
 		if json.Unmarshal(rec.Item.Result, &mcpResult) == nil {
 			var chunks []string
 			for _, content := range mcpResult.Content {
@@ -642,7 +642,9 @@ func toolItem(data json.RawMessage) (harnessItem, bool) {
 					chunks = append(chunks, content.Text)
 				}
 			}
-			resultText = strings.Join(chunks, "\n")
+			if resultText == "" {
+				resultText = strings.Join(chunks, "\n")
+			}
 		}
 		if resultText == "" {
 			resultText = string(rec.Item.Result)
@@ -657,6 +659,7 @@ func toolItem(data json.RawMessage) (harnessItem, bool) {
 		Name:     firstNonEmpty(rec.Item.Name, rec.Item.Tool, rec.Item.Type),
 		Args:     firstNonBlank(rec.Item.Command, arguments),
 		Result:   firstNonBlank(rec.Item.AggregatedOutput, rec.Item.Output, resultText),
+		Done:     mcpResult.IsError,
 		Failed:   mcpResult.IsError,
 		Duration: durationFromMillis(rec.Item.DurationMS),
 	}

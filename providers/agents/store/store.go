@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"strings"
 	"time"
 
@@ -51,6 +52,12 @@ var ErrRunLeaseLost = fmt.Errorf("run execution lease was lost")
 // ErrRunCancellationRequested means this lease's run was explicitly cancelled.
 // The executor should stop remote work rather than treat it as a recovery handoff.
 var ErrRunCancellationRequested = errors.New("run cancellation was requested")
+
+// MaxDelegatedRuns bounds direct child admissions per parent run.
+const MaxDelegatedRuns = 3
+
+// ErrDelegationLimit means the parent already admitted its maximum children.
+var ErrDelegationLimit = fmt.Errorf("delegation fan-out limit (%d per run) reached", MaxDelegatedRuns)
 
 // RunLeaseDuration is the period after which an execution lease may be taken
 // over if its owner has stopped renewing it.
@@ -320,7 +327,13 @@ type RunArtifact struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// validate checks the facts an artifact row must carry.
+const (
+	StructuredResultArtifact = "structured-result.json"
+	MaxStructuredResultBytes = 32 << 10
+	maxRunArtifactBytes      = 32 << 20
+)
+
+// validate checks the facts and limits an artifact row must carry.
 func (a RunArtifact) validate() error {
 	switch {
 	case strings.TrimSpace(a.RunID) == "":
@@ -331,6 +344,27 @@ func (a RunArtifact) validate() error {
 		return fmt.Errorf("run artifact needs a digest")
 	case a.Size != int64(len(a.Data)):
 		return fmt.Errorf("run artifact size %d does not match its %d data bytes", a.Size, len(a.Data))
+	case a.Size > maxRunArtifactBytes:
+		return fmt.Errorf("run artifact exceeds the %d-byte limit", maxRunArtifactBytes)
+	}
+	if a.Name == StructuredResultArtifact && (a.Size > MaxStructuredResultBytes || a.MediaType != "application/json") {
+		return fmt.Errorf("structured run result must be application/json and at most %d bytes", MaxStructuredResultBytes)
+	}
+	if len(a.MediaType) > 255 {
+		return fmt.Errorf("run artifact media type exceeds 255 bytes")
+	}
+	if a.MediaType != "" {
+		mediaType, _, err := mime.ParseMediaType(a.MediaType)
+		if err != nil || !strings.Contains(mediaType, "/") {
+			return fmt.Errorf("invalid run artifact media type %q", a.MediaType)
+		}
+	}
+	return nil
+}
+
+func validateRunCompletion(run Run, final Message) error {
+	if run.Phase != RunPhaseSucceeded || final.RunID != run.ID || final.Role != "assistant" || final.ID == "" || final.CreatedAt.IsZero() {
+		return fmt.Errorf("run completion requires a succeeded run and its final assistant message")
 	}
 	return nil
 }
@@ -953,8 +987,9 @@ type Store interface {
 	// ClaimRun atomically moves a pending/resumable run to Running. A canceled or
 	// terminal run cannot be claimed, so an approval racing with cancel cannot
 	// revive work after the cancel flag or terminal phase is recorded. When
-	// supplied, inboxID must match the parked checkpoint atomically.
-	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time, inboxID ...string) (Run, error)
+	// supplied, inboxID must match the parked checkpoint atomically. A nonempty
+	// owner takes a fresh execution lease in the same transition.
+	ClaimRun(ctx context.Context, scope Scope, id, owner string, now time.Time, inboxID ...string) (Run, error)
 	// ClaimRecovery claims exactly the observed Running revision and increments its
 	// recovery attempt atomically. It also checks that the execution lease expired,
 	// then transfers the lease to owner. Stale, cancelled and terminal runs are rejected.
@@ -971,6 +1006,9 @@ type Store interface {
 	// SaveRunOwned atomically persists an execution transition only while owner
 	// still owns the unexpired epoch. Lease columns are preserved.
 	SaveRunOwned(ctx context.Context, scope Scope, run Run, owner string, attempt int, now time.Time) (bool, error)
+	// CompleteRun commits the fenced transition to Succeeded and the final
+	// transcript message together. An empty owner matches only an unleased run.
+	CompleteRun(ctx context.Context, scope Scope, run Run, owner string, attempt int, now time.Time, final Message) (bool, error)
 	// RequestCancel durably asks a run to stop: it sets CancelRequested (and
 	// the time of the first request) on the row without touching anything
 	// else, so it cannot race a concurrent checkpoint SaveRun. Idempotent; a
@@ -1052,7 +1090,8 @@ type Store interface {
 	DeleteWebhookDeliveries(ctx context.Context, scope Scope, webhookUID string) error
 	AddUsage(ctx context.Context, scope Scope, agentName string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, error)
 	// RecordRunUsageOwned monotonically records one execution's cumulative usage
-	// and bills only the increase, atomically fenced by its live run lease.
+	// and bills only the increase. The same lease owner may finish accounting
+	// after a requested abort, until it releases ownership.
 	RecordRunUsageOwned(ctx context.Context, scope Scope, runID, owner string, attempt int, total backend.Cost, now time.Time, window time.Duration) (Usage, bool, error)
 	// AddDelegatedUsage charges one child run to its parent Agent exactly once.
 	// The child Run's parent link and durable rollup marker are updated in the

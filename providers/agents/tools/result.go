@@ -20,7 +20,7 @@ import (
 )
 
 const ResultContractPrefix = "railgrid-result-contract:"
-const StructuredResultArtifact = "structured-result.json"
+const StructuredResultArtifact = store.StructuredResultArtifact
 
 // ResultContract is consumer-owned configuration, not an Agents workflow.
 // Its schema and tool name travel in the immutable invocation input.
@@ -54,7 +54,7 @@ func Result(d Deps, input string) []engine.Tool {
 			return nil
 		}
 		return []engine.Tool{{Name: contract.Name, Desc: contract.Description, JSONSchema: advertised, ReplaySafe: true, Exec: func(ctx context.Context, args string) (string, error) {
-			if len(args) > 32768 {
+			if len(args) > store.MaxStructuredResultBytes {
 				return "", fmt.Errorf("structured result exceeds limit")
 			}
 			var value any

@@ -269,7 +269,7 @@ func (s *Server) appendTurnTerminal(ctx context.Context, scope store.Scope, run 
 	return metadata
 }
 
-func (s *Server) appendTurnFinal(ctx context.Context, scope store.Scope, run taskRun, sessionID string, startedAt, createdAt time.Time, tracker *turnProgressTracker, content string) error {
+func turnFinalMessage(run taskRun, sessionID string, startedAt, createdAt time.Time, tracker *turnProgressTracker, content string) store.Message {
 	if tracker == nil {
 		tracker = newTurnProgressTracker(0)
 	}
@@ -281,10 +281,10 @@ func (s *Server) appendTurnFinal(ctx context.Context, scope store.Scope, run tas
 	if tracker.continuation != nil {
 		metadata[backend.ContinuationMetadataEnvelopeKey] = tracker.continuation.Clone()
 	}
-	return s.appendProgressMessage(ctx, scope, store.Message{
+	return store.Message{
 		ID: uuid.NewString(), AgentName: agentName, SessionID: sessionID, RunID: run.RunID,
 		Role: "assistant", Content: safeTruncate(content, maxStoredOutput),
 		Metadata:  metadata,
 		CreatedAt: createdAt,
-	})
+	}
 }

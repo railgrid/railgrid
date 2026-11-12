@@ -597,8 +597,8 @@ type taskRun struct {
 	// Repository, when non-nil, makes this a REPOSITORY attempt on a
 	// harness-backed agent (see api/repository.go): a fresh clone of an approved
 	// commit, no history, no harness session, a Git result on completion. The
-	// clone source it carries is dispatch data — held here for the turn and
-	// never persisted; a run rebuilt from its record carries none.
+	// clone source is dispatch data. Fresh dispatches of rebuilt runs
+	// populate it from the pinned checkout connection.
 	Repository      *repositoryAttempt
 	ModelSettings   *store.ModelSettings
 	HarnessSettings *store.HarnessSettings
@@ -796,7 +796,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	run.RunID = runID
 	releaseLease := func() {}
 	defer func() { releaseLease() }()
-	if cont != nil && s.cfg.ProcessID != "" {
+	if cont != nil && s.cfg.ProcessID != "" && !run.executionLeaseManaged {
 		stored, err := s.store.GetRun(ctx, scope, runID)
 		if err != nil {
 			return runResult{RunID: runID, Phase: store.RunPhaseRunning}, fmt.Errorf("reading run before taking its execution lease: %w", err)
@@ -1176,11 +1176,8 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		out, err = b.Continue(ctx, brun, answer, sink)
 	}
 	sink.progress.flushPending()
-	if leaseWasLost(ctx) {
-		return runResult{RunID: runID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
-	}
 	end := time.Now().UTC()
-	if harnessT != nil && run.Repository == nil {
+	if harnessT != nil && run.Repository == nil && !leaseWasLost(ctx) {
 		// The next chat reads the session row, not this run's display metadata.
 		// Save the receipt's session even on a park or cancellation so a later
 		// turn can resume the actual Codex thread instead of replaying history
@@ -1188,9 +1185,6 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		if sessionErr := s.persistHarnessTurn(ctx, scope, harnessT, brun, out, end); sessionErr != nil {
 			err = errors.Join(err, sessionErr)
 		}
-	}
-	if leaseWasLost(ctx) {
-		return runResult{RunID: runID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
 	}
 	// A backend can return useful usage together with an error (for example, a
 	// runner event stream can fail after reporting token usage). Bill that work
@@ -1219,7 +1213,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			out.Usage.Billed.InputTokens, out.Usage.Billed.OutputTokens, out.Usage.Billed.CostMicros, end, budgetWindow(agent.Spec.Budget))
 	}
 	cancelUsage()
-	if errors.Is(usageErr, store.ErrRunLeaseLost) {
+	if leaseWasLost(ctx) || errors.Is(usageErr, store.ErrRunLeaseLost) {
 		return runResult{RunID: runID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
 	}
 	if usageErr != nil {
@@ -1315,19 +1309,17 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	// of a spawned worker, GET /api/runs/{id}) finds the result where it found the
 	// phase instead of having to locate the session and dig out its last message.
 	persistCtx, cancelPersist := boundedPersistContext(ctx)
-	if !s.finishRunOwned(persistCtx, scope, runID, runOutcome{
+	final := turnFinalMessage(run, sessionID, startedAt, end, tracker, finalContent)
+	if err := s.finishRunWithOwner(persistCtx, scope, runID, runOutcome{
 		Phase: store.RunPhaseSucceeded, Usage: out.Usage.Total.Tokens, CostMicros: out.Usage.Total.CostMicros,
 		Output: out.Output, Sources: out.Sources, WorkedDurationMS: tracker.workedDurationMS(),
 		Harness: harnessT, Result: runResultFor(out.Result),
-	}, end, run.ExecutionOwner, run.Attempt) {
+	}, end, run.ExecutionOwner, run.Attempt, &final); err != nil {
 		cancelPersist()
-		return runResult{RunID: runID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
-	}
-	// The final transcript row is a terminal side effect. Write it only after
-	// this executor wins the owned terminal CAS so a stale lease cannot append
-	// an answer after a newer owner has taken over the run.
-	if werr := s.appendTurnFinal(persistCtx, scope, run, sessionID, startedAt, end, tracker, finalContent); werr != nil {
-		log.Printf("run %s: persisting final assistant message after success: %v", runID, werr)
+		if errors.Is(err, store.ErrRunLeaseLost) || errors.Is(err, store.ErrRunAlreadySettled) {
+			return runResult{RunID: runID, Phase: store.RunPhaseRunning}, store.ErrRunLeaseLost
+		}
+		return finishFailedTurn(fmt.Errorf("completing run: %w", err))
 	}
 	s.recordAgentRun(persistCtx, run.CR, agent, end, &window)
 	cancelPersist()
@@ -1665,8 +1657,8 @@ func (s *Server) failBeforeStart(ctx context.Context, scope store.Scope, run tas
 // SSE stream) asked to see.
 //
 // Complete model responses that led to a tool call are persisted immediately as
-// commentary; the final response is persisted by the lifecycle after the run
-// reaches a terminal phase, so it can carry authoritative timing.
+// commentary. The lifecycle persists the final response with the successful
+// run transition so it carries authoritative timing.
 type turnSink struct {
 	s           *Server
 	ctx         context.Context
@@ -1879,7 +1871,7 @@ type runOutcome struct {
 // timestamps. Active executors use finishRunOwned so a stale epoch cannot
 // settle a run after recovery transferred its lease.
 func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time) bool {
-	return s.finishRunWithOwner(ctx, scope, runID, out, end, "", 0)
+	return s.finishRunWithOwner(ctx, scope, runID, out, end, "", 0, nil) == nil
 }
 
 func (s *Server) finishRunOwned(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time, owner string, attempt int) bool {
@@ -1889,13 +1881,13 @@ func (s *Server) finishRunOwned(ctx context.Context, scope store.Scope, runID st
 		}
 		return s.finishRun(ctx, scope, runID, out, end)
 	}
-	return s.finishRunWithOwner(ctx, scope, runID, out, end, owner, attempt)
+	return s.finishRunWithOwner(ctx, scope, runID, out, end, owner, attempt, nil) == nil
 }
 
-func (s *Server) finishRunWithOwner(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time, owner string, attempt int) bool {
+func (s *Server) finishRunWithOwner(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time, owner string, attempt int, final *store.Message) error {
 	stored, err := s.store.GetRun(ctx, scope, runID)
 	if err != nil {
-		return false
+		return err
 	}
 	parked := stored
 	parked.Checkpoint = append([]byte(nil), stored.Checkpoint...)
@@ -1932,13 +1924,25 @@ func (s *Server) finishRunWithOwner(ctx context.Context, scope store.Scope, runI
 	}
 	stored.UpdatedAt = end
 	stored.FinishedAt = &end
-	if owner != "" {
+	if final != nil {
+		updated, err := s.store.CompleteRun(ctx, scope, stored, owner, attempt, time.Now().UTC(), *final)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return store.ErrRunLeaseLost
+		}
+		s.projectRun(ctx, scope, stored)
+	} else if owner != "" {
 		updated, err := s.saveRunOwned(ctx, scope, stored, owner, attempt)
-		if err != nil || !updated {
-			return false
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return store.ErrRunLeaseLost
 		}
 	} else if err := s.saveRun(ctx, scope, stored); err != nil {
-		return false
+		return err
 	}
 	s.closeParkedInboxItem(ctx, scope, parked, out.Phase, end)
 	if isTerminalRunPhase(stored.Phase) && ctx.Value(descendantReconcileContextKey{}) != true {
@@ -1951,7 +1955,7 @@ func (s *Server) finishRunWithOwner(ctx context.Context, scope store.Scope, runI
 	// The runner slot this run held is free. Give it to the oldest run waiting
 	// in the queue rather than leaving it idle until that run's own wake-up.
 	s.wakeNextQueued(ctx, scope, stored.AgentName, end)
-	return true
+	return nil
 }
 
 // closeParkedInboxItem closes the inbox item a run was parked on when the run

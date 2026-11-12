@@ -759,6 +759,8 @@ func (s *Server) harnessEnvironmentForRepository(ctx context.Context, run taskRu
 			return nil, fmt.Errorf("GitHub App connection %q: %w", connName, err)
 		}
 		if repositoryID != "" && run.Repository != nil {
+			// Use the same repository-scoped token for checkout and the
+			// environment below, where harness commands can read it.
 			run.Repository.Source = &runner.RepositorySource{RemoteURL: repositoryURL, Username: "x-access-token", Token: token}
 		}
 	} else if kind := conn.Spec.Config["credentialType"]; kind != "" {

@@ -148,6 +148,24 @@ func TestHarnessSelfMCPServersAttachOnlyWhenTheyCanWork(t *testing.T) {
 	}
 }
 
+func TestHarnessReviewRequiresExplicitRunnerCapability(t *testing.T) {
+	f := newHarnessMCPFixture(t, nil)
+	agent := f.agent(t)
+	agent.Spec.Tools.Background.Families = []string{"code"}
+	run := taskRun{
+		Agent: agent, Scope: f.scope, ClusterID: "tenant", Trigger: agentsv1alpha1.RunTriggerDelegation,
+		Task: `railgrid-code-scope:{"reviewOnly":true,"proof":"signed","eventUID":"event","pullRequest":"pr","pullRequestUID":"uid"}`,
+	}
+	for _, dispatcher := range []any{struct{}{}, fakeCapabilities{verification: []string{runner.RemoteMCPCapability}}} {
+		if got := f.server.harnessSelfMCPServers(t.Context(), run, "run", dispatcher); len(got) != 0 {
+			t.Fatal("attached an approved tool to a runner without the capability")
+		}
+	}
+	if got := f.server.harnessSelfMCPServers(t.Context(), run, "run", currentRunner); len(got) != 1 || len(got[0].ApprovedTools) != 1 {
+		t.Fatal("did not attach the approved tool to a capable runner")
+	}
+}
+
 func TestHarnessSessionEditsItsOwnAgent(t *testing.T) {
 	f := newHarnessMCPFixture(t, &agentsv1alpha1.AgentSelfConfiguration{Enabled: true})
 	servers := f.mint(t, agentsv1alpha1.RunTriggerChat)

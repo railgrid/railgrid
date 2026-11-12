@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
 
 	// Registers the "postgres" database/sql driver that OpenPostgres names. The
@@ -56,6 +57,18 @@ func (m *scopedMutation) commit() error {
 		return fmt.Errorf("commit scoped mutation: %w", err)
 	}
 	m.tx = nil
+	return nil
+}
+
+func (m *scopedMutation) ensureTransaction(ctx context.Context, db *sql.DB) error {
+	if m.tx != nil {
+		return nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	m.tx, m.executor = tx, tx
 	return nil
 }
 
@@ -201,6 +214,8 @@ var agentsSchema = []string{
 	`DROP INDEX IF EXISTS agents_runs_idempotency_idx`,
 	`CREATE INDEX IF NOT EXISTS agents_runs_scope_idx
 		ON agents_runs (org_uuid, workspace_uuid, created_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS agents_runs_parent_idx
+		ON agents_runs (org_uuid, workspace_uuid, parent_run_id, created_at DESC, id DESC) WHERE parent_run_id <> ''`,
 	`CREATE TABLE IF NOT EXISTS agents_memories (
 		id TEXT PRIMARY KEY,
 		org_uuid TEXT NOT NULL,
@@ -476,7 +491,22 @@ func (p *PostgresStore) AppendMessage(ctx context.Context, scope Scope, msg Mess
 		return err
 	}
 	defer mutation.rollback()
-	scope = mutation.scope
+	if err := mutation.ensureTransaction(ctx, p.db); err != nil {
+		return err
+	}
+	// Serialize appends until commit so an older sequence cannot appear behind
+	// a checkpoint boundary captured by a concurrent turn.
+	if err := lockTranscriptSession(ctx, mutation.executor, mutation.scope, msg.SessionID); err != nil {
+		return err
+	}
+	if err := appendMessage(ctx, mutation, msg); err != nil {
+		return err
+	}
+	return mutation.commit()
+}
+
+func appendMessage(ctx context.Context, mutation *scopedMutation, msg Message) error {
+	scope := mutation.scope
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
@@ -487,29 +517,13 @@ func (p *PostgresStore) AppendMessage(ctx context.Context, scope Scope, msg Mess
 	if err != nil {
 		return err
 	}
-	if mutation.tx == nil {
-		tx, err := p.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		mutation.tx, mutation.executor = tx, tx
-	}
-	// Serialize appends within a session until commit. BIGSERIAL values are
-	// allocated before commit; this lock prevents a late-committing older value
-	// from appearing behind a checkpoint boundary captured by another turn.
-	if err := lockTranscriptSession(ctx, mutation.executor, scope, msg.SessionID); err != nil {
-		return err
-	}
 	_, err = mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_messages
 			(id, org_uuid, workspace_uuid, agent_name, session_id, run_id, role, content, content_encrypted, content_key_id, metadata, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		msg.ID, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, msg.SessionID, msg.RunID,
 		msg.Role, msg.Content, msg.ContentEncrypted, msg.ContentKeyID, meta, msg.CreatedAt.UTC())
-	if err != nil {
-		return err
-	}
-	return mutation.commit()
+	return err
 }
 
 func (p *PostgresStore) ListMessages(ctx context.Context, scope Scope, sessionID string, limit int, cursor string) (Page, error) {
@@ -1092,6 +1106,11 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 	if run.ID == "" {
 		return fmt.Errorf("run ID is required")
 	}
+	if run.Phase == RunPhasePending && run.ParentRunID != "" && run.Trigger == agentsv1alpha1.RunTriggerDelegation {
+		if err := p.checkDelegationAdmission(ctx, mutation, run); err != nil {
+			return err
+		}
+	}
 	sources, err := marshalJSONB(run.Sources)
 	if err != nil {
 		return err
@@ -1137,8 +1156,8 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 		phase=EXCLUDED.phase, attempt=GREATEST(agents_runs.attempt, EXCLUDED.attempt), message=EXCLUDED.message,
 			retries=EXCLUDED.retries, retry_at=EXCLUDED.retry_at,
 			output=EXCLUDED.output, sources=EXCLUDED.sources, delivery=EXCLUDED.delivery,
-			checkpoint=EXCLUDED.checkpoint, input_tokens=EXCLUDED.input_tokens,
-			output_tokens=EXCLUDED.output_tokens, usd_micros=EXCLUDED.usd_micros,
+			checkpoint=EXCLUDED.checkpoint, input_tokens=GREATEST(agents_runs.input_tokens, EXCLUDED.input_tokens),
+			output_tokens=GREATEST(agents_runs.output_tokens, EXCLUDED.output_tokens), usd_micros=GREATEST(agents_runs.usd_micros, EXCLUDED.usd_micros),
 		updated_at=GREATEST(agents_runs.updated_at, EXCLUDED.updated_at),
 		started_at=CASE WHEN agents_runs.phase='Running' AND EXCLUDED.phase IN ('Pending','Succeeded','Failed','Aborted') AND EXCLUDED.started_at IS NULL THEN NULL ELSE COALESCE(agents_runs.started_at, EXCLUDED.started_at) END,
 		finished_at=EXCLUDED.finished_at,
@@ -1149,7 +1168,9 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 			delegated_usage_rolled_up=agents_runs.delegated_usage_rolled_up OR EXCLUDED.delegated_usage_rolled_up,
 			harness_settings=COALESCE(agents_runs.harness_settings, EXCLUDED.harness_settings),
 			model_settings=COALESCE(agents_runs.model_settings, EXCLUDED.model_settings)
-		WHERE NOT (agents_runs.phase IN ('Succeeded','Failed','Aborted') AND agents_runs.phase <> EXCLUDED.phase)
+		WHERE agents_runs.org_uuid=EXCLUDED.org_uuid AND agents_runs.workspace_uuid=EXCLUDED.workspace_uuid
+		  AND agents_runs.agent_name=EXCLUDED.agent_name
+		  AND NOT (agents_runs.phase IN ('Succeeded','Failed','Aborted') AND agents_runs.phase <> EXCLUDED.phase)
 		  AND (agents_runs.execution_owner='' OR (agents_runs.cancel_requested AND EXCLUDED.phase='Aborted'))`,
 		run.ID, scope.OrgUUID, scope.WorkspaceUUID, run.AgentName, run.SessionID, run.Trigger, run.ParentRunID,
 		string(run.Phase), run.Attempt, run.Input, run.Output, sources, run.IdempotencyKey, delivery, run.Message, nullBytes(run.Checkpoint),
@@ -1183,6 +1204,35 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 		return ErrRunClaimConflict
 	}
 	return mutation.commit()
+}
+
+// Serialize admissions for one parent across agents and replicas. The lock
+// covers the insert, so concurrent delegates see each other's committed rows.
+func (p *PostgresStore) checkDelegationAdmission(ctx context.Context, mutation *scopedMutation, run Run) error {
+	if err := mutation.ensureTransaction(ctx, p.db); err != nil {
+		return err
+	}
+	scope := mutation.scope
+	key := "agents-delegation:" + scope.OrgUUID + ":" + scope.WorkspaceUUID + ":" + run.ParentRunID
+	if _, err := mutation.executor.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
+		return err
+	}
+	var existing bool
+	var children int
+	err := mutation.executor.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM agents_runs WHERE id=$3 AND org_uuid=$1 AND workspace_uuid=$2),
+		       (SELECT count(*) FROM (
+		         SELECT 1 FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2
+		           AND parent_run_id=$4 AND parent_run_id <> '' AND trigger_kind=$5 LIMIT $6
+		       ) AS children)`,
+		scope.OrgUUID, scope.WorkspaceUUID, run.ID, run.ParentRunID, run.Trigger, MaxDelegatedRuns).Scan(&existing, &children)
+	if err != nil {
+		return err
+	}
+	if !existing && children >= MaxDelegatedRuns {
+		return ErrDelegationLimit
+	}
+	return nil
 }
 
 func (p *PostgresStore) ClaimFreshRun(ctx context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error) {
@@ -1253,6 +1303,20 @@ func (p *PostgresStore) FailPendingRun(ctx context.Context, scope Scope, id stri
 }
 
 func (p *PostgresStore) SaveRunOwned(ctx context.Context, scope Scope, run Run, owner string, attempt int, now time.Time) (bool, error) {
+	if owner == "" {
+		return false, fmt.Errorf("owned run save requires an owner")
+	}
+	return p.saveRunningRun(ctx, scope, run, owner, attempt, now, nil)
+}
+
+func (p *PostgresStore) CompleteRun(ctx context.Context, scope Scope, run Run, owner string, attempt int, now time.Time, final Message) (bool, error) {
+	if err := validateRunCompletion(run, final); err != nil {
+		return false, err
+	}
+	return p.saveRunningRun(ctx, scope, run, owner, attempt, now, &final)
+}
+
+func (p *PostgresStore) saveRunningRun(ctx context.Context, scope Scope, run Run, owner string, attempt int, now time.Time, final *Message) (bool, error) {
 	mutation, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return false, err
@@ -1262,8 +1326,16 @@ func (p *PostgresStore) SaveRunOwned(ctx context.Context, scope Scope, run Run, 
 	if err := scope.withAgent(); err != nil {
 		return false, err
 	}
-	if run.ID == "" || owner == "" {
-		return false, fmt.Errorf("owned run save requires an id and owner")
+	if run.ID == "" {
+		return false, fmt.Errorf("run ID is required")
+	}
+	if final != nil {
+		if err := mutation.ensureTransaction(ctx, p.db); err != nil {
+			return false, err
+		}
+		if err := lockTranscriptSession(ctx, mutation.executor, scope, final.SessionID); err != nil {
+			return false, err
+		}
 	}
 	sources, err := marshalJSONB(run.Sources)
 	if err != nil {
@@ -1318,13 +1390,14 @@ func (p *PostgresStore) SaveRunOwned(ctx context.Context, scope Scope, run Run, 
 			model_settings=COALESCE(model_settings,$26)
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase=$27
 			AND execution_owner=$28 AND attempt=$29 AND $5=$29
-			AND execution_lease_at > $30::timestamptz - interval '2 minutes'
-			AND (cancel_requested=FALSE OR $4=$31)`,
+			AND (($28='' AND execution_lease_at IS NULL)
+				OR execution_lease_at > $30::timestamptz - interval '2 minutes')
+			AND (cancel_requested=FALSE OR $4=$31) AND agent_name=$32`,
 		scope.OrgUUID, scope.WorkspaceUUID, run.ID, string(run.Phase), run.Attempt, run.Message, run.Retries, nullTime(run.RetryAt),
 		run.Output, sources, delivery, nullBytes(run.Checkpoint), run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), worked,
 		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, harnessSettings, modelSettings,
-		string(RunPhaseRunning), owner, attempt, now.UTC(), string(RunPhaseAborted))
+		string(RunPhaseRunning), owner, attempt, now.UTC(), string(RunPhaseAborted), scope.AgentName)
 	if err != nil {
 		return false, err
 	}
@@ -1332,10 +1405,18 @@ func (p *PostgresStore) SaveRunOwned(ctx context.Context, scope Scope, run Run, 
 	if err != nil {
 		return false, err
 	}
+	if n != 1 {
+		return false, nil
+	}
+	if final != nil {
+		if err := appendMessage(ctx, mutation, *final); err != nil {
+			return false, fmt.Errorf("persist final assistant message: %w", err)
+		}
+	}
 	if err := mutation.commit(); err != nil {
 		return false, err
 	}
-	return n == 1, nil
+	return true, nil
 }
 
 func (p *PostgresStore) UpdateRunCheckpoint(ctx context.Context, scope Scope, id, owner string, attempt int, expectedUpdatedAt time.Time, checkpoint json.RawMessage, workedDurationMS *int64, now time.Time) (bool, error) {
@@ -1433,7 +1514,7 @@ func (p *PostgresStore) RequestCancel(ctx context.Context, scope Scope, id strin
 	return mutation.commit()
 }
 
-func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string, now time.Time, inboxID ...string) (Run, error) {
+func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, owner string, now time.Time, inboxID ...string) (Run, error) {
 	mutation, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return Run{}, err
@@ -1447,27 +1528,19 @@ func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string,
 		UPDATE agents_runs SET phase=$4,
 			updated_at=GREATEST($5::timestamptz, updated_at + interval '1 microsecond'),
 			started_at=COALESCE(started_at, GREATEST($5::timestamptz, updated_at + interval '1 microsecond')),
-			execution_owner='', execution_lease_at=NULL
+			execution_owner=$8,
+			execution_lease_at=CASE WHEN $8='' THEN NULL ELSE GREATEST($5::timestamptz, updated_at + interval '1 microsecond') END
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase IN ($6,$7) AND cancel_requested=FALSE`
-	args := []any{scope.OrgUUID, scope.WorkspaceUUID, id, string(RunPhaseRunning), now.UTC(), string(RunPhasePending), string(RunPhasePendingApproval)}
+	args := []any{scope.OrgUUID, scope.WorkspaceUUID, id, string(RunPhaseRunning), now.UTC(), string(RunPhasePending), string(RunPhasePendingApproval), owner}
 	if len(inboxID) > 0 && inboxID[0] != "" {
-		query += " AND phase=$7 AND checkpoint->>'inboxID'=$8"
+		query += " AND phase=$7 AND checkpoint->>'inboxID'=$9"
 		args = append(args, inboxID[0])
 	}
-	res, err := mutation.executor.ExecContext(ctx, query, args...)
-	if err != nil {
-		return Run{}, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return Run{}, err
-	}
-	if n == 0 {
+	row := mutation.executor.QueryRowContext(ctx, query+" RETURNING "+runColumns, args...)
+	run, err := scanRun(row)
+	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
 	}
-	row := mutation.executor.QueryRowContext(ctx, `SELECT `+runColumns+`
-		FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`, scope.OrgUUID, scope.WorkspaceUUID, id)
-	run, err := scanRun(row)
 	if err != nil {
 		return Run{}, err
 	}
@@ -1708,7 +1781,7 @@ func (p *PostgresStore) QueryRuns(ctx context.Context, scope Scope, q RunQuery) 
 		add(` AND session_id=$%d`, q.SessionID)
 	}
 	if q.ParentRunID != "" {
-		add(` AND parent_run_id=$%d`, q.ParentRunID)
+		add(` AND parent_run_id=$%d AND parent_run_id <> ''`, q.ParentRunID)
 	}
 	if !before.IsZero() {
 		args = append(args, before, beforeID)
@@ -2459,22 +2532,19 @@ func (p *PostgresStore) RecordRunUsageOwned(ctx context.Context, scope Scope, ru
 	if total.InputTokens < 0 || total.OutputTokens < 0 || total.CostMicros < 0 {
 		return Usage{}, false, fmt.Errorf("run usage totals must not be negative")
 	}
-	if mutation.tx == nil {
-		mutation.tx, err = p.db.BeginTx(ctx, nil)
-		if err != nil {
-			return Usage{}, false, fmt.Errorf("begin owned run usage mutation: %w", err)
-		}
-		mutation.executor = mutation.tx
+	if err := mutation.ensureTransaction(ctx, p.db); err != nil {
+		return Usage{}, false, fmt.Errorf("begin owned run usage mutation: %w", err)
 	}
 
 	var currentIn, currentOut, currentCost int64
 	err = mutation.executor.QueryRowContext(ctx, `SELECT input_tokens, output_tokens, usd_micros
 		FROM agents_runs
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND agent_name=$4
-		  AND phase=$8 AND execution_owner=$5 AND attempt=$6
-		  AND execution_lease_at > $7::timestamptz - interval '2 minutes'
+		  AND execution_owner=$5 AND attempt=$6
+		  AND ((phase=$8 AND execution_lease_at > $7::timestamptz - interval '2 minutes')
+		       OR (phase=$9 AND cancel_requested))
 		FOR UPDATE`,
-		scope.OrgUUID, scope.WorkspaceUUID, runID, scope.AgentName, owner, attempt, now.UTC(), string(RunPhaseRunning)).
+		scope.OrgUUID, scope.WorkspaceUUID, runID, scope.AgentName, owner, attempt, now.UTC(), string(RunPhaseRunning), string(RunPhaseAborted)).
 		Scan(&currentIn, &currentOut, &currentCost)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Usage{}, false, nil
@@ -2486,22 +2556,12 @@ func (p *PostgresStore) RecordRunUsageOwned(ctx context.Context, scope Scope, ru
 	inDelta := max(total.InputTokens-currentIn, 0)
 	outDelta := max(total.OutputTokens-currentOut, 0)
 	costDelta := max(total.CostMicros-currentCost, 0)
-	res, err := mutation.executor.ExecContext(ctx, `UPDATE agents_runs
+	// The SELECT holds the row lock until commit, including across cancellation.
+	if _, err := mutation.executor.ExecContext(ctx, `UPDATE agents_runs
 		SET input_tokens=GREATEST(input_tokens,$4), output_tokens=GREATEST(output_tokens,$5), usd_micros=GREATEST(usd_micros,$6)
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND agent_name=$7
-		  AND phase=$10 AND execution_owner=$8 AND attempt=$9
-		  AND execution_lease_at > $11::timestamptz - interval '2 minutes'`,
-		scope.OrgUUID, scope.WorkspaceUUID, runID, total.InputTokens, total.OutputTokens, total.CostMicros,
-		scope.AgentName, owner, attempt, string(RunPhaseRunning), now.UTC())
-	if err != nil {
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`,
+		scope.OrgUUID, scope.WorkspaceUUID, runID, total.InputTokens, total.OutputTokens, total.CostMicros); err != nil {
 		return Usage{}, false, err
-	}
-	changed, err := res.RowsAffected()
-	if err != nil {
-		return Usage{}, false, err
-	}
-	if changed != 1 {
-		return Usage{}, false, nil
 	}
 
 	ws := windowStart(now, window)

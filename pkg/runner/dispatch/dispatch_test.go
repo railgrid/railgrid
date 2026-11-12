@@ -674,7 +674,7 @@ func TestNativeMCPObjectResultClosesItsToolCall(t *testing.T) {
 	if !ok || !item.Done || item.Failed || item.Result != "observed" || item.Args != `{"input":{"op":"observe"}}` {
 		t.Fatalf("MCP result not recognized: %+v %v", item, ok)
 	}
-	failed, ok := toolItem(json.RawMessage(`{"item":{"id":"mcp-2","type":"mcpToolCall","tool":"code_pull_request","status":"completed","result":{"isError":true,"content":[{"type":"text","text":"scope rejected"}]}}}`))
+	failed, ok := toolItem(json.RawMessage(`{"item":{"id":"mcp-2","type":"mcpToolCall","tool":"code_pull_request","output":"scope rejected","result":{"isError":true,"content":[{"type":"text","text":"scope rejected"}]}}}`))
 	if !ok || !failed.Done || !failed.Failed {
 		t.Fatal("MCP failure was treated as success")
 	}

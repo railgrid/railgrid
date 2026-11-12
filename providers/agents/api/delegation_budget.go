@@ -20,12 +20,12 @@ func (s *Server) checkDelegationBudget(ctx context.Context, scope store.Scope, p
 		return fmt.Errorf("delegation requires its parent Run identity")
 	}
 	scope.AgentName = "" // delegates run as other Agents in this same workspace
-	page, err := s.store.QueryRuns(ctx, scope, store.RunQuery{ParentRunID: parent, Trigger: agentsv1alpha1.RunTriggerDelegation, Limit: 3})
+	page, err := s.store.QueryRuns(ctx, scope, store.RunQuery{ParentRunID: parent, Trigger: agentsv1alpha1.RunTriggerDelegation, Limit: store.MaxDelegatedRuns})
 	if err != nil {
 		return fmt.Errorf("reading durable delegation budget: %w", err)
 	}
-	if len(page.Items) >= 3 {
-		return fmt.Errorf("delegation fan-out limit (3 per run) reached")
+	if len(page.Items) >= store.MaxDelegatedRuns {
+		return store.ErrDelegationLimit
 	}
 	return nil
 }

@@ -37,6 +37,15 @@ func testRunArtifacts(t *testing.T, s Store, sc Scope) {
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
+	for _, artifact := range []RunArtifact{
+		{RunID: runID, Name: StructuredResultArtifact, Digest: "bad-type", MediaType: "text/plain", Size: 2, Data: []byte("{}"), CreatedAt: now},
+		{RunID: runID, Name: StructuredResultArtifact, Digest: "too-large", MediaType: "application/json", Size: MaxStructuredResultBytes + 1, Data: make([]byte, MaxStructuredResultBytes+1), CreatedAt: now},
+		{RunID: runID, Name: "bad-type", Digest: "bad-type", MediaType: "text/", Size: 2, Data: []byte("{}"), CreatedAt: now},
+	} {
+		if err := s.SaveRunArtifact(ctx, sc, artifact); err == nil {
+			t.Fatalf("accepted invalid artifact %q (%s, %d bytes)", artifact.Name, artifact.MediaType, artifact.Size)
+		}
+	}
 	a := RunArtifact{RunID: runID, Name: "structured-result.json", Digest: "one", MediaType: "application/json", Size: 2, Data: []byte("{}"), CreatedAt: now}
 	if err := s.SaveRunArtifact(ctx, sc, a); err != nil {
 		t.Fatal(err)

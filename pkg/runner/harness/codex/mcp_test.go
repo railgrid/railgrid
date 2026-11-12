@@ -17,12 +17,15 @@ limitations under the License.
 package codex
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
@@ -171,6 +174,74 @@ func TestApprovedMCPToolsAreAllowlistedWithoutChangingNativeApprovals(t *testing
 		t.Fatal("unapproved MCP tools were automatically approved")
 	}
 }
+
+// Point RAILGRID_TEST_CODEX_BINARY at the binary used by the runner's
+// version pin to check its actual app-server configuration parser.
+func TestApprovedMCPToolsLoadInCodexAppServer(t *testing.T) {
+	binary := os.Getenv("RAILGRID_TEST_CODEX_BINARY")
+	if binary == "" {
+		t.Skip("set RAILGRID_TEST_CODEX_BINARY to check a real Codex version")
+	}
+	args, _, err := mcpOverrides([]harness.MCPServer{{Name: "agent", URL: testMCPURL, Token: testMCPToken, ApprovedTools: []string{"code_pull_request"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, append(args, "app-server")...)
+	cmd.Env = append(os.Environ(), "CODEX_HOME="+t.TempDir())
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cancel()
+		_ = cmd.Wait()
+	}()
+	_, err = stdin.Write([]byte(`{"id":1,"method":"initialize","params":{"clientInfo":{"name":"railgrid-test","version":"1"}}}
+{"method":"initialized"}
+{"id":2,"method":"config/read","params":{"includeLayers":false}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	for scanner.Scan() {
+		var response struct {
+			ID     int `json:"id"`
+			Result struct {
+				Config struct {
+					MCPServers map[string]struct {
+						ApprovalMode string   `json:"default_tools_approval_mode"`
+						EnabledTools []string `json:"enabled_tools"`
+					} `json:"mcp_servers"`
+				} `json:"config"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if response.ID != 2 {
+			continue
+		}
+		server := response.Result.Config.MCPServers["agent"]
+		if server.ApprovalMode != "approve" || len(server.EnabledTools) != 1 || server.EnabledTools[0] != "code_pull_request" {
+			t.Fatalf("Codex did not load the approved tool configuration: %+v", server)
+		}
+		return
+	}
+	t.Fatalf("Codex returned no config/read response: scanner=%v context=%v", scanner.Err(), ctx.Err())
+}
+
 func TestUnconfiguredMCPElicitationCannotRemainSilentlyRunning(t *testing.T) {
 	if !isApprovalRequest("mcpServer/elicitation/request") || isRequestUserInput("mcpServer/elicitation/request") {
 		t.Fatal("MCP approval is not a product clarification")
