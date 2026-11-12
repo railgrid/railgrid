@@ -46,7 +46,7 @@ jobs:
     if: needs.changes.outputs.mode == 'full'
     name: Build hub + agent (binaries and images)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -58,6 +58,11 @@ jobs:
         run: make build
 
       - name: Build hub and agent images
+        # proxy.golang.org intermittently drops HTTP/2 streams on these
+        # runners, so the go commands inside the image builds use HTTP/1.1,
+        # and hack/go-retry.sh retries the failed Docker step in place.
+        env:
+          GO_BUILD_GODEBUG: http2client=0
         run: make e2e-images
 
       - name: Archive binaries and images
