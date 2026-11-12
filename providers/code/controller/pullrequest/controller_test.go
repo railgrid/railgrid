@@ -16,6 +16,7 @@ import (
 
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -317,5 +318,38 @@ func TestAdvanceDoesNotWeakenApprovedParentAfterHeadObservation(t *testing.T) {
 	}
 	if len(forge.published) != 0 {
 		t.Fatal("published over an unexpected commit")
+	}
+}
+
+// A PullRequest without a verified command cannot adopt a forge PR by number:
+// adoption would make the existing branch's head this resource's to move.
+func TestNumberAdoptionRequiresAVerifiedCommand(t *testing.T) {
+	r, c, host, req, pr := publicationFixture(t)
+	// Someone else's open PR on an existing branch.
+	host.pr = &backend.PullRequest{Number: 42, Repository: "acme/product", HeadRepository: "acme/product", Head: pr.Spec.Branch, Base: pr.Spec.Base, Commit: headB, State: "open"}
+	pr.Spec.Number = 42
+	pr.Spec.DesiredHead = nil
+	pr.Spec.AttachmentRef = ""
+	pr.Generation++
+	if err := c.Update(t.Context(), pr); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: pr.Name}, pr); err != nil {
+		t.Fatal(err)
+	}
+	pr.Status.Head, pr.Status.Number = "", 0
+	if err := c.Status().Update(t.Context(), pr); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = r.Reconcile(t.Context(), req)
+	got := &codev1alpha1.PullRequest{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: pr.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Number != 0 || got.Status.Head != "" || got.Status.Phase != codev1alpha1.PullRequestPhaseFailed {
+		t.Fatalf("adopted without a command: number=%d head=%q phase=%s", got.Status.Number, got.Status.Head, got.Status.Phase)
+	}
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, codev1alpha1.ConditionReady); cond == nil || !strings.Contains(cond.Message, "only for a verified command") {
+		t.Fatalf("missing the adoption refusal: %+v", cond)
 	}
 }

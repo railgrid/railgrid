@@ -657,6 +657,19 @@ The worker can observe the admitted PR, publish COMMENT reviews on its exact
 current head, or publish a verified snapshot to its pinned branch and base; it
 cannot merge or approve.
 
+**Trust boundary.** The signing key derives from the Connection Secret in the
+tenant workspace, and the grant and tombstones live in the PullRequest spec. A
+principal that can read that Secret and update PullRequests can therefore forge
+a grant or remove a tombstone. This is not treated as an escalation: the same
+Secret holds the GitHub App private key, so that principal can already act as
+the App on GitHub directly. Inside Railgrid, a forged grant borrows only the
+authority of the caller it names, because every use re-runs the SubjectAccessReview
+above. What it can do is attribute work to a caller who did not request it.
+Grant read access to the Connection's credentials namespace and `update` on
+`pullrequests` only to principals you would trust with the App key. Moving the
+key to a provider-held secret and the grant to provider-owned state would remove
+that attribution gap; it is not implemented.
+
 Only the same authenticated coordinator identity can renew or revoke its grant.
 Revocation clears the command and desired head and writes a bounded tombstone on
 the PullRequest, so a delayed grant retry cannot restore canceled authority.

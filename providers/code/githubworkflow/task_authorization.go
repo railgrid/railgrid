@@ -689,7 +689,11 @@ func (s *Server) operateTask(ctx context.Context, dyn dynamic.Interface, cluster
 		if len(in.Body) > 16384 {
 			return nil, errors.New("PR status comment exceeds the Code limit")
 		}
-		e := &api.GitHubEvent{Spec: api.GitHubEventSpec{Repository: repositoryName(binding{repo: b.repo, conn: b.conn}), PullRequest: effectivePullRequestNumber(fresh)}}
+		number := effectivePullRequestNumber(fresh)
+		if number <= 0 {
+			return nil, errors.New("the pull request has not been opened yet; there is no status comment target")
+		}
+		e := &api.GitHubEvent{Spec: api.GitHubEventSpec{Repository: repositoryName(binding{repo: b.repo, conn: b.conn}), PullRequest: number}}
 		marker := fmt.Sprintf("<!-- railgrid-pr-status:%s -->", fresh.UID)
 		return publishTextUpdating(ctx, b.client, e, 0, in.Body, marker, true)
 	}

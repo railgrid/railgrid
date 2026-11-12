@@ -126,3 +126,33 @@ func TestTaskGrantDelegatesOnlyReviewAuthority(t *testing.T) {
 		t.Fatalf("removing review role was not rejected: %v", err)
 	}
 }
+
+// The issuer's status comment has no target until the PR is opened; Code says
+// so instead of posting to /issues/0/comments and reporting GitHub's 404.
+func TestTaskStatusCommentRequiresAnOpenedPullRequest(t *testing.T) {
+	f, repo, input, issuer := taskTestFixture(t)
+	allowTaskCallerSAR(f, true, nil)
+	issued, err := authorizeTaskTest(t, f, repo, input, issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := issued.(TaskAuthorizationResult)
+	scope := input
+	scope.Op, scope.GrantRef, scope.Proof = "scope", grant.GrantRef, grant.Proof
+	scope.InvocationKey, scope.InvocationAgent, scope.InvocationAgentUID = "task:run:1", "coordinator", "coordinator-uid"
+	scoped, err := authorizeTaskTest(t, f, repo, scope, issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.dyn.Resource(PullRequests).Get(t.Context(), "task-pr", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := Operation{Op: "comment", PullRequestUID: string(stored.GetUID()), SourceUID: input.SourceUID, SourceDigest: input.SourceDigest,
+		GrantRef: grant.GrantRef, SourceProof: grant.Proof, InvocationKey: scope.InvocationKey, InvocationAgent: scope.InvocationAgent,
+		InvocationAgentUID: scope.InvocationAgentUID, ScopeProof: scoped.(TaskAuthorizationResult).ScopeProof, Body: "Working on it"}
+	raw, _ := json.Marshal(op)
+	if _, err := f.s.Operate(t.Context(), f.dyn, "tenant", stored, raw, issuer); err == nil || !strings.Contains(err.Error(), "has not been opened yet") {
+		t.Fatalf("status comment on an unopened PR: %v", err)
+	}
+}

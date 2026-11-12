@@ -89,3 +89,33 @@ func TestWorkflowObservationPaginationAndHeadFence(t *testing.T) {
 		}
 	}
 }
+
+// Each CI source reports its own counts; the workflow failure decides the
+// state without being counted again as a failed check run.
+func TestCISummaryKeepsSourcesSeparate(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	checks := []any{}
+	for range 3 {
+		checks = append(checks, map[string]any{"head_sha": head, "status": "completed", "conclusion": "success"})
+	}
+	c := Client{HTTP: &http.Client{Transport: testTransport(func(r *http.Request) (*http.Response, error) {
+		var out any
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/check-runs"):
+			out = map[string]any{"total_count": 3, "check_runs": checks}
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			out = map[string]any{"sha": head, "total_count": 0}
+		case strings.HasSuffix(r.URL.Path, "/actions/runs"):
+			out = map[string]any{"total_count": 1, "workflow_runs": []any{map[string]any{"id": 1, "workflow_id": 1, "head_sha": head, "event": "push", "status": "completed", "conclusion": "failure"}}}
+		}
+		raw, _ := json.Marshal(out)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(raw))), Header: make(http.Header)}, nil
+	})}}
+	summary, state, err := observeCI(context.Background(), c, "railgrid/example", head)
+	if err != nil || state != "failed" {
+		t.Fatalf("state=%s err=%v", state, err)
+	}
+	if !strings.Contains(summary, "3 check runs (0 pending, 0 failed") || !strings.Contains(summary, "1 current workflow runs (0 pending, 1 failed)") {
+		t.Fatalf("summary mixes sources: %s", summary)
+	}
+}

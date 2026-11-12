@@ -62,27 +62,34 @@ func observeCI(ctx context.Context, api Client, repo, sha string) (summary, stat
 	if status.SHA != sha {
 		return "", "", fmt.Errorf("GitHub returned status for a different commit")
 	}
+	// Each source is reported with its own counts; only the combined totals
+	// decide the state.
+	statusPending, statusFailed := 0, 0
 	if status.Total > 0 {
 		switch status.State {
 		case "failure", "error":
-			failed++
+			statusFailed = 1
 		case "success":
 		default:
-			pending++
+			statusPending = 1
 		}
 	}
 	workflows, workflowPending, workflowFailed, workflowErr := observeWorkflows(ctx, api, repo, sha)
 	if workflowErr != nil {
 		return "", "", workflowErr
 	}
-	pending += workflowPending
-	failed += workflowFailed
-	summary = fmt.Sprintf("CI observation on `%s`: %d check runs (%d pending, %d failed, %d skipped/neutral); %d commit-status contexts. This observes available CI, not a merge approval or an assertion about unseen policy.", sha, count, pending, failed, skipped, status.Total)
+	totalPending := pending + statusPending + workflowPending
+	totalFailed := failed + statusFailed + workflowFailed
+	statusState := "none"
+	if status.Total > 0 {
+		statusState = status.State
+	}
+	summary = fmt.Sprintf("CI observation on `%s`: %d check runs (%d pending, %d failed, %d skipped/neutral); %d commit-status contexts (combined state %s). This observes available CI, not a merge approval or an assertion about unseen policy.", sha, count, pending, failed, skipped, status.Total, statusState)
 	summary += fmt.Sprintf(" %d current workflow runs (%d pending, %d failed).", workflows, workflowPending, workflowFailed)
 	switch {
-	case failed > 0:
+	case totalFailed > 0:
 		return summary, "failed", nil
-	case pending > 0:
+	case totalPending > 0:
 		return summary, "pending", nil
 	case count+status.Total+workflows == 0:
 		return summary + " No CI evidence exists yet.", "unknown", nil
