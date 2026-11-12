@@ -16,12 +16,11 @@ normalized in the migration:
 - **Edges native select.** The service `<select>` keeps `appearance: auto` on
   purpose for native popup UX. Its closed control must still carry `.svc-input`
   or `.k-input` styling.
-- **Slider.** No implementation is shipped. The build-to-this contract is a
-  native range input with accent color or a 2px track, accent fill, square
-  12×12px thumb, standard focus ring, and mono tabular value.
-- **Date/time picker.** No custom picker is shipped. Use read-only mono output
-  from `portal/src/utils/time.ts` or native `date`/`datetime-local` styled as
-  `.k-input`; a range is two inputs joined by an en dash.
-- **Command palette.** No implementation is shipped. The build-to-this
-  contract is a centered 560px surface-raised panel with surface-derived scrim,
-  borderless input, mono keycap, and grouped menu results.
+- **Slider.** Native range is the current fallback. A shared custom slider's
+  geometry and interaction require a rendered review in both themes and with
+  keyboard and touch input.
+- **Date/time picker.** No custom picker is shipped. Native inputs need an
+  explicit timezone and daylight-saving policy when used for scheduling.
+- **Global command palette.** No global implementation is shipped. Scope,
+  shortcut, focus, results, and responsive behavior remain to be validated.
+  The contextual AgentKit slash palette is a separate shipped component.

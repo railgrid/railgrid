@@ -6,7 +6,7 @@
      k-input/k-menu recipes. Its teleported panel carries a generic PortalKit
      scope class because it is rendered outside the component root. -->
 <script setup lang="ts">
-import { Check, ChevronDown } from 'lucide-vue-next'
+import { AlertCircle, Check, ChevronDown } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref, useId, watch } from 'vue'
 import { ensureRailgridUIStyles } from '../portalkit/styles'
 
@@ -23,6 +23,7 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
   required?: boolean
   invalid?: boolean
+  errorMessage?: string
   describedby?: string
   labelledby?: string
   name?: string
@@ -32,6 +33,7 @@ const props = withDefaults(defineProps<{
   disabled: false,
   required: false,
   invalid: false,
+  errorMessage: '',
   describedby: undefined,
   labelledby: undefined,
   name: undefined,
@@ -48,6 +50,8 @@ const instanceID = useId()
 const triggerID = computed(() => props.id || `form-select-${instanceID}`)
 const listboxID = computed(() => `${triggerID.value}-listbox`)
 const valueID = computed(() => `${triggerID.value}-value`)
+const errorID = computed(() => `${triggerID.value}-error`)
+const accessibleDescribedby = computed(() => [props.describedby, props.invalid && props.errorMessage ? errorID.value : ''].filter(Boolean).join(' '))
 const accessibleLabelledby = computed(() => [props.labelledby, valueID.value].filter(Boolean).join(' '))
 const optionID = (index: number): string => `${listboxID.value}-option-${index}`
 
@@ -302,7 +306,7 @@ onBeforeUnmount(() => {
       :aria-expanded="open ? 'true' : 'false'"
       aria-haspopup="listbox"
       :aria-activedescendant="activeDescendant"
-      :aria-describedby="describedby || undefined"
+      :aria-describedby="accessibleDescribedby || undefined"
       :aria-labelledby="accessibleLabelledby"
       :aria-required="required ? 'true' : undefined"
       :aria-invalid="invalid ? 'true' : undefined"
@@ -312,6 +316,10 @@ onBeforeUnmount(() => {
       <span :id="valueID" class="k-form-select__value" :class="{ 'is-placeholder': !modelValue }">{{ selectedLabel }}</span>
       <ChevronDown class="k-form-select__chevron" :size="15" :stroke-width="1.75" aria-hidden="true" />
     </button>
+    <p v-if="invalid && errorMessage" :id="errorID" class="k-form-select__error" role="alert">
+      <AlertCircle :size="15" :stroke-width="1.75" aria-hidden="true" />
+      <span>{{ errorMessage }}</span>
+    </p>
     <input
       v-if="name"
       class="k-form-select__value-input"

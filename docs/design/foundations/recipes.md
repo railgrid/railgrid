@@ -32,7 +32,7 @@ copied only to registered AgentKit consumers. They use the same tokens and
 | `.k-kbd` | 9px mono uppercase shortcut key-cap, 3px, darker bottom edge |
 | `[data-k-tip="…"]` | CSS tooltip with 300ms delay, hover/focus, 260px max |
 | `.k-progress` / `__bar` | 2px-radius track and semantic fill |
-| `.k-toggle` / `__knob` | Sharp 3px switch and 2px text-primary knob |
+| `.k-toggle` / `__knob` | 4px switch track with a 3px light knob |
 | `.k-avatar` (`--sm`) | Mono-initials circle, 28/20px; presence uses `.live-dot` |
 | `.k-dropzone` | Dashed drop target; drag-over accent tint, no glow |
 

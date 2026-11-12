@@ -757,8 +757,13 @@ test-create-flow-conformance: ## Verify route-owned creation uses the canonical 
 
 verify-ui-conformance: test-portal-settings-conformance test-create-flow-conformance ## Verify provider UI source uses the canonical k-* design vocabulary
 	@node --test provider-sdk/portalkit-vue/ResourceTable.selection.test.mjs provider-sdk/portalkit-vue/ResourceTable.sorting.test.mjs provider-sdk/portalkit-vue/ResourceTable.overflow.test.mjs provider-sdk/portalkit-vue/resource-technical.conformance.test.mjs
+	@node --test provider-sdk/portalkit/form-select.behavior.test.mjs
 	@node hack/verify-ui-conformance.test.mjs
 	@node hack/verify-ui-conformance.mjs
+
+.PHONY: serve-design-review
+serve-design-review: ## Serve the local design book fixtures and source index
+	portal/node_modules/.bin/vite --config hack/design-review/vite.config.mjs
 
 serve-onboarding-visual: ## Serve the isolated real-component onboarding fixture
 	cd portal && npm exec vite -- --config ../hack/onboarding-visual/vite.config.mjs
