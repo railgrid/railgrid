@@ -114,6 +114,8 @@ export const routes = [
     children: [
       { path: '', redirect: '/bonkers/providers' },
       { path: 'providers', name: 'bonkers-providers', component: () => import('@/pages/bonkers/ProvidersSection.vue') },
+      { path: 'system-services', name: 'bonkers-system-services', component: () => import('@/pages/bonkers/SystemServicesSection.vue') },
+      { path: 'workspace-seeds', name: 'bonkers-workspace-seeds', component: () => import('@/pages/bonkers/WorkspaceSeedsSection.vue') },
       { path: 'organizations', name: 'bonkers-organizations', component: () => import('@/pages/bonkers/OrgsSection.vue') },
       { path: 'users', name: 'bonkers-users', component: () => import('@/pages/bonkers/UsersSection.vue') },
       { path: 'metering', name: 'bonkers-metering', component: () => import('@/pages/bonkers/MeteringSection.vue') },

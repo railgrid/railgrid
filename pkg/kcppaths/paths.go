@@ -87,6 +87,20 @@ const (
 // root:railgrid:providers:<name>.
 func ProviderPath(name string) string { return ProvidersParent + ":" + name }
 
+// SystemServicePath returns the workspace path of a platform service that is
+// not a provider (a SystemWorkspace): root:railgrid:system:<name>.
+func SystemServicePath(name string) string { return System + ":" + name }
+
+// IsReservedSystemName reports whether name is one of the hub's own children
+// of root:railgrid:system, which a SystemWorkspace may never claim.
+func IsReservedSystemName(name string) bool {
+	switch System + ":" + name {
+	case SystemControllers, SystemProviders, SystemTenants:
+		return true
+	}
+	return false
+}
+
 // OrgPath returns the tenant workspace path for an org by UUID:
 // root:railgrid:tenants:<uuid>.
 func OrgPath(orgUUID string) string { return TenantsParent + ":" + orgUUID }

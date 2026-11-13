@@ -3,7 +3,7 @@ import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ShieldAlert, AlertCircle, RefreshCw, Puzzle, Building2, Users, Gauge,
-  Hexagon, ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen, Tag,
+  Hexagon, ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen, Tag, ServerCog, Sprout,
 } from 'lucide-vue-next'
 
 import { hubVersionDetails, hubVersionLabel, useHubVersion } from '@/composables/useHubVersion'
@@ -21,6 +21,8 @@ const platformVersionDetails = computed(() => hubVersionDetails(hubVersion.value
 
 const sections = [
   { to: '/bonkers/providers', label: 'Providers', icon: Puzzle },
+  { to: '/bonkers/system-services', label: 'System services', icon: ServerCog },
+  { to: '/bonkers/workspace-seeds', label: 'Workspace seeds', icon: Sprout },
   { to: '/bonkers/organizations', label: 'Organizations', icon: Building2 },
   { to: '/bonkers/users', label: 'Users', icon: Users },
   { to: '/bonkers/metering', label: 'Metering', icon: Gauge },
