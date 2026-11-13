@@ -152,6 +152,11 @@ func (h *Handler) Register(r *mux.Router) {
 	// intent on Organization.spec.plan and update the entitlement immediately;
 	// the reconciler repairs interrupted writes and maintains that intent.
 	r.HandleFunc("/organizations/{name}/plan", h.setOrganizationPlan).Methods(http.MethodPut)
+	// Registered ahead of the provider routes, not after them: on a subrouter
+	// gorilla/mux forgets a method mismatch as soon as a later route's path
+	// prefix matches, so anything registered after the rotate route below
+	// turns its 405 for a non-POST into a 404.
+	h.registerPlatformServices(r)
 	r.HandleFunc("/providers", h.listProviders).Methods(http.MethodGet)
 	// Provisioning is declarative: creating a Provider object in
 	// root:railgrid:system:providers drives the Provider reconciler
