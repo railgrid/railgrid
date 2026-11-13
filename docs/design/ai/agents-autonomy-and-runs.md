@@ -122,12 +122,6 @@ the disclosure; generic results do not imply shell execution metadata. The
 composer reserves a bottom action row for send/stop, matching App Studio, while
 keyboard guidance remains in its accessible description and editor tooltip.
 
-Run Detail presents a bounded, redacted preview of the original request before
-the execution record and output. Failure and approval notices remain first.
-The request disclosure retains its state across refreshes and resets for a
-different run. Failed steps open by default; Review step diagnostics opens them
-and moves focus to the Execution heading.
-
 Agent creation preserves its non-secret draft when it opens Models to add a
 missing credential. Harness setup opens the identity family directly. Cancel
 returns to the unfinished agent; success selects the new identity or model.
@@ -239,10 +233,11 @@ argument disclosure and approval/denial controls above the table.
 Run detail leads with the agent and phase. Failed and aborted runs show a
 bounded, sanitized diagnostic excerpt and supported recovery navigation before
 execution evidence and partial output. Error steps start expanded; an error
-step alone is not proof of the run's terminal cause. Successful runs put the
-result first and start execution collapsed. Empty results and missing partial
-output are explicit. Pending approvals and questions retain their existing
-authority checks and actions above the evidence.
+step alone is not proof of the run's terminal cause. Review step diagnostics
+opens failed steps and moves focus to the Execution heading. Successful runs
+show the result before the execution record and start execution collapsed.
+Empty results and missing partial output are explicit. Pending approvals and
+questions retain their existing authority checks and actions above the evidence.
 
 Chat, the inbox, and run detail use the same question card. A single question
 with a runner-supplied choices block offers numbered choices and a custom
@@ -259,10 +254,12 @@ For a runner-managed Codex question, the runner owns the durable pause and
 ignores Codex's blocking flag and auto-resolution timer. The reply or skip
 instruction is supplied in a new turn on the saved Codex session.
 
-The full original request is a single collapsed disclosure below the result and
-execution sections. Its summary includes a bounded, redacted preview; truncation
-preserves Unicode code points. The diagnostic excerpt yields to the full
-technical diagnostic when that disclosure is open. Session, timestamps, duration, usage, copyable run ID,
+The original request appears in a single disclosure after any failure, approval,
+or question notice and before output and execution. The disclosure starts
+collapsed with a bounded, redacted preview that preserves Unicode code points
+when truncated. It retains its state across refreshes and resets for a different
+run. The diagnostic excerpt yields to the full technical diagnostic when that
+disclosure is open. Session, timestamps, duration, usage, copyable run ID,
 harness coordinates, attempts, and parent navigation occupy a secondary details
 column that stacks below the evidence in narrow containers. Child runs continue
 to use the shared simple `ResourceTable`. Output uses document styling, and

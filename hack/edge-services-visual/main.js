@@ -44,7 +44,7 @@ createApp({
         <div><h1>Services</h1><p>Apps reachable from your edges.</p></div>
         <button class="k-btn k-btn--primary" type="button" disabled aria-describedby="creation-note">New service</button>
       </header>
-      <ResourceTable :columns="columns" :rows="rows" aria-label="Services" row-key="name"
+      <ResourceTable :columns="columns" :rows="rows" aria-label="Services" row-key="name" :interactive="false"
         :loaded="true" :error="failed ? 'Could not refresh.' : null"
         :stale="failed" :retryable="failed" searchable search-placeholder="Search services…"
         :search-keys="['name', 'edge', 'type', 'target']" @retry="retry">
