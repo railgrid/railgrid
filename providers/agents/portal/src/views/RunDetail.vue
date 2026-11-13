@@ -631,6 +631,16 @@ onBeforeUnmount(() => {
                 @decide="resolve(run!.pending!.inboxID, $event)"
               />
             </section>
+            <details v-if="run.input" class="agents-run-request k-resource-technical" :open="requestOpen" @toggle="requestOpen = ($event.target as HTMLDetailsElement).open">
+              <summary class="k-resource-technical__summary">
+                <span class="k-resource-technical__summary-label agents-run-request-label">
+                  <span>Original request</span>
+                  <span v-if="!requestOpen" class="agents-run-request-preview">{{ requestPreview }}</span>
+                </span>
+                <ChevronDown class="k-resource-technical__chevron" :size="14" :stroke-width="1.75" aria-hidden="true" />
+              </summary>
+              <div class="k-resource-technical__body"><pre class="k-resource-technical__pre">{{ run.input }}</pre></div>
+            </details>
             <button v-if="runFailurePhase && run.steps.some(step => step.outcome === 'error')" class="k-dashboard-action agents-run-failure-link" type="button" @click="inspectFailedSteps">Review step diagnostics</button>
             <section v-if="!runFailurePhase" class="agents-run-output-message agents-run-section" aria-labelledby="agents-run-output-heading">
               <h2 id="agents-run-output-heading">{{ run.phase === 'Succeeded' ? 'Result' : 'Output' }}</h2>
@@ -698,16 +708,6 @@ onBeforeUnmount(() => {
                 <ul><li v-for="source in run.sources" :key="source"><a :href="source" target="_blank" rel="noopener noreferrer">{{ source }}</a></li></ul>
               </div>
             </section>
-            <details v-if="run.input" class="agents-run-request k-resource-technical" :open="requestOpen" @toggle="requestOpen = ($event.target as HTMLDetailsElement).open">
-              <summary class="k-resource-technical__summary">
-                <span class="k-resource-technical__summary-label agents-run-request-label">
-                  <span>Original request</span>
-                  <span v-if="!requestOpen" class="agents-run-request-preview">{{ requestPreview }}</span>
-                </span>
-                <ChevronDown class="k-resource-technical__chevron" :size="14" :stroke-width="1.75" aria-hidden="true" />
-              </summary>
-              <div class="k-resource-technical__body"><pre class="k-resource-technical__pre">{{ run.input }}</pre></div>
-            </details>
           </main>
 
           <aside class="agents-run-inspector" :class="{ 'is-collapsed': !inspectorOpen }" aria-label="Run evidence">
