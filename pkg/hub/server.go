@@ -74,6 +74,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/sharedstore"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 	"github.com/railgrid/railgrid/pkg/hub/workloadidentity"
+	"github.com/railgrid/railgrid/pkg/hub/workspaceseeds"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 	"github.com/railgrid/railgrid/pkg/server/auth"
 	"github.com/railgrid/railgrid/pkg/server/proxy"
@@ -1400,6 +1401,20 @@ func (s *Server) Run(ctx context.Context) error {
 					logger.Error(err, "Setting up metering provider binding controller failed")
 					return
 				}
+			}
+
+			// Workspace seeds: backend functionality every tenant workspace gets
+			// without an Enable step. The admin manager serves the WorkspaceSeed
+			// objects; the core manager engages every tenant workspace and is
+			// where each one is brought to the accepted seeds.
+			seedStore := workspaceseeds.NewStore()
+			if err := workspaceseeds.SetupSeedsWithManager(adminMgr, seedStore); err != nil {
+				logger.Error(err, "Setting up workspace seed controller failed")
+				return
+			}
+			if err := workspaceseeds.SetupWorkspacesWithManager(coreMgr, &coreExportProvider.Clusters, bootstrapper, seedStore); err != nil {
+				logger.Error(err, "Setting up workspace seed apply controller failed")
+				return
 			}
 
 			// Organization bootstrap controller — runs against root:railgrid:users

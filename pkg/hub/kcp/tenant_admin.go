@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/util/retry"
 
+	adminv1alpha1 "github.com/railgrid/railgrid/apis/admin/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
@@ -64,13 +65,17 @@ func tenantAdminRules(bindings []unstructured.Unstructured) []rbacv1.PolicyRule 
 		{NonResourceURLs: []string{"/api", "/api/*", "/apis", "/apis/*", "/openapi", "/openapi/*", "/version", "/healthz", "/livez", "/readyz"}, Verbs: []string{"get"}},
 	}
 
-	groupsWithBoundResources := map[string]struct{}{}
+	// The access members get on each admitted group. A binding the hub seeded
+	// (WorkspaceSeed) can bound it with the tenant-access annotation; when two
+	// bindings serve one group the narrower access holds.
+	groupsWithBoundResources := map[string]adminv1alpha1.SeedTenantAccess{}
 	useResources := map[string]schema.GroupResource{}
 	for _, binding := range bindings {
 		phase, _, _ := unstructured.NestedString(binding.Object, "status", "phase")
 		if binding.GetDeletionTimestamp() != nil || phase != "Bound" {
 			continue
 		}
+		access := bindingTenantAccess(&binding)
 		resources, _, _ := unstructured.NestedSlice(binding.Object, "status", "boundResources")
 		for _, raw := range resources {
 			item, ok := raw.(map[string]interface{})
@@ -82,7 +87,12 @@ func tenantAdminRules(bindings []unstructured.Unstructured) []rbacv1.PolicyRule 
 			if !tenantDataGroup(group) || !validBoundResource(resource) {
 				continue
 			}
-			groupsWithBoundResources[group] = struct{}{}
+			if current, seen := groupsWithBoundResources[group]; !seen || narrowerTenantAccess(access, current) {
+				groupsWithBoundResources[group] = access
+			}
+			if access != adminv1alpha1.SeedTenantAccessReadWrite {
+				continue
+			}
 			switch group + "/" + resource {
 			case "agents.railgrid.ai/modelproviderconnections", "ai.railgrid.ai/modelproviderconnections", "railgrid.ai/mcpservers":
 				useResources[group+"/"+resource] = schema.GroupResource{Group: group, Resource: resource}
@@ -99,7 +109,13 @@ func tenantAdminRules(bindings []unstructured.Unstructured) []rbacv1.PolicyRule 
 		// subresource coordinates. RBAC cannot wildcard a custom subresource
 		// under just one parent, so the admitted API group is the permission
 		// boundary here. Reserved platform groups are excluded above.
-		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{group}, Resources: []string{"*"}, Verbs: write})
+		switch groupsWithBoundResources[group] {
+		case adminv1alpha1.SeedTenantAccessNone:
+		case adminv1alpha1.SeedTenantAccessReadOnly:
+			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{group}, Resources: []string{"*"}, Verbs: read})
+		default:
+			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{group}, Resources: []string{"*"}, Verbs: write})
+		}
 	}
 	keys := make([]string, 0, len(useResources))
 	for key := range useResources {
@@ -108,9 +124,43 @@ func tenantAdminRules(bindings []unstructured.Unstructured) []rbacv1.PolicyRule 
 	sort.Strings(keys)
 	for _, key := range keys {
 		resource := useResources[key]
+		if groupsWithBoundResources[resource.Group] != adminv1alpha1.SeedTenantAccessReadWrite {
+			// Another binding narrowed the group after this one admitted the
+			// resource.
+			continue
+		}
 		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{resource.Group}, Resources: []string{resource.Resource}, Verbs: []string{"use"}})
 	}
 	return rules
+}
+
+// bindingTenantAccess reads the access a binding gives members to the groups
+// it serves. Tenants only read APIBindings, so the annotation is the hub's. An
+// unknown value gives nothing: a typo must not widen access.
+func bindingTenantAccess(binding *unstructured.Unstructured) adminv1alpha1.SeedTenantAccess {
+	value, set := binding.GetAnnotations()[adminv1alpha1.TenantAccessAnnotation]
+	if !set {
+		return adminv1alpha1.SeedTenantAccessReadWrite
+	}
+	switch access := adminv1alpha1.SeedTenantAccess(value); access {
+	case adminv1alpha1.SeedTenantAccessReadWrite, adminv1alpha1.SeedTenantAccessReadOnly:
+		return access
+	}
+	return adminv1alpha1.SeedTenantAccessNone
+}
+
+// narrowerTenantAccess reports whether a gives members less than b.
+func narrowerTenantAccess(a, b adminv1alpha1.SeedTenantAccess) bool {
+	rank := func(access adminv1alpha1.SeedTenantAccess) int {
+		switch access {
+		case adminv1alpha1.SeedTenantAccessNone:
+			return 0
+		case adminv1alpha1.SeedTenantAccessReadOnly:
+			return 1
+		}
+		return 2
+	}
+	return rank(a) < rank(b)
 }
 
 func tenantDataGroup(group string) bool {
