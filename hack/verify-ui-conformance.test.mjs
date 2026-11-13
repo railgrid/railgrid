@@ -716,7 +716,7 @@ test('keeps platform-admin flat lists and navigation on shared host patterns', (
   const appLayout = fs.readFileSync(new URL('../portal/src/components/AppLayout.vue', import.meta.url), 'utf8')
   const navigationDock = fs.readFileSync(new URL('../portal/src/composables/useNavigationDock.ts', import.meta.url), 'utf8')
   assert.match(store, /const loaded = ref\(false\)/)
-  assert.match(store, /providers\.value = p\s+loaded\.value = true/)
+  assert.match(store, /seeds\.value = sd\s+loaded\.value = true/)
   assert.match(shell, /import \{ useSidebarExpansion \} from '@\/composables\/useSidebarExpansion'/)
   assert.match(shell, /:class="sidebarExpanded \? 'w-48' : 'w-14'"/)
   assert.match(appLayout, /const \{ sidebarExpanded, toggleSidebar \} = useSidebarExpansion\(\)/)
