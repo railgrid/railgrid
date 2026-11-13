@@ -1,0 +1,28 @@
+apiVersion: tenancy.kcp.io/v1alpha1
+kind: WorkspaceType
+metadata:
+  name: system-service
+  annotations:
+    bootstrap.railgrid.ai/create-only: "true"
+spec:
+  # A `system-service` workspace (root:railgrid:system:<name>) is the home of a
+  # platform service that is not a provider: its APIExports, schemas and
+  # configuration (created by the service's own installer) and the `provider`
+  # ServiceAccount the hub mints a kubeconfig for. The hub creates one per
+  # SystemWorkspace object (admin.railgrid.ai).
+  #
+  # Like `provider`, deliberately NO `extend: universal`: the service's
+  # ServiceAccount is cluster-admin in this workspace, and tenancy.kcp.io must
+  # not be served here or it could create child workspaces. The `default`
+  # namespace universal would have added is created by the SystemWorkspace
+  # controller.
+  #
+  # Unlike `provider`, NO defaultAPIBindings: without providers.railgrid.ai the
+  # service cannot write a CatalogEntry, so it cannot appear in the catalog. It
+  # reaches tenant workspaces through a WorkspaceSeed instead.
+  limitAllowedChildren:
+    none: true
+  limitAllowedParents:
+    types:
+    - name: universal
+      path: root

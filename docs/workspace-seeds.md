@@ -1,6 +1,6 @@
 # Workspace seeds — backend functionality in every workspace
 
-**Status:** Implemented in the hub (`pkg/hub/workspaceseeds`, `pkg/hub/kcp/workspaceseed.go`). No seed ships with the hub.
+**Status:** Implemented in the hub (`pkg/hub/workspaceseeds`, `pkg/hub/kcp/workspaceseed.go`, `pkg/hub/providers/system_workspace*.go`) and in the admin area. No seed ships with the hub.
 **Last updated:** 2026-11-13
 **Reads beside:** [providers.md](./providers.md), [provider-scoping.md](./provider-scoping.md)
 
@@ -50,6 +50,93 @@ spec:
 
 Seeds live in `root:railgrid:system:providers`, next to `Provider` objects, and
 are served by the `admin.railgrid.ai` export, which is bound nowhere else.
+
+## The whole flow
+
+A service that is not a provider is onboarded in three steps, all in the
+admin area (`/bonkers`) or with `kubectl` against
+`root:railgrid:system:providers`:
+
+1. **Create a system service** (admin area: *System services*). The hub
+   provisions the workspace `root:railgrid:system:<name>` and a kubeconfig.
+2. **Run the service's installer** with that kubeconfig. It creates the
+   service's APIExports, schemas and configuration in the workspace.
+3. **Create a workspace seed** (admin area: *Workspace seeds*) that binds
+   those exports and creates the objects every workspace should have.
+
+Step 3 comes after step 2 because a seed names exports, and those have to
+exist to be bound. What the hub does with a seed saved before its export
+exists has not been tested.
+
+## System services
+
+A `SystemWorkspace` (`admin.railgrid.ai/v1alpha1`) is the `Provider` object's
+counterpart for these services. Creating one makes the hub provision:
+
+- the workspace `root:railgrid:system:<name>`, of the `system-service`
+  WorkspaceType;
+- a `provider` ServiceAccount in it, bound to `cluster-admin` in that
+  workspace;
+- a kubeconfig for that ServiceAccount, in the Secret
+  `<name>-system-kubeconfig` in `root:railgrid:system:providers`.
+
+```yaml
+apiVersion: admin.railgrid.ai/v1alpha1
+kind: SystemWorkspace
+metadata:
+  name: switchboard        # -> root:railgrid:system:switchboard
+spec:
+  displayName: Switchboard
+```
+
+What differs from a provider's workspace, and why:
+
+| | Provider | System service |
+|---|---|---|
+| Path | `root:railgrid:providers:<name>` | `root:railgrid:system:<name>` |
+| CatalogEntry export bound | yes | no, so it cannot register in the catalog |
+| ServiceAccount role | per `--provider-workspace-cluster-admin` | always `cluster-admin` in its own workspace |
+| Reaches tenant workspaces | when a tenant enables it | through a workspace seed |
+
+Neither kind of workspace serves `tenancy.kcp.io`, so neither can create
+child workspaces, and the credential has no access outside its own
+workspace.
+
+The names `controllers`, `providers` and `tenants` are the hub's own and are
+refused (`Ready=False`, reason `NameReserved`). A workspace of the requested
+name that the hub did not create for this object, for example
+`root:railgrid:system:metering`, is neither provisioned into nor deleted
+(`Ready=False`, reason `WorkspaceNotOwned`): the hub recognises its own by the
+`admin.railgrid.ai/system-workspace` annotation and the workspace type.
+
+**Deleting a `SystemWorkspace` deletes the workspace and every APIExport in
+it.** Tenant workspaces bound to those exports lose the API and its objects.
+The admin API refuses the delete while a seed references the workspace;
+`kubectl delete` does not check.
+
+Credentials are rotated the way a provider's are
+(`POST /api/admin/system-workspaces/{name}/credentials/rotate`): a second
+token is issued, the Secret is rewritten, and the previous token stops working
+after the grace period.
+
+## The admin area
+
+| Section | What it does |
+|---------|--------------|
+| *System services* | Create and delete system services, see whether the workspace is ready, download the kubeconfig, see which seeds reference each |
+| *Workspace seeds* | List seeds with their `Accepted` condition, create one, edit its spec as YAML, delete it |
+
+The seed editor sends the spec to the hub, which runs the validation below
+before storing anything, so a seed the hub would refuse is rejected at save
+with the reason, and unknown fields are an error instead of being dropped.
+Saving has no confirmation step beyond the button: it reaches every tenant
+workspace.
+
+The routes are under `/api/admin`, gated by `--admin-users` like the rest of
+the admin API: `system-workspaces` (GET, POST), `system-workspaces/{name}`
+(DELETE), `system-workspaces/{name}/kubeconfig` (GET),
+`system-workspaces/{name}/credentials/rotate` (POST), `workspace-seeds` (GET,
+POST), `workspace-seeds/{name}` (PUT, DELETE).
 
 ## What the hub does
 
@@ -125,8 +212,9 @@ another export, or one without the seed annotation.
 
 - **It is platform administration.** Whoever may write `WorkspaceSeed`s
   decides what runs in every tenant workspace and which claims are accepted
-  there, with no tenant consent step. Nothing but access to
-  `root:railgrid:system:providers` guards it.
+  there, with no tenant consent step. What guards it is write access to
+  `root:railgrid:system:providers` and membership of `--admin-users`, which
+  the admin area's seed editor requires.
 - **Claims must match the export.** kcp reports `PermissionClaimsValid=False`
   and serves nothing for a claim whose group, resource, verbs or identity hash
   differ from what the export declares. A claim the export declares and the
@@ -147,7 +235,8 @@ another export, or one without the seed annotation.
 - **Seeded bindings are not providers.** They do not appear in the portal's
   enabled-providers list, and the provider binding-claims reconciler leaves
   them alone, because their export is not under `root:railgrid:providers`.
-  Put a seeded service's workspace under `root:railgrid:system`.
+  Put a seeded service's workspace under `root:railgrid:system`, which is
+  what creating a system service does.
 
 ## What has been tested
 
@@ -160,3 +249,16 @@ Secret is refused. Not covered there: a workspace created after the seed, a
 `whenBound` object appearing when its provider is enabled later, and a change
 to a seed reaching bindings that already exist. Those paths have unit tests
 only.
+
+`TestYSystemWorkspace` in the same suite: a `SystemWorkspace` becomes a
+`system-service` workspace with a kubeconfig Secret, that credential creates
+an APIResourceSchema and an APIExport in its workspace, finds no CatalogEntry
+API there, cannot create a child workspace and cannot list Secrets in
+`root:railgrid:system:providers`; a reserved name and a hand-made workspace
+are refused, the hand-made workspace survives its `SystemWorkspace` being
+deleted, and deleting a provisioned one removes the workspace and the Secret.
+The admin routes have unit tests against a fake client only: the e2e hub runs
+without `--admin-users`. The two admin sections are type-checked and their
+helpers unit-tested; they have not been exercised in a browser against a
+hub. Not tested: credential rotation for a system service, and the token sweep
+that follows it.

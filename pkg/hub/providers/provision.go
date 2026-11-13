@@ -1063,6 +1063,15 @@ const ProviderKubeconfigSecretKey = "kubeconfig"
 // CR so a provider pod (or dev tooling) can read its credentials from one
 // well-known place. Idempotent. Ensures the target namespace exists first.
 func (p *Provisioner) WriteKubeconfigSecret(ctx context.Context, namespace, name, key string, kc []byte, providerName string) error {
+	return p.writeKubeconfigSecret(ctx, namespace, name, key, kc, map[string]string{
+		"providers.railgrid.ai/provider":   providerName,
+		"providers.railgrid.ai/managed-by": "provider-controller",
+	})
+}
+
+// writeKubeconfigSecret create-or-updates a kubeconfig Secret in
+// root:railgrid:system:providers with the given labels.
+func (p *Provisioner) writeKubeconfigSecret(ctx context.Context, namespace, name, key string, kc []byte, labels map[string]string) error {
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = apiurl.KCPClusterURL(cfg.Host, kcppaths.SystemProviders)
 	cs, err := kubernetes.NewForConfig(cfg)
@@ -1080,10 +1089,7 @@ func (p *Provisioner) WriteKubeconfigSecret(ctx context.Context, namespace, name
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
-			Labels: map[string]string{
-				"providers.railgrid.ai/provider":   providerName,
-				"providers.railgrid.ai/managed-by": "provider-controller",
-			},
+			Labels:    labels,
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{key: kc},

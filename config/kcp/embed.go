@@ -77,6 +77,8 @@ var ProvidersFS embed.FS
 // PR #205 / commit 3d2d277 for the failure shape). The `edge` WorkspaceType
 // has no defaultAPIBindings (it is a pure mount point) but ships here too so
 // the `workspace` type's limitAllowedChildren reference to it resolves.
+// `system-service`, the type of the workspaces a SystemWorkspace provisions
+// under root:railgrid:system, has none either and ships with the rest.
 //
-//go:embed workspacetype-organization.yaml workspacetype-workspace.yaml workspacetype-edge.yaml workspacetype-provider.yaml
+//go:embed workspacetype-organization.yaml workspacetype-workspace.yaml workspacetype-edge.yaml workspacetype-provider.yaml workspacetype-system-service.yaml
 var PostProvidersFS embed.FS
