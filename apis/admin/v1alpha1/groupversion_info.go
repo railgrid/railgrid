@@ -43,6 +43,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&ProviderList{},
 		&WorkspaceSeed{},
 		&WorkspaceSeedList{},
+		&SystemWorkspace{},
+		&SystemWorkspaceList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

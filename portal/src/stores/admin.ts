@@ -60,6 +60,49 @@ export interface AdminProvider {
   registered: boolean
   onboarded: boolean
 }
+// A platform service that is not a provider: its workspace under
+// root:railgrid:system, provisioned by the hub from a SystemWorkspace object.
+export interface AdminSystemWorkspace {
+  name: string
+  displayName: string
+  workspacePath: string
+  workspaceCluster: string
+  ready: boolean
+  // The Ready condition's reason and message; empty until the hub has
+  // reconciled the object once.
+  reason: string
+  message: string
+  // WorkspaceSeeds that reference an export in this workspace. The hub
+  // refuses to delete the workspace while this is not empty.
+  seeds: string[]
+}
+export interface AdminSeedBinding {
+  name: string
+  exportPath: string
+  exportName: string
+  tenantAccess: string
+  claims: number
+}
+export interface AdminSeedObject {
+  resource: string
+  apiVersion: string
+  kind: string
+  namespace: string
+  name: string
+  gated: boolean
+}
+// What every tenant workspace gets without an Enable step. spec is the seed's
+// spec as YAML, the form it is edited in. accepted is 'True', 'False', or ''
+// while the hub has not looked at the current spec yet.
+export interface AdminWorkspaceSeed {
+  name: string
+  spec: string
+  accepted: string
+  reason: string
+  message: string
+  bindings: AdminSeedBinding[]
+  objects: AdminSeedObject[]
+}
 // KubeconfigServer selects which hub address a downloaded provider kubeconfig
 // points at. 'internal' is the hub's in-cluster Service — correct for a provider
 // installed by Helm alongside the hub, and it keeps that provider's traffic off
@@ -70,6 +113,8 @@ export const useAdminStore = defineStore('admin', () => {
   const users = ref<AdminUser[]>([])
   const orgs = ref<AdminOrg[]>([])
   const providers = ref<AdminProvider[]>([])
+  const systemWorkspaces = ref<AdminSystemWorkspace[]>([])
+  const seeds = ref<AdminWorkspaceSeed[]>([])
   const loading = ref(false)
   // True only after all admin collections have been read successfully at
   // least once. Keep this true during later refreshes so callers can render
@@ -100,6 +145,8 @@ export const useAdminStore = defineStore('admin', () => {
     users.value = []
     orgs.value = []
     providers.value = []
+    systemWorkspaces.value = []
+    seeds.value = []
     kubeconfigServers.value = []
     isAdmin.value = null
     loaded.value = false
@@ -161,15 +208,19 @@ export const useAdminStore = defineStore('admin', () => {
     errorDetails.value = null
     forbidden.value = false
     try {
-      const [u, o, p] = await Promise.all([
+      const [u, o, p, sw, sd] = await Promise.all([
         get<AdminUser>('/api/admin/users', revision),
         get<AdminOrg>('/api/admin/organizations', revision),
         get<AdminProvider>('/api/admin/providers', revision),
+        get<AdminSystemWorkspace>('/api/admin/system-workspaces', revision),
+        get<AdminWorkspaceSeed>('/api/admin/workspace-seeds', revision),
       ])
       if (!current()) return
       users.value = u
       orgs.value = o
       providers.value = p
+      systemWorkspaces.value = sw
+      seeds.value = sd
       loaded.value = true
     } catch (e) {
       if (!current()) return
@@ -252,6 +303,59 @@ export const useAdminStore = defineStore('admin', () => {
     )
   }
 
+  // write sends one admin write and returns the response. 403 flips
+  // `forbidden` like every other admin write; any other failure throws the
+  // hub's own message, which for these routes says what to change (a refused
+  // seed, a workspace still referenced by a seed).
+  async function write(method: string, path: string, what: string, body?: unknown): Promise<Response> {
+    const revision = identityRevision
+    const resp = await authFetch(path, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+    assertIdentity(revision)
+    if (resp.status === 403) {
+      forbidden.value = true
+      throw new Error('forbidden')
+    }
+    if (!resp.ok) {
+      const failure = (await resp.json().catch(() => ({}))) as { error?: string }
+      assertIdentity(revision)
+      throw new Error(failure.error ?? `${what}: ${resp.status} ${resp.statusText}`)
+    }
+    return resp
+  }
+
+  // createSystemWorkspace creates a SystemWorkspace object; the hub then
+  // provisions root:railgrid:system:<name> with a ServiceAccount and a
+  // kubeconfig, the way it does for a Provider.
+  async function createSystemWorkspace(name: string, displayName: string): Promise<void> {
+    await write('POST', '/api/admin/system-workspaces', `create system service ${name}`, { name, displayName })
+  }
+
+  // deleteSystemWorkspace removes the object; the hub deletes the workspace
+  // and everything in it. Refused (409) while a seed references the workspace.
+  async function deleteSystemWorkspace(name: string): Promise<void> {
+    await write('DELETE', `/api/admin/system-workspaces/${encodeURIComponent(name)}`, `delete system service ${name}`)
+  }
+
+  // saveSeed creates a WorkspaceSeed (create=true, refused when the name is
+  // taken) or replaces the spec of an existing one. spec is YAML. The hub
+  // validates before it stores anything, so a refusal changes nothing.
+  async function saveSeed(name: string, spec: string, create: boolean): Promise<AdminWorkspaceSeed> {
+    const resp = create
+      ? await write('POST', '/api/admin/workspace-seeds', `create seed ${name}`, { name, spec })
+      : await write('PUT', `/api/admin/workspace-seeds/${encodeURIComponent(name)}`, `save seed ${name}`, { spec })
+    return (await resp.json()) as AdminWorkspaceSeed
+  }
+
+  // deleteSeed removes a WorkspaceSeed. The hub stops applying it; what it
+  // already created in tenant workspaces stays.
+  async function deleteSeed(name: string): Promise<void> {
+    await write('DELETE', `/api/admin/workspace-seeds/${encodeURIComponent(name)}`, `delete seed ${name}`)
+  }
+
   // downloadProviderKubeconfig fetches the minted kubeconfig (read from the
   // Secret the Provider controller wrote into root:railgrid:system:providers) and
   // triggers a browser download.
@@ -261,15 +365,25 @@ export const useAdminStore = defineStore('admin', () => {
   // in-cluster Service, so its traffic never leaves), 'external' for one running
   // anywhere else. Omitted downloads whatever the controller minted.
   async function downloadProviderKubeconfig(name: string, server?: KubeconfigServer): Promise<void> {
+    await downloadKubeconfig('providers', name, `${name}-kubeconfig`, server)
+  }
+
+  // downloadSystemWorkspaceKubeconfig is the same download for a system
+  // service's workspace.
+  async function downloadSystemWorkspaceKubeconfig(name: string, server?: KubeconfigServer): Promise<void> {
+    await downloadKubeconfig('system-workspaces', name, `${name}-system-kubeconfig`, server)
+  }
+
+  async function downloadKubeconfig(collection: 'providers' | 'system-workspaces', name: string, file: string, server?: KubeconfigServer): Promise<void> {
     const revision = identityRevision
     const query = server ? `?server=${server}` : ''
-    const resp = await authFetch(`/api/admin/providers/${encodeURIComponent(name)}/kubeconfig${query}`)
+    const resp = await authFetch(`/api/admin/${collection}/${encodeURIComponent(name)}/kubeconfig${query}`)
     assertIdentity(revision)
     if (resp.status === 403) {
       forbidden.value = true
       throw new Error('forbidden')
     }
-    if (resp.status === 404) throw new Error('kubeconfig not ready — provider not provisioned yet')
+    if (resp.status === 404) throw new Error('kubeconfig not ready — not provisioned yet')
     if (!resp.ok) {
       // 400 carries an actionable message (e.g. the hub has no internal URL
       // configured); surface it instead of a bare status code.
@@ -282,10 +396,10 @@ export const useAdminStore = defineStore('admin', () => {
     const url = URL.createObjectURL(new Blob([text], { type: 'application/yaml' }))
     const a = document.createElement('a')
     a.href = url
-    a.download = server ? `${name}-kubeconfig-${server}.yaml` : `${name}-kubeconfig.yaml`
+    a.download = server ? `${file}-${server}.yaml` : `${file}.yaml`
     a.click()
     URL.revokeObjectURL(url)
   }
 
-  return { users, orgs, providers, loading, loaded, forbidden, error, errorDetails, isAdmin, kubeconfigServers, checkAccess, refresh, createProvider, deleteProvider, undeleteOrg, undeleteWorkspace, downloadProviderKubeconfig }
+  return { users, orgs, providers, systemWorkspaces, seeds, loading, loaded, forbidden, error, errorDetails, isAdmin, kubeconfigServers, checkAccess, refresh, createProvider, deleteProvider, undeleteOrg, undeleteWorkspace, downloadProviderKubeconfig, createSystemWorkspace, deleteSystemWorkspace, downloadSystemWorkspaceKubeconfig, saveSeed, deleteSeed }
 })

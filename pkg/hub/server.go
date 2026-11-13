@@ -1389,6 +1389,17 @@ func (s *Server) Run(ctx context.Context) error {
 				logger.Error(err, "Setting up provider provisioning controller failed")
 				return
 			}
+			// Platform services that are not providers get their workspace under
+			// root:railgrid:system the same declarative way, from a
+			// SystemWorkspace object.
+			if err := providers.SetupSystemWorkspaceWithManager(adminMgr, kcpConfig, providers.CatalogReconcilerOptions{
+				HubExternalURL: s.opts.HubExternalURL,
+				HubInternalURL: s.opts.HubInternalURL,
+				Provisioner:    s.providerProvisionerOptions(),
+			}); err != nil {
+				logger.Error(err, "Setting up system workspace provisioning controller failed")
+				return
+			}
 			// Every platform provider workspace gets a binding to metering's
 			// provider export, so the provider can emit UsageRecords; gated on
 			// metering being discovered, a no-op until then.
