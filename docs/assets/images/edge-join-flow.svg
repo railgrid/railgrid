@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" width="1200" height="700" role="img" aria-labelledby="t d">
+<title id="t">Join-token bootstrap</title>
+<desc id="d">Sequence: the CLI creates the edge object; the edges provider mints a join token; the CLI prints the install command; the agent dials the hub with the join token; the hub forwards to the edges provider, which matches the token, obtains a scoped identity from the hub and returns it on the upgrade response; the agent saves it; the provider clears the token and marks the edge Ready.</desc>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a0b12"/><stop offset="1" stop-color="#141329"/></linearGradient>
+
+<marker id="m0" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5aa9ff"/></marker>
+<marker id="m1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8b6bff"/></marker>
+<marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2fd6a0"/></marker>
+<marker id="m3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#b7a4ff"/></marker>
+</defs>
+<rect width="1200" height="700" rx="18" fill="url(#bg)"/>
+
+<rect x="30" y="30" width="200" height="58" rx="10" fill="#111320" stroke="#5aa9ff" stroke-width="1.5"/>
+<text x="130" y="55" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e9e9f2" text-anchor="middle">railgrid CLI</text>
+<text x="130" y="74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" fill="#8a8ca6" text-anchor="middle">you</text>
+<path d="M130,88 V668" stroke="#262a44" stroke-width="1.5" stroke-dasharray="3 5"/>
+<rect x="265" y="30" width="200" height="58" rx="10" fill="#111320" stroke="#b7a4ff" stroke-width="1.5"/>
+<text x="365" y="55" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e9e9f2" text-anchor="middle">Tenant workspace</text>
+<text x="365" y="74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" fill="#8a8ca6" text-anchor="middle">the edge object, in kcp</text>
+<path d="M365,88 V668" stroke="#262a44" stroke-width="1.5" stroke-dasharray="3 5"/>
+<rect x="500" y="30" width="200" height="58" rx="10" fill="#111320" stroke="#8b6bff" stroke-width="1.5"/>
+<text x="600" y="55" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e9e9f2" text-anchor="middle">Edges provider</text>
+<text x="600" y="74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" fill="#8a8ca6" text-anchor="middle">reconcilers + tunnel handler</text>
+<path d="M600,88 V668" stroke="#262a44" stroke-width="1.5" stroke-dasharray="3 5"/>
+<rect x="735" y="30" width="200" height="58" rx="10" fill="#111320" stroke="#9a9cb8" stroke-width="1.5"/>
+<text x="835" y="55" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e9e9f2" text-anchor="middle">Hub</text>
+<text x="835" y="74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" fill="#8a8ca6" text-anchor="middle">agent ingress</text>
+<path d="M835,88 V668" stroke="#262a44" stroke-width="1.5" stroke-dasharray="3 5"/>
+<rect x="970" y="30" width="200" height="58" rx="10" fill="#111320" stroke="#2fd6a0" stroke-width="1.5"/>
+<text x="1070" y="55" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e9e9f2" text-anchor="middle">Agent</text>
+<text x="1070" y="74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" fill="#8a8ca6" text-anchor="middle">on the cluster or host</text>
+<path d="M1070,88 V668" stroke="#262a44" stroke-width="1.5" stroke-dasharray="3 5"/>
+<path d="M146,140 H361" fill="none" stroke="#5aa9ff" stroke-width="1.8" marker-end="url(#m0)"/>
+<circle cx="130" cy="140" r="11" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.6"/><text x="130" y="144.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#5aa9ff" text-anchor="middle">1</text>
+<text x="154" y="131" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#c9cbe0">railgrid edge create my-cluster</text>
+<text x="154" y="157" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#5aa9ff">KubernetesCluster, spec: {}</text>
+<path d="M584,200 H369" fill="none" stroke="#8b6bff" stroke-width="1.8" marker-end="url(#m1)"/>
+<circle cx="600" cy="200" r="11" fill="#0a0b12" stroke="#8b6bff" stroke-width="1.6"/><text x="600" y="204.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#8b6bff" text-anchor="middle">2</text>
+<text x="389" y="191" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#c9cbe0">TokenReconciler mints a join token</text>
+<text x="389" y="217" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#8b6bff">status.joinToken (+ hash)</text>
+<path d="M349,260 H134" fill="none" stroke="#5aa9ff" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#m0)"/>
+<circle cx="365" cy="260" r="11" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.6"/><text x="365" y="264.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#5aa9ff" text-anchor="middle">3</text>
+<text x="154" y="251" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#c9cbe0">polls, then prints the join command</text>
+<text x="154" y="277" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#5aa9ff">--hub-url --edge-name --token</text>
+<path d="M1054,330 H839" fill="none" stroke="#2fd6a0" stroke-width="1.8" marker-end="url(#m2)"/>
+<circle cx="1070" cy="330" r="11" fill="#0a0b12" stroke="#2fd6a0" stroke-width="1.6"/><text x="1070" y="334.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#2fd6a0" text-anchor="middle">4</text>
+<text x="859" y="321" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#c9cbe0">WebSocket, dialled outward</text>
+<text x="859" y="347" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#2fd6a0">Bearer &lt;join token&gt;</text>
+<path d="M819,390 H604" fill="none" stroke="#b7a4ff" stroke-width="1.8" marker-end="url(#m3)"/>
+<circle cx="835" cy="390" r="11" fill="#0a0b12" stroke="#b7a4ff" stroke-width="1.6"/><text x="835" y="394.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#b7a4ff" text-anchor="middle">5</text>
+<text x="624" y="381" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#c9cbe0">forwarded to the provider</text>
+<text x="624" y="407" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#b7a4ff">/agent/clusters/…/proxy</text>
+<circle cx="600" cy="452" r="11" fill="#0a0b12" stroke="#8b6bff" stroke-width="1.6"/><text x="600" y="456.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#8b6bff" text-anchor="middle">6</text>
+<rect x="620" y="432" width="381.5" height="40" rx="7" fill="#0d0e18" stroke="#262a44" stroke-width="1"/>
+<text x="632" y="449" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#c9cbe0">constant-time match; asks the hub for a scoped identity</text>
+<text x="632" y="465" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#8b6bff">24h token, refreshed by the agent at 80%</text>
+<path d="M616,520 H1066" fill="none" stroke="#8b6bff" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#m1)"/>
+<circle cx="600" cy="520" r="11" fill="#0a0b12" stroke="#8b6bff" stroke-width="1.6"/><text x="600" y="524.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#8b6bff" text-anchor="middle">7</text>
+<text x="624" y="511" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#c9cbe0">the upgrade response carries the credential</text>
+<text x="624" y="537" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#8b6bff">X-Railgrid-Agent-Credential</text>
+<circle cx="1070" cy="584" r="11" fill="#0a0b12" stroke="#2fd6a0" stroke-width="1.6"/><text x="1070" y="588.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#2fd6a0" text-anchor="middle">8</text>
+<rect x="761.12" y="564" width="288.88" height="40" rx="7" fill="#0d0e18" stroke="#262a44" stroke-width="1"/>
+<text x="773.12" y="581" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#c9cbe0">saved; the join token is not used again</text>
+<text x="773.12" y="597" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#2fd6a0">~/.railgrid/agent-&lt;edge&gt;.credential.json</text>
+<path d="M584,640 H369" fill="none" stroke="#8b6bff" stroke-width="1.8" marker-end="url(#m1)"/>
+<circle cx="600" cy="640" r="11" fill="#0a0b12" stroke="#8b6bff" stroke-width="1.6"/><text x="600" y="644.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#8b6bff" text-anchor="middle">9</text>
+<text x="389" y="631" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#c9cbe0">token cleared, edge reported Ready</text>
+<text x="389" y="657" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#8b6bff">connected · Ready · Registered</text>
+</svg>

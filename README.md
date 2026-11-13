@@ -1,3 +1,16 @@
+<p align="center">
+  <img src="docs/assets/images/banner.svg" alt="railgrid: one control plane for platform teams. The portal, the CLI and AI agents call one hub, which reaches providers, organization-owned providers and edges." width="100%">
+</p>
+
+<p align="center">
+  <a href="#quickstart"><b>Quickstart</b></a> ·
+  <a href="#install"><b>Install</b></a> ·
+  <a href="#how-it-fits-together"><b>Architecture</b></a> ·
+  <a href="#cli-reference"><b>CLI</b></a> ·
+  <a href="https://railgrid.ai/docs/"><b>Docs</b></a> ·
+  <a href="CONTRIBUTING.md"><b>Contributing</b></a>
+</p>
+
 # railgrid
 
 railgrid is an open-source control plane for platform teams.
@@ -7,7 +20,7 @@ Providers publish Kubernetes-style APIs, versioned actions and MCP tools into is
 ## Deployment and release status
 
 - **Railgrid Cloud** is the control plane operated by Railgrid. If you have access, sign in to the [hosted console](https://console.railgrid.ai). For availability, pricing, support options, and service commitments, [contact the Railgrid team](https://railgrid.ai/contact/).
-- **Self-hosted Railgrid** runs on your Kubernetes infrastructure. Start with the [Helm deployment guide](https://railgrid.github.io/railgrid/helm.html) or try it locally with `railgrid dev init`.
+- **Self-hosted Railgrid** runs on your Kubernetes infrastructure. Start with the [Helm deployment guide](docs/helm.md) or try it locally with `railgrid dev init`.
 
 Railgrid is pre-1.0, and `v1alpha1` APIs may change between releases. See [GitHub Releases](https://github.com/railgrid/railgrid/releases) for published versions and [the upgrade guidance](https://railgrid.ai/docs/resources/releases/) before upgrading. For a self-hosted hub, check with its operator about CLI compatibility. Hub and provider versions can differ by deployment.
 
@@ -36,22 +49,9 @@ The provider directories listed above are mirrored read-only to `railgrid/provid
 
 ## How it fits together
 
-```
-                 people · CLI · portal · AI agents (MCP)
-                                 │
-                        ┌────────▼────────┐
-                        │    railgrid hub    │   workspaces, OIDC, RBAC,
-                        │                 │   provider registry, proxies
-                        └──┬─────┬─────┬──┘
-           provider APIs   │     │     │   outbound tunnels
-      ┌────────────────────┘     │     └────────────────────┐
-┌─────▼──────┐          ┌────────▼───────┐           ┌──────▼──────┐
-│  platform  │          │   org-owned    │           │    edges    │
-│  providers │          │   providers    │           │ clusters &  │
-│ (in-cluster│          │ (your cluster, │           │   servers   │
-│  with hub) │          │  over an edge) │           │ behind NAT  │
-└────────────┘          └────────────────┘           └─────────────┘
-```
+<p align="center">
+  <img src="docs/assets/images/overview.svg" alt="The portal, the railgrid CLI, kubectl and AI agents call one hub. The hub holds workspaces, identity, the provider registry and the MCP aggregate. It reaches platform providers running next to it, and organization-owned providers over an edge. Agents on clusters and servers behind NAT dial out to the hub." width="100%">
+</p>
 
 The hub is the only component that needs to be reachable. Providers register with the hub and serve their APIs inside their own workspace; agents on edges connect outward. Traffic between the hub and everything else is HTTP/1.1 and WebSockets, so any reverse proxy, ingress or tunnel in front of the hub works.
 
@@ -65,7 +65,7 @@ helm install railgrid-hub oci://ghcr.io/railgrid/charts/railgrid-hub \
   --set hub.hubExternalURL=https://railgrid.example.com
 ```
 
-That is a complete single hub; its control-plane store runs inside the same release. For TLS, OIDC, ingress and the provider hardening flags, see [Helm deployment](https://railgrid.github.io/railgrid/helm.html). Larger installs can run the control-plane store as separate shards: [single hub](https://railgrid.github.io/railgrid/install-embedded-kcp.html), [multi-shard](https://railgrid.github.io/railgrid/install-external-kcp.html).
+That is a complete single hub; its control-plane store runs inside the same release. For TLS, OIDC, ingress and the provider hardening flags, see [Helm deployment](docs/helm.md). Larger installs can run the control-plane store as separate shards: [single hub](docs/install-embedded-kcp.md), [multi-shard](docs/install-external-kcp.md).
 
 To try railgrid on a laptop, the CLI can create a local hub in a kind cluster:
 
@@ -132,7 +132,7 @@ This prints the workspace's MCP endpoint and ready-to-paste configuration, with 
 
 ## Security
 
-The hub authenticates users with OIDC or a static token, and providers with their own workspace service-account token. Org-owned providers never see a user's bearer: they receive a short-lived, workspace-bound delegated token. Agents refuse to proxy to link-local and metadata addresses and can be locked to an allow-list. Webhooks into the agents provider are signature-checked. Details are in [Security](https://railgrid.github.io/railgrid/security.html).
+The hub authenticates users with OIDC or a static token, and providers with their own workspace service-account token. Org-owned providers never see a user's bearer: they receive a short-lived, workspace-bound delegated token. Agents refuse to proxy to link-local and metadata addresses and can be locked to an allow-list. Webhooks into the agents provider are signature-checked. Details are in [Security](docs/security.md).
 
 Some hardened behaviours ship off by default for one release so existing installs can roll forward; the Helm doc's section "Turning on the hardened defaults early" lists the values that turn them on.
 
@@ -211,9 +211,13 @@ skips them with a warning. `exec` needs a prior sync.
 
 ## Documentation
 
-Published: [Railgrid documentation](https://railgrid.ai/docs/) · [Local quickstart](https://railgrid.github.io/railgrid/getting-started.html) · [Helm deployment](https://railgrid.github.io/railgrid/helm.html) · [Security](https://railgrid.github.io/railgrid/security.html) · [Ingress](https://railgrid.github.io/railgrid/ingress/) · [MCP architecture](https://railgrid.github.io/railgrid/mcp-architecture.html) · [Developer guide](https://railgrid.github.io/railgrid/developers.html)
-
-Design documents in this repository: [providers](docs/providers.md), [organizations and the workspace tree](docs/organizations.md), [provider scoping](docs/provider-scoping.md), [provider actions](docs/provider-actions.md), [BYO providers](docs/byo-providers.md), [MCP architecture](docs/mcp-architecture.md).
+| | |
+|---|---|
+| **Using railgrid** | [Railgrid documentation](https://railgrid.ai/docs/) · [Local quickstart](docs/getting-started.md) · [CLI reference](docs/cli/README.md) |
+| **Running a hub** | [Helm deployment](docs/helm.md) · [Single hub](docs/install-embedded-kcp.md) · [Multi-shard](docs/install-external-kcp.md) · [Ingress](docs/ingress/index.md) · [Security](docs/security.md) |
+| **Writing a provider** | [Providers](docs/providers.md) · [Provider actions](docs/provider-actions.md) · [Provider scoping](docs/provider-scoping.md) · [BYO providers](docs/byo-providers.md) |
+| **Working on railgrid** | [CONTRIBUTING.md](CONTRIBUTING.md) · [DEVELOPERS.md](DEVELOPERS.md) · [AGENTS.md](AGENTS.md) · [Local environment with `railgrid dev`](docs/developers.md) |
+| **Design** | [Organizations and the workspace tree](docs/organizations.md) · [MCP architecture](docs/mcp-architecture.md) |
 
 ## Under the hood
 
@@ -221,7 +225,11 @@ Workspaces are served by [kcp](https://github.com/kcp-dev/kcp), which gives ever
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for building, running the local stack, tests and the pull-request workflow.
+<p align="center">
+  <img src="docs/assets/images/contribution-flow.svg" alt="Fork and branch, change, regenerate, verify with make verify, open a pull request, Prow CI and review, merge." width="100%">
+</p>
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers building, running the local stack, tests and the pull-request workflow. [DEVELOPERS.md](DEVELOPERS.md) is the reference for the internals: the workspace tree, how an edge joins, how a call reaches it.
 
 ## License
 
