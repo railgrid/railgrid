@@ -71,6 +71,7 @@ import type {
   ScheduleCreate,
   SchedulePatch,
   SessionMeta,
+  SessionNotification,
   Toolset,
   ToolsetWrite,
   TranscriptMessage,
@@ -559,6 +560,8 @@ export class ApiClient {
     const page = await this.getVerb<MessagePage>(this.verb(AGENTS, agent, 'messages', { query: { session, limit, ...(cursor ? { cursor } : {}) } }), true)
     return { items: page.items || [], nextCursor: page.nextCursor }
   }
+  listSessionNotifications = (agent: string, session: string): Promise<SessionNotification[]> =>
+    this.listVerb<SessionNotification>(this.verbTail(this.verb(AGENTS, agent, 'notifications'), session), true)
 
   // Model credentials are ModelCredential objects in the tenant workspace,
   // written through kcp; the API key stays in the Secret each one points at.

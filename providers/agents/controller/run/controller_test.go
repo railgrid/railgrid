@@ -618,10 +618,10 @@ func TestAStrandedRunningRunIsRecovered(t *testing.T) {
 	d := &dispatcher{}
 	r := &Reconciler{
 		Now: func() time.Time { return started }, ProcessID: "pod-a", Dispatch: d.dispatch,
-		Recover: func(_ context.Context, _, _, runID string) error {
+		Recover: func(_ context.Context, _, _, runID string) (time.Duration, error) {
 			recovered.run = runID
 			recovered.calls++
-			return nil
+			return 0, nil
 		},
 	}
 	object := unattended("r1", func(o *agentsv1alpha1.Run) {
@@ -645,9 +645,9 @@ func TestOurOwnRunningRunIsNotRecovered(t *testing.T) {
 	r := &Reconciler{
 		Now: func() time.Time { return started }, ProcessID: "pod-a",
 		Dispatch: (&dispatcher{}).dispatch,
-		Recover: func(context.Context, string, string, string) error {
+		Recover: func(context.Context, string, string, string) (time.Duration, error) {
 			t.Fatal("this process is executing that run")
-			return nil
+			return 0, nil
 		},
 	}
 	object := unattended("r1", func(o *agentsv1alpha1.Run) {

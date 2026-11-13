@@ -131,6 +131,12 @@ var served = map[string]dataplane.Limits{
 	},
 }
 
+var pullRequestActions = map[string]dataplane.Limits{
+	"submit-review":  jsonAction(50),
+	"upsert-comment": jsonAction(50),
+	"ready":          jsonAction(50),
+}
+
 func jsonAction(items int64) dataplane.Limits {
 	return dataplane.Limits{
 		Timeout:        actionTimeout,
@@ -171,6 +177,7 @@ var snapshotActions = map[string]bool{
 // that did not settle.
 var statusFor = map[string]int{
 	"invalid_action_input":         http.StatusBadRequest,
+	"review_operation_conflict":    http.StatusConflict,
 	"action_forbidden":             http.StatusForbidden,
 	"identity_conflict":            http.StatusConflict,
 	"unsupported_provider":         http.StatusUnprocessableEntity,
@@ -210,14 +217,17 @@ func New(callers dataplane.ProviderCallerFactory, backends *backend.Registry) *S
 }
 
 type Input struct {
-	Repository      string `json:"repository"`
-	RepositoryUID   string `json:"repositoryUID"`
-	ConnectionUID   string `json:"connectionUID"`
-	Branch          string `json:"branch,omitempty"`
-	ExpectedHead    string `json:"expectedHead,omitempty"`
-	Number          int    `json:"number,omitempty"`
-	Page            int    `json:"page,omitempty"`
-	ParentCommentID int64  `json:"parentCommentID,omitempty"`
+	Repository      string               `json:"repository"`
+	RepositoryUID   string               `json:"repositoryUID"`
+	ConnectionUID   string               `json:"connectionUID"`
+	Branch          string               `json:"branch,omitempty"`
+	ExpectedHead    string               `json:"expectedHead,omitempty"`
+	Number          int                  `json:"number,omitempty"`
+	IdempotencyKey  string               `json:"idempotencyKey,omitempty"`
+	CommentKey      string               `json:"commentKey,omitempty"`
+	Comments        []backend.ReviewNote `json:"comments,omitempty"`
+	Page            int                  `json:"page,omitempty"`
+	ParentCommentID int64                `json:"parentCommentID,omitempty"`
 	backend.PullRequestInput
 	Snapshot  *backend.Snapshot `json:"snapshot,omitempty"`
 	BundleRef string            `json:"bundleRef,omitempty"`
@@ -238,12 +248,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// reads, so it is resolved from the route before anything else happens.
 	gvr, kind := repositories, "Repository"
 	limits, isServed := served[req.Verb]
-	if req.Resource == connections.Resource {
+	switch req.Resource {
+	case connections.Resource:
 		gvr, kind = connections, "Connection"
 		limits, isServed = connectionActions[req.Verb]
+	case pullRequests.Resource:
+		gvr, kind = pullRequests, "PullRequest"
+		limits, isServed = pullRequestActions[req.Verb]
 	}
 	if route.Group != gvr.Group || route.APIVersion != gvr.Version ||
-		(req.Resource != repositories.Resource && req.Resource != connections.Resource) ||
+		(req.Resource != repositories.Resource && req.Resource != connections.Resource && req.Resource != pullRequests.Resource) ||
 		req.Component != "" || req.Version != ContractVersion || req.Tail != "" || !isServed {
 		http.NotFound(w, r)
 		return
@@ -293,6 +307,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	dataplane.Serve(w, r, envelope, limits, func(ctx context.Context, raw json.RawMessage) (any, *actionwire.Error) {
 		if req.Resource == connections.Resource {
 			return s.runConnection(ctx, provider, req, visible, raw)
+		}
+		if req.Resource == pullRequests.Resource {
+			return s.runPullRequest(ctx, provider, req, visible, raw)
 		}
 		return s.run(ctx, provider, identity, req, visible, raw)
 	}, dataplane.WithErrorStatus(func(e *actionwire.Error) int {

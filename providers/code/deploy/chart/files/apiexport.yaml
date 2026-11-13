@@ -67,7 +67,7 @@ spec:
       crd: {}
   - group: code.railgrid.ai
     name: pullrequests
-    schema: v261018-947b2daa.pullrequests.code.railgrid.ai
+    schema: v261112-09bc5d78c.pullrequests.code.railgrid.ai
     storage:
       crd: {}
   - group: code.railgrid.ai
@@ -93,6 +93,33 @@ spec:
   - group: code.railgrid.ai
     name: connections/mint-registry-token
     schema: v260924-87f1980f.mint-registry-token.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: pullrequests/ready
+    schema: v261112-09bc5d78c.ready.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: pullrequests/submit-review
+    schema: v261112-09bc5d78c.submit-review.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
+    name: pullrequests/upsert-comment
+    schema: v261112-09bc5d78c.upsert-comment.code.railgrid.ai
     storage:
       virtual:
         reference:

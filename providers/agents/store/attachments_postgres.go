@@ -302,12 +302,22 @@ func (p *PostgresStore) ReconcileAgentAttachmentBindings(ctx context.Context) er
 }
 
 func (p *PostgresStore) CreateAgentChatRun(ctx context.Context, scope Scope, agentUID string, msg Message, run Run, receipts []AgentAttachmentReceipt, actorID string, now time.Time) error {
+	return p.createAgentChatRun(ctx, scope, agentUID, msg, run, receipts, actorID, "", now)
+}
+
+func (p *PostgresStore) CreateOwnedAgentChatRun(ctx context.Context, scope Scope, agentUID string, msg Message, run Run, receipts []AgentAttachmentReceipt, actorID, ownerSubject string, now time.Time) error {
+	return p.createAgentChatRun(ctx, scope, agentUID, msg, run, receipts, actorID, ownerSubject, now)
+}
+
+func (p *PostgresStore) createAgentChatRun(ctx context.Context, scope Scope, agentUID string, msg Message, run Run, receipts []AgentAttachmentReceipt, actorID, ownerSubject string, now time.Time) error {
 	scope = p.normalizeScope(ctx, scope)
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
-	if err := validateAgentAttachmentAdmission(receipts, scope, agentUID, msg.SessionID, actorID, run.ID); err != nil {
-		return err
+	if len(receipts) > 0 {
+		if err := validateAgentAttachmentAdmission(receipts, scope, agentUID, msg.SessionID, actorID, run.ID); err != nil {
+			return err
+		}
 	}
 	if msg.ID == "" || msg.Role != "user" || msg.RunID != run.ID || msg.SessionID != run.SessionID || run.AgentName != scope.AgentName || run.Phase == "" || msg.CreatedAt.IsZero() {
 		return fmt.Errorf("atomic chat admission needs a matching user message and run")
@@ -330,6 +340,27 @@ func (p *PostgresStore) CreateAgentChatRun(ctx context.Context, scope Scope, age
 	}
 	if err := lockTranscriptSession(ctx, mutation.executor, scope, msg.SessionID); err != nil {
 		return err
+	}
+	if ownerSubject != "" && validateSessionAccess(agentUID, msg.SessionID, ownerSubject) == nil {
+		var ownerExists, transcriptExists bool
+		if err := mutation.executor.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agents_session_access WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND session_id=$5 AND is_owner=TRUE)`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, msg.SessionID).Scan(&ownerExists); err != nil {
+			return err
+		}
+		if !ownerExists {
+			if err := mutation.executor.QueryRowContext(ctx, `SELECT EXISTS (
+				SELECT 1 FROM agents_messages WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4
+				UNION ALL SELECT 1 FROM agents_session_titles WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4
+				UNION ALL SELECT 1 FROM agents_session_models WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4
+				UNION ALL SELECT 1 FROM agents_session_summaries WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4
+			)`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, msg.SessionID).Scan(&transcriptExists); err != nil {
+				return err
+			}
+			if !transcriptExists {
+				if _, err := mutation.executor.ExecContext(ctx, `INSERT INTO agents_session_access (org_uuid,workspace_uuid,agent_name,agent_uid,session_id,subject,is_owner,created_at) VALUES ($1,$2,$3,$4,$5,$6,TRUE,$7)`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, msg.SessionID, ownerSubject, now.UTC()); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	items := make([]AgentAttachment, 0, len(receipts))
 	for _, receipt := range receipts {
@@ -379,7 +410,10 @@ func insertAgentChatRun(ctx context.Context, executor scopedExecutor, scope Scop
 	if err != nil {
 		return err
 	}
-	var delivery, harnessSettings, repository, result, modelSettings any
+	var delivery, harnessSettings, repository, result, structuredResult, modelSettings, executionLeaseAt, runnerCleanupBinding, limits any
+	if !run.ExecutionLeaseAt.IsZero() {
+		executionLeaseAt = run.ExecutionLeaseAt.UTC()
+	}
 	if run.Delivery != nil {
 		delivery, err = marshalJSONB(run.Delivery)
 	}
@@ -392,24 +426,34 @@ func insertAgentChatRun(ctx context.Context, executor scopedExecutor, scope Scop
 	if err == nil && run.Result != nil {
 		result, err = marshalJSONB(run.Result)
 	}
+	if err == nil && run.StructuredResult != nil {
+		structuredResult, err = marshalJSONB(run.StructuredResult)
+	}
 	if err == nil && run.ModelSettings != nil {
 		modelSettings, err = marshalJSONB(run.ModelSettings)
+	}
+	if err == nil && run.Limits != nil {
+		limits, err = marshalJSONB(run.Limits)
+	}
+	if err == nil && run.RunnerCleanupBinding != nil {
+		runnerCleanupBinding, err = marshalJSONB(run.RunnerCleanupBinding)
 	}
 	if err != nil {
 		return err
 	}
 	_, err = executor.ExecContext(ctx, `
 		INSERT INTO agents_runs
-			(id,org_uuid,workspace_uuid,agent_name,session_id,trigger_kind,parent_run_id,phase,attempt,input,output,sources,idempotency_key,delivery,message,checkpoint,input_tokens,output_tokens,usd_micros,created_at,updated_at,started_at,finished_at,worked_duration_ms,backend,attempt_id,harness_session_id,repository,result,retries,retry_at,harness_settings,model_settings)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)`,
+			(id,org_uuid,workspace_uuid,agent_name,session_id,trigger_kind,parent_run_id,phase,attempt,input,output,sources,idempotency_key,delivery,message,checkpoint,input_tokens,output_tokens,usd_micros,created_at,updated_at,started_at,finished_at,worked_duration_ms,backend,attempt_id,harness_session_id,repository,result,structured_result,invocation_fingerprint,invocation_agent_uid,invocation_prevented,retries,retry_at,harness_settings,model_settings,execution_owner,execution_lease_at,execution_epoch,agent_uid,recovery_identity,runner_cleanup_binding,limits,usage_completeness,cost_basis)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46)`,
 		run.ID, scope.OrgUUID, scope.WorkspaceUUID, run.AgentName, run.SessionID, run.Trigger, run.ParentRunID,
 		string(run.Phase), run.Attempt, run.Input, run.Output, sources, run.IdempotencyKey, delivery, run.Message,
 		nullBytes(run.Checkpoint), run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), nullInt64(run.WorkedDurationMS),
-		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, run.Retries, nullTime(run.RetryAt), harnessSettings, modelSettings)
+		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, structuredResult, run.InvocationFingerprint, run.InvocationAgentUID, run.InvocationPrevented, run.Retries, nullTime(run.RetryAt), harnessSettings, modelSettings, run.ExecutionOwner, executionLeaseAt, run.ExecutionEpoch, run.AgentUID, string(run.RecoveryIdentity), runnerCleanupBinding, limits, run.UsageCompleteness, run.CostBasis)
 	return err
 }
 
 var _ AgentAttachmentStore = (*PostgresStore)(nil)
 var _ AgentChatAdmissionStore = (*PostgresStore)(nil)
+var _ AgentChatOwnerAdmissionStore = (*PostgresStore)(nil)
 var _ AgentAttachmentQuotaConfigurer = (*PostgresStore)(nil)

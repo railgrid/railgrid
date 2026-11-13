@@ -261,13 +261,23 @@ func (m *MemoryStore) ReconcileAgentAttachmentBindings(_ context.Context) error 
 	return nil
 }
 
-func (m *MemoryStore) CreateAgentChatRun(_ context.Context, scope Scope, agentUID string, msg Message, run Run, receipts []AgentAttachmentReceipt, actorID string, now time.Time) error {
+func (m *MemoryStore) CreateAgentChatRun(ctx context.Context, scope Scope, agentUID string, msg Message, run Run, receipts []AgentAttachmentReceipt, actorID string, now time.Time) error {
+	return m.createAgentChatRun(ctx, scope, agentUID, msg, run, receipts, actorID, "", now)
+}
+
+func (m *MemoryStore) CreateOwnedAgentChatRun(ctx context.Context, scope Scope, agentUID string, msg Message, run Run, receipts []AgentAttachmentReceipt, actorID, ownerSubject string, now time.Time) error {
+	return m.createAgentChatRun(ctx, scope, agentUID, msg, run, receipts, actorID, ownerSubject, now)
+}
+
+func (m *MemoryStore) createAgentChatRun(_ context.Context, scope Scope, agentUID string, msg Message, run Run, receipts []AgentAttachmentReceipt, actorID, ownerSubject string, now time.Time) error {
 	scope = m.normalizeScope(scope)
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
-	if err := validateAgentAttachmentAdmission(receipts, scope, agentUID, msg.SessionID, actorID, run.ID); err != nil {
-		return err
+	if len(receipts) > 0 {
+		if err := validateAgentAttachmentAdmission(receipts, scope, agentUID, msg.SessionID, actorID, run.ID); err != nil {
+			return err
+		}
 	}
 	if msg.ID == "" || msg.Role != "user" || msg.RunID != run.ID || msg.SessionID != run.SessionID || run.AgentName != scope.AgentName || run.Phase == "" {
 		return fmt.Errorf("atomic chat admission needs a matching user message and run")
@@ -294,6 +304,16 @@ func (m *MemoryStore) CreateAgentChatRun(_ context.Context, scope Scope, agentUI
 	if err != nil {
 		return err
 	}
+	if ownerSubject != "" {
+		ownerKey := sessionAccessKey(scope, agentUID, msg.SessionID)
+		transcriptKey := sessionKey(scope, msg.SessionID)
+		_, hasTitle := m.sessionTitles[transcriptKey]
+		_, hasModelSettings := m.sessionModels[transcriptKey]
+		_, hasSummary := m.summaries[transcriptKey]
+		if m.sessionOwners[ownerKey] == "" && len(m.messages[transcriptKey]) == 0 && !hasTitle && !hasModelSettings && !hasSummary && validateSessionAccess(agentUID, msg.SessionID, ownerSubject) == nil {
+			m.sessionOwners[ownerKey] = ownerSubject
+		}
+	}
 	m.messageSequence++
 	msg.Sequence = m.messageSequence
 	m.messages[sessionKey(scope, msg.SessionID)] = append(m.messages[sessionKey(scope, msg.SessionID)], msg)
@@ -307,4 +327,5 @@ func (m *MemoryStore) CreateAgentChatRun(_ context.Context, scope Scope, agentUI
 
 var _ AgentAttachmentStore = (*MemoryStore)(nil)
 var _ AgentChatAdmissionStore = (*MemoryStore)(nil)
+var _ AgentChatOwnerAdmissionStore = (*MemoryStore)(nil)
 var _ AgentAttachmentQuotaConfigurer = (*MemoryStore)(nil)

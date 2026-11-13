@@ -21,9 +21,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/railgrid/provider-sdk/dataplane"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
@@ -128,6 +130,10 @@ func newChatToolServer(t *testing.T, reply string) *Server {
 }
 
 func newChatToolFixture(t *testing.T, modelURL, aggregateURL string, review http.HandlerFunc) *Server {
+	return newChatToolFixtureWithKCPSubject(t, modelURL, aggregateURL, review, "alice")
+}
+
+func newChatToolFixtureWithKCPSubject(t *testing.T, modelURL, aggregateURL string, review http.HandlerFunc, kcpSubject string) *Server {
 	t.Helper()
 	ws := tenanttest.New()
 	agent := researchAgent(false)
@@ -149,6 +155,17 @@ func newChatToolFixture(t *testing.T, modelURL, aggregateURL string, review http
 		}})
 	}
 	kcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/selfsubjectreviews") {
+			if kcpSubject == "" {
+				http.Error(w, "identity review unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"apiVersion": "authentication.k8s.io/v1", "kind": "SelfSubjectReview",
+				"status": map[string]any{"userInfo": map[string]any{"username": kcpSubject}},
+			})
+			return
+		}
 		if review != nil && strings.HasSuffix(r.URL.Path, "/selfsubjectaccessreviews") {
 			review(w, r)
 			return
@@ -172,7 +189,10 @@ func newChatToolFixture(t *testing.T, modelURL, aggregateURL string, review http
 }
 
 func TestMCPChatStreamsTheTurnAndReturnsTheTerminalFrame(t *testing.T) {
-	s := newChatToolServer(t, "Three instances are ready.")
+	model := newFakeLLM(t, "Three instances are ready.")
+	kcpSubject := "system:serviceaccount:default:verified-chat-owner"
+	s := newChatToolFixtureWithKCPSubject(t, model.srv.URL, "", nil, kcpSubject)
+	s.cfg.ProcessID = "agents-chat-worker-1"
 	rec := httptest.NewRecorder()
 	s.MCPHandler().ServeHTTP(rec, chatToolRequest("tools/call", map[string]any{
 		"name":      "chat",
@@ -200,10 +220,63 @@ func TestMCPChatStreamsTheTurnAndReturnsTheTerminalFrame(t *testing.T) {
 	if data["content"] != "Three instances are ready." {
 		t.Fatalf("content = %v, want the model's reply", data["content"])
 	}
-	if data["runID"] == "" || data["runID"] == nil {
+	runID, _ := data["runID"].(string)
+	if runID == "" {
 		t.Fatalf("done frame carries no runID: %v", data)
 	}
-	page, err := s.store.ListMessages(context.Background(), store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "scout"}, "t1", 100, "")
+	scope := store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "scout"}
+	storedRun, err := s.store.GetRun(context.Background(), scope, runID)
+	if err != nil || storedRun.Phase != store.RunPhaseSucceeded {
+		t.Fatalf("ProcessID chat run = %+v, err=%v; want a durable succeeded run", storedRun, err)
+	}
+	tenantScope, err := s.tenant.For("c1", "test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedAgent, err := tenantScope.Dynamic().Resource(agentsclient.AgentGVR).Get(context.Background(), "scout", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	access, ok := s.store.(store.SessionNotificationStore)
+	if !ok {
+		t.Fatal("chat store does not support session ownership")
+	}
+	owned, err := access.HasSessionAccess(context.Background(), scope, string(storedAgent.GetUID()), "t1", kcpSubject)
+	if err != nil || !owned {
+		t.Fatalf("ProcessID chat did not atomically retain its verified KCP session owner: owned=%t err=%v", owned, err)
+	}
+	hubUUIDOwns, err := access.HasSessionAccess(context.Background(), scope, string(storedAgent.GetUID()), "t1", "alice")
+	if err != nil || hubUUIDOwns {
+		t.Fatalf("Hub user ID unexpectedly owns the chat session: owned=%t err=%v", hubUUIDOwns, err)
+	}
+	// Use the admitted chat session directly through the Agents HTTP handlers.
+	producer := "system:serviceaccount:default:session-notifier"
+	notificationRequest := func(method, verb, subject, body string) *http.Request {
+		r := httptest.NewRequest(method, "/agents/scout/"+verb+"/t1", strings.NewReader(body))
+		request := dataplane.Request{ClusterID: "c1", Resource: "agents", Name: "scout", Verb: verb}
+		gate := &gateInfo{request: request, provider: tenantScope.Dynamic(), object: storedAgent, identity: identity{clusterID: "c1", orgUUID: "o", workspaceUUID: "w", user: subject}}
+		r = r.WithContext(withGate(r.Context(), gate))
+		r.SetPathValue("name", "scout")
+		r.SetPathValue("tail", "t1")
+		return r
+	}
+	grant := httptest.NewRecorder()
+	s.sessionAccess(grant, notificationRequest(http.MethodPost, "session-access", kcpSubject, `{"subject":"`+producer+`"}`))
+	if grant.Code != http.StatusNoContent {
+		t.Fatalf("grant = %d: %s", grant.Code, grant.Body.String())
+	}
+	deliver := httptest.NewRecorder()
+	s.deliverSessionNotification(deliver, notificationRequest(http.MethodPost, "deliver", producer, `{"key":"test-delivery","payload":"completion notice","expectedOwner":"`+kcpSubject+`"}`))
+	if deliver.Code != http.StatusOK {
+		t.Fatalf("deliver = %d: %s", deliver.Code, deliver.Body.String())
+	}
+	feed := httptest.NewRecorder()
+	s.listSessionNotifications(feed, notificationRequest(http.MethodGet, "notifications", kcpSubject, ""))
+	if feed.Code != http.StatusOK || !strings.Contains(feed.Body.String(), "completion notice") {
+		t.Fatalf("notification feed = %d: %s", feed.Code, feed.Body.String())
+	}
+
+	page, err := s.store.ListMessages(context.Background(), scope, "t1", 100, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +293,35 @@ func TestMCPChatStreamsTheTurnAndReturnsTheTerminalFrame(t *testing.T) {
 		t.Fatal("missing persisted user message")
 	}
 
+}
+
+func TestMCPChatContinuesWithoutOptionalOwnerWhenIdentityReviewFails(t *testing.T) {
+	model := newFakeLLM(t, "Chat still works.")
+	s := newChatToolFixtureWithKCPSubject(t, model.srv.URL, "", nil, "")
+	s.cfg.ProcessID = "agents-chat-worker-1"
+	rec := httptest.NewRecorder()
+	s.MCPHandler().ServeHTTP(rec, chatToolRequest("tools/call", map[string]any{
+		"name": "chat", "arguments": map[string]any{"agent": "scout", "message": "continue without a session grant", "sessionId": "review-unavailable"},
+	}, true))
+	_, result := chatFrames(t, rpcMessages(t, rec))
+	sc, _ := result["structuredContent"].(map[string]any)
+	data, _ := sc["data"].(map[string]any)
+	if sc["event"] != "done" || data["status"] != "completed" {
+		t.Fatalf("identity review outage blocked ordinary chat: %v", sc)
+	}
+	access := s.store.(store.SessionNotificationStore)
+	scope := store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "scout"}
+	tenantScope, err := s.tenant.For("c1", "test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedAgent, err := tenantScope.Dynamic().Resource(agentsclient.AgentGVR).Get(context.Background(), "scout", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owned, err := access.HasSessionAccess(context.Background(), scope, string(storedAgent.GetUID()), "review-unavailable", "alice"); err != nil || owned {
+		t.Fatalf("unverified Hub identity acquired session ownership: owned=%t err=%v", owned, err)
+	}
 }
 
 func TestMCPChatRefusalKeepsTheHTTPClass(t *testing.T) {

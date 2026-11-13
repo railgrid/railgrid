@@ -67,6 +67,7 @@ type Repository struct {
 	RequiredToolchains   []string
 	RequiredEnvironment  []string
 	Verification         runner.VerificationRequirements
+	Artifacts            []runner.ArtifactSpec
 
 	// ApprovedInput, when set, is forwarded verbatim as the dispatch's approved
 	// input envelope instead of the provenance envelope a conversational turn
@@ -89,8 +90,9 @@ const (
 	GitResultJSONName   = "git-result.json"
 	GitResultBundleName = "git-result.bundle"
 
-	maxGitResultJSONBytes   = 64 << 10
-	maxGitResultBundleBytes = 32 << 20
+	maxGitResultJSONBytes       = 64 << 10
+	maxGitResultBundleBytes     = 32 << 20
+	maxRepositoryArtifactsBytes = 32 << 20
 
 	gitResultVersion = "git-result/v1"
 	// gitResultUnusable prefixes every verification failure, so a reader of the
@@ -195,6 +197,28 @@ func (b *Backend) gitResult(ctx context.Context, receipt runner.Receipt) (*backe
 		sum := sha256.Sum256(data)
 		artifacts = append(artifacts, backend.Artifact{Name: runner.ScreenshotsName, Digest: hex.EncodeToString(sum[:]), Size: int64(len(data)), Data: data, MediaType: "application/json"})
 		break
+	}
+	var requestedBytes int64
+	for _, spec := range repo.Artifacts {
+		var ref *runner.Artifact
+		for i := range receipt.Artifacts {
+			if receipt.Artifacts[i].Name == spec.Name {
+				ref = &receipt.Artifacts[i]
+				break
+			}
+		}
+		if ref == nil {
+			continue
+		}
+		if requestedBytes+ref.Length > maxRepositoryArtifactsBytes {
+			return nil, nil, unusable("requested artifacts exceed the %d-byte aggregate bound", maxRepositoryArtifactsBytes)
+		}
+		data, err := b.fetchArtifact(ctx, attemptID, *ref, maxRepositoryArtifactsBytes)
+		if err != nil {
+			return nil, nil, err
+		}
+		requestedBytes += int64(len(data))
+		artifacts = append(artifacts, backend.Artifact{Name: ref.Name, Digest: stripSHA256(ref.Digest), Size: int64(len(data)), Data: data, MediaType: firstNonEmpty(ref.MediaType, spec.MediaType, "application/octet-stream")})
 	}
 	return &result, artifacts, nil
 }

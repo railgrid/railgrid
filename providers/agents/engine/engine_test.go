@@ -109,8 +109,9 @@ func TestAssistantMessageExposesToolCallsWithoutProse(t *testing.T) {
 // engine's streaming loop and usage extraction can be exercised without a
 // network call.
 type mockModel struct {
-	chunks []*schema.Message
-	gotIn  []*schema.Message
+	chunks    []*schema.Message
+	gotIn     []*schema.Message
+	maxTokens []int
 }
 
 func (m *mockModel) Generate(_ context.Context, in []*schema.Message, _ ...einomodel.Option) (*schema.Message, error) {
@@ -118,9 +119,55 @@ func (m *mockModel) Generate(_ context.Context, in []*schema.Message, _ ...einom
 	return schema.AssistantMessage("", nil), nil
 }
 
-func (m *mockModel) Stream(_ context.Context, in []*schema.Message, _ ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+func (m *mockModel) WithTools([]*schema.ToolInfo) (einomodel.ToolCallingChatModel, error) {
+	return m, nil
+}
+
+func (m *mockModel) Stream(_ context.Context, in []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	m.gotIn = in
+	if common := einomodel.GetCommonOptions(nil, opts...); common.MaxTokens != nil {
+		m.maxTokens = append(m.maxTokens, *common.MaxTokens)
+	}
 	return schema.StreamReaderFromArray(m.chunks), nil
+}
+
+func TestOutputTokenLimitIsPassedToModelAndUsageEvidenceIsRecorded(t *testing.T) {
+	m := &mockModel{chunks: []*schema.Message{{Role: schema.Assistant, Content: "ok", ResponseMeta: &schema.ResponseMeta{
+		Usage: &schema.TokenUsage{CompletionTokens: 4},
+	}}}}
+	res, err := New().StreamTurnWithTools(context.Background(), m, []Message{{Role: RoleUser, Content: "go"}}, nil,
+		TurnConfig{MaxIters: 1, MaxOutputTokens: 7}, Callbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(m.maxTokens, []int{7}) {
+		t.Fatalf("model max-token options = %v, want [7]", m.maxTokens)
+	}
+	if res.Usage.OutputTokens != 4 || res.UsageEvidence != (UsageEvidence{Responses: 1, ReportedResponses: 1}) {
+		t.Fatalf("usage/evidence = %+v / %+v", res.Usage, res.UsageEvidence)
+	}
+}
+
+func TestOutputTokenLimitStopsAfterUnreportedToolResponse(t *testing.T) {
+	m := &mockModel{chunks: []*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+		ID: "tool-1", Type: "function", Function: schema.FunctionCall{Name: "noop", Arguments: `{}`},
+	}}}}}
+	toolCalls := 0
+	res, err := New().StreamTurnWithTools(context.Background(), m, []Message{{Role: RoleUser, Content: "go"}}, []Tool{{
+		Name: "noop", Exec: func(context.Context, string) (string, error) { toolCalls++; return "done", nil },
+	}}, TurnConfig{MaxIters: 3, MaxOutputTokens: 10}, Callbacks{})
+	if !errors.Is(err, ErrOutputTokenUsageUnavailable) {
+		t.Fatalf("error = %v, want missing usage refusal", err)
+	}
+	if len(m.maxTokens) != 1 || m.maxTokens[0] != 10 {
+		t.Fatalf("model calls/options = %v, want one request with 10 tokens", m.maxTokens)
+	}
+	if toolCalls != 0 {
+		t.Fatalf("executed %d tools after usage was missing", toolCalls)
+	}
+	if res.UsageEvidence != (UsageEvidence{Responses: 1}) {
+		t.Fatalf("usage evidence = %+v, want one unreported response", res.UsageEvidence)
+	}
 }
 
 type errorStreamModel struct{}

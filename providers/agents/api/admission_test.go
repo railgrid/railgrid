@@ -67,6 +67,58 @@ func TestRunAdmissionPersistsDefaultSessionBeforeExecution(t *testing.T) {
 	})
 }
 
+func TestProcessIDStillClaimsPreAdmittedRun(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "agent"}
+	if _, err := st.AddUsage(ctx, scope, scope.AgentName, 2, 0, 0, time.Now(), 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, events: newEventBus(), cfg: Config{ProcessID: "agents-worker-lease-test"}}
+	agent := &agentsv1alpha1.Agent{}
+	agent.Name = scope.AgentName
+	agent.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "day", TokenLimit: 1}
+	admission, err := s.startRun(ctx, scope, agent, taskRun{Trigger: "api", Task: "budget refusal after lease claim"}, runAccess{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		run, err := st.GetRun(ctx, scope, admission.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.Phase == store.RunPhaseFailed {
+			if run.ExecutionEpoch != 1 {
+				t.Fatalf("pre-admitted run execution epoch = %d, want lease claim epoch 1", run.ExecutionEpoch)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pre-admitted run did not settle after lease claim: %+v", run)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestProcessIDDoesNotReopenMissingPreAdmittedRun(t *testing.T) {
+	st := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "agent"}
+	s := &Server{store: st, events: newEventBus(), cfg: Config{ProcessID: "agents-worker-lease-test"}}
+	agent := &agentsv1alpha1.Agent{}
+	agent.Name = scope.AgentName
+	result, err := s.executeTask(t.Context(), taskRun{
+		RunID: "deleted-before-dispatch", Scope: scope, Agent: agent,
+		Trigger: "api", Task: "must remain closed", PreAdmitted: true,
+	})
+	if err == nil || result.RunID != "" {
+		t.Fatalf("missing pre-admitted Run was reopened: result=%+v err=%v", result, err)
+	}
+	if _, err := st.GetRun(t.Context(), scope, "deleted-before-dispatch"); err == nil {
+		t.Fatal("execution recreated a Run whose durable admission row had disappeared")
+	}
+}
+
 func TestPostgresRunAdmissionPersistsDefaultSessionBeforeExecution(t *testing.T) {
 	dsn := os.Getenv("AGENTS_TEST_POSTGRES_DSN")
 	if dsn == "" {

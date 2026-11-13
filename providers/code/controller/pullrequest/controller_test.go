@@ -16,7 +16,12 @@ import (
 
 	"time"
 
+	jsonpatch "github.com/evanphx/json-patch/v5"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"
@@ -26,6 +31,7 @@ import (
 const (
 	headA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	headB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	headC = "dddddddddddddddddddddddddddddddddddddddd"
 	tree  = "cccccccccccccccccccccccccccccccccccccccc"
 )
 
@@ -33,13 +39,15 @@ const (
 type fakeForge struct {
 	backend.Collaboration
 	backend.SnapshotPublisher
-	branch    string
-	published []backend.Snapshot
-	expected  []string
-	pr        *backend.PullRequest
-	created   int
-	reviews   []backend.Review
-	comments  []backend.Comment
+	branch      string
+	published   []backend.Snapshot
+	expected    []string
+	pr          *backend.PullRequest
+	created     int
+	reviews     []backend.Review
+	comments    []backend.Comment
+	checks      []backend.Check
+	feedbackErr error
 }
 
 func (f *fakeForge) BranchHead(context.Context, *codev1alpha1.Connection, backend.Credential, *codev1alpha1.Repository, string) (string, error) {
@@ -60,6 +68,10 @@ func (f *fakeForge) FindPullRequest(context.Context, *codev1alpha1.Connection, b
 	return f.pr, nil
 }
 
+func (f *fakeForge) ReadPullRequest(context.Context, *codev1alpha1.Connection, backend.Credential, *codev1alpha1.Repository, int) (*backend.PullRequest, error) {
+	return f.pr, nil
+}
+
 func (f *fakeForge) CreatePullRequest(_ context.Context, _ *codev1alpha1.Connection, _ backend.Credential, _ *codev1alpha1.Repository, in backend.PullRequestInput) (*backend.PullRequest, error) {
 	f.created++
 	f.pr = &backend.PullRequest{Number: 17, URL: "https://example.invalid/pull/17", Repository: "acme/product", HeadRepository: "acme/product", Head: in.Head, Base: in.Base, Commit: in.Commit, State: "open"}
@@ -67,7 +79,10 @@ func (f *fakeForge) CreatePullRequest(_ context.Context, _ *codev1alpha1.Connect
 }
 
 func (f *fakeForge) PullRequestFeedback(context.Context, *codev1alpha1.Connection, backend.Credential, *codev1alpha1.Repository, int, string) (*backend.Feedback, error) {
-	return &backend.Feedback{Reviews: f.reviews}, nil
+	if f.feedbackErr != nil {
+		return nil, f.feedbackErr
+	}
+	return &backend.Feedback{Checks: f.checks, Reviews: f.reviews}, nil
 }
 
 func (f *fakeForge) ListComments(_ context.Context, _ *codev1alpha1.Connection, _ backend.Credential, _ *codev1alpha1.Repository, _ int, page int) (*backend.CommentPage, error) {
@@ -91,7 +106,7 @@ func stage(t *testing.T, store snapshotstore.Store, cluster string, snapshot bac
 }
 
 func resource(head *codev1alpha1.PullRequestHead) *codev1alpha1.PullRequest {
-	pr := &codev1alpha1.PullRequest{Spec: codev1alpha1.PullRequestSpec{RepositoryRef: "product", Branch: "factory/task-1", Base: "main", Title: "ENG-4: test"}}
+	pr := &codev1alpha1.PullRequest{Spec: codev1alpha1.PullRequestSpec{RepositoryRef: "product", Branch: "work/task-1", Base: "main", Title: "ENG-4: test"}}
 	pr.Spec.DesiredHead = head
 	return pr
 }
@@ -149,6 +164,120 @@ func TestAdvanceMovesTheBranchUnderAnExpectedHeadLease(t *testing.T) {
 	}
 }
 
+func TestAcceptedPublicationUsesImmutableExpectedHeadAndRecoversCandidate(t *testing.T) {
+	store, err := snapshotstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Reconciler{Snapshots: store}
+	ref := stage(t, store, "tenant", backend.Snapshot{BaseCommit: headC, Commit: headA, Tree: tree, Bundle: []byte("bundle")})
+	intent := &codev1alpha1.PullRequestPublication{Sequence: 1, OperationID: "op-1", ExpectedHead: headB, Candidate: codev1alpha1.PullRequestHead{Commit: headA, BaseCommit: headC, Tree: tree, BundleRef: ref}}
+	pr := resource(nil)
+	forge := &fakeForge{branch: headB}
+	if err := r.advancePublication(context.Background(), forge, nil, backend.Credential{}, nil, "tenant", pr, intent); err != nil {
+		t.Fatal(err)
+	}
+	if forge.branch != headA || len(forge.published) != 1 || forge.expected[0] != headB {
+		t.Fatalf("publication did not use expected-head lease: branch=%s expected=%v", forge.branch, forge.expected)
+	}
+	// A retry after an accepted push recognizes the candidate already on the
+	// branch and does not create another forge write.
+	if err := r.advancePublication(context.Background(), forge, nil, backend.Credential{}, nil, "tenant", pr, intent); err != nil || len(forge.published) != 1 {
+		t.Fatalf("recovery repeated publication: err=%v writes=%d", err, len(forge.published))
+	}
+	// An external push after acceptance still fails the original lease.
+	forge.branch = headC
+	if err := r.advancePublication(context.Background(), forge, nil, backend.Credential{}, nil, "tenant", pr, intent); err == nil || len(forge.published) != 1 {
+		t.Fatalf("stale accepted lease wrote over an external head: err=%v writes=%d", err, len(forge.published))
+	}
+}
+
+func TestPublicationAllowsCandidateParentIndependentOfBranchLease(t *testing.T) {
+	intent := &codev1alpha1.PullRequestPublication{Sequence: 1, OperationID: "op", ExpectedHead: headB, Candidate: codev1alpha1.PullRequestHead{Commit: headA, BaseCommit: headA, Tree: tree, BundleRef: strings.Repeat("d", 64)}}
+	if err := validatePublication(intent); err != nil {
+		t.Fatalf("valid rebuilt candidate rejected: %v", err)
+	}
+}
+
+func TestReconcilePersistsAcceptanceBeforeForgeWriteAndTerminalReceiptStillObserves(t *testing.T) {
+	r, c, host, req, pr := publicationFixture(t)
+	pr.Spec.DesiredHead = nil
+	pr.Spec.Body = ""
+	pr.Spec.AttachmentRef = ""
+	ref := stage(t, r.Snapshots, "tenant", backend.Snapshot{BaseCommit: headB, Commit: headA, Tree: tree, Bundle: []byte("candidate")})
+	pr.Spec.Publication = &codev1alpha1.PullRequestPublication{Sequence: 1, OperationID: "publish-1", ExpectedAbsent: true, Candidate: codev1alpha1.PullRequestHead{Commit: headA, BaseCommit: headB, Tree: tree, BundleRef: ref}}
+	pr.Status.Head = ""
+	pr.Generation++
+	if err := c.Update(t.Context(), pr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.published) != 0 {
+		t.Fatal("forge write happened before accepted receipt persisted")
+	}
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(pr), pr); err != nil {
+		t.Fatal(err)
+	}
+	if pr.Status.Publication == nil || pr.Status.Publication.Phase != "Accepted" {
+		t.Fatalf("receipt = %+v", pr.Status.Publication)
+	}
+	if _, err := r.Reconcile(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.published) != 1 {
+		t.Fatalf("accepted operation did not publish once: %d", len(host.published))
+	}
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(pr), pr); err != nil {
+		t.Fatal(err)
+	}
+	if pr.Status.Publication == nil || pr.Status.Publication.Phase != "Published" || pr.Status.Publication.ObservedHead != headA {
+		t.Fatalf("publication outcome = %+v", pr.Status.Publication)
+	}
+	reads := host.reads
+	if _, err := r.Reconcile(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.published) != 1 {
+		t.Fatal("terminal receipt replayed publication")
+	}
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(pr), pr); err != nil {
+		t.Fatal(err)
+	}
+	if host.reads != reads+1 {
+		t.Fatal("terminal receipt stopped forge observation")
+	}
+}
+
+func TestReconcileAcknowledgesCancellationBeforeAcceptanceWithoutForgeWrite(t *testing.T) {
+	r, c, host, req, pr := publicationFixture(t)
+	pr.Spec.DesiredHead = nil
+	ref := stage(t, r.Snapshots, "tenant", backend.Snapshot{BaseCommit: headB, Commit: headA, Tree: tree, Bundle: []byte("candidate")})
+	pr.Spec.Publication = &codev1alpha1.PullRequestPublication{Sequence: 1, OperationID: "cancel-1", ExpectedAbsent: true, Candidate: codev1alpha1.PullRequestHead{Commit: headA, BaseCommit: headB, Tree: tree, BundleRef: ref}, Cancel: true}
+	pr.Generation++
+	if err := c.Update(t.Context(), pr); err != nil {
+		t.Fatal(err)
+	}
+	// A pre-accept cancellation must be durably acknowledged even while forge
+	// credentials are unavailable.
+	if err := c.Delete(t.Context(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credential", Namespace: "default"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(t.Context(), req); err != nil {
+		t.Fatalf("Reconcile without forge credentials: %v", err)
+	}
+	if len(host.published) != 0 || host.created != 0 {
+		t.Fatal("cancelled pre-acceptance intent reached forge")
+	}
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(pr), pr); err != nil {
+		t.Fatal(err)
+	}
+	if pr.Status.Publication == nil || pr.Status.Publication.Phase != "Cancelled" || pr.Status.Publication.FinishedAt == nil {
+		t.Fatalf("cancellation receipt = %+v", pr.Status.Publication)
+	}
+}
+
 // The pull request is opened once: a create whose answer was lost is found
 // again rather than opened twice.
 func TestOpenAdoptsAnExistingPullRequest(t *testing.T) {
@@ -190,6 +319,56 @@ func TestObserveConversationCarriesReviewsAndComments(t *testing.T) {
 	}
 }
 
+func TestAdoptionRequiresMatchingOpenSameRepositoryPullRequest(t *testing.T) {
+	base := &backend.PullRequest{Number: 12, Repository: "acme/product", HeadRepository: "acme/product", Head: "work/task-1", Base: "main", State: "open"}
+	cases := []struct {
+		name   string
+		mutate func(*backend.PullRequest)
+		want   bool
+	}{
+		{"matching", func(*backend.PullRequest) {}, true},
+		{"wrong repository", func(p *backend.PullRequest) { p.Repository = "other/product" }, false},
+		{"fork head", func(p *backend.PullRequest) { p.HeadRepository = "fork/product" }, false},
+		{"wrong branch", func(p *backend.PullRequest) { p.Head = "other" }, false},
+		{"wrong base", func(p *backend.PullRequest) { p.Base = "release" }, false},
+		{"closed", func(p *backend.PullRequest) { p.State = "closed" }, false},
+		{"merged", func(p *backend.PullRequest) { p.Merged = true }, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := *base
+			tc.mutate(&got)
+			if validAdoption(&got, "acme/product", "work/task-1", "main") != tc.want {
+				t.Fatalf("validAdoption = %t, want %t", !tc.want, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckObservationsAreCommitPinnedAndFreshnessIsNotAdvancedOnError(t *testing.T) {
+	now := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+	r := &Reconciler{Now: func() time.Time { return now }}
+	forge := &fakeForge{checks: []backend.Check{{ID: 5, Name: "build", AppID: 8, Head: headA, Status: "completed", Conclusion: "success"}}}
+	pr := resource(nil)
+	pr.Status.Number = 17
+	pr.Status.Head = headA
+	if err := r.observeConversation(context.Background(), forge, nil, backend.Credential{}, nil, pr); err != nil {
+		t.Fatal(err)
+	}
+	if pr.Status.ChecksHead != headA || pr.Status.ChecksObservedAt == nil || !pr.Status.ChecksObservedAt.Time.Equal(now) || len(pr.Status.Checks) != 1 {
+		t.Fatalf("check observation = %+v", pr.Status)
+	}
+	oldObservedAt := pr.Status.ChecksObservedAt.DeepCopy()
+	pr.Status.Head = headB
+	forge.feedbackErr = errors.New("forge unavailable")
+	if err := r.observeConversation(context.Background(), forge, nil, backend.Credential{}, nil, pr); err == nil {
+		t.Fatal("expected unavailable observation")
+	}
+	if pr.Status.ChecksHead != headA || !pr.Status.ChecksObservedAt.Equal(oldObservedAt) || pr.Status.ChecksError == "" {
+		t.Fatalf("unavailable checks were refreshed or not marked: %+v", pr.Status)
+	}
+}
+
 // An open pull request is re-read on the interval the coordinator set, five
 // minutes when unset, and never more often than the floor.
 func TestObserveIntervalDefaultsAndFloors(t *testing.T) {
@@ -208,5 +387,37 @@ func TestObserveIntervalDefaultsAndFloors(t *testing.T) {
 		if got := observeInterval(pr); got != tc.want {
 			t.Errorf("%s: observeInterval = %s, want %s", name, got, tc.want)
 		}
+	}
+}
+
+func TestForgeObservationPreservesExactActionClaim(t *testing.T) {
+	const claimedAt = "2026-11-12T09:08:07.123456789Z"
+	// Keep raw JSON outside the typed fake client so it cannot normalize the
+	// timestamp before the simulated API server applies the merge patch.
+	raw := []byte(`{"metadata":{"resourceVersion":"1"},"status":{"reviewOperations":[{"key":"review","phase":"Accepted","updatedAt":"` + claimedAt + `"}]}}`)
+	c := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		SubResourcePatch: func(_ context.Context, _ client.Client, sub string, obj client.Object, patch client.Patch, _ ...client.SubResourcePatchOption) error {
+			if sub != "status" {
+				t.Fatalf("patched subresource %q", sub)
+			}
+			data, err := patch.Data(obj)
+			if err != nil {
+				return err
+			}
+			raw, err = jsonpatch.MergePatch(raw, data)
+			return err
+		},
+	}).Build()
+	var current codev1alpha1.PullRequest
+	if err := json.Unmarshal(raw, &current); err != nil {
+		t.Fatal(err)
+	}
+	next := current.DeepCopy()
+	next.Status.Head = headA
+	if err := updateStatusIfChanged(t.Context(), c, &current, next); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), claimedAt) || !strings.Contains(string(raw), headA) {
+		t.Fatalf("observation rewrote claim or lost new head: %s", raw)
 	}
 }

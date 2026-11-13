@@ -24,11 +24,11 @@ var selfSubjectReviews = schema.GroupVersionResource{
 	Group: "authentication.k8s.io", Version: "v1", Resource: "selfsubjectreviews",
 }
 
-// resolveAgentAttachmentOwner asks the caller-authenticated API server for
+// resolveAuthenticatedKCPSubject asks the caller-authenticated API server for
 // the Kubernetes principal attached to this bearer. The hub's browser user ID
 // is a Railgrid User UUID and is not necessarily the username KCP stores on a
-// data-plane request, so it cannot own upload bytes directly.
-func (s *Server) resolveAgentAttachmentOwner(ctx context.Context, id identity) (string, error) {
+// data-plane request, so it cannot own upload bytes or session grants directly.
+func (s *Server) resolveAuthenticatedKCPSubject(ctx context.Context, id identity) (string, error) {
 	if s == nil || s.tenant == nil || strings.TrimSpace(id.clusterID) == "" || strings.TrimSpace(id.token) == "" {
 		return "", errors.New("a current caller bearer is required to resolve Agent attachment ownership")
 	}
@@ -69,7 +69,7 @@ func (s *Server) resumeAttachmentCaller(ctx context.Context, checkpoint runCheck
 		return "", nil
 	}
 	if strings.TrimSpace(access.HubToken) != "" {
-		return s.resolveAgentAttachmentOwner(ctx, identity{clusterID: access.ClusterID, user: access.CallerUser, token: access.HubToken})
+		return s.resolveAuthenticatedKCPSubject(ctx, identity{clusterID: access.ClusterID, user: access.CallerUser, token: access.HubToken})
 	}
 	// A data-plane approval carries the canonical kcp username from its gate.
 	return strings.TrimSpace(access.CallerUser), nil

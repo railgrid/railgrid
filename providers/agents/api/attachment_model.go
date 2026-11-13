@@ -150,7 +150,7 @@ func (s *Server) agentAttachmentReadTool(_ context.Context, run taskRun, session
 			// A compacted conversation may retain a file ID in quoted context
 			// after its original receipt leaves replay history. Resolve the
 			// current caller lazily rather than using the browser User UUID.
-			principal, err := s.resolveAgentAttachmentOwner(ctx, identity{clusterID: access.ClusterID, token: access.HubToken})
+			principal, err := s.resolveAuthenticatedKCPSubject(ctx, identity{clusterID: access.ClusterID, token: access.HubToken})
 			if err != nil {
 				return "", errors.New("the current caller identity could not be verified for attachment reads")
 			}

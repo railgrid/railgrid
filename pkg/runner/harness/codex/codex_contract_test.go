@@ -28,6 +28,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -298,8 +299,8 @@ func TestRunCancellationKillsProcessGroupDescendants(t *testing.T) {
 	}
 	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(descendantPID, 0); err != nil {
-			if errors.Is(err, syscall.ESRCH) {
+		if err := probeProcess(descendantPID); err != nil {
+			if processIsGone(err) {
 				return
 			}
 		}
@@ -308,11 +309,151 @@ func TestRunCancellationKillsProcessGroupDescendants(t *testing.T) {
 	t.Fatalf("descendant process %d survived Codex process-group cleanup", descendantPID)
 }
 
+func TestRunSystemdScopeCancellationKillsDetachedDescendants(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("systemd user scopes are Linux-only")
+	}
+	adapter := New(Config{
+		Binary:          fakeDetachedCleanupCodexBinary(t, filepath.Join(t.TempDir(), "descendant.pid"), filepath.Join(t.TempDir(), "cleanup.log")),
+		Home:            t.TempDir(),
+		ExpectedVersion: "0.153.4",
+		Environment:     harness.EnvironmentConfig{ProcessScope: "systemd-user"},
+	})
+	probe, err := newUserSystemdScope(adapter.(*Adapter).launchEnv())
+	if err != nil {
+		t.Skipf("systemd user scope prerequisites unavailable: %v", err)
+	}
+	probeCmd := probe.command("/bin/true", nil, []string{"PATH=/usr/bin:/bin"})
+	if output, err := probeCmd.CombinedOutput(); err != nil {
+		t.Skipf("systemd user scope is unavailable: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
+	if err := probe.stop(); err != nil {
+		t.Fatalf("stop completed disposable scope: %v", err)
+	}
+
+	pidFile := filepath.Join(t.TempDir(), "detached.pid")
+	logFile := filepath.Join(t.TempDir(), "cleanup.log")
+	adapter = New(Config{
+		Binary:          fakeDetachedCleanupCodexBinary(t, pidFile, logFile),
+		Home:            t.TempDir(),
+		ExpectedVersion: "0.153.4",
+		Environment:     harness.EnvironmentConfig{ProcessScope: "systemd-user"},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	resultCh := make(chan harness.Result, 1)
+	errCh := make(chan error, 1)
+	registeredScope := ""
+	var registeredMu sync.Mutex
+	go func() {
+		result, runErr := adapter.Run(ctx, harness.Launch{AttemptID: "attempt-systemd-cleanup", Workdir: t.TempDir(), Instructions: "wait", Credential: testCredential(), RegisterProcessScope: func(unit string) error {
+			registeredMu.Lock()
+			defer registeredMu.Unlock()
+			registeredScope = unit
+			return nil
+		}}, func(event harness.Event) error {
+			if event.Type == "turn_started" {
+				registeredMu.Lock()
+				validRegisteredScope := systemdScopeUnitPattern.MatchString(registeredScope)
+				registeredMu.Unlock()
+				if !validRegisteredScope {
+					return errors.New("systemd scope was not durably registered before the turn started")
+				}
+				close(started)
+			}
+			return nil
+		})
+		resultCh <- result
+		errCh <- runErr
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("scoped cleanup harness did not start a turn")
+	}
+	var descendantPID int
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, readErr := os.ReadFile(pidFile)
+		if readErr == nil {
+			if descendantPID, readErr = strconv.Atoi(strings.TrimSpace(string(data))); readErr == nil && descendantPID > 0 {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if descendantPID == 0 {
+		cancel()
+		t.Fatal("scoped cleanup harness did not publish descendant pid")
+	}
+	// setsid runs in the newly started child and writes its PID before the
+	// parent process has necessarily completed setsid(2). Wait for the kernel
+	// session transition instead of making the test depend on scheduler order.
+	for time.Now().Before(deadline) && !processHasOwnSession(descendantPID) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !processHasOwnSession(descendantPID) {
+		cancel()
+		t.Fatalf("test descendant %d did not escape its parent's process group", descendantPID)
+	}
+	cancel()
+	select {
+	case result := <-resultCh:
+		if result.Phase != "cancelled" {
+			t.Fatalf("cancellation result = %+v", result)
+		}
+		if err := <-errCh; err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not stop after cancellation")
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := probeProcess(descendantPID); processIsGone(err) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("detached process %d survived systemd user scope cleanup", descendantPID)
+}
+
 func fakeCleanupCodexBinary(t *testing.T, pidFile, logFile string) string {
+	return fakeCleanupBinary(t, pidFile, logFile, false)
+}
+
+func fakeDetachedCleanupCodexBinary(t *testing.T, pidFile, logFile string) string {
+	return fakeCleanupBinary(t, pidFile, logFile, true)
+}
+
+func processHasOwnSession(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	closeParen := strings.LastIndexByte(string(data), ')')
+	if closeParen < 0 {
+		return false
+	}
+	fields := strings.Fields(string(data[closeParen+1:]))
+	if len(fields) < 4 {
+		return false
+	}
+	processGroup, groupErr := strconv.Atoi(fields[2])
+	session, sessionErr := strconv.Atoi(fields[3])
+	return groupErr == nil && sessionErr == nil && processGroup == pid && session == pid
+}
+
+func fakeCleanupBinary(t *testing.T, pidFile, logFile string, detached bool) string {
 	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "codex")
-	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.153.4; exit 0; fi\nRAILGRID_FAKE_CLEANUP_CHILD=1 RAILGRID_FAKE_CLEANUP_PID=%q RAILGRID_FAKE_CLEANUP_LOG=%q exec %q -test.run=TestFakeCleanupAppServerProcess\n", pidFile, logFile, os.Args[0])
+	detachedEnv := ""
+	if detached {
+		detachedEnv = "RAILGRID_FAKE_CLEANUP_DETACHED=1 "
+	}
+	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.153.4; exit 0; fi\n%sRAILGRID_FAKE_CLEANUP_CHILD=1 RAILGRID_FAKE_CLEANUP_PID=%q RAILGRID_FAKE_CLEANUP_LOG=%q exec %q -test.run=TestFakeCleanupAppServerProcess\n", detachedEnv, pidFile, logFile, os.Args[0])
 	if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -328,6 +469,9 @@ func TestFakeCleanupAppServerProcess(t *testing.T) {
 		_ = os.WriteFile(logFile, []byte(message), 0o600)
 	}
 	child := exec.Command("sh", "-c", "sleep 60")
+	if os.Getenv("RAILGRID_FAKE_CLEANUP_DETACHED") == "1" {
+		child = exec.Command("setsid", "sleep", "60")
+	}
 	if err := child.Start(); err != nil {
 		log("child start: " + err.Error())
 		os.Exit(2)
@@ -451,4 +595,19 @@ func TestPluginCacheRejectsUnsafeHomeEntries(t *testing.T) {
 			}
 		})
 	}
+}
+
+// probeProcess checks whether a PID is still present. os.Process.Signal wraps
+// an exited process as os.ErrProcessDone on Linux, while Unix process APIs can
+// report ESRCH for the same condition.
+func probeProcess(pid int) error {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return process.Signal(syscall.Signal(0))
+}
+
+func processIsGone(err error) bool {
+	return errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH)
 }

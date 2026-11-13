@@ -33,8 +33,9 @@ var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // EnvironmentConfig is local operator policy, never part of a task request.
 // Values are literal: no shell evaluation, tilde expansion, or env-file loading.
 type EnvironmentConfig struct {
-	PathPrepend []string          `json:"pathPrepend,omitempty"`
-	Variables   map[string]string `json:"variables,omitempty"`
+	PathPrepend  []string          `json:"pathPrepend,omitempty"`
+	Variables    map[string]string `json:"variables,omitempty"`
+	ProcessScope string            `json:"processScope,omitempty"`
 }
 
 // LoadEnvironmentConfig reads a bounded, explicit operator file. Only an absent
@@ -86,6 +87,9 @@ func (e EnvironmentConfig) Validate() error {
 
 // ValidateForWorktreeRoot also excludes tools controlled by managed tasks.
 func (e EnvironmentConfig) ValidateForWorktreeRoot(worktreeRoot string) error {
+	if e.ProcessScope != "" && e.ProcessScope != "systemd-user" {
+		return errors.New("runner environment processScope must be empty or systemd-user")
+	}
 	for _, path := range e.PathPrepend {
 		if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsAny(path, string(os.PathListSeparator)+"\x00\r\n") {
 			return errors.New("runner environment pathPrepend requires clean absolute paths")

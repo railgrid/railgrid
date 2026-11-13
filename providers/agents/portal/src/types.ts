@@ -1033,6 +1033,16 @@ export interface SessionMeta {
   lastActivity: string
 }
 
+/** Durable session feed item; it is separate from transcript/model context. */
+export interface SessionNotification {
+  id: string
+  sessionID: string
+  key: string
+  producer: string
+  payload: string
+  createdAt: string
+}
+
 export const sessionLabel = (s: SessionMeta): string =>
   s.title?.trim() || s.preview?.trim() || 'New chat'
 

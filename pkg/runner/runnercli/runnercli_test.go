@@ -144,3 +144,15 @@ func TestAdapterLoadsOperatorEnvironmentFromRunnerState(t *testing.T) {
 		}
 	}
 }
+
+func TestSystemdProcessScopeIsCodexOnly(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "environment.json")
+	if err := os.WriteFile(file, []byte(`{"environment":{"processScope":"systemd-user"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	claudeOpts := Options{Harness: HarnessClaude, EnvironmentConfig: file}
+	if _, err := claudeOpts.adapter(root); err == nil || !strings.Contains(err.Error(), "Codex") {
+		t.Fatalf("Claude adapter with systemd-user process scope: %v", err)
+	}
+}

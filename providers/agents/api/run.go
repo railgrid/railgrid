@@ -113,9 +113,11 @@ type runResult struct {
 	StoppedByViewer bool   `json:"stoppedByViewer,omitempty"`
 	StoppedAfterMS  *int64 `json:"stoppedAfterMS,omitempty"`
 	Usage           struct {
-		InputTokens  int64 `json:"inputTokens"`
-		OutputTokens int64 `json:"outputTokens"`
-		USDMicros    int64 `json:"usdMicros"`
+		InputTokens  int64  `json:"inputTokens"`
+		OutputTokens int64  `json:"outputTokens"`
+		USDMicros    int64  `json:"usdMicros"`
+		Completeness string `json:"completeness,omitempty"`
+		CostBasis    string `json:"costBasis,omitempty"`
 	} `json:"usage"`
 }
 
@@ -304,8 +306,9 @@ type runAccess struct {
 	AttachmentCaller string
 	// EdgesEndpoint is the hub mcpserver MCP URL ("" → the edges family is
 	// absent, which it is for anything with no caller credential).
-	EdgesEndpoint string
-	EdgesInsecure bool
+	EdgesEndpoint    string
+	EdgesInsecure    bool
+	RecoveryIdentity store.RecoveryIdentity
 
 	// Notify delivers a finished run's output to the agent channel its
 	// schedule/trigger reports to. Nil where there is nothing to deliver to —
@@ -319,6 +322,7 @@ func (a runAccess) applyTo(tr *taskRun) {
 	tr.ClusterID, tr.HubToken = a.ClusterID, a.HubToken
 	tr.CallerUser = a.CallerUser
 	tr.EdgesEndpoint, tr.EdgesInsecure = a.EdgesEndpoint, a.EdgesInsecure
+	tr.RecoveryIdentity = a.RecoveryIdentity
 }
 
 // inherited is the access a child run of this one gets: a spawned worker, which
@@ -339,11 +343,12 @@ func (r taskRun) inherited() runAccess {
 func (s *Server) callerAccess(ctx context.Context, c *agentsclient.Client, id identity) runAccess {
 	return runAccess{
 		Creds: c, CR: clientCR{c},
-		ClusterID:     id.clusterID,
-		CallerUser:    id.user,
-		HubToken:      id.token,
-		EdgesEndpoint: s.aggregateMCPEndpoint(ctx, id),
-		EdgesInsecure: s.cfg.HubInsecure,
+		ClusterID:        id.clusterID,
+		CallerUser:       id.user,
+		HubToken:         id.token,
+		EdgesEndpoint:    s.aggregateMCPEndpoint(ctx, id),
+		EdgesInsecure:    s.cfg.HubInsecure,
+		RecoveryIdentity: store.RecoveryIdentityCaller,
 		Notify: func(ctx context.Context, agent *agentsv1alpha1.Agent, role, prefix, text string) {
 			s.deliverToNotifyChannel(ctx, c, agent, role, prefix, text)
 		},
@@ -518,16 +523,21 @@ func resumeArtifactReferences(checkpoint runCheckpoint, callerUser string) (stri
 type taskRun struct {
 	// CallerUser attributes only this attended task, never inherited child tasks.
 	CallerUser string
-	Creds      llm.CredentialResolver
-	CR         tools.CRAccess
-	Scope      store.Scope
-	Agent      *agentsv1alpha1.Agent
+	// SessionOwnerSubject is set only by an attended chat transport with a
+	// trusted caller identity; internal/model runs leave notification ownership
+	// untouched.
+	SessionOwnerSubject string
+	Creds               llm.CredentialResolver
+	CR                  tools.CRAccess
+	Scope               store.Scope
+	Agent               *agentsv1alpha1.Agent
 
 	// RunID pre-assigns the run's ID (async run-now, chat's SSE start event,
 	// resume). Empty → generated.
 	RunID string
 
 	SessionID string
+	Limits    *agentsv1alpha1.RunLimits
 	Task      string
 	Trigger   string
 	// ArtifactOwner and ArtifactRefs are attended-chat inputs. Checkpoints retain
@@ -554,7 +564,17 @@ type taskRun struct {
 	// IdempotencyKey is the caller's de-duplication token for an API-invoked run.
 	// Carried here because the lifecycle rewrites the run record from scratch and
 	// would otherwise drop what the pre-write stored.
-	IdempotencyKey string
+	IdempotencyKey        string
+	InvocationFingerprint string
+	InvocationAgentUID    string
+	AgentUID              string
+	RecoveryIdentity      store.RecoveryIdentity
+	ExecutionOwner        string
+	ExecutionEpoch        uint64
+	// PreAdmitted means this caller durably created the Pending Run row before
+	// entering executeTask. Those paths acquire a process lease before work;
+	// attended chat and inline child runs create their row later in runTurn.
+	PreAdmitted bool
 
 	// NotifyChannel is the agent-channel role a paused/resumed background run
 	// delivers to (recorded in the checkpoint for resume delivery).
@@ -720,6 +740,20 @@ func maxToolTurns(agent *agentsv1alpha1.Agent, run taskRun) int {
 	return 16
 }
 
+func storedRunLimits(limits *agentsv1alpha1.RunLimits) *store.RunLimits {
+	if limits == nil {
+		return nil
+	}
+	return &store.RunLimits{MaxOutputTokens: limits.MaxOutputTokens}
+}
+
+func runLimitsForStored(limits *store.RunLimits) *agentsv1alpha1.RunLimits {
+	if limits == nil {
+		return nil
+	}
+	return &agentsv1alpha1.RunLimits{MaxOutputTokens: limits.MaxOutputTokens}
+}
+
 // backendCancelTimeout bounds telling a backend to stop a turn. The in-process
 // one has nothing to do; a remote one gets a round trip, not forever.
 const backendCancelTimeout = 30 * time.Second
@@ -847,6 +881,12 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	// stopping.
 	var stopOnce sync.Once
 	stopRemote := func() {
+		// A lost lease means another executor may already own this same runner
+		// AttemptID. Stop this replica's local work, but never cancel that remote
+		// attempt without a fenced runner protocol.
+		if leaseWasLost(ctx) {
+			return
+		}
 		stopOnce.Do(func() {
 			go func() {
 				// Bounded, and detached from the context just cancelled: a backend
@@ -924,6 +964,9 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		ContextBudgetTokens: turnContextBudget(modelName),
 		CheckpointEvery:     checkpointEveryIterations,
 	}
+	if run.Limits != nil {
+		limits.MaxOutputTokens = run.Limits.MaxOutputTokens
+	}
 
 	// The two heads: a fresh turn writes the durable Running record and assembles
 	// a conversation; a resumed one continues from state that already exists.
@@ -949,6 +992,9 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// of the session's history or the agent's notes — the coordinator
 			// approved the prompt it sent, not the conversation around it.
 			msgs = repositoryTurnMessages(agent, run.Task)
+			if len(run.Repository.ResultSchema) > 0 {
+				msgs = slices.Insert(msgs, len(msgs)-1, backend.Message{Role: backend.RoleSystem, Content: "Your final response must be one JSON value, with no Markdown fences or surrounding commentary, matching this caller-supplied JSON Schema exactly:\n" + string(run.Repository.ResultSchema)})
+			}
 			if agent.Spec.HarnessBacked() && skillGuidance != "" {
 				msgs = slices.Insert(msgs, len(msgs)-1, backend.Message{Role: backend.RoleSystem, Content: skillGuidance})
 			}
@@ -986,7 +1032,12 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		}
 		running := store.Run{
 			ID: runID, AgentName: agent.Name, SessionID: sessionID, Trigger: run.Trigger,
+			Limits:      storedRunLimits(run.Limits),
 			ParentRunID: run.ParentRunID, IdempotencyKey: run.IdempotencyKey,
+			InvocationFingerprint: run.InvocationFingerprint,
+			InvocationAgentUID:    run.InvocationAgentUID,
+			AgentUID:              run.AgentUID, RecoveryIdentity: run.RecoveryIdentity,
+			ExecutionOwner: run.ExecutionOwner, ExecutionEpoch: run.ExecutionEpoch,
 			Delivery: run.delivery(),
 			// Where this run executed, recorded up front so a resume or a
 			// recovery reads it off the row rather than off an agent spec that
@@ -1007,13 +1058,28 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("preparing the harness cancellation checkpoint: %w", err))
 			}
 			running.Checkpoint = checkpoint
+			running.RunnerCleanupBinding, err = runnerCleanupBindingFromCheckpoint(checkpoint)
+			if err != nil {
+				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("preparing the harness cleanup binding: %w", err))
+			}
 		}
 		message := store.Message{
 			ID: taskMessageID, AgentName: agent.Name, SessionID: sessionID, RunID: runID,
 			Role: "user", Content: run.Task, CreatedAt: startedAt,
 			Metadata: agentChatTranscriptMetadata(run),
 		}
-		if len(run.AttachmentRefs) > 0 {
+		if run.Trigger == agentsv1alpha1.RunTriggerChat && run.SessionOwnerSubject != "" {
+			admission, ok := s.store.(store.AgentChatOwnerAdmissionStore)
+			if !ok {
+				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, errors.New("atomic Agent chat admission is not configured"))
+			}
+			if err := admission.CreateOwnedAgentChatRun(ctx, scope, string(agent.UID), message, running, run.AttachmentRefs, run.AttachmentOwner, run.SessionOwnerSubject, startedAt); err != nil {
+				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("accepting Agent chat input: %w", err))
+			}
+			// The transaction writes the Run and transcript anchor together; ownership
+			// is attached only when this is the first transcript in the session.
+			s.projectRun(ctx, scope, running)
+		} else if len(run.AttachmentRefs) > 0 {
 			admission, ok := s.store.(store.AgentChatAdmissionStore)
 			if !ok {
 				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, errors.New("atomic Agent chat attachment admission is not configured"))
@@ -1110,6 +1176,8 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		log.Printf("run %s: recording usage: %v", runID, usageErr)
 	}
 
+	structuredFailureState := ""
+	var structuredResult *store.StructuredResult
 	finishFailedTurn := func(cause error) (runResult, error) {
 		phase := store.RunPhaseFailed
 		if out.Status == backend.StatusCancelled {
@@ -1130,9 +1198,13 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			}
 		}
 		terminal := s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), cause.Error())
+		if structuredFailureState != "" {
+			structuredResult = &store.StructuredResult{State: structuredFailureState}
+		}
 		s.finishRun(persistCtx, scope, runID, runOutcome{
 			Phase: phase, Message: cause.Error(), Usage: out.Usage.Total.Tokens,
-			CostMicros: out.Usage.Total.CostMicros, WorkedDurationMS: tracker.workedDurationMS(), Harness: harnessT,
+			CostMicros: out.Usage.Total.CostMicros, UsageCompleteness: string(out.Usage.Completeness), CostBasis: string(out.Usage.CostBasis),
+			WorkedDurationMS: tracker.workedDurationMS(), Harness: harnessT, StructuredResult: structuredResult,
 		}, end)
 		s.recordAgentRun(persistCtx, run.CR, agent, end, &window)
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
@@ -1146,6 +1218,8 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		res.Usage.InputTokens = out.Usage.Total.InputTokens
 		res.Usage.OutputTokens = out.Usage.Total.OutputTokens
 		res.Usage.USDMicros = out.Usage.Total.CostMicros
+		res.Usage.Completeness = string(out.Usage.Completeness)
+		res.Usage.CostBasis = string(out.Usage.CostBasis)
 		return res, cause
 	}
 
@@ -1182,6 +1256,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		s.finishRun(persistCtx, scope, runID, runOutcome{
 			Phase: store.RunPhaseFailed, Message: writeErr.Error(),
 			Usage: out.Usage.Total.Tokens, CostMicros: out.Usage.Total.CostMicros,
+			UsageCompleteness: string(out.Usage.Completeness), CostBasis: string(out.Usage.CostBasis),
 			WorkedDurationMS: tracker.workedDurationMS(), Harness: harnessT,
 		}, end)
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
@@ -1206,6 +1281,29 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 				Size: int64(len(data)), Digest: hex.EncodeToString(sum[:]),
 			})
 		}
+		if len(run.Repository.ResultSchema) > 0 {
+			data, rerr := structuredJSON(finalContent)
+			if rerr == nil {
+				rerr = validateStructuredResult(run.Repository.ResultSchema, data)
+			}
+			state, digest := "valid", ""
+			if rerr != nil {
+				if errors.Is(rerr, errStructuredResultMissing) {
+					structuredFailureState = "missing"
+				} else {
+					structuredFailureState = "invalid"
+				}
+				state = structuredFailureState
+			} else {
+				sum := sha256.Sum256(data)
+				digest = hex.EncodeToString(sum[:])
+				out.Artifacts = append(out.Artifacts, backend.Artifact{Name: StructuredResultArtifactName, MediaType: "application/json", Data: data, Size: int64(len(data)), Digest: digest})
+			}
+			if rerr != nil {
+				return finishFailedTurn(fmt.Errorf("structured result invalid: %w", rerr))
+			}
+			structuredResult = &store.StructuredResult{State: state, Digest: digest, Size: int64(len(data))}
+		}
 		if serr := s.storeRunArtifacts(ctx, scope, runID, out.Artifacts, end); serr != nil {
 			return finishFailedTurn(fmt.Errorf("git result unusable: storing its artifacts: %w", serr))
 		}
@@ -1216,8 +1314,9 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	persistCtx, cancelPersist := boundedPersistContext(ctx)
 	s.finishRun(persistCtx, scope, runID, runOutcome{
 		Phase: store.RunPhaseSucceeded, Usage: out.Usage.Total.Tokens, CostMicros: out.Usage.Total.CostMicros,
+		UsageCompleteness: string(out.Usage.Completeness), CostBasis: string(out.Usage.CostBasis),
 		Output: out.Output, Sources: out.Sources, WorkedDurationMS: tracker.workedDurationMS(),
-		Harness: harnessT, Result: runResultFor(out.Result),
+		Harness: harnessT, Result: runResultFor(out.Result), StructuredResult: structuredResult,
 	}, end)
 	s.recordAgentRun(persistCtx, run.CR, agent, end, &window)
 	cancelPersist()
@@ -1228,6 +1327,8 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	res.Usage.InputTokens = out.Usage.Total.InputTokens
 	res.Usage.OutputTokens = out.Usage.Total.OutputTokens
 	res.Usage.USDMicros = out.Usage.Total.CostMicros
+	res.Usage.Completeness = string(out.Usage.Completeness)
+	res.Usage.CostBasis = string(out.Usage.CostBasis)
 	return res, nil
 }
 
@@ -1263,26 +1364,10 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 		return runResult{}, s.failPark(ctx, run, sessionID, harnessT, requestID, err)
 	}
 	if requestID == "" {
-		// A park with no request behind it came from the turn itself rather
-		// than from a gate the provider wrapped, so there is no inbox item yet
-		// and filing one is this layer's job — reaching the store is the
-		// provider's side of the seam. Without it the run would be parked on
-		// something nobody can see, let alone answer.
-		//
-		// Which KIND to file is decided the same way pendingFor decides what to
-		// show: a park that names a tool is a call waiting on a verdict and
-		// files an approval; one that does not is a question and files a
-		// question. A harness produces both — its own request-user-input, and
-		// now its permission prompts.
-		var err error
-		if strings.TrimSpace(out.Parked.Tool) != "" {
-			requestID, err = s.postHarnessApproval(ctx, run, out.Parked.Tool, out.Parked.Args)
-		} else {
-			requestID, err = s.postRunQuestion(ctx, run, out.Parked.Question, out.Parked.Questions)
-		}
-		if err != nil {
-			return runResult{}, s.failPark(ctx, run, sessionID, harnessT, "", err)
-		}
+		// Allocate the inbox ID before persisting the checkpoint. The inbox row
+		// is written only after the park is durable, so an answer can never be
+		// accepted while the run still looks active.
+		requestID = uuid.NewString()
 	}
 	ck.InboxID = requestID
 	ckJSON, err := json.Marshal(ck)
@@ -1303,21 +1388,46 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 	stored.InputTokens = out.Usage.Total.InputTokens
 	stored.OutputTokens = out.Usage.Total.OutputTokens
 	stored.USDMicros = out.Usage.Total.CostMicros
+	stored.UsageCompleteness = string(out.Usage.Completeness)
+	stored.CostBasis = string(out.Usage.CostBasis)
 	stored.WorkedDurationMS = tracker.workedDurationMS()
 	stored.UpdatedAt = end
 	if err := s.saveRun(persistCtx, scope, stored); err != nil {
 		cause := fmt.Errorf("saving run %s's approval checkpoint: %w", runID, err)
 		return runResult{}, s.failPark(ctx, run, sessionID, harnessT, requestID, cause)
 	}
+	// Make the terminal turn visible before publishing the inbox item. Readers
+	// responding to the item event must already observe the durable park.
 	s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(store.RunPhasePendingApproval), "", "")
 	s.publishRunEvent(scope, runEvent{ID: runID, Agent: run.Agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhasePendingApproval})
-
+	if out.Parked.RequestID == "" {
+		// The checkpoint now names the item that will be created below. A
+		// concurrent answer therefore sees a resumable run from its first
+		// observable moment.
+		//
+		// Which KIND to file is decided the same way pendingFor decides what to
+		// show: a park that names a tool is a call waiting on a verdict and
+		// files an approval; one that does not is a question and files a
+		// question. A harness produces both — its own request-user-input, and
+		// now its permission prompts.
+		var err error
+		if strings.TrimSpace(out.Parked.Tool) != "" {
+			_, err = s.postHarnessApproval(ctx, run, requestID, out.Parked.Tool, out.Parked.Args)
+		} else {
+			_, err = s.postRunQuestion(ctx, run, requestID, out.Parked.Question, out.Parked.Questions)
+		}
+		if err != nil {
+			return runResult{}, s.failPark(ctx, run, sessionID, harnessT, requestID, err)
+		}
+	}
 	res := runResult{RunID: runID, Content: out.Text, Phase: store.RunPhasePendingApproval,
 		StartedAt: &startedAt, FinishedAt: &end, DurationMS: tracker.durationMS(),
 		Pending: pendingFor(requestID, out.Parked)}
 	res.Usage.InputTokens = out.Usage.Total.InputTokens
 	res.Usage.OutputTokens = out.Usage.Total.OutputTokens
 	res.Usage.USDMicros = out.Usage.Total.CostMicros
+	res.Usage.Completeness = string(out.Usage.Completeness)
+	res.Usage.CostBasis = string(out.Usage.CostBasis)
 	return res, nil
 }
 
@@ -1364,8 +1474,25 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 	if run.RunID == "" {
 		run.RunID = uuid.NewString()
 	}
+	if run.ExecutionOwner == "" && s.cfg.ProcessID != "" && run.PreAdmitted {
+		claimed, leaseCtx, stop, err := s.claimFreshRun(ctx, run.Scope, run.RunID, string(run.Agent.UID), run.RecoveryIdentity)
+		if err != nil {
+			if errors.Is(err, store.ErrRunClaimConflict) || errors.Is(err, store.ErrInvocationAgentChanged) {
+				return runResult{RunID: run.RunID, Phase: store.RunPhasePending}, nil
+			}
+			return runResult{}, err
+		}
+		run.ExecutionOwner = claimed.ExecutionOwner
+		run.ExecutionEpoch = claimed.ExecutionEpoch
+		run.AgentUID = claimed.AgentUID
+		ctx = leaseCtx
+		defer stop()
+	}
 	res, err := s.runTurn(ctx, run, nil)
 	if err != nil && res.Phase == "" {
+		if errors.Is(err, store.ErrRunLeaseLost) || errors.Is(err, store.ErrRunCancellationRequested) {
+			return res, err
+		}
 		// Every entry point needs a durable refusal, including controller-owned
 		// schedules and chats that announced their run ID before setup began.
 		// Keeping this at the execution boundary prevents a claimed Pending run
@@ -1414,10 +1541,13 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 	if err := s.resolveChatModelSettings(ctx, &tr); err != nil {
 		return runAdmission{}, err
 	}
-
 	if err := s.saveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: tr.SessionID, Trigger: tr.Trigger,
-		IdempotencyKey: tr.IdempotencyKey,
+		Limits:                storedRunLimits(tr.Limits),
+		IdempotencyKey:        tr.IdempotencyKey,
+		InvocationFingerprint: tr.InvocationFingerprint,
+		InvocationAgentUID:    string(agent.UID),
+		AgentUID:              string(agent.UID), RecoveryIdentity: tr.RecoveryIdentity,
 		// What a repository run is asked to run against is part of the REQUEST,
 		// so it is on the first record: the Run object is projected from this
 		// write, and its spec is never rewritten afterwards.
@@ -1436,6 +1566,7 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 		}
 		return runAdmission{}, fmt.Errorf("persisting run before execution: %w", err)
 	}
+	tr.PreAdmitted = true
 	go func() {
 		res, err := s.executeTask(ctx, tr)
 		if err != nil {
@@ -1497,7 +1628,7 @@ func (s *Server) failBeforeStart(ctx context.Context, scope store.Scope, run tas
 		record := store.Run{
 			ID: run.RunID, AgentName: scope.AgentName, SessionID: sessionID,
 			Trigger: run.Trigger, ParentRunID: run.ParentRunID,
-			IdempotencyKey: run.IdempotencyKey, Delivery: run.delivery(),
+			IdempotencyKey: run.IdempotencyKey, InvocationFingerprint: run.InvocationFingerprint, InvocationAgentUID: run.InvocationAgentUID, Delivery: run.delivery(),
 			Phase: store.RunPhaseFailed, Input: run.Task, Message: cause.Error(),
 			CreatedAt: at, UpdatedAt: at, FinishedAt: &at,
 		}
@@ -1706,31 +1837,34 @@ func (k *turnSink) Aborted(ctx context.Context) error {
 // "" on success); Output/Sources carry the answer, so a caller reading the run
 // record gets the result and not just the phase.
 type runOutcome struct {
-	Phase            store.RunPhase
-	Message          string
-	Usage            backend.Tokens
-	CostMicros       int64
-	Output           string
-	Sources          []string
-	WorkedDurationMS *int64
+	Phase             store.RunPhase
+	Message           string
+	Usage             backend.Tokens
+	CostMicros        int64
+	UsageCompleteness string
+	CostBasis         string
+	Output            string
+	Sources           []string
+	WorkedDurationMS  *int64
 	// Harness, when set, is the harness turn that just ran, so the run record
 	// keeps the attempt it was and the harness session the NEXT turn has to chain
 	// onto. Nil for a model-backed run.
 	Harness *harnessTurn
 	// Result is a repository run's verified Git result. Nil otherwise.
-	Result *store.RunResult
+	Result           *store.RunResult
+	StructuredResult *store.StructuredResult
 }
 
 // finishRun stamps a run's terminal phase, result, usage, and timestamps, and
 // clears any checkpoint.
-func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time) {
+func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time) bool {
 	stored, err := s.store.GetRun(ctx, scope, runID)
 	if err != nil {
-		return
+		return false
 	}
+	parked := stored
 	stored.Phase = out.Phase
 	stored.Message = out.Message
-	s.closeParkedInboxItem(ctx, scope, stored, out.Phase, end)
 	stored.Checkpoint = nil
 	if out.Output != "" {
 		stored.Output = safeTruncate(out.Output, maxStoredOutput)
@@ -1745,6 +1879,8 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	if out.CostMicros > 0 {
 		stored.USDMicros = out.CostMicros
 	}
+	stored.UsageCompleteness = out.UsageCompleteness
+	stored.CostBasis = out.CostBasis
 	if out.WorkedDurationMS != nil {
 		value := *out.WorkedDurationMS
 		if value < 0 {
@@ -1756,14 +1892,19 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	if out.Result != nil {
 		stored.Result = out.Result
 	}
+	if out.StructuredResult != nil {
+		stored.StructuredResult = out.StructuredResult
+	}
 	stored.UpdatedAt = end
 	stored.FinishedAt = &end
 	if err := s.saveRun(ctx, scope, stored); err != nil {
-		return
+		return false
 	}
+	s.closeParkedInboxItem(ctx, scope, parked, out.Phase, end)
 	// The runner slot this run held is free. Give it to the oldest run waiting
 	// in the queue rather than leaving it idle until that run's own wake-up.
 	s.wakeNextQueued(ctx, scope, stored.AgentName, end)
+	return true
 }
 
 // closeParkedInboxItem closes the inbox item a run was parked on when the run
@@ -1836,16 +1977,35 @@ func runResultFor(r *backend.RepositoryResult) *store.RunResult {
 	}
 }
 
+const StructuredResultArtifactName = "structured-result.json"
+
 // storeRunArtifacts files what a repository attempt exported, under the run,
 // for the `artifact` verb to serve. Bounded by its own persist context: the
 // bundle can be tens of megabytes and the turn's context may be near its end.
 func (s *Server) storeRunArtifacts(ctx context.Context, scope store.Scope, runID string, artifacts []backend.Artifact, at time.Time) error {
 	persistCtx, cancel := boundedPersistContext(ctx)
 	defer cancel()
+	lease, leased := leaseIdentityFromContext(ctx, runID)
+	if !leased {
+		if current, err := s.store.GetRun(persistCtx, scope, runID); err == nil && current.ExecutionOwner != "" {
+			return store.ErrRunLeaseLost
+		}
+	}
 	for _, a := range artifacts {
-		if err := s.store.SaveRunArtifact(persistCtx, scope, store.RunArtifact{
+		artifact := store.RunArtifact{
 			RunID: runID, Name: a.Name, Digest: a.Digest, MediaType: a.MediaType, Size: a.Size, Data: a.Data, CreatedAt: at,
-		}); err != nil {
+		}
+		var err error
+		if leased {
+			var ok bool
+			ok, err = s.store.SaveRunArtifactOwned(persistCtx, scope, artifact, lease.owner, lease.epoch, time.Now().UTC())
+			if err == nil && !ok {
+				err = store.ErrRunLeaseLost
+			}
+		} else {
+			err = s.store.SaveRunArtifact(persistCtx, scope, artifact)
+		}
+		if err != nil {
 			return fmt.Errorf("%s: %w", a.Name, err)
 		}
 	}

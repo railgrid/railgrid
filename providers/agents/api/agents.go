@@ -556,8 +556,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	sse("start", map[string]any{"runID": runID, "sessionID": req.SessionID})
 
 	frame := s.chatTurn(runCtx, taskRun{
-		CallerUser: id.user,
-		Creds:      c, CR: clientCR{c}, Scope: id.scope(name), Agent: agent,
+		CallerUser:          id.user,
+		SessionOwnerSubject: id.user,
+		Creds:               c, CR: clientCR{c}, Scope: id.scope(name), Agent: agent,
 		RunID:     runID,
 		SessionID: req.SessionID, Task: req.Message, Trigger: agentsv1alpha1.RunTriggerChat,
 		// No EdgesEndpoint and no HubToken: a verb carries no caller

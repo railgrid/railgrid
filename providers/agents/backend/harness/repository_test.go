@@ -155,6 +155,52 @@ func TestRepositoryStartRequestIsARepositoryAttempt(t *testing.T) {
 	}
 }
 
+func TestGitResultFetchesRequestedArtifactsWithoutArtifactEvents(t *testing.T) {
+	doc := gitResult(t, gitResultDocument{Version: gitResultVersion, TaskID: "run-1", AttemptID: "run-1", AttemptEpoch: 1, BaseCommit: testBase, NoChanges: true})
+	logData := []byte("verification passed\n")
+	requested := runner.ArtifactSpec{Name: "verification-log", Path: "artifacts/verification.log", MediaType: "text/plain", CollectOnCompletion: true}
+	repo := testRepository()
+	repo.Artifacts = []runner.ArtifactSpec{requested}
+	reader := &fakeArtifacts{bodies: map[string][]byte{"doc": doc, "log": logData}}
+	b := New(repositoryConfig(&fakeRunner{}, reader, repo))
+	receipt := completedReceipt(
+		artifactRef("doc", GitResultJSONName, doc),
+		artifactRef("log", requested.Name, logData),
+	)
+	result, artifacts, err := b.gitResult(context.Background(), receipt)
+	if err != nil {
+		t.Fatalf("gitResult: %v", err)
+	}
+	if result == nil || !result.NoChanges {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(artifacts) != 2 || artifacts[1].Name != requested.Name || string(artifacts[1].Data) != string(logData) {
+		t.Fatalf("artifacts = %+v, want git result and requested verification log", artifacts)
+	}
+}
+
+type oldRunner struct{ *fakeRunner }
+
+func (oldRunner) Capabilities(context.Context) (runner.Capabilities, error) {
+	return runner.Capabilities{Verification: []string{"git-result-v1"}}, nil
+}
+
+func TestRepositoryArtifactRequestRequiresAdvertisedRunnerCapability(t *testing.T) {
+	repo := testRepository()
+	repo.Artifacts = []runner.ArtifactSpec{{Name: "verification-log", Path: "artifacts/verification.log", CollectOnCompletion: true}}
+	f := &fakeRunner{}
+	cfg := repositoryConfig(f, &fakeArtifacts{}, repo)
+	cfg.Runner = oldRunner{f}
+	b := New(cfg)
+	_, err := b.Turn(context.Background(), testRun(), backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "run verification"}}}, &recordingSink{})
+	if err == nil || !strings.Contains(err.Error(), "does not support completion-collected repository artifacts") {
+		t.Fatalf("error = %v, want a clear unsupported-runner blocker", err)
+	}
+	if len(f.starts) != 0 {
+		t.Fatalf("runner Start calls = %d, want none", len(f.starts))
+	}
+}
+
 // Without the coordinator's approved input the dispatch carries the provenance
 // envelope every conversational turn carries, because the runner refuses an
 // empty one.

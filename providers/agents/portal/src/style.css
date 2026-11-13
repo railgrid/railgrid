@@ -674,6 +674,27 @@ railgrid-provider-agents .agents-chat-read-notice {
   margin: 8px auto 0;
   border-color: var(--color-border-default);
 }
+railgrid-provider-agents .agents-session-notifications-control {
+  display: flex; width: calc(100% - 32px); max-width: var(--k-ai-conversation-content-width); flex: none; justify-content: flex-end; margin: 8px auto 0;
+}
+railgrid-provider-agents .agents-session-notifications {
+  box-sizing: border-box; width: calc(100% - 32px); max-width: var(--k-ai-conversation-content-width); max-height: 240px; flex: none; margin: 8px auto 4px; overflow: auto;
+  border: 1px solid var(--color-border-default); background: var(--color-surface-raised); color: var(--color-text-primary);
+}
+railgrid-provider-agents .agents-session-notifications__header {
+  display: flex; min-height: 40px; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; padding: 8px 10px; border-bottom: 1px solid var(--color-border-subtle);
+}
+railgrid-provider-agents .agents-session-notifications__header h2 { margin: 0; font-size: 12px; font-weight: 650; }
+railgrid-provider-agents .agents-session-notifications__header p,
+railgrid-provider-agents .agents-session-notifications__state { margin: 3px 0 0; color: var(--color-text-secondary); font-size: 11px; line-height: 1.45; }
+railgrid-provider-agents .agents-session-notifications__actions { display: flex; flex: none; gap: 4px; margin-left: auto; }
+railgrid-provider-agents .agents-session-notifications__state { padding: 10px; }
+railgrid-provider-agents .agents-session-notifications__state p { margin: 0 0 8px; }
+railgrid-provider-agents .agents-session-notifications__list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+railgrid-provider-agents .agents-session-notifications__list li { min-width: 0; padding: 8px 10px; border-bottom: 1px solid var(--color-border-subtle); }
+railgrid-provider-agents .agents-session-notifications__list li:last-child { border-bottom: 0; }
+railgrid-provider-agents .agents-session-notifications__list time { color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 10px; }
+railgrid-provider-agents .agents-session-notifications__list p { margin: 3px 0 0; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 railgrid-provider-agents .agents-chat-workspace--inspection .agents-conversation-column { flex: 1 1 56%; }
 railgrid-provider-agents .agents-artifact-panel {
   display: flex; min-width: 360px; min-height: 0; flex: 0 1 44%; flex-direction: column; gap: 12px; overflow: auto;

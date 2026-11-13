@@ -210,12 +210,14 @@ type reconcileImageForge struct {
 	imageForge
 	backend.GitBackend
 	updates    int
+	reads      int
 	failUpdate bool
 	body       string
 }
 
 func (f *reconcileImageForge) Name() string { return "github" }
 func (f *reconcileImageForge) ReadPullRequest(context.Context, *api.Connection, backend.Credential, *api.Repository, int) (*backend.PullRequest, error) {
+	f.reads++
 	return f.pr, nil
 }
 func (f *reconcileImageForge) UpdatePullRequest(_ context.Context, _ *api.Connection, _ backend.Credential, _ *api.Repository, _ int, in backend.PullRequestInput) (*backend.PullRequest, error) {

@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -528,6 +529,77 @@ func artifactSource(workdir, relative string) (string, error) {
 		return "", errors.New("artifact path escapes the task worktree")
 	}
 	return resolved, nil
+}
+
+// openDeclaredArtifact confines completion collection to a real artifacts/
+// directory. OpenRoot prevents traversal and symlink escapes even if a path is
+// changed after the checks below; the component checks also reject ordinary
+// in-tree symlinks, including links to sibling files.
+func openDeclaredArtifact(workdir, relative string) (*os.File, error) {
+	if !strings.HasPrefix(relative, "artifacts/") || filepath.IsAbs(relative) || filepath.Clean(relative) != relative {
+		return nil, errors.New("declared artifact path must be clean and under artifacts/")
+	}
+	rel := strings.TrimPrefix(relative, "artifacts/")
+	if rel == "" || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, errors.New("declared artifact path escapes artifacts/")
+	}
+	rootPath := filepath.Join(workdir, "artifacts")
+	rootInfo, err := os.Lstat(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("artifacts root must be a real directory")
+	}
+	parts := strings.Split(filepath.FromSlash(rel), string(filepath.Separator))
+	current := rootPath
+	for i, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.HasPrefix(part, ".") {
+			return nil, errors.New("declared artifact path contains an unsafe component")
+		}
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if statErr != nil {
+			return nil, statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, errors.New("declared artifact path cannot contain symlinks")
+		}
+		if i < len(parts)-1 && !info.IsDir() {
+			return nil, errors.New("declared artifact parent is not a directory")
+		}
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	openedRootInfo, statErr := root.Stat(".")
+	if statErr != nil || !os.SameFile(rootInfo, openedRootInfo) {
+		_ = root.Close()
+		if statErr != nil {
+			return nil, statErr
+		}
+		return nil, errors.New("artifacts root changed while opening")
+	}
+	f, err := root.OpenFile(filepath.FromSlash(rel), os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	closeErr := root.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		_ = f.Close()
+		return nil, closeErr
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, errors.New("declared artifact is not a regular file")
+	}
+	return f, nil
 }
 
 func validateArtifactRelativePath(relative string) error {

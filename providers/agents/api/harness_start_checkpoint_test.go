@@ -67,6 +67,59 @@ func TestInitialHarnessCheckpointContainsOnlySafeCancellationCoordinates(t *test
 	if strings.Contains(string(checkpointRaw), "harness-login-test-secret") || strings.Contains(string(checkpointRaw), "runner-bearer-test-secret") {
 		t.Fatal("initial checkpoint contains credential material")
 	}
+	binding, err := runnerCleanupBindingFromCheckpoint(checkpointRaw)
+	if err != nil {
+		t.Fatalf("runnerCleanupBindingFromCheckpoint: %v", err)
+	}
+	if binding.ClusterID != wantTarget.ClusterID || binding.EdgeKind != wantTarget.EdgeKind || binding.EdgeName != wantTarget.EdgeName ||
+		binding.Service != wantTarget.Service || binding.RunnerID != wantTarget.RunnerID || binding.TaskID != state.TaskID ||
+		binding.AttemptID != state.AttemptID || binding.AttemptEpoch != state.Epoch || binding.AgentUID != state.AgentUID || binding.BackendKey != state.BackendKey {
+		t.Fatalf("persisted cleanup binding = %+v", binding)
+	}
+	encodedBinding, err := json.Marshal(binding)
+	if err != nil || strings.Contains(string(encodedBinding), "harness-login-test-secret") || strings.Contains(string(encodedBinding), "runner-bearer-test-secret") {
+		t.Fatalf("cleanup binding includes credential material or failed to marshal: %s, %v", encodedBinding, err)
+	}
+}
+
+func TestTerminalRunRetainsOnlyRunnerCleanupBinding(t *testing.T) {
+	ctx := context.Background()
+	storeImpl := store.NewMemoryStore()
+	agent := harnessAgent("edge-test")
+	agent.UID = "agent-uid"
+	run := taskRun{
+		Scope: store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: agent.Name},
+		Agent: agent, RunID: "run-cleanup-binding", SessionID: "chat", ClusterID: "cluster-test", Trigger: "chat",
+	}
+	checkpoint, err := initialHarnessCheckpoint(run, startCheckpointHarnessTurn(run, 4, "native-session"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := runnerCleanupBindingFromCheckpoint(checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC()
+	if err := storeImpl.SaveRun(ctx, run.Scope, store.Run{
+		ID: run.RunID, AgentName: agent.Name, SessionID: run.SessionID, Trigger: run.Trigger,
+		AttemptID: run.RunID, AgentUID: string(agent.UID), Repository: &store.RunRepository{RepositoryID: "repo", BaseCommit: "base"},
+		Phase: store.RunPhaseRunning, Checkpoint: checkpoint, RunnerCleanupBinding: binding,
+		CreatedAt: started, UpdatedAt: started, StartedAt: &started,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: storeImpl}
+	s.finishRun(ctx, run.Scope, run.RunID, runOutcome{Phase: store.RunPhaseSucceeded}, started.Add(time.Second))
+	finished, err := storeImpl.GetRun(ctx, run.Scope, run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Checkpoint != nil {
+		t.Fatalf("terminal run retained its resume checkpoint: %s", finished.Checkpoint)
+	}
+	if finished.RunnerCleanupBinding == nil || *finished.RunnerCleanupBinding != *binding {
+		t.Fatalf("terminal run cleanup binding = %+v, want %+v", finished.RunnerCleanupBinding, binding)
+	}
 }
 
 func TestInitialHarnessCheckpointUsesSelectedTaskAndEffectiveSession(t *testing.T) {

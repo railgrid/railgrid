@@ -9,8 +9,10 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -137,5 +139,162 @@ func TestConcurrentApprovalVerdictsShareOneResumeClaim(t *testing.T) {
 	}
 	if claims.Load() != 1 {
 		t.Fatalf("resume claims=%d, want 1", claims.Load())
+	}
+}
+
+func TestInboxAnswerVerbAcceptsOnlyAnsweredQuestions(t *testing.T) {
+	if !inboxAnswerAllowed(store.InboxKindQuestion, store.InboxStateAnswered) {
+		t.Fatal("answer verb rejected a question")
+	}
+	for _, item := range []struct {
+		kind  store.InboxItemKind
+		state store.InboxItemState
+	}{
+		{store.InboxKindApproval, store.InboxStateAnswered},
+		{store.InboxKindApproval, store.InboxStateApproved},
+		{store.InboxKindApproval, store.InboxStateDenied},
+		{store.InboxKindQuestion, store.InboxStateDenied},
+	} {
+		if inboxAnswerAllowed(item.kind, item.state) {
+			t.Errorf("answer verb accepted kind=%q state=%q", item.kind, item.state)
+		}
+	}
+}
+
+func TestRepeatedInboxDecisionAfterResumeIsIdempotent(t *testing.T) {
+	ctx := t.Context()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", AgentName: "coder"}
+	st := store.NewMemoryStore()
+	now := time.Now().UTC()
+	run := store.Run{ID: "run", AgentName: "coder", Phase: store.RunPhasePendingApproval, Checkpoint: []byte(`{"inboxID":"approval"}`), CreatedAt: now, UpdatedAt: now}
+	if err := st.SaveRun(ctx, scope, run); err != nil {
+		t.Fatal(err)
+	}
+	item := store.InboxItem{ID: "approval", AgentName: "coder", RunID: run.ID, Kind: store.InboxKindApproval, State: store.InboxStatePending, Payload: map[string]any{"tool": "shell", "args": "{}"}, CreatedAt: now, UpdatedAt: now}
+	if err := st.AddInboxItem(ctx, scope, item); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+	first, err := s.resolveInboxDecision(ctx, scope, item.ID, store.InboxStateApproved, "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Phase, run.Checkpoint = store.RunPhaseSucceeded, nil
+	if err := st.SaveRun(ctx, scope, run); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := s.resolveInboxDecision(ctx, scope, item.ID, store.InboxStateApproved, "", now.Add(time.Second))
+	if err != nil || retry.State != first.State || !retry.UpdatedAt.Equal(first.UpdatedAt) {
+		t.Fatalf("identical retry did not return the saved decision: got=%+v err=%v", retry, err)
+	}
+}
+
+func TestInboxDecisionCanDismissWhenRunIsTerminalOrMissing(t *testing.T) {
+	for _, terminal := range []bool{true, false} {
+		t.Run(fmt.Sprintf("terminal=%t", terminal), func(t *testing.T) {
+			ctx := t.Context()
+			scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", AgentName: "coder"}
+			st := store.NewMemoryStore()
+			now := time.Now().UTC()
+			item := store.InboxItem{ID: "approval", AgentName: "coder", RunID: "run", Kind: store.InboxKindApproval, State: store.InboxStatePending, Payload: map[string]any{"tool": "shell", "args": "{}"}, CreatedAt: now, UpdatedAt: now}
+			if err := st.AddInboxItem(ctx, scope, item); err != nil {
+				t.Fatal(err)
+			}
+			if terminal {
+				if err := st.SaveRun(ctx, scope, store.Run{ID: "run", AgentName: "coder", Phase: store.RunPhaseFailed, CreatedAt: now, UpdatedAt: now}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			resolved, err := (&Server{store: st}).resolveInboxDecision(ctx, scope, item.ID, store.InboxStateDenied, "", now)
+			if err != nil || resolved.State != store.InboxStateDenied {
+				t.Fatalf("deny failed: item=%+v err=%v", resolved, err)
+			}
+		})
+	}
+}
+
+func TestApprovalOfTerminalOrMissingRunIsRejectedButCanBeDenied(t *testing.T) {
+	for _, terminal := range []bool{true, false} {
+		t.Run(fmt.Sprintf("terminal=%t", terminal), func(t *testing.T) {
+			ctx := t.Context()
+			scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", AgentName: "coder"}
+			st := store.NewMemoryStore()
+			now := time.Now().UTC()
+			item := store.InboxItem{ID: "approval", AgentName: "coder", RunID: "run", Kind: store.InboxKindApproval, State: store.InboxStatePending, Payload: map[string]any{"tool": "shell", "args": "{}"}, CreatedAt: now, UpdatedAt: now}
+			if err := st.AddInboxItem(ctx, scope, item); err != nil {
+				t.Fatal(err)
+			}
+			if terminal {
+				if err := st.SaveRun(ctx, scope, store.Run{ID: "run", AgentName: "coder", Phase: store.RunPhaseSucceeded, CreatedAt: now, UpdatedAt: now}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s := &Server{store: st}
+			_, err := s.resolveInboxDecision(ctx, scope, item.ID, store.InboxStateApproved, "", now)
+			var requestErr *requestError
+			if !errors.As(err, &requestErr) || requestErr.code != http.StatusConflict || requestErr.reason != "RunEnded" {
+				t.Fatalf("approve error = %#v, want 409 RunEnded", err)
+			}
+			saved, err := st.GetInboxItem(ctx, scope, item.ID)
+			if err != nil || saved.State != store.InboxStatePending {
+				t.Fatalf("approval mutated item: %+v, %v", saved, err)
+			}
+			if got, err := s.resolveInboxDecision(ctx, scope, item.ID, store.InboxStateDenied, "", now); err != nil || got.State != store.InboxStateDenied {
+				t.Fatalf("deny did not remain available: %+v, %v", got, err)
+			}
+		})
+	}
+}
+
+type inboxInsertThenErrorStore struct{ store.Store }
+
+func (s inboxInsertThenErrorStore) AddInboxItem(_ context.Context, scope store.Scope, item store.InboxItem) error {
+	if err := s.Store.AddInboxItem(context.Background(), scope, item); err != nil {
+		return err
+	}
+	return errors.New("write acknowledgment lost")
+}
+
+func TestAddInboxItemOnceReadsBackMatchingConcurrentInsert(t *testing.T) {
+	ctx := t.Context()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws"}
+	item := store.InboxItem{ID: "same", AgentName: "coder", RunID: "run", Kind: store.InboxKindQuestion, State: store.InboxStatePending}
+	s := &Server{store: inboxInsertThenErrorStore{Store: store.NewMemoryStore()}}
+	created, err := s.addInboxItemOnce(ctx, scope, item)
+	if err != nil || created {
+		t.Fatalf("readback after ambiguous insert: created=%t err=%v", created, err)
+	}
+	got, err := s.store.GetInboxItem(ctx, scope, item.ID)
+	if err != nil || got.RunID != item.RunID {
+		t.Fatalf("insert not durable: %+v err=%v", got, err)
+	}
+}
+
+func TestAddInboxItemOnceRecognizesExistingMatchingMemoryItem(t *testing.T) {
+	ctx := t.Context()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws"}
+	item := store.InboxItem{ID: "same", AgentName: "coder", RunID: "run", Kind: store.InboxKindQuestion, State: store.InboxStatePending}
+	st := store.NewMemoryStore()
+	if err := st.AddInboxItem(ctx, scope, item); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+	created, err := s.addInboxItemOnce(ctx, scope, item)
+	if err != nil || created {
+		t.Fatalf("existing item not recognized: created=%t err=%v", created, err)
+	}
+}
+
+func TestAddInboxItemOnceRejectsReadbackWithDifferentKind(t *testing.T) {
+	ctx := t.Context()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws"}
+	st := store.NewMemoryStore()
+	if err := st.AddInboxItem(ctx, scope, store.InboxItem{ID: "same", AgentName: "coder", RunID: "run", Kind: store.InboxKindApproval, State: store.InboxStatePending}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+	created, err := s.addInboxItemOnce(ctx, scope, store.InboxItem{ID: "same", AgentName: "coder", RunID: "run", Kind: store.InboxKindQuestion, State: store.InboxStatePending})
+	if err == nil || created {
+		t.Fatalf("different existing item accepted: created=%t err=%v", created, err)
 	}
 }

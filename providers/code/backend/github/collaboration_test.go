@@ -47,7 +47,7 @@ func TestCollaborationPinsRepositoryAndHeadBeforeCreatingPR(t *testing.T) {
 					}
 					posts++
 					var input map[string]any
-					if json.NewDecoder(r.Body).Decode(&input) != nil || input["head"] != "feature" || input["base"] != "main" || input["title"] != "Public summary" {
+					if json.NewDecoder(r.Body).Decode(&input) != nil || input["head"] != "feature" || input["base"] != "main" || input["title"] != "Public summary" || input["draft"] != true {
 						t.Error("PR request lost pinned public inputs")
 					}
 					if kind == "lost response" {
@@ -65,7 +65,7 @@ func TestCollaborationPinsRepositoryAndHeadBeforeCreatingPR(t *testing.T) {
 			defer server.Close()
 			conn := &api.Connection{Spec: api.ConnectionSpec{Owner: "team", BaseURL: server.URL}}
 			repo := &api.Repository{Spec: api.RepositorySpec{Name: "demo"}, Status: api.RepositoryStatus{RepoID: "42"}}
-			result, err := New().CreatePullRequest(context.Background(), conn, backend.Credential{Token: "test-token"}, repo, backend.PullRequestInput{Head: "feature", Base: "main", Commit: commit, Title: "Public summary", Body: "Ready for review"})
+			result, err := New().CreatePullRequest(context.Background(), conn, backend.Credential{Token: "test-token"}, repo, backend.PullRequestInput{Head: "feature", Base: "main", Commit: commit, Title: "Public summary", Body: "Ready for review", Draft: true})
 			switch kind {
 			case "success":
 				if err != nil || result == nil || result.Commit != commit || posts != 1 {
@@ -83,6 +83,104 @@ func TestCollaborationPinsRepositoryAndHeadBeforeCreatingPR(t *testing.T) {
 		})
 	}
 }
+
+func TestSubmitReviewRecoveryRejectsMarkerFromAnotherActor(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	input := backend.ReviewInput{Number: 7, ExpectedHead: commit, IdempotencyKey: "consumer-key-1", Body: "Review summary", RecoverOnly: true, Scope: "pr-uid-a"}
+	marker := "<!-- railgrid-review-key:" + scopeDigest(input.Scope) + ":" + input.IdempotencyKey + ":" + backend.ReviewFingerprint(input) + " -->"
+	creates := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/repos/team/demo":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "full_name": "team/demo"})
+		case "/api/v3/repos/team/demo/pulls/7":
+			_ = json.NewEncoder(w).Encode(map[string]any{"number": 7, "html_url": "https://github.com/team/demo/pull/7", "state": "open", "merged": false, "draft": true, "head": map[string]any{"ref": "feature", "sha": commit, "repo": map[string]any{"full_name": "team/demo"}}, "base": map[string]any{"ref": "main", "repo": map[string]any{"full_name": "team/demo"}}})
+		case "/api/v3/repos/team/demo/pulls/7/reviews":
+			if r.Method == http.MethodPost {
+				creates++
+				w.WriteHeader(http.StatusCreated)
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": 99, "commit_id": commit, "state": "COMMENTED", "body": marker, "user": map[string]any{"login": "someone-else", "type": "Bot"}}})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	conn := &api.Connection{Spec: api.ConnectionSpec{Owner: "team", BaseURL: server.URL}}
+	repo := &api.Repository{Spec: api.RepositorySpec{Name: "demo"}, Status: api.RepositoryStatus{RepoID: "42"}}
+	_, err := New().SubmitReview(context.Background(), conn, backend.Credential{Token: "test-token", ActorLogin: "railgrid-helper[bot]", ActorType: "Bot"}, repo, input)
+	if err == nil || creates != 0 {
+		t.Fatalf("recovery trusted another actor or created a duplicate: creates=%d err=%v", creates, err)
+	}
+}
+
+func TestBaseCurrentUsesCurrentBaseTipAndImmutableComparison(t *testing.T) {
+	for _, tc := range []struct {
+		name, status string
+		behind       int
+		want         bool
+	}{
+		{"candidate contains current base", "ahead", 0, true},
+		{"candidate behind current base", "behind", 2, false},
+		{"candidate diverged", "diverged", 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			baseTip, candidate := strings.Repeat("b", 40), strings.Repeat("a", 40)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/v3/repos/team/demo":
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "full_name": "team/demo"})
+				case "/api/v3/repos/team/demo/branches/main":
+					_ = json.NewEncoder(w).Encode(map[string]any{"name": "main", "commit": map[string]any{"sha": baseTip}})
+				case "/api/v3/repos/team/demo/compare/" + baseTip + "..." + candidate:
+					_ = json.NewEncoder(w).Encode(map[string]any{"status": tc.status, "behind_by": tc.behind, "base_commit": map[string]any{"sha": baseTip}})
+				default:
+					t.Errorf("unexpected route %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			conn := &api.Connection{Spec: api.ConnectionSpec{Owner: "team", BaseURL: server.URL}}
+			repo := &api.Repository{Spec: api.RepositorySpec{Name: "demo"}, Status: api.RepositoryStatus{RepoID: "42"}}
+			pr := &backend.PullRequest{Base: "main", Commit: candidate}
+			baseHead, current, observationErr, err := New().ObservePullRequestBase(context.Background(), conn, backend.Credential{Token: "test"}, repo, pr)
+			if err != nil || observationErr != "" || current == nil || *current != tc.want || baseHead != baseTip {
+				t.Fatalf("observation: base=%q current=%v error=%q callErr=%v", baseHead, current, observationErr, err)
+			}
+		})
+	}
+}
+
+func TestBaseCurrentIncompleteComparisonIsUnavailableNotFalse(t *testing.T) {
+	baseTip, candidate := strings.Repeat("b", 40), strings.Repeat("a", 40)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/repos/team/demo":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "full_name": "team/demo"})
+		case "/api/v3/repos/team/demo/branches/main":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "main", "commit": map[string]any{"sha": baseTip}})
+		case "/api/v3/repos/team/demo/compare/" + baseTip + "..." + candidate:
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ahead", "base_commit": map[string]any{"sha": baseTip}})
+		default:
+			t.Errorf("unexpected route %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	conn := &api.Connection{Spec: api.ConnectionSpec{Owner: "team", BaseURL: server.URL}}
+	repo := &api.Repository{Spec: api.RepositorySpec{Name: "demo"}, Status: api.RepositoryStatus{RepoID: "42"}}
+	pr := &backend.PullRequest{Base: "main", Commit: candidate}
+	base, current, observationErr, err := New().ObservePullRequestBase(context.Background(), conn, backend.Credential{Token: "test"}, repo, pr)
+	if err != nil || base != baseTip || current != nil || observationErr == "" {
+		t.Fatalf("incomplete comparison was asserted: base=%q current=%v observationErr=%q callErr=%v", base, current, observationErr, err)
+	}
+}
+
 func collaborationPR(commit string) map[string]any {
 	return map[string]any{"number": 1, "html_url": "https://github.com/team/demo/pull/1", "state": "closed", "merged": true, "merge_commit_sha": strings.Repeat("c", 40), "merged_at": "2026-09-13T12:00:00Z", "merged_by": map[string]any{"login": "human", "type": "User"}, "head": map[string]any{"ref": "feature", "sha": commit, "repo": map[string]any{"full_name": "team/demo"}}, "base": map[string]any{"ref": "main", "repo": map[string]any{"full_name": "team/demo"}}}
 }
@@ -297,5 +395,129 @@ func TestOpenPullRequestCarriesNoMergeProof(t *testing.T) {
 	merged := &gh.PullRequest{Number: gh.Int(1), State: gh.String("closed"), Merged: gh.Bool(true), MergeCommitSHA: gh.String(strings.Repeat("c", 40)), MergedBy: &gh.User{Login: gh.String("human"), Type: gh.String("User")}}
 	if got := pullResult(merged); got.MergeCommit != strings.Repeat("c", 40) || got.Merger != "human" {
 		t.Fatalf("merged pull request observation = %+v, want merge proof", got)
+	}
+}
+
+func TestOperationMarkerMustBeAppendedAfterCallerBody(t *testing.T) {
+	prefix := "<!-- railgrid-review-key:scope:key:"
+	marker := prefix + strings.Repeat("a", 64) + " -->"
+	another := "<!-- railgrid-review-key:scope:another:" + strings.Repeat("b", 64) + " -->"
+	if hasOperationMarker("user text\n"+marker+"\n\n"+another, prefix) {
+		t.Fatal("a marker in the caller body matched the operation")
+	}
+	if !hasOperationMarker("user text\n\n"+marker, prefix) {
+		t.Fatal("the appended operation marker did not match")
+	}
+}
+
+func TestReviewWriteClassificationReleasesOnlyUnattemptedOrDefinitiveWrites(t *testing.T) {
+	writeErr := errors.New("host request failed")
+	for _, tc := range []struct {
+		name           string
+		writeAttempted bool
+		wantRejected   bool
+		wantPermanent  bool
+	}{
+		{name: "before write", writeAttempted: false, wantRejected: true},
+		{name: "ambiguous attempted write", writeAttempted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyReviewWrite(writeErr, tc.writeAttempted)
+			var rejected *backend.ReviewWriteRejected
+			if errors.As(got, &rejected) != tc.wantRejected {
+				t.Fatalf("classification = %T %v, rejected=%t", got, got, tc.wantRejected)
+			}
+			if rejected != nil && rejected.Permanent != tc.wantPermanent {
+				t.Fatalf("permanent = %t, want %t", rejected.Permanent, tc.wantPermanent)
+			}
+		})
+	}
+}
+
+func TestManagedCommentRecoveryEditsKnownIDAndFencesCreates(t *testing.T) {
+	for _, mode := range []string{"known with removed marker", "known missing", "listing stale", "replacement marker", "replacement marker by another author", "unknown"} {
+		t.Run(mode, func(t *testing.T) {
+			patches, creates := 0, 0
+			input := backend.ManagedCommentInput{Number: 7, Scope: "pr-uid", Key: "key", Body: "updated", RecoverOnly: true}
+			markerBody := "edited without marker"
+			if mode == "replacement marker" || mode == "replacement marker by another author" {
+				marker := "<!-- railgrid-managed-comment:" + scopeDigest(input.Scope) + ":" + input.Key + ":" + strings.Repeat("a", 64) + " -->"
+				input.CommentID = 99
+				markerBody = "updated\n\n" + marker
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				commentID := 99
+				if mode == "replacement marker" || mode == "replacement marker by another author" {
+					commentID = 100
+				}
+				login := "bot"
+				if mode == "replacement marker by another author" {
+					login = "someone-else"
+				}
+				comment := map[string]any{"id": commentID, "body": markerBody, "user": map[string]any{"login": login, "type": "User"}}
+				switch {
+				case r.URL.Path == "/api/v3/repos/team/demo":
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "full_name": "team/demo"})
+				case r.URL.Path == "/api/v3/repos/team/demo/issues/7/comments" && r.Method == http.MethodGet:
+					items := []any{}
+					if mode == "known with removed marker" || mode == "replacement marker" || mode == "replacement marker by another author" {
+						items = append(items, comment)
+					}
+					_ = json.NewEncoder(w).Encode(items)
+				case r.URL.Path == "/api/v3/repos/team/demo/issues/comments/99" && r.Method == http.MethodGet:
+					if mode == "listing stale" {
+						_ = json.NewEncoder(w).Encode(comment)
+					} else {
+						w.WriteHeader(http.StatusNotFound)
+					}
+				case (r.URL.Path == "/api/v3/repos/team/demo/issues/comments/99" || r.URL.Path == "/api/v3/repos/team/demo/issues/comments/100") && r.Method == http.MethodPatch:
+					patches++
+					_ = json.NewEncoder(w).Encode(comment)
+				case r.Method == http.MethodPost:
+					creates++
+					w.WriteHeader(http.StatusCreated)
+				default:
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(server.Close)
+			conn := &api.Connection{Spec: api.ConnectionSpec{Owner: "team", BaseURL: server.URL}}
+			repo := &api.Repository{Spec: api.RepositorySpec{Name: "demo"}, Status: api.RepositoryStatus{RepoID: "42"}}
+			if mode != "unknown" && mode != "replacement marker" && mode != "replacement marker by another author" {
+				input.CommentID = 99
+			}
+			got, err := New().UpsertManagedComment(t.Context(), conn, backend.Credential{Token: "test-token", ActorLogin: "bot", ActorType: "Bot"}, repo, input)
+			switch mode {
+			case "known with removed marker":
+				if err != nil || got == nil || got.ID != 99 || patches != 1 {
+					t.Fatalf("recoverable edit = %+v, patches=%d, err=%v", got, patches, err)
+				}
+			case "known missing":
+				if !errors.Is(err, backend.ErrManagedCommentMissing) {
+					t.Fatalf("missing pinned comment = %v", err)
+				}
+			case "listing stale":
+				if err != nil || got == nil || got.ID != 99 || patches != 1 {
+					t.Fatalf("ID lookup did not recover stale listing = %+v, patches=%d, err=%v", got, patches, err)
+				}
+			case "replacement marker":
+				if err != nil || got == nil || got.ID != 100 || patches != 1 {
+					t.Fatalf("replacement marker was not adopted = %+v, patches=%d, err=%v", got, patches, err)
+				}
+			case "replacement marker by another author":
+				if !errors.Is(err, backend.ErrManagedCommentMissing) || patches != 0 {
+					t.Fatalf("foreign replacement marker was adopted or patched: patches=%d, err=%v", patches, err)
+				}
+			case "unknown":
+				if err == nil || errors.Is(err, backend.ErrManagedCommentMissing) {
+					t.Fatalf("uncertain create = %v", err)
+				}
+			}
+			if creates != 0 {
+				t.Fatalf("recovery issued %d creates", creates)
+			}
+		})
 	}
 }

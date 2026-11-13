@@ -315,6 +315,9 @@ type Limits struct {
 	// offers. 0 disables mid-turn checkpointing, and with it recovery of a run
 	// whose process dies.
 	CheckpointEvery int
+	// MaxOutputTokens is a hard aggregate ceiling for model completion tokens
+	// across one run. Backends that cannot enforce it must reject the request.
+	MaxOutputTokens int64
 }
 
 // Run identifies the durable run a turn belongs to. The provider owns it
@@ -434,7 +437,29 @@ type Usage struct {
 	// includes what the run had already spent when it parked, and that was
 	// billed then.
 	Billed Cost
+	// Completeness describes how fully the backend observed usage for the run.
+	Completeness UsageCompleteness
+	// CostBasis distinguishes provider-reported charges from local estimates.
+	CostBasis CostBasis
 }
+
+// UsageCompleteness describes the evidence available for usage totals.
+type UsageCompleteness string
+
+const (
+	UsageComplete    UsageCompleteness = "complete"
+	UsagePartial     UsageCompleteness = "partial"
+	UsageUnavailable UsageCompleteness = "unavailable"
+)
+
+// CostBasis identifies how CostMicros was obtained.
+type CostBasis string
+
+const (
+	CostBasisProviderReported CostBasis = "provider_reported"
+	CostBasisCatalogEstimate  CostBasis = "catalog_estimate"
+	CostBasisUnavailable      CostBasis = "unavailable"
+)
 
 // Outcome is what one turn came to.
 type Outcome struct {

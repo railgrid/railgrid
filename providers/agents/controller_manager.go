@@ -38,6 +38,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"time"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/klog/v2"
@@ -209,7 +210,7 @@ func runControllerManager(ctx context.Context, deps api.ControllerDeps, ready *v
 // logical cluster the CR came from.
 type runExecution interface {
 	DispatchRun(ctx context.Context, clusterID string, object *agentsv1alpha1.Run) error
-	RecoverRun(ctx context.Context, clusterID, agentName, runID string) error
+	RecoverRun(ctx context.Context, clusterID, agentName, runID string) (time.Duration, error)
 	StopRun(ctx context.Context, clusterID, agentName, runID, reason string) error
 	PurgeRunData(ctx context.Context, clusterID, agentName, runID string) error
 }

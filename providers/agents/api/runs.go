@@ -21,6 +21,9 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/railgrid/railgrid/pkg/runner"
 )
 
 // runSummary is the list-view shape of a run. Class derives from the trigger
@@ -103,8 +106,12 @@ type runDetail struct {
 	// against, and — once it succeeded — the verified Git result whose
 	// artifacts the `artifact` verb serves. Same shapes as the Run object's
 	// spec.repository and status.result.
-	Repository *store.RunRepository `json:"repository,omitempty"`
-	Result     *store.RunResult     `json:"result,omitempty"`
+	Repository       *store.RunRepository    `json:"repository,omitempty"`
+	Result           *store.RunResult        `json:"result,omitempty"`
+	StructuredResult *store.StructuredResult `json:"structuredResult,omitempty"`
+	// Cleanup is a live runner-journal observation, separate from the Agents
+	// Run phase because terminal execution does not mean cleanup has ended.
+	Cleanup *runner.CleanupObservation `json:"cleanup,omitempty"`
 }
 
 // runHarnessInfo is the edge-side identity of one harness-backed run.
@@ -153,7 +160,7 @@ func summarize(run store.Run) runSummary {
 // deliberately not served here: a route that restated the object would be a
 // second source of truth for the same facts.
 func (s *Server) runTrace(w http.ResponseWriter, r *http.Request) {
-	_, id, ok := s.requireClient(w, r)
+	c, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
@@ -162,12 +169,140 @@ func (s *Server) runTrace(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusConflict, "Conflict", "this run names no agent, so its trace cannot be located")
 		return
 	}
-	detail, err := s.runDetailFor(r.Context(), id.scope(agent), r.PathValue("name"))
+	scope := id.scope(agent)
+	runID := r.PathValue("name")
+	run, err := s.store.GetRun(r.Context(), scope, runID)
 	if err != nil {
 		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
 		return
 	}
+	detail, err := s.runDetailFor(r.Context(), scope, runID)
+	if err != nil {
+		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
+		return
+	}
+	if harnessBackedRun(run) {
+		detail.Cleanup = s.observeRunnerCleanup(r.Context(), c, id, run)
+	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+// A repository execution is necessarily runner-backed even if a historical or
+// projection path omitted Backend. Keep the backend summary itself honest, but
+// still expose an unknown cleanup observation instead of hiding the field.
+func harnessBackedRun(run store.Run) bool {
+	return run.Backend == agentsv1alpha1.AgentBackendHarness || run.Repository != nil
+}
+
+// observeRunnerCleanup reads the current journal for this exact harness
+// attempt. Failures use fixed reasons so an older or unreachable runner never
+// makes ordinary trace unreadable or reveals hook output, paths, or errors.
+func (s *Server) observeRunnerCleanup(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) *runner.CleanupObservation {
+	unknown := func(reason string) *runner.CleanupObservation {
+		return &runner.CleanupObservation{State: runner.CleanupUnknown, ObservedAt: time.Now().UTC(), Reason: reason}
+	}
+	observeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	binding := run.RunnerCleanupBinding
+	if binding == nil && len(run.Checkpoint) > 0 {
+		// A still-active pre-upgrade run may retain its legacy checkpoint. Do not
+		// infer a terminal binding from the current Agent when no checkpoint exists.
+		if legacy, err := runnerCleanupBindingFromCheckpoint(run.Checkpoint); err == nil {
+			binding = legacy
+		}
+	}
+	if binding == nil {
+		return unknown("cleanup_binding_unavailable")
+	}
+	if c == nil || s.runners == nil {
+		return unknown("runner_unavailable")
+	}
+	if reason := runnerCleanupRunBindingIssue(run, id.clusterID, binding); reason != "" {
+		return unknown(reason)
+	}
+	agent, err := c.Agents().Get(observeCtx, run.AgentName, metav1.GetOptions{})
+	if err != nil || string(agent.UID) != run.AgentUID {
+		return unknown("agent_binding_unavailable")
+	}
+	target := &harnessCancelTarget{
+		ClusterID: binding.ClusterID, EdgeKind: binding.EdgeKind, EdgeName: binding.EdgeName,
+		Service: binding.Service, RunnerID: binding.RunnerID,
+	}
+	ref, grantAgent, ok := parkedHarnessRunner(id.clusterID, agent, target, binding.BackendKey)
+	if !ok {
+		return unknown("runner_binding_unavailable")
+	}
+	token, err := s.harnessIdentity(observeCtx, id.clusterID, grantAgent)
+	if err != nil {
+		return unknown("runner_identity_unavailable")
+	}
+	dispatcher, err := s.runners(observeCtx, ref, token)
+	if err != nil {
+		return unknown("runner_unavailable")
+	}
+	receipt, err := dispatcher.Inspect(observeCtx, binding.AttemptID)
+	if err != nil {
+		return unknown("runner_unavailable")
+	}
+	if reason := runnerCleanupReceiptIssue(receipt, binding); reason != "" {
+		return unknown(reason)
+	}
+	if receipt.Cleanup == nil {
+		return unknown("runner_unsupported")
+	}
+	observed := *receipt.Cleanup
+	return &observed
+}
+
+// runnerCleanupRunBindingIssue returns only fixed reason codes. Keeping the
+// Run-to-binding check separate from the remote receipt check makes an
+// observation actionable without exposing IDs or weakening any identity fence.
+func runnerCleanupRunBindingIssue(run store.Run, clusterID string, binding *store.RunnerCleanupBinding) string {
+	attemptID := runHarnessAttemptID(run, binding)
+	switch {
+	case attemptID == "":
+		return "run_attempt_unavailable"
+	case binding.AttemptID != attemptID:
+		return "run_attempt_mismatch"
+	case binding.ClusterID != clusterID:
+		return "runner_cluster_mismatch"
+	case binding.AttemptEpoch == 0 || binding.TaskID == "" || binding.BackendKey == "":
+		return "cleanup_binding_incomplete"
+	case binding.AgentUID == "" || run.AgentUID == "":
+		return "agent_binding_unavailable"
+	case binding.AgentUID != run.AgentUID:
+		return "agent_binding_mismatch"
+	default:
+		return ""
+	}
+}
+
+// runHarnessAttemptID reports the stored runner attempt, or uses the run ID
+// only when a durable cleanup binding independently proves that exact legacy
+// convention. This avoids inventing trace coordinates for incomplete rows.
+func runHarnessAttemptID(run store.Run, binding *store.RunnerCleanupBinding) string {
+	if run.AttemptID != "" {
+		return run.AttemptID
+	}
+	if binding != nil && run.ID != "" && binding.AttemptID == run.ID {
+		return run.ID
+	}
+	return ""
+}
+
+// runnerCleanupReceiptIssue validates all identity coordinates returned by
+// Inspect and reports which exact boundary failed using a bounded fixed code.
+func runnerCleanupReceiptIssue(receipt runner.Receipt, binding *store.RunnerCleanupBinding) string {
+	switch {
+	case receipt.AttemptID != binding.AttemptID:
+		return "runner_attempt_mismatch"
+	case receipt.TaskID != binding.TaskID:
+		return "runner_task_mismatch"
+	case receipt.AttemptEpoch != binding.AttemptEpoch:
+		return "runner_epoch_mismatch"
+	default:
+		return ""
+	}
 }
 
 // runDetailFor assembles one run's full record: summary, answer,
@@ -187,8 +322,9 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 	// Only for a harness-backed run: on an in-process one these coordinates
 	// name nothing, and an empty block would invite a reader to look for a
 	// machine that was never involved.
-	if run.Backend == agentsv1alpha1.AgentBackendHarness && (run.AttemptID != "" || run.HarnessSessionID != "") {
-		detail.Harness = &runHarnessInfo{AttemptID: run.AttemptID, SessionID: run.HarnessSessionID}
+	attemptID := runHarnessAttemptID(run, run.RunnerCleanupBinding)
+	if harnessBackedRun(run) && (attemptID != "" || run.HarnessSessionID != "") {
+		detail.Harness = &runHarnessInfo{AttemptID: attemptID, SessionID: run.HarnessSessionID}
 	}
 	if run.Phase == store.RunPhaseRunning {
 		progress, err := s.store.GetRunProgress(ctx, scope, runID)
@@ -199,6 +335,7 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 		}
 	}
 	detail.Repository, detail.Result = run.Repository, run.Result
+	detail.StructuredResult = run.StructuredResult
 	detail.HarnessSettings = run.HarnessSettings
 	if run.Phase == store.RunPhasePendingApproval && len(run.Checkpoint) > 0 {
 		var ck runCheckpoint
@@ -252,7 +389,7 @@ type runArtifactResponse struct {
 }
 
 // runArtifact serves the `artifact` verb on a Run: POST …/runs/{id}/artifact
-// with {"name": "git-result.json" | "git-result.bundle" | "final-response.md" | "screenshots.json"}.
+// with {"name": "git-result.json" | "git-result.bundle" | "structured-result.json" | "final-response.md" | "screenshots.json"}.
 // The public report name is backend.FinalResponseArtifactName.
 //
 // It serves only what this provider stored for THAT run, after it verified the

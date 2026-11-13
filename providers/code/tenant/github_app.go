@@ -90,6 +90,93 @@ func (r CredentialResolver) Resolve(ctx context.Context, conn *api.Connection, d
 	return backend.Credential{Token: token}, nil
 }
 
+// ResolveActor resolves an authenticated write identity only for operations
+// that need ownership checks. App installations cannot use GET /user, so their
+// app slug comes from GET /app authenticated with the Connection's JWT.
+func (r CredentialResolver) ResolveActor(ctx context.Context, conn *api.Connection, data map[string][]byte) (string, string, error) {
+	if conn.Spec.Type == api.CredentialTypeGitHubApp {
+		slug, err := r.appSlug(ctx, conn, data)
+		if err != nil {
+			return "", "", err
+		}
+		return slug + "[bot]", "Bot", nil
+	}
+	return "", "", nil
+}
+
+func (r CredentialResolver) appSlug(ctx context.Context, conn *api.Connection, data map[string][]byte) (string, error) {
+	appID, err := strconv.ParseInt(strings.TrimSpace(string(data["appID"])), 10, 64)
+	if err != nil || appID <= 0 {
+		return "", errors.New("GitHub App appID must be positive")
+	}
+	block, rest := pem.Decode(data["privateKey"])
+	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
+		return "", errors.New("GitHub App privateKey must contain one RSA private key")
+	}
+	var key *rsa.PrivateKey
+	if block.Type == "RSA PRIVATE KEY" {
+		key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+	} else {
+		var parsed any
+		parsed, err = x509.ParsePKCS8PrivateKey(block.Bytes)
+		key, _ = parsed.(*rsa.PrivateKey)
+	}
+	if err != nil || key == nil || key.N.BitLen() < 2048 {
+		return "", errors.New("GitHub App requires a valid RSA key of at least 2048 bits")
+	}
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	claims, _ := json.Marshal(map[string]any{"iss": strconv.FormatInt(appID, 10), "iat": now.Add(-time.Minute).Unix(), "exp": now.Add(9 * time.Minute).Unix()})
+	unsigned := header + "." + base64.RawURLEncoding.EncodeToString(claims)
+	digest := sha256.Sum256([]byte(unsigned))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	if err != nil {
+		return "", errors.New("GitHub App signing failed")
+	}
+	base := "https://api.github.com"
+	if conn.Spec.BaseURL != "" {
+		u, err := url.Parse(conn.Spec.BaseURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return "", errors.New("GitHub App baseURL must be an HTTPS API endpoint")
+		}
+		base = strings.TrimRight(u.String(), "/")
+		if !strings.HasSuffix(base, "/api/v3") {
+			base += "/api/v3"
+		}
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/app", nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Authorization", "Bearer "+unsigned+"."+base64.RawURLEncoding.EncodeToString(signature))
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	client := &http.Client{Timeout: 20 * time.Second}
+	if r.Client != nil {
+		copied := *r.Client
+		client = &copied
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("credential redirects forbidden") }
+	response, err := client.Do(request)
+	if err != nil {
+		return "", errors.New("GitHub App identity request failed")
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub App identity returned HTTP %d", response.StatusCode)
+	}
+	var result struct {
+		Slug string `json:"slug"`
+	}
+	if json.NewDecoder(io.LimitReader(response.Body, 65537)).Decode(&result) != nil || result.Slug == "" || len(result.Slug) > 100 {
+		return "", errors.New("invalid GitHub App identity response")
+	}
+	return result.Slug, nil
+}
+
 // installationToken mints a GitHub App installation access token for the
 // Connection and returns it with its expiry.
 //

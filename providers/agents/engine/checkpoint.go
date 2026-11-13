@@ -43,12 +43,14 @@ type Interrupt struct {
 // conversation, the tool calls not yet executed (the first one is the gated
 // call), streamed content so far, accumulated usage, and the loop iteration.
 type Checkpoint struct {
-	AwaitingReply bool                `json:"awaitingReply,omitempty"`
-	Messages      []CheckpointMessage `json:"messages"`
-	Pending       []PendingCall       `json:"pending"`
-	Content       string              `json:"content,omitempty"`
-	Usage         Usage               `json:"usage"`
-	Iter          int                 `json:"iter"`
+	AwaitingReply   bool                `json:"awaitingReply,omitempty"`
+	Messages        []CheckpointMessage `json:"messages"`
+	Pending         []PendingCall       `json:"pending"`
+	Content         string              `json:"content,omitempty"`
+	Usage           Usage               `json:"usage"`
+	UsageEvidence   UsageEvidence       `json:"usageEvidence,omitempty"`
+	MaxOutputTokens int64               `json:"maxOutputTokens,omitempty"`
+	Iter            int                 `json:"iter"`
 }
 
 // PendingCall is one tool call the model requested that has not executed yet.
