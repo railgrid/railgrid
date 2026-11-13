@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
 
 	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
@@ -30,7 +32,7 @@ import (
 // call has not thereby been granted the others'. A workspace-wide view is the
 // portal's job, over the agents it can see.
 func (s *Server) listInboxItems(w http.ResponseWriter, r *http.Request) {
-	_, id, ok := s.requireClient(w, r)
+	c, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
@@ -41,6 +43,13 @@ func (s *Server) listInboxItems(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
+	if state == "" || state == store.InboxStatePending {
+		items, err = s.repairMissingParkedInboxItems(r.Context(), store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: r.PathValue("name")}, state, items, c)
+		if err != nil {
+			writeStatus(w, http.StatusServiceUnavailable, "InboxRepairUnavailable", "a parked run's inbox item could not be restored; retry the inbox request")
+			return
+		}
+	}
 	mine := make([]store.InboxItem, 0, len(items))
 	for _, item := range items {
 		if item.AgentName == agent {
@@ -48,6 +57,128 @@ func (s *Server) listInboxItems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeList(w, mine)
+}
+
+// repairMissingParkedInboxItems closes the tiny crash window between saving a
+// PendingApproval checkpoint and writing its inbox row. The checkpoint is the
+// durable source for reconstructing the item, so a subsequent inbox read can
+// restore it without resuming or otherwise changing the parked run.
+func (s *Server) repairMissingParkedInboxItems(ctx context.Context, scope store.Scope, state store.InboxItemState, items []store.InboxItem, callers ...*agentsclient.Client) ([]store.InboxItem, error) {
+	var caller *agentsclient.Client
+	if len(callers) > 0 {
+		caller = callers[0]
+	}
+	var agent *agentsv1alpha1.Agent
+	var agentErr error
+	if caller != nil {
+		agent, agentErr = (clientCR{caller}).GetAgent(ctx, scope.AgentName)
+	}
+	workspaceScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}
+	known := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		known[item.ID] = struct{}{}
+	}
+	var cursor string
+	for {
+		page, err := s.store.QueryRuns(ctx, scope, store.RunQuery{Phase: store.RunPhasePendingApproval, Limit: 200, Cursor: cursor})
+		if err != nil {
+			return nil, err
+		}
+		for _, run := range page.Items {
+			var checkpoint runCheckpoint
+			if json.Unmarshal(run.Checkpoint, &checkpoint) != nil || checkpoint.InboxID == "" {
+				continue
+			}
+			if _, ok := known[checkpoint.InboxID]; ok {
+				continue
+			}
+			// Re-read before repairing: a concurrent answer, cancel, or resume
+			// may have moved the run since QueryRuns returned this snapshot.
+			live, err := s.store.GetRun(ctx, scope, run.ID)
+			if err != nil {
+				return nil, err
+			}
+			var liveCheckpoint runCheckpoint
+			if live.Phase != store.RunPhasePendingApproval || json.Unmarshal(live.Checkpoint, &liveCheckpoint) != nil || liveCheckpoint.InboxID != checkpoint.InboxID {
+				continue
+			}
+			item, ok := parkedInboxItem(live, liveCheckpoint)
+			if !ok {
+				continue
+			}
+			created := true
+			if err := s.store.AddInboxItemForParkedRun(ctx, scope, live.ID, item); err != nil {
+				if errors.Is(err, store.ErrRunNotParked) {
+					continue
+				}
+				created = false
+				// Another list request may have repaired the same checkpoint.
+				saved, readErr := s.store.GetInboxItem(ctx, workspaceScope, item.ID)
+				if readErr != nil || saved.AgentName != item.AgentName || saved.RunID != item.RunID || saved.Kind != item.Kind {
+					return nil, err
+				}
+				item = saved
+			} else {
+				saved, readErr := s.store.GetInboxItem(ctx, workspaceScope, item.ID)
+				if readErr != nil {
+					return nil, readErr
+				}
+				item = saved
+			}
+			known[item.ID] = struct{}{}
+			if state == "" || item.State == state {
+				items = append(items, item)
+			}
+			if created {
+				s.events.publish(workspaceScope, "inbox", map[string]any{
+					"id": item.ID, "state": string(item.State), "agent": item.AgentName, "runID": item.RunID, "kind": string(item.Kind),
+				})
+				if agentErr == nil && agent != nil && caller != nil {
+					notifyRun := taskRun{Scope: scope, RunID: live.ID, Trigger: live.Trigger, NotifyChannel: liveCheckpoint.NotifyChannel, Agent: agent, CR: clientCR{caller}, Creds: caller}
+					if item.Kind == store.InboxKindApproval {
+						s.notifyInboxApproval(ctx, notifyRun, checkpoint.Tool)
+					} else {
+						s.notifyInboxQuestion(ctx, notifyRun, item.Prompt)
+					}
+				}
+			}
+		}
+		if page.NextCursor == "" {
+			return items, nil
+		}
+		cursor = page.NextCursor
+	}
+}
+
+func (s *Server) addInboxItemOnce(ctx context.Context, scope store.Scope, item store.InboxItem) (created bool, err error) {
+	if err := s.store.AddInboxItem(ctx, scope, item); err == nil {
+		return true, nil
+	} else {
+		saved, readErr := s.store.GetInboxItem(ctx, scope, item.ID)
+		if readErr == nil && saved.AgentName == item.AgentName && saved.RunID == item.RunID && saved.Kind == item.Kind {
+			return false, nil
+		}
+		return false, err
+	}
+}
+
+func parkedInboxItem(run store.Run, checkpoint runCheckpoint) (store.InboxItem, bool) {
+	item := store.InboxItem{ID: checkpoint.InboxID, AgentName: run.AgentName, RunID: run.ID, State: store.InboxStatePending,
+		CreatedAt: run.UpdatedAt, UpdatedAt: run.UpdatedAt}
+	if strings.TrimSpace(checkpoint.Tool) != "" {
+		item.Kind = store.InboxKindApproval
+		item.Prompt = "Allow " + run.AgentName + " to run " + checkpoint.Tool + "?"
+		item.Payload = map[string]any{"tool": checkpoint.Tool, "args": redactArgs(approvableArgs(checkpoint.Args)), "trigger": run.Trigger, "harness": checkpoint.Backend == agentsv1alpha1.AgentBackendHarness}
+		return item, true
+	}
+	question := strings.TrimSpace(checkpoint.Question)
+	if question == "" {
+		question = "the agent is waiting for input"
+	}
+	item.Kind = store.InboxKindQuestion
+	item.Prompt = safeTruncate(question, maxHarnessQuestion)
+	item.Payload = map[string]any{"harness": checkpoint.Backend == agentsv1alpha1.AgentBackendHarness, "trigger": run.Trigger, "questions": checkpoint.Questions}
+	return item, true
 }
 
 type resolveInboxRequest struct {
@@ -80,6 +211,31 @@ func (s *Server) resolveInboxDecision(ctx context.Context, scope store.Scope, id
 	item, err := s.store.GetInboxItem(ctx, scope, id)
 	if err != nil {
 		return store.InboxItem{}, err
+	}
+	if item.State != store.InboxStatePending && item.State == state && item.Response == response {
+		// A client may retry after losing the response to the first decision.
+		// Return the stored verdict without asking the already-resumed run to park again.
+		return item, nil
+	}
+	if item.State == store.InboxStatePending && item.RunID != "" && resolutionResumesRun(item.Kind, state) {
+		runScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: item.AgentName}
+		run, runErr := s.store.GetRun(ctx, runScope, item.RunID)
+		if runErr != nil && !errors.Is(runErr, store.ErrRunNotFound) {
+			return store.InboxItem{}, runErr
+		}
+		if state == store.InboxStateApproved && (errors.Is(runErr, store.ErrRunNotFound) || (runErr == nil && (run.Phase == store.RunPhaseSucceeded || run.Phase == store.RunPhaseFailed || run.Phase == store.RunPhaseAborted))) {
+			return store.InboxItem{}, &requestError{code: http.StatusConflict, reason: "RunEnded", msg: "the run has ended; this approval can no longer be applied"}
+		}
+		if runErr == nil && run.Phase != store.RunPhaseSucceeded && run.Phase != store.RunPhaseFailed && run.Phase != store.RunPhaseAborted {
+			var checkpoint runCheckpoint
+			if run.Phase != store.RunPhasePendingApproval || run.CancelRequested || json.Unmarshal(run.Checkpoint, &checkpoint) != nil || checkpoint.InboxID != item.ID {
+				// A live run may still be writing the checkpoint that makes this item resumable.
+				if latest, err := s.store.GetInboxItem(ctx, scope, id); err == nil && latest.State != store.InboxStatePending {
+					return store.InboxItem{}, store.ErrInboxAlreadyResolved
+				}
+				return store.InboxItem{}, &requestError{code: http.StatusConflict, reason: "RunNotParked", msg: "the run is not waiting on this inbox item yet; retry after the run parks"}
+			}
+		}
 	}
 	if item.Kind == store.InboxKindQuestion {
 		if state != store.InboxStateAnswered && state != store.InboxStateDenied {
@@ -145,6 +301,12 @@ func (s *Server) resolveInboxDecisionOnce(ctx context.Context, scope store.Scope
 	return resolved, err
 }
 
+// inboxAnswerAllowed reports whether the answer-only endpoint may resolve an
+// item with this kind and state.
+func inboxAnswerAllowed(kind store.InboxItemKind, state store.InboxItemState) bool {
+	return kind == store.InboxKindQuestion && state == store.InboxStateAnswered
+}
+
 // resolutionResumesRun reports whether resolving an item this way continues the
 // run it is bound to: a verdict on an approval, or an answer to a question.
 func resolutionResumesRun(kind store.InboxItemKind, state store.InboxItemState) bool {
@@ -166,6 +328,16 @@ func resolutionResumesRun(kind store.InboxItemKind, state store.InboxItemState) 
 // executes the gated call with the exact requested arguments, deny feeds the
 // refusal back to the model.
 func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
+	s.resolveInboxItemWithPolicy(w, r, false)
+}
+
+// answerInboxItem records a response to a question, without exposing the
+// approval and denial powers of inbox-resolve to provider callers.
+func (s *Server) answerInboxItem(w http.ResponseWriter, r *http.Request) {
+	s.resolveInboxItemWithPolicy(w, r, true)
+}
+
+func (s *Server) resolveInboxItemWithPolicy(w http.ResponseWriter, r *http.Request, answerOnly bool) {
 	c, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
@@ -176,6 +348,10 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var state store.InboxItemState
+	if answerOnly && strings.TrimSpace(req.Decision) != "answer" {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "decision must be answer")
+		return
+	}
 	switch strings.TrimSpace(req.Decision) {
 	case "approve":
 		state = store.InboxStateApproved
@@ -195,6 +371,10 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	existing, gerr := s.store.GetInboxItem(r.Context(), wsScope, itemID)
 	if gerr != nil || existing.AgentName != r.PathValue("name") {
 		writeStatus(w, http.StatusNotFound, "NotFound", "no such inbox item on this agent")
+		return
+	}
+	if answerOnly && !inboxAnswerAllowed(existing.Kind, state) {
+		writeStatus(w, http.StatusBadRequest, "InvalidInboxItem", "inbox-answer only accepts question items")
 		return
 	}
 	payload, err := inboxAnswerPayload(existing, state, &req)

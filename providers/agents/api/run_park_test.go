@@ -10,7 +10,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,9 +28,16 @@ type parkFailureStore struct {
 	store.Store
 	addInboxErr   error
 	pendingRunErr error
+	getRunErr     error
+	beforeAdd     func(context.Context, store.Scope, store.InboxItem) error
 }
 
 func (s parkFailureStore) AddInboxItem(ctx context.Context, scope store.Scope, item store.InboxItem) error {
+	if s.beforeAdd != nil {
+		if err := s.beforeAdd(ctx, scope, item); err != nil {
+			return err
+		}
+	}
 	if s.addInboxErr != nil {
 		return s.addInboxErr
 	}
@@ -42,19 +51,34 @@ func (s parkFailureStore) SaveRun(ctx context.Context, scope store.Scope, run st
 	return s.Store.SaveRun(ctx, scope, run)
 }
 
+func (s parkFailureStore) GetRun(ctx context.Context, scope store.Scope, id string) (store.Run, error) {
+	if s.getRunErr != nil {
+		return store.Run{}, s.getRunErr
+	}
+	return s.Store.GetRun(ctx, scope, id)
+}
+
 func TestParkRunPersistenceFailuresStopHarnessAndCloseInbox(t *testing.T) {
 	addErr := errors.New("inbox unavailable")
 	checkpointErr := errors.New("run store unavailable")
+	getRunErr := errors.New("run read unavailable")
 	for _, test := range []struct {
-		name          string
-		question      bool
-		addInboxErr   error
-		pendingRunErr error
-		wantInbox     store.InboxItemState
+		name            string
+		question        bool
+		addInboxErr     error
+		pendingRunErr   error
+		getRunErr       error
+		backendStateErr bool
+		marshalErr      bool
+		preposted       bool
 	}{
 		{name: "inbox write fails", addInboxErr: addErr},
-		{name: "approval checkpoint write fails", pendingRunErr: checkpointErr, wantInbox: store.InboxStateDenied},
-		{name: "question checkpoint write fails", question: true, pendingRunErr: checkpointErr, wantInbox: store.InboxStateAnswered},
+		{name: "approval checkpoint write fails", pendingRunErr: checkpointErr},
+		{name: "preposted approval checkpoint write fails", preposted: true, pendingRunErr: checkpointErr},
+		{name: "question checkpoint write fails", question: true, pendingRunErr: checkpointErr},
+		{name: "run read fails and closes preposted approval", preposted: true, getRunErr: getRunErr},
+		{name: "backend state fails and closes preposted approval", preposted: true, backendStateErr: true},
+		{name: "checkpoint marshal fails and closes preposted approval", preposted: true, marshalErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -74,6 +98,10 @@ func TestParkRunPersistenceFailuresStopHarnessAndCloseInbox(t *testing.T) {
 			if test.question {
 				out.Parked.Tool, out.Parked.Args, out.Parked.Question = "", "", "What should I do?"
 			}
+			if test.backendStateErr || test.marshalErr {
+				out.Parked.RequestID = "gate-item"
+				out.Parked.State = json.RawMessage("not-json")
+			}
 
 			base := store.NewMemoryStore()
 			scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "coder"}
@@ -84,14 +112,44 @@ func TestParkRunPersistenceFailuresStopHarnessAndCloseInbox(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			if test.preposted {
+				out.Parked.RequestID = "gate-item"
+				if err := base.AddInboxItem(ctx, scope, store.InboxItem{
+					ID: out.Parked.RequestID, AgentName: scope.AgentName, RunID: "run-1",
+					Kind: store.InboxKindApproval, State: store.InboxStatePending, CreatedAt: now, UpdatedAt: now,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeAdd := func(ctx context.Context, scope store.Scope, item store.InboxItem) error {
+				parked, err := base.GetRun(ctx, store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: item.AgentName}, item.RunID)
+				if err != nil {
+					return err
+				}
+				var checkpoint runCheckpoint
+				if parked.Phase != store.RunPhasePendingApproval || json.Unmarshal(parked.Checkpoint, &checkpoint) != nil || checkpoint.InboxID != item.ID {
+					return errors.New("inbox item published before its matching park checkpoint")
+				}
+				return nil
+			}
+			var verifyOrder func(context.Context, store.Scope, store.InboxItem) error
+			if test.addInboxErr != nil {
+				verifyOrder = beforeAdd
+			}
+			if test.marshalErr {
+				out.Parked.State = json.RawMessage("not-json")
+			}
 			s := &Server{
-				store:  parkFailureStore{Store: base, addInboxErr: test.addInboxErr, pendingRunErr: test.pendingRunErr},
+				store:  parkFailureStore{Store: base, addInboxErr: test.addInboxErr, pendingRunErr: test.pendingRunErr, getRunErr: test.getRunErr, beforeAdd: verifyOrder},
 				events: newEventBus(),
 			}
 			inboxEvents, unsubscribe := s.events.subscribe(scope)
 			defer unsubscribe()
 			agent := harnessAgent("edge")
 			agent.Name = "coder"
+			if test.backendStateErr {
+				agent.Spec.Backend.Type = "model"
+			}
 			run := taskRun{Scope: scope, Agent: agent, RunID: "run-1", SessionID: "chat", Trigger: "chat"}
 			h := &harnessTurn{backend: b, Session: store.HarnessSession{SessionID: "chat", Turns: 1}}
 
@@ -105,6 +163,15 @@ func TestParkRunPersistenceFailuresStopHarnessAndCloseInbox(t *testing.T) {
 			if test.pendingRunErr != nil && !errors.Is(err, checkpointErr) {
 				t.Fatalf("park error = %v, want checkpoint write error", err)
 			}
+			if test.getRunErr != nil && !errors.Is(err, getRunErr) {
+				t.Fatalf("park error = %v, want run read error", err)
+			}
+			if test.backendStateErr && !strings.Contains(err.Error(), "invalid character") {
+				t.Fatalf("park error = %v, want backend state decode error", err)
+			}
+			if test.marshalErr && !strings.Contains(err.Error(), "encoding the run's resume checkpoint") {
+				t.Fatalf("park error = %v, want checkpoint marshal error", err)
+			}
 			if test.addInboxErr != nil && !errors.Is(err, addErr) {
 				t.Fatalf("park error = %v, want inbox write error", err)
 			}
@@ -113,23 +180,20 @@ func TestParkRunPersistenceFailuresStopHarnessAndCloseInbox(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.wantInbox == "" {
-				if len(items) != 0 {
-					t.Fatalf("failed inbox write left items behind: %+v", items)
+			if test.preposted {
+				if len(items) != 1 || items[0].State != store.InboxStateDenied {
+					t.Fatalf("failed park did not close the preposted approval: %+v", items)
 				}
 				return
 			}
-			if len(items) != 1 || items[0].State != test.wantInbox {
-				t.Fatalf("orphan inbox item = %+v, want one item closed as %s", items, test.wantInbox)
+			if len(items) != 0 {
+				t.Fatalf("failed park left inbox items behind: %+v", items)
 			}
-			if len(inboxEvents) != 2 {
-				t.Fatalf("inbox events = %d, want pending plus cleanup update", len(inboxEvents))
-			}
-			<-inboxEvents // pending card was published before the checkpoint write.
-			closedEvent := <-inboxEvents
-			closed, ok := closedEvent.Data.(map[string]any)
-			if !ok || closed["state"] != string(test.wantInbox) {
-				t.Fatalf("cleanup event = %#v, want state %s", closedEvent.Data, test.wantInbox)
+			for range len(inboxEvents) {
+				event := <-inboxEvents
+				if event.Type == "inbox" {
+					t.Fatalf("failed park published inbox event: %+v", event)
+				}
 			}
 		})
 	}

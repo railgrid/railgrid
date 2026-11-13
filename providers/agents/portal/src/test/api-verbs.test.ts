@@ -168,6 +168,12 @@ describe('verbs are kube paths', () => {
     expect(calls[0].url).toBe(`${KUBE}/agents/scout/messages?session=s1&limit=200&cursor=older-page`)
   })
 
+  it('reads notifications through the exact session custom subresource', async () => {
+    const { api, calls } = clientWithRecorder({ items: [{ id: 'n1', sessionID: 's1', payload: 'Build ready' }] })
+    expect(await api.listSessionNotifications('scout', 's1')).toEqual([{ id: 'n1', sessionID: 's1', payload: 'Build ready' }])
+    expect(calls).toEqual([{ url: `${KUBE}/agents/scout/notifications/s1`, method: 'GET' }])
+  })
+
   it('addresses each verb as a custom subresource on its object', async () => {
     const { api, calls } = clientWithRecorder()
     await api.listSessions('scout')

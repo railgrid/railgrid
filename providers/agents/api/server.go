@@ -49,6 +49,8 @@ import (
 // URL is optional; an empty store config falls back to in-memory persistence so
 // the provider boots against a bare hub for development.
 type Config struct {
+	// ProcessID uniquely identifies this provider process for durable run leases.
+	ProcessID string
 	// HubURL is the railgrid hub base URL. Empty disables tenant-workspace access
 	// (resource endpoints return 501).
 	HubURL string

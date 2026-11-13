@@ -74,7 +74,7 @@ func pullResult(pr *gh.PullRequest) *backend.PullRequest {
 	if pr == nil {
 		return nil
 	}
-	result := &backend.PullRequest{Number: pr.GetNumber(), URL: pr.GetHTMLURL(), Repository: pr.GetBase().GetRepo().GetFullName(), HeadRepository: pr.GetHead().GetRepo().GetFullName(), Head: pr.GetHead().GetRef(), Base: pr.GetBase().GetRef(), Commit: pr.GetHead().GetSHA(), State: pr.GetState(), Merged: pr.GetMerged()}
+	result := &backend.PullRequest{Number: pr.GetNumber(), NodeID: pr.GetNodeID(), URL: pr.GetHTMLURL(), Repository: pr.GetBase().GetRepo().GetFullName(), HeadRepository: pr.GetHead().GetRepo().GetFullName(), Head: pr.GetHead().GetRef(), Base: pr.GetBase().GetRef(), Commit: pr.GetHead().GetSHA(), State: pr.GetState(), Merged: pr.GetMerged(), Draft: pr.GetDraft(), BaseHead: pr.GetBase().GetSHA(), MergeableState: pr.GetMergeableState()}
 	// GitHub fills merge_commit_sha for OPEN pull requests too: it is the sha
 	// of a trial merge it computes for mergeability, not evidence of a merge.
 	// Only a merged pull request carries merge proof.
@@ -144,6 +144,35 @@ func (b *Backend) ReadPullRequest(ctx context.Context, conn *api.Connection, cre
 	}
 	return result, nil
 }
+
+// ObservePullRequestBase compares immutable commit IDs after resolving the actual
+// current base branch tip. The PR payload's base SHA can lag the branch itself.
+func (b *Backend) ObservePullRequestBase(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, pr *backend.PullRequest) (string, *bool, string, error) {
+	if !validBranch(pr.Base) || !objectID.MatchString(pr.Commit) {
+		return "", nil, "", errors.New("pull request base or head identity is invalid")
+	}
+	c, err := b.collaborationClient(ctx, conn, cred, repo)
+	if err != nil {
+		return "", nil, "", err
+	}
+	branch, response, err := c.Repositories.GetBranch(ctx, owner(conn, repo), repo.Spec.Name, pr.Base, 0)
+	if err != nil {
+		return "", nil, "reading current base branch: " + classify(response, err).Error(), nil
+	}
+	baseSHA := branch.GetCommit().GetSHA()
+	if branch.GetName() != pr.Base || !objectID.MatchString(baseSHA) {
+		return "", nil, "current base branch returned an invalid identity", nil
+	}
+	comparison, response, err := c.Repositories.CompareCommits(ctx, owner(conn, repo), repo.Spec.Name, baseSHA, pr.Commit, &gh.ListOptions{PerPage: 1})
+	if err != nil {
+		return baseSHA, nil, "comparing current base with pull request head: " + classify(response, err).Error(), nil
+	}
+	if comparison == nil || comparison.GetBaseCommit().GetSHA() != baseSHA || comparison.GetStatus() == "" || comparison.BehindBy == nil {
+		return baseSHA, nil, "forge returned an incomplete base comparison", nil
+	}
+	current := (comparison.GetStatus() == "ahead" || comparison.GetStatus() == "identical") && comparison.GetBehindBy() == 0
+	return baseSHA, &current, "", nil
+}
 func (b *Backend) CreatePullRequest(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, in backend.PullRequestInput) (*backend.PullRequest, error) {
 	if !validPullInput(in) || strings.TrimSpace(in.Title) == "" || len(in.Title) > 256 || len(in.Body) > 32768 {
 		return nil, errors.New("invalid pull request input")
@@ -159,7 +188,7 @@ func (b *Backend) CreatePullRequest(ctx context.Context, conn *api.Connection, c
 	if err != nil {
 		return nil, err
 	}
-	raw, response, err := c.PullRequests.Create(ctx, owner(conn, repo), repo.Spec.Name, &gh.NewPullRequest{Title: &in.Title, Body: &in.Body, Head: &in.Head, Base: &in.Base})
+	raw, response, err := c.PullRequests.Create(ctx, owner(conn, repo), repo.Spec.Name, &gh.NewPullRequest{Title: &in.Title, Body: &in.Body, Head: &in.Head, Base: &in.Base, Draft: gh.Bool(in.Draft)})
 	if err != nil {
 		return nil, classify(response, err)
 	}

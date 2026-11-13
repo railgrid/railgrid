@@ -654,6 +654,13 @@ receipt with `Inspect` and replayable server-sent events. Events have ordered
 cursors; a cursor gap or `cursor_expired` response requires inspecting the
 receipt before continuing. Progress is an observation, not proof of completion.
 
+`Inspect` also reports a bounded `cleanup` journal observation for terminal
+attempts: pending, running, done, failed, retained, or delegated. A retained
+warm environment includes its expiry when known. This field is omitted by
+older runners; consumers must treat an omitted or unavailable observation as
+unknown rather than infer cleanup from a terminal attempt phase. Hook output,
+local paths, and raw cleanup errors are not part of the receipt.
+
 For an active attempt, an explicit cancel request first returns
 `cancelling`; it is complete only after the harness exits and the receipt or
 event reports `cancelled`. That cancellation remains terminal across process

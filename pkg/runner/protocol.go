@@ -162,6 +162,9 @@ type ArtifactSpec struct {
 	Path      string `json:"path,omitempty"`
 	MediaType string `json:"mediaType,omitempty"`
 	Digest    string `json:"digest,omitempty"`
+	// CollectOnCompletion asks Runner to copy this fixed path after a successful
+	// adapter run. Older event-only artifact declarations retain their behavior.
+	CollectOnCompletion bool `json:"collectOnCompletion,omitempty"`
 }
 
 // RepositorySource tells the runner where to get a repository it does not
@@ -426,9 +429,36 @@ type Receipt struct {
 	Resources  []string           `json:"resources,omitempty"`
 	LastError  *Error             `json:"lastError,omitempty"`
 	Artifacts  []Artifact         `json:"artifacts,omitempty"`
-	AcceptedAt time.Time          `json:"acceptedAt"`
-	UpdatedAt  time.Time          `json:"updatedAt"`
+	// Cleanup is the runner's current journal observation for terminal cleanup.
+	// It is populated by Inspect; older runners omit it.
+	Cleanup    *CleanupObservation `json:"cleanup,omitempty"`
+	AcceptedAt time.Time           `json:"acceptedAt"`
+	UpdatedAt  time.Time           `json:"updatedAt"`
 }
+
+// CleanupObservation describes what the runner journal currently knows about
+// post-run cleanup. It deliberately contains no hook output or filesystem path.
+type CleanupObservation struct {
+	State      CleanupState `json:"state"`
+	Attempts   int          `json:"attempts,omitempty"`
+	ObservedAt time.Time    `json:"observedAt"`
+	ExpiresAt  *time.Time   `json:"expiresAt,omitempty"`
+	Reason     string       `json:"reason,omitempty"`
+}
+
+// CleanupState is the bounded lifecycle state of post-run cleanup.
+type CleanupState string
+
+const (
+	CleanupUnknown       CleanupState = "unknown"
+	CleanupNotApplicable CleanupState = "not_applicable"
+	CleanupPending       CleanupState = "pending"
+	CleanupRunning       CleanupState = "running"
+	CleanupDone          CleanupState = "done"
+	CleanupFailed        CleanupState = "failed"
+	CleanupRetained      CleanupState = "retained"
+	CleanupDelegated     CleanupState = "delegated"
+)
 
 // ArtifactResponse contains immutable artifact metadata and bytes are served
 // by the artifact endpoint. It is kept separate so callers never receive a

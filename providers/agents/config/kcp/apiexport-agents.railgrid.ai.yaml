@@ -98,7 +98,7 @@ spec:
       crd: {}
   - group: agents.railgrid.ai
     name: runs
-    schema: v261018-de5a5683.runs.agents.railgrid.ai
+    schema: v261112-09bc5d78c.runs.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai
@@ -154,6 +154,15 @@ spec:
           kind: DataPlaneEndpointSlice
           name: agents.railgrid.ai
   - group: agents.railgrid.ai
+    name: agents/deliver
+    schema: v261112-09bc5d78c.deliver.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
     name: agents/events
     schema: v260924-87f1980f.events.agents.railgrid.ai
     storage:
@@ -165,6 +174,15 @@ spec:
   - group: agents.railgrid.ai
     name: agents/inbox
     schema: v260924-87f1980f.inbox.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/inbox-answer
+    schema: v261113-09bc5d78c.inbox-answer.agents.railgrid.ai
     storage:
       virtual:
         reference:
@@ -190,6 +208,15 @@ spec:
           kind: DataPlaneEndpointSlice
           name: agents.railgrid.ai
   - group: agents.railgrid.ai
+    name: agents/notifications
+    schema: v261112-09bc5d78c.notifications.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
     name: agents/run
     schema: v261012-77f29a8e.run.agents.railgrid.ai
     storage:
@@ -201,6 +228,15 @@ spec:
   - group: agents.railgrid.ai
     name: agents/session
     schema: v260924-87f1980f.session.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/session-access
+    schema: v261112-09bc5d78c.session-access.agents.railgrid.ai
     storage:
       virtual:
         reference:

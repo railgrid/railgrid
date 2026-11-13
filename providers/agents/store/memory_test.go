@@ -10,12 +10,34 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
 
 func testScope() Scope {
 	return Scope{OrgUUID: "org1", WorkspaceUUID: "ws1", AgentName: "helper"}
+}
+
+func TestMemoryPreventStartRunTombstonesOnlyAbsentKeys(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	scope := testScope()
+	now := time.Now().UTC()
+	created, found, err := s.PreventStartRun(ctx, scope, "key", "uid", "fingerprint", now)
+	if err != nil || found || created.Phase != RunPhaseAborted || created.InvocationFingerprint != "fingerprint" {
+		t.Fatalf("tombstone=%+v found=%v err=%v", created, found, err)
+	}
+	got, found, err := s.PreventStartRun(ctx, scope, "key", "uid", "other", now.Add(time.Second))
+	if err != nil || !found || got.ID != created.ID || got.InvocationFingerprint != "fingerprint" {
+		t.Fatalf("existing=%+v found=%v err=%v", got, found, err)
+	}
+	if err := s.SaveRun(ctx, scope, Run{ID: "other", AgentName: scope.AgentName, IdempotencyKey: "key", Phase: RunPhasePending, CreatedAt: now, UpdatedAt: now}); err == nil {
+		t.Fatal("a tombstone must reserve its idempotency key")
+	}
+	if _, _, err := s.PreventStartRun(ctx, scope, "key", "recreated-uid", "other", now); !errors.Is(err, ErrInvocationAgentChanged) {
+		t.Fatalf("recreated Agent error = %v", err)
+	}
 }
 
 func legacyTaskIdentity(taskID string) HarnessIdentity {

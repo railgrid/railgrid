@@ -190,12 +190,21 @@ func TestRepositoryRunLifecycleStoresTheVerifiedResult(t *testing.T) {
 	artifacts, bodies := gitResultArtifacts(t, "run-lifecycle", false)
 	dispatcher := &repositoryLifecycleDispatcher{artifacts: artifacts, bodies: bodies}
 	s, run := repositoryLifecycleRun(t, dispatcher)
+	s.cfg.ProcessID = "agents-worker-1"
 
 	run.Agent.Spec.Backend.Harness.Model = "changed-agent-model"
 	run.Agent.Spec.Backend.Harness.ReasoningEffort = "low"
 	run.HarnessSettings = &store.HarnessSettings{Model: "gpt-6-luna", ReasoningEffort: "max"}
 
-	res, err := s.runTurn(t.Context(), run, nil)
+	claimed, leaseCtx, stopLease, err := s.claimFreshRun(t.Context(), run.Scope, run.RunID, string(run.Agent.UID), store.RecoveryIdentityCaller)
+	if err != nil {
+		t.Fatalf("claim repository run lease: %v", err)
+	}
+	defer stopLease()
+	run.ExecutionOwner = claimed.ExecutionOwner
+	run.ExecutionEpoch = claimed.ExecutionEpoch
+	run.AgentUID = claimed.AgentUID
+	res, err := s.runTurn(leaseCtx, run, nil)
 	if err != nil {
 		t.Fatalf("runTurn: %v", err)
 	}
@@ -302,6 +311,55 @@ func TestRepositoryRunLifecycleStoresTheVerifiedResult(t *testing.T) {
 	}
 }
 
+func TestRepositoryRunStoresValidatedStructuredResultIndependently(t *testing.T) {
+	artifacts, bodies := gitResultArtifacts(t, "run-lifecycle", true)
+	structured := []byte(`{"verdict":"pass"}`)
+	payload, _ := json.Marshal(map[string]any{"type": "result", "result": string(structured)})
+	d := &repositoryLifecycleDispatcher{artifacts: artifacts, bodies: bodies, events: []runner.Event{{Cursor: 1, Type: runner.EventProgress, Data: payload, AttemptEpoch: 1}, {Cursor: 2, Type: runner.EventCompleted, AttemptEpoch: 1}}}
+	s, run := repositoryLifecycleRun(t, d)
+	run.Repository.ResultSchema = json.RawMessage(`{"type":"object","required":["verdict"],"properties":{"verdict":{"type":"string","enum":["pass","fail"]}},"additionalProperties":false}`)
+	if _, err := s.runTurn(t.Context(), run, nil); err != nil {
+		t.Fatalf("runTurn: %v", err)
+	}
+	stored, err := s.store.GetRun(t.Context(), run.Scope, run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Result == nil || !stored.Result.NoChanges {
+		t.Fatalf("Git result lost: %+v", stored.Result)
+	}
+	if stored.StructuredResult == nil || stored.StructuredResult.State != "valid" || stored.StructuredResult.Digest != hexSHA(structured) || stored.StructuredResult.Size != int64(len(structured)) {
+		t.Fatalf("structured result = %+v", stored.StructuredResult)
+	}
+	a, found, err := s.store.GetRunArtifact(t.Context(), run.Scope, run.RunID, StructuredResultArtifactName)
+	if err != nil || !found || string(a.Data) != string(structured) || a.Digest != hexSHA(structured) {
+		t.Fatalf("artifact=%+v found=%v err=%v", a, found, err)
+	}
+	status := runStatusFor(stored)
+	if status.StructuredResult == nil || status.StructuredResult.State != "valid" || status.Result == nil || !status.Result.NoChanges {
+		t.Fatalf("projection: %+v", status)
+	}
+}
+
+func TestRepositoryRunInvalidStructuredOutputDoesNotPublishArtifact(t *testing.T) {
+	artifacts, bodies := gitResultArtifacts(t, "run-lifecycle", false)
+	payload, _ := json.Marshal(map[string]any{"type": "result", "result": `{"verdict":"unknown"}`})
+	d := &repositoryLifecycleDispatcher{artifacts: artifacts, bodies: bodies, events: []runner.Event{{Cursor: 1, Type: runner.EventProgress, Data: payload, AttemptEpoch: 1}, {Cursor: 2, Type: runner.EventCompleted, AttemptEpoch: 1}}}
+	s, run := repositoryLifecycleRun(t, d)
+	run.Repository.ResultSchema = json.RawMessage(`{"type":"object","required":["verdict"],"properties":{"verdict":{"type":"string","enum":["pass","fail"]}}}`)
+	res, err := s.runTurn(t.Context(), run, nil)
+	if err == nil || res.Phase != store.RunPhaseFailed {
+		t.Fatalf("runTurn = %+v, %v", res, err)
+	}
+	stored, _ := s.store.GetRun(t.Context(), run.Scope, run.RunID)
+	if stored.StructuredResult == nil || stored.StructuredResult.State != "invalid" {
+		t.Fatalf("structured result = %+v", stored.StructuredResult)
+	}
+	if _, found, _ := s.store.GetRunArtifact(t.Context(), run.Scope, run.RunID, StructuredResultArtifactName); found {
+		t.Fatal("invalid result artifact was published")
+	}
+}
+
 // A completed attempt that reports no usable export is a FAILED run, with the
 // prefix a coordinator branches on, and stores nothing.
 func TestRepositoryRunWithoutAnExportFails(t *testing.T) {
@@ -375,8 +433,9 @@ func TestRepositoryRunRestartedBeforeStartFailsForRetry(t *testing.T) {
 
 // The KRM types spell the contract's field names.
 func TestRunRepositoryAndResultWireShapes(t *testing.T) {
-	raw, _ := json.Marshal(agentsv1alpha1.RunRepository{RepositoryID: "r", BaseCommit: lifecycleBase, CommitMessage: "m"})
-	if string(raw) != `{"repositoryID":"r","baseCommit":"`+lifecycleBase+`","commitMessage":"m"}` {
+	requested := runner.ArtifactSpec{Name: "verification-log", Path: "artifacts/verification.log", MediaType: "text/plain", CollectOnCompletion: true}
+	raw, _ := json.Marshal(agentsv1alpha1.RunRepository{RepositoryID: "r", BaseCommit: lifecycleBase, CommitMessage: "m", Artifacts: []runner.ArtifactSpec{requested}})
+	if string(raw) != `{"repositoryID":"r","baseCommit":"`+lifecycleBase+`","commitMessage":"m","artifacts":[{"name":"verification-log","path":"artifacts/verification.log","mediaType":"text/plain","collectOnCompletion":true}]}` {
 		t.Fatalf("spec.repository = %s", raw)
 	}
 	raw, _ = json.Marshal(agentsv1alpha1.RunResult{BaseCommit: lifecycleBase, NoChanges: true, ResultDigest: "d"})

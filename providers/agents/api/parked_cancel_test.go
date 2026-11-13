@@ -370,11 +370,15 @@ func TestCancelParkedHarnessStopsRemoteAttemptAndLateApprovalCannotRevive(t *tes
 	}
 
 	workspaceScope := store.Scope{OrgUUID: f.scope.OrgUUID, WorkspaceUUID: f.scope.WorkspaceUUID}
-	item, err := f.server.resolveInboxDecision(context.Background(), workspaceScope, "inbox-parked-cancel", store.InboxStateApproved, "", time.Now().UTC())
-	if err != nil {
-		t.Fatalf("resolve late approval: %v", err)
+	_, err = f.server.resolveInboxDecision(context.Background(), workspaceScope, "inbox-parked-cancel", store.InboxStateApproved, "", time.Now().UTC())
+	var requestErr *requestError
+	if !errors.As(err, &requestErr) || requestErr.reason != "RunEnded" {
+		t.Fatalf("late approval error = %v, want RunEnded", err)
 	}
-	f.server.resumeApprovedRun(t.Context(), workspaceScope, item, runAccess{}, true, "")
+	inbox, err := f.server.store.GetInboxItem(context.Background(), workspaceScope, "inbox-parked-cancel")
+	if err != nil || inbox.State != store.InboxStatePending {
+		t.Fatalf("late approval changed cancelled item's state: item=%+v err=%v", inbox, err)
+	}
 	stored, err = f.server.store.GetRun(context.Background(), f.scope, run.ID)
 	if err != nil || stored.Phase != store.RunPhaseAborted {
 		t.Fatalf("run after late approval = %+v, %v; want it to stay Aborted", stored, err)

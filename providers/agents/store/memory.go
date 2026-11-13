@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // MemoryStore is a non-durable in-process Store for development and tests. It
@@ -46,7 +48,11 @@ type MemoryStore struct {
 	// mirroring the org/workspace columns the Postgres rows carry.
 	runScopes map[string]Scope // key: scope|runID
 	// mcpSessions are harness MCP sessions by token hash.
-	mcpSessions map[string]HarnessMCPSession
+	mcpSessions          map[string]HarnessMCPSession
+	sessionOwners        map[string]string
+	sessionGrants        map[string]map[string]bool
+	sessionNotifications map[string][]SessionNotification
+	notificationKeys     map[string]SessionNotification
 }
 
 type memorySessionModel struct {
@@ -57,26 +63,30 @@ type memorySessionModel struct {
 // NewMemoryStore returns an empty in-memory store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		sessionModels:      map[string]memorySessionModel{},
-		messages:           map[string][]Message{},
-		sessionTitles:      map[string]sessionTitle{},
-		runs:               map[string]Run{},
-		memories:           map[string]Memory{},
-		inbox:              map[string]InboxItem{},
-		toolCalls:          map[string][]ToolCall{},
-		usage:              map[string]Usage{},
-		tenants:            map[string]TenantRef{},
-		summaries:          map[string]SessionSummary{},
-		summaryGenerations: map[string]int64{},
-		harness:            map[string]HarnessSession{},
-		idempotencyPrimary: map[string]bool{},
-		artifacts:          map[string]runArtifactRow{},
-		agentArtifacts:     map[string]AgentArtifact{},
-		agentAttachments:   map[string]AgentAttachment{},
-		attachmentQuota:    DefaultAgentAttachmentQuota(),
-		deliveries:         map[string][]WebhookDelivery{},
-		mcpSessions:        map[string]HarnessMCPSession{},
-		runScopes:          map[string]Scope{},
+		sessionModels:        map[string]memorySessionModel{},
+		messages:             map[string][]Message{},
+		sessionTitles:        map[string]sessionTitle{},
+		runs:                 map[string]Run{},
+		memories:             map[string]Memory{},
+		inbox:                map[string]InboxItem{},
+		toolCalls:            map[string][]ToolCall{},
+		usage:                map[string]Usage{},
+		tenants:              map[string]TenantRef{},
+		summaries:            map[string]SessionSummary{},
+		summaryGenerations:   map[string]int64{},
+		harness:              map[string]HarnessSession{},
+		idempotencyPrimary:   map[string]bool{},
+		artifacts:            map[string]runArtifactRow{},
+		agentArtifacts:       map[string]AgentArtifact{},
+		agentAttachments:     map[string]AgentAttachment{},
+		attachmentQuota:      DefaultAgentAttachmentQuota(),
+		deliveries:           map[string][]WebhookDelivery{},
+		mcpSessions:          map[string]HarnessMCPSession{},
+		runScopes:            map[string]Scope{},
+		sessionOwners:        map[string]string{},
+		sessionGrants:        map[string]map[string]bool{},
+		sessionNotifications: map[string][]SessionNotification{},
+		notificationKeys:     map[string]SessionNotification{},
 	}
 }
 
@@ -199,6 +209,34 @@ func (m *MemoryStore) FindRunByIdempotencyKey(_ context.Context, scope Scope, ke
 		}
 	}
 	return Run{}, false, nil
+}
+
+func (m *MemoryStore) PreventStartRun(_ context.Context, scope Scope, key, agentUID, fingerprint string, now time.Time) (Run, bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return Run{}, false, err
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return Run{}, false, fmt.Errorf("idempotency key is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prefix := tenantKey(scope) + "|"
+	for k, existing := range m.runs {
+		if hasPrefix(k, prefix) && existing.AgentName == scope.AgentName && existing.IdempotencyKey == key && m.idempotencyPrimary[k] {
+			if existing.InvocationAgentUID != "" && existing.InvocationAgentUID != agentUID {
+				return Run{}, false, ErrInvocationAgentChanged
+			}
+			return existing, true, nil
+		}
+	}
+	id := uuid.NewString()
+	run := Run{ID: id, AgentName: scope.AgentName, Trigger: "api", Phase: RunPhaseAborted, IdempotencyKey: key, InvocationFingerprint: fingerprint, InvocationAgentUID: agentUID, InvocationPrevented: true, Message: "invocation start prevented", CreatedAt: now.UTC(), UpdatedAt: now.UTC(), FinishedAt: &now}
+	k := prefix + id
+	m.runs[k] = run
+	m.idempotencyPrimary[k] = true
+	return run, false, nil
 }
 
 func (m *MemoryStore) SaveTenantRef(_ context.Context, clusterID string, ref TenantRef) error {
@@ -434,6 +472,59 @@ func (m *MemoryStore) migrateUnmappedScope(clusterID string, ref TenantRef) {
 		}
 		delete(m.agentAttachments, key)
 	}
+	migratedOwners := make(map[string]string)
+	for key, owner := range m.sessionOwners {
+		if !hasPrefix(key, fromPrefix) {
+			continue
+		}
+		target := moveKey(key)
+		migratedOwners[key] = owner
+		if m.sessionOwners[target] == "" {
+			m.sessionOwners[target] = owner
+		}
+		delete(m.sessionOwners, key)
+	}
+	for key, grants := range m.sessionGrants {
+		if !hasPrefix(key, fromPrefix) {
+			continue
+		}
+		target := moveKey(key)
+		if m.sessionOwners[target] != "" && m.sessionOwners[target] == migratedOwners[key] {
+			if m.sessionGrants[target] == nil {
+				m.sessionGrants[target] = map[string]bool{}
+			}
+			for subject := range grants {
+				m.sessionGrants[target][subject] = true
+			}
+		}
+		delete(m.sessionGrants, key)
+	}
+	for key, items := range m.sessionNotifications {
+		if !hasPrefix(key, fromPrefix) {
+			continue
+		}
+		target := moveKey(key)
+		if m.sessionOwners[target] == migratedOwners[key] {
+			for _, item := range items {
+				dedupKey := target + "|" + item.Producer + "|" + item.Key
+				if _, exists := m.notificationKeys[dedupKey]; !exists {
+					m.sessionNotifications[target] = append(m.sessionNotifications[target], item)
+					m.notificationKeys[dedupKey] = item
+				}
+			}
+		}
+		delete(m.sessionNotifications, key)
+	}
+	for key := range m.notificationKeys {
+		if !hasPrefix(key, fromPrefix) {
+			continue
+		}
+		target := moveKey(key)
+		if _, exists := m.notificationKeys[target]; !exists {
+			m.notificationKeys[target] = m.notificationKeys[key]
+		}
+		delete(m.notificationKeys, key)
+	}
 	for key, rows := range m.deliveries {
 		if !hasPrefix(key, fromPrefix) {
 			continue
@@ -533,6 +624,21 @@ func (m *MemoryStore) hasUnmappedRows(tenant, prefix string) bool {
 		}
 	}
 	for key := range m.agentAttachments {
+		if hasPrefix(key, prefix) {
+			return true
+		}
+	}
+	for key := range m.sessionOwners {
+		if hasPrefix(key, prefix) {
+			return true
+		}
+	}
+	for key := range m.sessionGrants {
+		if hasPrefix(key, prefix) {
+			return true
+		}
+	}
+	for key := range m.sessionNotifications {
 		if hasPrefix(key, prefix) {
 			return true
 		}
@@ -876,6 +982,27 @@ func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID st
 	// The summary stands for messages that no longer exist; keeping it would
 	// replay a wiped conversation back into the model after "/new".
 	delete(m.sessionModels, sessionKey(scope, sessionID))
+	accessPrefix := sessionKey(scope, sessionID) + "|"
+	for key := range m.sessionOwners {
+		if hasPrefix(key, accessPrefix) {
+			delete(m.sessionOwners, key)
+		}
+	}
+	for key := range m.sessionGrants {
+		if hasPrefix(key, accessPrefix) {
+			delete(m.sessionGrants, key)
+		}
+	}
+	for key := range m.sessionNotifications {
+		if hasPrefix(key, accessPrefix) {
+			delete(m.sessionNotifications, key)
+		}
+	}
+	for key := range m.notificationKeys {
+		if hasPrefix(key, accessPrefix) {
+			delete(m.notificationKeys, key)
+		}
+	}
 	for key, attachment := range m.agentAttachments {
 		if attachment.AgentName == scope.AgentName && attachment.SessionID == sessionID && hasPrefix(key, tenantKey(scope)+"|") {
 			delete(m.agentAttachments, key)
@@ -1021,6 +1148,18 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 		}
 	}
 	if old, ok := m.runs[key]; ok {
+		run.ExecutionOwner = old.ExecutionOwner
+		run.ExecutionLeaseAt = old.ExecutionLeaseAt
+		run.ExecutionEpoch = old.ExecutionEpoch
+		if run.AgentUID == "" {
+			run.AgentUID = old.AgentUID
+		}
+		if run.RecoveryIdentity == RecoveryIdentityUnknown {
+			run.RecoveryIdentity = old.RecoveryIdentity
+		}
+		if run.Attempt < old.Attempt {
+			run.Attempt = old.Attempt
+		}
 		run.progress = old.progress
 	}
 	// Mirror the Postgres upsert: the cancel columns are RequestCancel's alone,
@@ -1032,8 +1171,23 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	if old, ok := m.runs[key]; ok && old.HarnessSettings != nil {
 		run.HarnessSettings = old.HarnessSettings
 	}
+	if old, ok := m.runs[key]; ok && run.RunnerCleanupBinding == nil {
+		run.RunnerCleanupBinding = old.RunnerCleanupBinding
+	}
 	if old, ok := m.runs[key]; ok && old.ModelSettings != nil {
 		run.ModelSettings = old.ModelSettings
+	}
+	if old, ok := m.runs[key]; ok && old.Limits != nil {
+		run.Limits = old.Limits
+	}
+	if old, ok := m.runs[key]; ok {
+		if run.InvocationFingerprint == "" {
+			run.InvocationFingerprint = old.InvocationFingerprint
+		}
+		if run.InvocationAgentUID == "" {
+			run.InvocationAgentUID = old.InvocationAgentUID
+		}
+		run.InvocationPrevented = run.InvocationPrevented || old.InvocationPrevented
 	}
 	if run.ModelSettings != nil {
 		dup := *run.ModelSettings
@@ -1042,6 +1196,27 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	if run.HarnessSettings != nil {
 		dup := *run.HarnessSettings
 		run.HarnessSettings = &dup
+	}
+	if run.Limits != nil {
+		dup := *run.Limits
+		run.Limits = &dup
+	}
+	if run.Repository != nil {
+		dup := *run.Repository
+		dup.ResultSchema = append(json.RawMessage(nil), run.Repository.ResultSchema...)
+		run.Repository = &dup
+	}
+	if run.StructuredResult != nil {
+		dup := *run.StructuredResult
+		run.StructuredResult = &dup
+	}
+	if run.RunnerCleanupBinding != nil {
+		dup := *run.RunnerCleanupBinding
+		run.RunnerCleanupBinding = &dup
+	}
+	if run.Result != nil {
+		dup := *run.Result
+		run.Result = &dup
 	}
 	m.runs[key] = run
 	if !exists && run.IdempotencyKey != "" {
@@ -1073,7 +1248,7 @@ func (m *MemoryStore) RequestCancel(_ context.Context, scope Scope, id string, n
 	k := tenantKey(scope) + "|" + id
 	run, ok := m.runs[k]
 	if !ok {
-		return fmt.Errorf("run %q not found", id)
+		return fmt.Errorf("%w: %q", ErrRunNotFound, id)
 	}
 	switch run.Phase {
 	case RunPhasePending, RunPhaseRunning, RunPhasePendingApproval:
@@ -1098,7 +1273,11 @@ func (m *MemoryStore) GetRun(_ context.Context, scope Scope, id string) (Run, er
 	defer m.mu.Unlock()
 	run, ok := m.runs[tenantKey(scope)+"|"+id]
 	if !ok {
-		return Run{}, fmt.Errorf("run %q not found", id)
+		return Run{}, fmt.Errorf("%w: %q", ErrRunNotFound, id)
+	}
+	if run.Limits != nil {
+		dup := *run.Limits
+		run.Limits = &dup
 	}
 	return run, nil
 }
@@ -1137,7 +1316,88 @@ func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID str
 	return run, nil
 }
 
-func (m *MemoryStore) ClaimRecovery(_ context.Context, scope Scope, id string, observed, now time.Time) (Run, error) {
+func (m *MemoryStore) ClaimRunWithLease(_ context.Context, scope Scope, id, owner, agentUID string, recovery RecoveryIdentity, now time.Time, inboxID ...string) (Run, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return Run{}, err
+	}
+	if owner == "" {
+		return Run{}, fmt.Errorf("execution owner is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	k := tenantKey(scope) + "|" + id
+	run, ok := m.runs[k]
+	if !ok || run.CancelRequested || run.Phase != RunPhasePendingApproval {
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
+	}
+	if len(inboxID) > 0 && inboxID[0] != "" {
+		var ck struct {
+			InboxID string `json:"inboxID"`
+		}
+		if json.Unmarshal(run.Checkpoint, &ck) != nil || ck.InboxID != inboxID[0] {
+			return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
+		}
+	}
+	if run.AgentUID != "" && run.AgentUID != agentUID {
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
+	}
+	run.Phase = RunPhaseRunning
+	run.UpdatedAt = now.UTC()
+	if run.StartedAt == nil {
+		t := now.UTC()
+		run.StartedAt = &t
+	}
+	run.ExecutionEpoch++
+	run.ExecutionOwner = owner
+	run.ExecutionLeaseAt = now.UTC()
+	run.AgentUID = agentUID
+	run.RecoveryIdentity = recovery
+	m.runs[k] = run
+	return run, nil
+}
+
+func (m *MemoryStore) ClaimFreshRun(_ context.Context, scope Scope, id string, observed time.Time, owner, agentUID string, recovery RecoveryIdentity, now time.Time) (Run, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return Run{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	k := tenantKey(scope) + "|" + id
+	run, ok := m.runs[k]
+	if !ok || run.Phase != RunPhasePending || run.CancelRequested || !run.UpdatedAt.Equal(observed) || run.ExecutionOwner != "" || owner == "" {
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
+	}
+	if run.AgentUID != "" && run.AgentUID != agentUID {
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
+	}
+	run.Phase = RunPhaseRunning
+	run.ExecutionEpoch++
+	run.ExecutionOwner = owner
+	run.ExecutionLeaseAt = now.UTC()
+	run.AgentUID = agentUID
+	run.RecoveryIdentity = recovery
+	run.UpdatedAt = now.UTC()
+	if run.StartedAt == nil {
+		t := now.UTC()
+		run.StartedAt = &t
+	}
+	m.runs[k] = run
+	return run, nil
+}
+
+func (m *MemoryStore) ClaimRecovery(_ context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error) {
+	return m.claimStrandedRun(scope, id, observed, owner, now, false)
+}
+
+func (m *MemoryStore) ClaimRunClosure(_ context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error) {
+	return m.claimStrandedRun(scope, id, observed, owner, now, true)
+}
+
+func (m *MemoryStore) claimStrandedRun(scope Scope, id string, observed time.Time, owner string, now time.Time, closure bool) (Run, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {
 		return Run{}, err
@@ -1147,17 +1407,136 @@ func (m *MemoryStore) ClaimRecovery(_ context.Context, scope Scope, id string, o
 	scope = m.normalizeScopeLocked(scope)
 	k := tenantKey(scope) + "|" + id
 	run, ok := m.runs[k]
-	if !ok || run.CancelRequested || run.Phase != RunPhaseRunning || !run.UpdatedAt.Equal(observed) {
+	if !ok || run.Phase != RunPhaseRunning || !run.UpdatedAt.Equal(observed) || owner == "" || (run.CancelRequested && !closure) {
 		return Run{}, fmt.Errorf("run %q: %w", id, ErrRecoveryClaimStale)
+	}
+	if run.ExecutionOwner != "" && run.ExecutionLeaseAt.Add(RunLeaseDuration).After(now) {
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRecoveryClaimStale)
+	}
+	if !closure && !run.CanResumeAsAgent() {
+		return Run{}, ErrRunRecoveryUnrecoverable
 	}
 	// Advance the revision even if the recovering replica's clock is behind.
 	if minimum := observed.Add(time.Microsecond); now.Before(minimum) {
 		now = minimum
 	}
-	run.Attempt++
+	if !closure {
+		run.Attempt++
+		run.RecoveryIdentity = RecoveryIdentityAgent
+	}
+	run.ExecutionOwner = owner
+	run.ExecutionLeaseAt = now.UTC()
+	run.ExecutionEpoch++
 	run.UpdatedAt = now.UTC()
 	m.runs[k] = run
 	return run, nil
+}
+
+func (m *MemoryStore) RenewRunLease(_ context.Context, scope Scope, id, owner string, epoch uint64, now time.Time) (Run, bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return Run{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := tenantKey(m.normalizeScopeLocked(scope)) + "|" + id
+	run, ok := m.runs[k]
+	if !ok || run.ExecutionOwner != owner || run.ExecutionEpoch != epoch || run.Phase != RunPhaseRunning || !run.ExecutionLeaseAt.Add(RunLeaseDuration).After(now) {
+		return Run{}, false, nil
+	}
+	if run.CancelRequested {
+		return run, false, ErrRunCancellationRequested
+	}
+	run.ExecutionLeaseAt = now.UTC()
+	m.runs[k] = run
+	return run, true, nil
+}
+
+func (m *MemoryStore) ReleaseRunLease(_ context.Context, scope Scope, id, owner string, epoch uint64) (bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := tenantKey(m.normalizeScopeLocked(scope)) + "|" + id
+	run, ok := m.runs[k]
+	if !ok || run.ExecutionOwner != owner || run.ExecutionEpoch != epoch {
+		return false, nil
+	}
+	run.ExecutionOwner = ""
+	run.ExecutionLeaseAt = time.Time{}
+	m.runs[k] = run
+	return true, nil
+}
+
+func (m *MemoryStore) SaveRunOwned(_ context.Context, scope Scope, run Run, owner string, epoch uint64, now time.Time) (bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	k := tenantKey(scope) + "|" + run.ID
+	current, ok := m.runs[k]
+	if !ok || current.ExecutionOwner != owner || current.ExecutionEpoch != epoch || !current.ExecutionLeaseAt.Add(RunLeaseDuration).After(now) {
+		return false, ErrRunLeaseLost
+	}
+	if current.CancelRequested && run.Phase != RunPhaseAborted {
+		return false, ErrRunCancellationRequested
+	}
+	run.ExecutionOwner = current.ExecutionOwner
+	run.ExecutionLeaseAt = current.ExecutionLeaseAt
+	if run.Phase != RunPhaseRunning {
+		run.ExecutionOwner = ""
+		run.ExecutionLeaseAt = time.Time{}
+	}
+	run.ExecutionEpoch = current.ExecutionEpoch
+	run.AgentUID = current.AgentUID
+	run.RecoveryIdentity = current.RecoveryIdentity
+	run.CancelRequested = current.CancelRequested
+	run.CancelRequestedAt = current.CancelRequestedAt
+	run.CancelRequestedBy = current.CancelRequestedBy
+	run.progress = current.progress
+	if run.RunnerCleanupBinding == nil {
+		run.RunnerCleanupBinding = current.RunnerCleanupBinding
+	}
+	if current.Limits != nil {
+		dup := *current.Limits
+		run.Limits = &dup
+	}
+	m.runs[k] = run
+	return true, nil
+}
+
+func (m *MemoryStore) SaveCancelledRun(_ context.Context, scope Scope, run Run) (bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	k := tenantKey(scope) + "|" + run.ID
+	current, ok := m.runs[k]
+	if !ok || !current.CancelRequested || run.Phase != RunPhaseAborted {
+		return false, ErrRunCancellationRequested
+	}
+	run.ExecutionOwner = current.ExecutionOwner
+	run.ExecutionLeaseAt = current.ExecutionLeaseAt
+	run.ExecutionEpoch = current.ExecutionEpoch
+	run.AgentUID = current.AgentUID
+	run.RecoveryIdentity = current.RecoveryIdentity
+	run.CancelRequested = true
+	run.CancelRequestedAt = current.CancelRequestedAt
+	run.CancelRequestedBy = current.CancelRequestedBy
+	run.progress = current.progress
+	if run.RunnerCleanupBinding == nil {
+		run.RunnerCleanupBinding = current.RunnerCleanupBinding
+	}
+	m.runs[k] = run
+	return true, nil
 }
 
 func (m *MemoryStore) ListRuns(_ context.Context, scope Scope, limit int) ([]Run, error) {
@@ -1371,7 +1750,46 @@ func (m *MemoryStore) AddInboxItem(_ context.Context, scope Scope, item InboxIte
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
-	m.inbox[tenantKey(scope)+"|"+item.ID] = item
+	key := tenantKey(scope) + "|" + item.ID
+	if _, exists := m.inbox[key]; exists {
+		return ErrInboxItemExists
+	}
+	m.inbox[key] = item
+	return nil
+}
+
+func (m *MemoryStore) AddInboxItemForParkedRun(_ context.Context, scope Scope, runID string, item InboxItem) error {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	workspace := Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}
+	if err := workspace.validate(); err != nil {
+		return err
+	}
+	if item.ID == "" {
+		return fmt.Errorf("inbox item ID is required")
+	}
+	if item.AgentName != scope.AgentName || item.RunID != runID {
+		return fmt.Errorf("inbox item does not match parked run scope")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	key := tenantKey(scope) + "|" + runID
+	run, ok := m.runs[key]
+	var checkpoint struct {
+		InboxID string `json:"inboxID"`
+	}
+	if !ok || run.Phase != RunPhasePendingApproval || run.CancelRequested || json.Unmarshal(run.Checkpoint, &checkpoint) != nil || checkpoint.InboxID != item.ID {
+		return ErrRunNotParked
+	}
+	workspace = m.normalizeScopeLocked(workspace)
+	itemKey := tenantKey(workspace) + "|" + item.ID
+	if _, exists := m.inbox[itemKey]; exists {
+		return ErrInboxItemExists
+	}
+	m.inbox[itemKey] = item
 	return nil
 }
 
@@ -1691,6 +2109,26 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 			delete(m.harness, k)
 		}
 	}
+	for k := range m.sessionOwners {
+		if hasPrefix(k, msgPrefix) {
+			delete(m.sessionOwners, k)
+		}
+	}
+	for k := range m.sessionGrants {
+		if hasPrefix(k, msgPrefix) {
+			delete(m.sessionGrants, k)
+		}
+	}
+	for k := range m.sessionNotifications {
+		if hasPrefix(k, msgPrefix) {
+			delete(m.sessionNotifications, k)
+		}
+	}
+	for k := range m.notificationKeys {
+		if hasPrefix(k, msgPrefix) {
+			delete(m.notificationKeys, k)
+		}
+	}
 	for k, run := range m.runs {
 		if run.AgentName == agentName && hasPrefix(k, tk+"|") {
 			delete(m.runs, k)
@@ -1833,6 +2271,27 @@ func (m *MemoryStore) SaveRunArtifact(_ context.Context, scope Scope, artifact R
 	artifact.CreatedAt = artifact.CreatedAt.UTC()
 	m.artifacts[artifactKey(scope, artifact.RunID, artifact.Name)] = runArtifactRow{agentName: scope.AgentName, artifact: artifact}
 	return nil
+}
+
+func (m *MemoryStore) SaveRunArtifactOwned(_ context.Context, scope Scope, artifact RunArtifact, owner string, epoch uint64, now time.Time) (bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	if err := artifact.validate(); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	run, ok := m.runs[tenantKey(scope)+"|"+artifact.RunID]
+	if !ok || run.ExecutionOwner != owner || run.ExecutionEpoch != epoch || run.CancelRequested || !run.ExecutionLeaseAt.Add(RunLeaseDuration).After(now) || run.Phase != RunPhaseRunning {
+		return false, ErrRunLeaseLost
+	}
+	artifact.Data = append([]byte(nil), artifact.Data...)
+	artifact.CreatedAt = artifact.CreatedAt.UTC()
+	m.artifacts[artifactKey(scope, artifact.RunID, artifact.Name)] = runArtifactRow{agentName: scope.AgentName, artifact: artifact}
+	return true, nil
 }
 
 func (m *MemoryStore) GetRunArtifact(_ context.Context, scope Scope, runID, name string) (RunArtifact, bool, error) {

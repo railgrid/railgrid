@@ -26,6 +26,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 // repositoryCleanup is deliberately read from the approved base, not the
@@ -149,7 +151,7 @@ func cleanupEnvironment(workdir string) []string {
 // Called under r.mu after terminal state is durable. No post-terminal SSE
 // events: lifecycle maintenance is recorded in durable state and service logs.
 func (r *Runner) scheduleCleanupLocked(attempt *attemptRecord) {
-	if attempt.CleanupDelegated {
+	if attempt.CleanupDelegated || attempt.ProcessCleanupUnconfirmed {
 		return
 	}
 	if r.retainEnvironmentLocked(attempt) {
@@ -198,4 +200,133 @@ func (r *Runner) scheduleCleanupLocked(attempt *attemptRecord) {
 			log.Printf("persist cleanup result %s: %v", id, err)
 		}
 	}()
+}
+
+// cleanupObservationLocked projects only bounded journal state. Hook output and
+// local worktree paths are intentionally never returned to remote callers.
+func (r *Runner) cleanupObservationLocked(attempt *attemptRecord) *CleanupObservation {
+	if attempt == nil {
+		return nil
+	}
+	obs := &CleanupObservation{State: CleanupNotApplicable, Attempts: attempt.CleanupAttempts, ObservedAt: time.Now().UTC()}
+	if attempt.Receipt.Phase.IsTerminal() && attempt.ProcessCleanupUnconfirmed {
+		obs.State = CleanupFailed
+		obs.Reason = "process_teardown_unconfirmed"
+		return obs
+	}
+	if !attempt.Receipt.Phase.IsTerminal() || !attempt.CleanupEligible {
+		return obs
+	}
+	if attempt.CleanupDelegated {
+		obs.State = CleanupDelegated
+		obs.Reason = "successor_attempt"
+		if env := r.state.Environments[attempt.Start.EnvironmentID]; env != nil && !env.ExpiresAt.IsZero() {
+			expiresAt := env.ExpiresAt.UTC()
+			obs.ExpiresAt = &expiresAt
+		}
+		return obs
+	}
+	if env := r.state.Environments[attempt.Start.EnvironmentID]; env != nil && env.AttemptID == attempt.Receipt.AttemptID && !env.Evicting {
+		obs.State = CleanupRetained
+		obs.Reason = "warm_environment"
+		if !env.ExpiresAt.IsZero() {
+			expiresAt := env.ExpiresAt.UTC()
+			obs.ExpiresAt = &expiresAt
+		}
+		return obs
+	}
+	switch {
+	case attempt.CleanupDone:
+		obs.State = CleanupDone
+	case attempt.cleanupRunning:
+		obs.State = CleanupRunning
+	case attempt.CleanupAttempts >= 3:
+		obs.State = CleanupFailed
+		obs.Reason = "retry_limit_reached"
+	default:
+		obs.State = CleanupPending
+	}
+	return obs
+}
+
+// recoverProcessCleanupsAtStartup gives saved process scopes one bounded
+// recovery attempt before retention runs. Unavailable or inconclusive probes
+// remain quarantined for a later retention tick or operator recovery.
+func (r *Runner) recoverProcessCleanupsAtStartup() {
+	changed := false
+	recovery, canRecover := r.adapter.(harness.ProcessCleanupRecovery)
+	for _, attempt := range r.state.Attempts {
+		if attempt == nil || attempt.ProcessCleanupReference == "" {
+			continue
+		}
+		if !canRecover {
+			attempt.ProcessCleanupUnconfirmed = true
+			changed = true
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		done, err := recovery.RecoverProcessCleanup(ctx, attempt.ProcessCleanupReference)
+		cancel()
+		if err != nil || !done {
+			attempt.ProcessCleanupUnconfirmed = true
+			if err != nil {
+				log.Printf("process cleanup recovery at startup failed: %v", err)
+			}
+			changed = true
+			continue
+		}
+		attempt.ProcessCleanupUnconfirmed = false
+		attempt.ProcessCleanupReference = ""
+		changed = true
+	}
+	if changed {
+		if err := r.persistLocked(); err != nil {
+			log.Printf("persist startup process cleanup recovery: %v", err)
+		}
+	}
+}
+
+// scheduleProcessCleanupRecoveryLocked re-probes saved scopes at retention
+// cadence. The attempt remains protected while the adapter works outside the
+// runner mutex.
+func (r *Runner) scheduleProcessCleanupRecoveryLocked() {
+	recovery, ok := r.adapter.(harness.ProcessCleanupRecovery)
+	if !ok {
+		return
+	}
+	for id, attempt := range r.state.Attempts {
+		if attempt == nil || !attempt.ProcessCleanupUnconfirmed || attempt.ProcessCleanupReference == "" || attempt.cleanupRunning {
+			continue
+		}
+		attempt.cleanupRunning = true
+		ref := attempt.ProcessCleanupReference
+		r.wg.Add(1)
+		go func(id, ref string) {
+			defer r.wg.Done()
+			r.cleanupSlots <- struct{}{}
+			defer func() { <-r.cleanupSlots }()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			done, err := recovery.RecoverProcessCleanup(ctx, ref)
+			cancel()
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			current := r.state.Attempts[id]
+			if current == nil {
+				return
+			}
+			current.cleanupRunning = false
+			if err != nil {
+				log.Printf("process cleanup recovery %s failed: %v", id, err)
+				return
+			}
+			if done {
+				current.ProcessCleanupUnconfirmed = false
+				current.ProcessCleanupReference = ""
+				if persistErr := r.persistLocked(); persistErr != nil {
+					log.Printf("persist process cleanup recovery %s: %v", id, persistErr)
+				}
+				r.scheduleCleanupLocked(current)
+			}
+		}(id, ref)
+	}
 }

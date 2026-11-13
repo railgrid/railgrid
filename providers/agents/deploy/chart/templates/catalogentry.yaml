@@ -50,7 +50,7 @@ spec:
             description: "Credential-less chat turn: the agent runs without the hub's aggregate MCP tools (clusters, servers, instances), because a verb carries no caller bearer. The portal uses the chat tool on the provider's MCP endpoint instead."
             stream: true
           - name: run
-            description: "Start an unattended run of the agent."
+            description: "Start an unattended run. Idempotency keys are limited to 1024 bytes; runLimits.maxOutputTokens is supported for model runs, while maxUSD and harness-backed token caps are rejected."
           - name: sessions
             description: "List the agent's chat sessions."
             readOnly: true
@@ -58,6 +58,13 @@ spec:
             description: "Read or update chat model preferences, or delete the session transcript."
           - name: messages
             description: "Read one chat session's transcript."
+            readOnly: true
+          - name: session-access
+            description: "Grant or revoke exact-session notification access; only the session owner can change grants."
+          - name: deliver
+            description: "Write a deduplicated notification to an explicitly authorized session feed, separate from transcript and model context."
+          - name: notifications
+            description: "Read the notification-only feed for an explicitly authorized exact session."
             readOnly: true
           - name: usage
             description: "Read the agent's cost, token and latency rollups."
@@ -67,6 +74,9 @@ spec:
             readOnly: true
           - name: inbox-resolve
             description: "Approve, deny or answer one of the agent's inbox items. A run-bound answer can stream the continuation."
+            stream: true
+          - name: inbox-answer
+            description: "Answer one question item only; cannot approve or deny permission requests. A run-bound answer can stream the continuation."
             stream: true
           - name: events
             description: "Follow the agent's run and inbox activity as it happens."
@@ -113,7 +123,7 @@ spec:
           - name: cancel
             description: "Ask a run in flight to stop."
           - name: artifact
-            description: "Read one artifact a repository run exported (git-result.json or git-result.bundle), base64-encoded. POST {\"name\": \"<artifact>\"}."
+            description: "Read one run artifact (Git result, structured result, final response, or screenshot data), base64-encoded. POST {\"name\": \"<artifact>\"}."
             readOnly: true
       - name: connections
         apiVersion: agents.railgrid.ai/v1alpha1

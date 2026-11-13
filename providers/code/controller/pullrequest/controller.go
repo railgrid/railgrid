@@ -140,11 +140,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if !ok {
 		return ctrl.Result{}, r.fail(ctx, c, &pr, fmt.Sprintf("git provider %q does not support pull requests", conn.Spec.Provider))
 	}
-	cred, err := shared.ResolveCredential(ctx, c, conn)
-	if err != nil {
-		return ctrl.Result{}, r.fail(ctx, c, &pr, err.Error())
-	}
-
 	body := withoutLocalScreenshots(pr.Spec.Body)
 	digest := textDigest(&pr)
 	textChanged := pr.Status.PublishedTextDigest != digest
@@ -157,17 +152,126 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	next := pr.DeepCopy()
 	next.Status.ObservedGeneration = pr.Generation
+	publication := pr.Spec.Publication
+	publicationActive := false
+	if publication == nil && pr.Status.Publication != nil {
+		return ctrl.Result{}, r.fail(ctx, c, &pr, "spec.publication cannot be removed after durable publication is enabled")
+	}
+	if publication != nil {
+		if pr.Spec.DesiredHead != nil {
+			return ctrl.Result{}, r.fail(ctx, c, &pr, "spec.publication and spec.desiredHead cannot be used together")
+		}
+		if err := validatePublication(publication); err != nil {
+			return ctrl.Result{}, r.fail(ctx, c, &pr, err.Error())
+		}
+		receipt := pr.Status.Publication
+		if receipt != nil && receipt.Phase == "Accepted" {
+			if publication.Sequence < receipt.Sequence || !receiptMatchesCurrentTarget(receipt, &pr, repo, conn) || (publication.Sequence == receipt.Sequence && !publicationMatchesReceipt(publication, receipt)) {
+				return ctrl.Result{}, r.fail(ctx, c, &pr, "accepted publication no longer matches its durable identity")
+			}
+			// Recover accepted work from the receipt even if the caller has
+			// already submitted a later sequence. Finish this lease first.
+			publication = publicationFromReceipt(receipt)
+			publicationActive = true
+		} else if receipt == nil || publication.Sequence > receipt.Sequence {
+			now := metav1.NewTime(r.now())
+			phase := "Accepted"
+			if publication.Cancel {
+				phase = "Cancelled"
+			}
+			receipt = &codev1alpha1.PullRequestPublicationStatus{Sequence: publication.Sequence, OperationID: publication.OperationID, ParentUID: string(pr.UID), RepositoryUID: string(repo.UID), ConnectionUID: string(conn.UID), Branch: pr.Spec.Branch, Base: pr.Spec.Base, Phase: phase, ExpectedHead: publication.ExpectedHead, ExpectedAbsent: publication.ExpectedAbsent, Candidate: publication.Candidate, AcceptedAt: &now}
+			if phase == "Cancelled" {
+				receipt.Message = "publication was cancelled before acceptance"
+				receipt.FinishedAt = &now
+			}
+			next.Status.Publication = receipt
+			if err := updateStatusIfChanged(ctx, c, &pr, next); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{Requeue: true}, nil
+		} else if publication.Sequence < receipt.Sequence || !samePublicationReceipt(publication, receipt, &pr, repo, conn) {
+			return ctrl.Result{}, r.fail(ctx, c, &pr, "publication intent does not match its durable receipt")
+		}
+	}
+	// A pre-accept cancellation is a local durable acknowledgement. Persist it
+	// before resolving forge credentials so transient auth failures cannot keep
+	// a request unacknowledged; accepted operations still recover with the
+	// receipt's original repository and branch identity above.
+	cred, err := shared.ResolveCredential(ctx, c, conn)
+	if err != nil {
+		return ctrl.Result{}, r.fail(ctx, c, &pr, err.Error())
+	}
+	if publicationActive && next.Status.Number > 0 {
+		observedPR, err := host.ReadPullRequest(ctx, conn, cred, repo, next.Status.Number)
+		if err != nil {
+			return ctrl.Result{}, r.fail(ctx, c, &pr, "reading bound pull request before publication: "+err.Error())
+		}
+		owner := repo.Spec.Owner
+		if owner == "" {
+			owner = conn.Spec.Owner
+		}
+		canonicalRepo := owner + "/" + repo.Spec.Name
+		if observedPR == nil || observedPR.Number != next.Status.Number || !validAdoption(observedPR, canonicalRepo, pr.Spec.Branch, pr.Spec.Base) {
+			return ctrl.Result{}, r.fail(ctx, c, &pr, "bound pull request changed repository, branch, base, or open state before publication")
+		}
+	}
+	// Number is an explicit, validated adoption request. Establish the observed
+	// branch head before normal reconciliation so the existing expected-head
+	// guard remains effective if a later desired head is published.
+	if pr.Spec.Number > 0 && next.Status.Number > 0 && next.Status.Number != pr.Spec.Number {
+		return ctrl.Result{}, r.fail(ctx, c, &pr, "spec.number conflicts with the already adopted pull request")
+	}
+	if next.Status.Number == 0 && pr.Spec.Number > 0 {
+		adopted, err := host.ReadPullRequest(ctx, conn, cred, repo, pr.Spec.Number)
+		if err != nil {
+			return ctrl.Result{}, r.fail(ctx, c, &pr, "reading pull request for adoption: "+err.Error())
+		}
+		owner := repo.Spec.Owner
+		if owner == "" {
+			owner = conn.Spec.Owner
+		}
+		canonicalRepo := owner + "/" + repo.Spec.Name
+		if !validAdoption(adopted, canonicalRepo, pr.Spec.Branch, pr.Spec.Base) || adopted.Number != pr.Spec.Number {
+			return ctrl.Result{}, r.fail(ctx, c, &pr, "pull request adoption does not match the configured repository, branch, base, and open state")
+		}
+		next.Status.Number = adopted.Number
+		next.Status.URL = adopted.URL
+		next.Status.Head = adopted.Commit
+		// Until the adoption has been persisted, don't let this same pass turn
+		// the request into a publication operation.
+		if err := updateStatusIfChanged(ctx, c, &pr, next); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
 	if adoptTextBaseline {
 		next.Status.PublishedTextDigest = digest
 	}
 
 	// 1. The branch: advance it to the desired head when it is not there.
 	pushed := false
-	if head := pr.Spec.DesiredHead; head != nil && pr.Status.Head != head.Commit {
+	desiredHead := pr.Spec.DesiredHead
+	if publicationActive {
+		desiredHead = &publication.Candidate
+	}
+	if desiredHead != nil && (publicationActive || pr.Status.Head != desiredHead.Commit) {
 		pushed = true
-		if err := r.advance(ctx, host, conn, cred, repo, string(req.ClusterName), &pr, head); err != nil {
+		var advanceErr error
+		if publicationActive {
+			advanceErr = r.advancePublication(ctx, host, conn, cred, repo, string(req.ClusterName), &pr, publication)
+		} else {
+			advanceErr = r.advance(ctx, host, conn, cred, repo, string(req.ClusterName), &pr, desiredHead)
+		}
+		if advanceErr != nil {
+			err := advanceErr
 			var permanent permanentError
 			if errors.As(err, &permanent) {
+				if publicationActive {
+					r.finishPublication(&next.Status, "Failed", "", err.Error())
+					next.Status.Phase = codev1alpha1.PullRequestPhaseFailed
+					shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonError, err.Error(), pr.Generation)
+					return ctrl.Result{}, updateStatusIfChanged(ctx, c, &pr, next)
+				}
 				return ctrl.Result{}, r.fail(ctx, c, &pr, err.Error())
 			}
 			shared.SetCondition(&next.Status.Conditions, codev1alpha1.PullRequestConditionHeadApplied, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, err.Error(), pr.Generation)
@@ -180,8 +284,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	// 2. The pull request: open it once there is something to review.
-	if pr.Status.Number == 0 && pr.Spec.DesiredHead != nil {
-		opened, err := r.open(ctx, host, conn, cred, repo, &pr, body)
+	if pr.Status.Number == 0 && desiredHead != nil {
+		opened, err := r.openWithHead(ctx, host, conn, cred, repo, &pr, body, desiredHead)
 		if err != nil {
 			shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, err.Error(), pr.Generation)
 			if updateErr := updateStatusIfChanged(ctx, c, &pr, next); updateErr != nil {
@@ -202,6 +306,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	observed, err := host.ReadPullRequest(ctx, conn, cred, repo, next.Status.Number)
 	if err != nil {
 		shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonError, "pull request unavailable: "+err.Error(), pr.Generation)
+		next.Status.ChecksError = bounded("pull request unavailable: " + err.Error())
+		next.Status.BaseCurrent = nil
+		next.Status.BaseCurrentError = bounded("pull request unavailable: " + err.Error())
 		if updateErr := updateStatusIfChanged(ctx, c, &pr, next); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
@@ -214,7 +321,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// read right after a push can lag. Reading the conversation against the
 	// stale head would be refused, and waiting the whole observe interval
 	// would leave the coordinator a stale head for minutes. Come back soon.
-	if pushed && pr.Spec.DesiredHead != nil && observed.Commit != pr.Spec.DesiredHead.Commit {
+	if pushed && desiredHead != nil && observed.Commit != desiredHead.Commit {
 		shared.SetCondition(&next.Status.Conditions, codev1alpha1.PullRequestConditionHeadApplied, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, "The head branch was advanced; waiting for the forge to report it.", pr.Generation)
 		shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, "The head branch was advanced; waiting for the forge to report it.", pr.Generation)
 		if err := updateStatusIfChanged(ctx, c, &pr, next); err != nil {
@@ -261,6 +368,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	next.Status.MergeCommit = observed.MergeCommit
 	next.Status.Merger = observed.Merger
 	next.Status.MergerType = observed.MergerType
+	next.Status.Draft = observed.Draft
+	next.Status.MergeableState = observed.MergeableState
+	if !observed.Merged && strings.EqualFold(observed.State, "open") {
+		if baseObserver, ok := host.(backend.PullRequestBaseObserver); ok {
+			baseHead, baseCurrent, baseErr, observeErr := baseObserver.ObservePullRequestBase(ctx, conn, cred, repo, observed)
+			if observeErr != nil {
+				next.Status.BaseHead, next.Status.BaseCurrent = "", nil
+				next.Status.BaseCurrentError = bounded(observeErr.Error())
+			} else {
+				next.Status.BaseHead, next.Status.BaseCurrent = baseHead, baseCurrent
+				next.Status.BaseCurrentError = bounded(baseErr)
+			}
+		} else {
+			next.Status.BaseHead, next.Status.BaseCurrent = "", nil
+			next.Status.BaseCurrentError = "base observation is unavailable for this forge"
+		}
+	}
 	next.Status.MergedAt = nil
 	if observed.MergedAt != nil {
 		at := metav1.NewTime(*observed.MergedAt)
@@ -279,7 +403,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	conversationErr := r.observeConversation(ctx, host, conn, cred, repo, next)
 	stamp := metav1.NewTime(r.now())
 	next.Status.LastObserved = &stamp
-	applied := pr.Spec.DesiredHead == nil || observed.Commit == pr.Spec.DesiredHead.Commit
+	applied := desiredHead == nil || observed.Commit == desiredHead.Commit
+	if !publicationActive && next.Status.Publication != nil && next.Status.Publication.Phase == "Published" {
+		applied = observed.Commit == next.Status.Publication.Candidate.Commit
+	}
 	if applied {
 		shared.SetCondition(&next.Status.Conditions, codev1alpha1.PullRequestConditionHeadApplied, metav1.ConditionTrue, codev1alpha1.ReasonReady, "The head branch is at the desired commit.", pr.Generation)
 	} else {
@@ -293,6 +420,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	default:
 		shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, "The head branch is behind the desired commit.", pr.Generation)
 	}
+	if publicationActive && applied && next.Status.Publication != nil && next.Status.Publication.Phase == "Accepted" {
+		message := "the candidate branch head was confirmed"
+		if pr.Spec.Publication != nil && pr.Spec.Publication.Sequence == publication.Sequence && pr.Spec.Publication.Cancel {
+			message = "the accepted publication completed after cancellation was requested"
+		}
+		r.finishPublication(&next.Status, "Published", observed.Commit, message)
+	}
 	if err := updateStatusIfChanged(ctx, c, &pr, next); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -301,6 +435,36 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	logger.V(3).Info("pull request settled", "phase", next.Status.Phase)
 	return ctrl.Result{}, nil
+}
+
+func validAdoption(pr *backend.PullRequest, repository, branch, base string) bool {
+	return pr != nil && pr.Number > 0 && strings.EqualFold(pr.Repository, repository) && strings.EqualFold(pr.HeadRepository, repository) && pr.Head == branch && pr.Base == base && !pr.Merged && strings.EqualFold(pr.State, "open")
+}
+
+func validatePublication(p *codev1alpha1.PullRequestPublication) error {
+	if p.Sequence < 1 || p.OperationID == "" || p.Candidate.Commit == "" || p.Candidate.BaseCommit == "" || p.Candidate.Tree == "" || p.Candidate.BundleRef == "" {
+		return errors.New("publication requires a positive sequence, operation ID, and complete candidate")
+	}
+	if p.ExpectedAbsent == (p.ExpectedHead != "") {
+		return errors.New("publication must set exactly one of expectedHead or expectedAbsent")
+	}
+	return nil
+}
+
+func samePublicationReceipt(p *codev1alpha1.PullRequestPublication, receipt *codev1alpha1.PullRequestPublicationStatus, pr *codev1alpha1.PullRequest, repo *codev1alpha1.Repository, conn *codev1alpha1.Connection) bool {
+	return receipt != nil && receipt.Sequence == p.Sequence && receipt.OperationID == p.OperationID && receipt.ParentUID == string(pr.UID) && receipt.RepositoryUID == string(repo.UID) && receipt.ConnectionUID == string(conn.UID) && receipt.Branch == pr.Spec.Branch && receipt.Base == pr.Spec.Base && receipt.ExpectedHead == p.ExpectedHead && receipt.ExpectedAbsent == p.ExpectedAbsent && reflect.DeepEqual(receipt.Candidate, p.Candidate)
+}
+
+func receiptMatchesCurrentTarget(receipt *codev1alpha1.PullRequestPublicationStatus, pr *codev1alpha1.PullRequest, repo *codev1alpha1.Repository, conn *codev1alpha1.Connection) bool {
+	return receipt != nil && receipt.ParentUID == string(pr.UID) && receipt.RepositoryUID == string(repo.UID) && receipt.ConnectionUID == string(conn.UID) && receipt.Branch == pr.Spec.Branch && receipt.Base == pr.Spec.Base
+}
+
+func publicationMatchesReceipt(p *codev1alpha1.PullRequestPublication, receipt *codev1alpha1.PullRequestPublicationStatus) bool {
+	return p != nil && receipt != nil && p.Sequence == receipt.Sequence && p.OperationID == receipt.OperationID && p.ExpectedHead == receipt.ExpectedHead && p.ExpectedAbsent == receipt.ExpectedAbsent && reflect.DeepEqual(p.Candidate, receipt.Candidate)
+}
+
+func publicationFromReceipt(receipt *codev1alpha1.PullRequestPublicationStatus) *codev1alpha1.PullRequestPublication {
+	return &codev1alpha1.PullRequestPublication{Sequence: receipt.Sequence, OperationID: receipt.OperationID, ExpectedHead: receipt.ExpectedHead, ExpectedAbsent: receipt.ExpectedAbsent, Candidate: receipt.Candidate}
 }
 
 // permanentError is a desired head the forge will never take: the branch is
@@ -345,7 +509,14 @@ func (r *Reconciler) advance(ctx context.Context, host forge, conn *codev1alpha1
 // open creates the pull request, or adopts the one the forge already has for
 // this head branch (a create whose answer was lost).
 func (r *Reconciler) open(ctx context.Context, host forge, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, pr *codev1alpha1.PullRequest, body string) (*backend.PullRequest, error) {
-	input := backend.PullRequestInput{Head: pr.Spec.Branch, Base: pr.Spec.Base, Commit: pr.Spec.DesiredHead.Commit, Title: pr.Spec.Title, Body: body}
+	return r.openWithHead(ctx, host, conn, cred, repo, pr, body, pr.Spec.DesiredHead)
+}
+
+func (r *Reconciler) openWithHead(ctx context.Context, host forge, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, pr *codev1alpha1.PullRequest, body string, head *codev1alpha1.PullRequestHead) (*backend.PullRequest, error) {
+	if head == nil {
+		return nil, errors.New("no desired head to open")
+	}
+	input := backend.PullRequestInput{Head: pr.Spec.Branch, Base: pr.Spec.Base, Commit: head.Commit, Title: pr.Spec.Title, Body: body, Draft: pr.Spec.Draft}
 	existing, err := host.FindPullRequest(ctx, conn, cred, repo, input)
 	if err != nil {
 		return nil, fmt.Errorf("finding the pull request: %w", err)
@@ -360,11 +531,74 @@ func (r *Reconciler) open(ctx context.Context, host forge, conn *codev1alpha1.Co
 	return created, nil
 }
 
+func (r *Reconciler) advancePublication(ctx context.Context, host forge, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, cluster string, pr *codev1alpha1.PullRequest, intent *codev1alpha1.PullRequestPublication) error {
+	current, err := host.BranchHead(ctx, conn, cred, repo, pr.Spec.Branch)
+	if err != nil {
+		return fmt.Errorf("reading the head branch: %w", err)
+	}
+	if current == intent.Candidate.Commit {
+		return nil
+	}
+	if intent.ExpectedAbsent {
+		if current != "" {
+			return permanentError{fmt.Errorf("the head branch %q exists at %s; expected it to be absent", pr.Spec.Branch, current)}
+		}
+	} else if current != intent.ExpectedHead {
+		return permanentError{fmt.Errorf("the head branch is at %s, not the authorized expected head %s", current, intent.ExpectedHead)}
+	}
+	snapshot, err := actions.FindStaged(ctx, r.Snapshots, cluster, intent.Candidate.BundleRef)
+	if err != nil {
+		return fmt.Errorf("staged snapshot %s: %w", intent.Candidate.BundleRef, err)
+	}
+	if snapshot.Commit != intent.Candidate.Commit || snapshot.Tree != intent.Candidate.Tree || snapshot.BaseCommit != intent.Candidate.BaseCommit {
+		return permanentError{errors.New("the staged snapshot does not match the immutable publication intent")}
+	}
+	snapshot.Message = intent.Candidate.Message
+	if err := host.PublishSnapshot(ctx, conn, cred, repo, snapshot, pr.Spec.Branch, func() string {
+		if intent.ExpectedAbsent {
+			return ""
+		}
+		return intent.ExpectedHead
+	}()); err != nil {
+		return fmt.Errorf("advancing the head branch: %w", err)
+	}
+	return nil
+}
+
+func (r *Reconciler) finishPublication(status *codev1alpha1.PullRequestStatus, phase, observedHead, message string) {
+	if status.Publication == nil {
+		return
+	}
+	now := metav1.NewTime(r.now())
+	status.Publication.Phase = phase
+	status.Publication.ObservedHead = observedHead
+	status.Publication.Message = message
+	status.Publication.FinishedAt = &now
+}
+
 func (r *Reconciler) observeConversation(ctx context.Context, host forge, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, pr *codev1alpha1.PullRequest) error {
 	feedback, err := host.PullRequestFeedback(ctx, conn, cred, repo, pr.Status.Number, pr.Status.Head)
 	if err != nil {
+		pr.Status.ChecksError = bounded(err.Error())
 		return err
 	}
+	checks := make([]codev1alpha1.PullRequestCheck, 0, len(feedback.Checks))
+	for _, check := range feedback.Checks {
+		if check.Head != pr.Status.Head {
+			pr.Status.ChecksError = "forge returned checks for a different head"
+			return errors.New(pr.Status.ChecksError)
+		}
+		checks = append(checks, codev1alpha1.PullRequestCheck{ID: check.ID, Name: check.Name, AppID: check.AppID, Head: check.Head, Status: check.Status, Conclusion: check.Conclusion, DetailsURL: check.DetailsURL})
+	}
+	pr.Status.ChecksTruncated = len(checks) > 256
+	if len(checks) > 256 {
+		checks = checks[len(checks)-256:]
+	}
+	pr.Status.Checks = checks
+	pr.Status.ChecksHead = pr.Status.Head
+	checksAt := metav1.NewTime(r.now())
+	pr.Status.ChecksObservedAt = &checksAt
+	pr.Status.ChecksError = ""
 	reviews := make([]codev1alpha1.PullRequestReview, 0, len(feedback.Reviews))
 	for _, review := range feedback.Reviews {
 		at := metav1.NewTime(review.SubmittedAt)
@@ -419,5 +653,7 @@ func updateStatusIfChanged(ctx context.Context, c client.Client, current, next *
 	if reflect.DeepEqual(current.Status, next.Status) {
 		return nil
 	}
-	return c.Status().Update(ctx, next)
+	// Merge only the observed fields. Typed status reserialization would round
+	// the action ledgers' claim timestamps and invalidate the release fence.
+	return c.Status().Patch(ctx, next, client.MergeFromWithOptions(current, client.MergeFromWithOptimisticLock{}))
 }

@@ -48,6 +48,10 @@ const (
 	// coordinator must see it before sending the field: decoding refuses
 	// unknown fields, so an older runner rejects the request outright.
 	RemoteMCPCapability = "remote-mcp-v1"
+	// CompletionArtifactsCapability advertises fixed-path artifact collection.
+	// Callers must observe it before sending ArtifactSpec.CollectOnCompletion,
+	// which older strict runner/v1 decoders do not recognize.
+	CompletionArtifactsCapability = "completion-artifacts-v1"
 )
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)

@@ -30,8 +30,16 @@ func TestGitHubInstallationCredentialIsSignedAndBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
-	calls := 0
+	calls, appIdentityCalls := 0, 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/app" && r.Method == http.MethodGet {
+			appIdentityCalls++
+			if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+				t.Error("app identity request missing JWT")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"slug": "railgrid-helper"})
+			return
+		}
 		calls++
 		if r.URL.Path != "/api/v3/app/installations/456/access_tokens" || r.Method != http.MethodPost {
 			t.Errorf("unexpected token route: %s %s", r.Method, r.URL.Path)
@@ -66,8 +74,12 @@ func TestGitHubInstallationCredentialIsSignedAndBounded(t *testing.T) {
 	data := map[string][]byte{"appID": []byte("123"), "installationID": []byte("456"), "privateKey": pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})}
 	resolver := CredentialResolver{Client: server.Client(), Now: func() time.Time { return now }}
 	credential, err := resolver.Resolve(context.Background(), conn, data)
-	if err != nil || credential.Token != "installation-token" || calls != 1 {
-		t.Fatalf("credential resolution failed: calls=%d error=%v", calls, err)
+	if err != nil || credential.Token != "installation-token" || calls != 1 || appIdentityCalls != 0 {
+		t.Fatalf("credential resolution failed: token calls=%d app calls=%d error=%v", calls, appIdentityCalls, err)
+	}
+	actor, actorType, err := resolver.ResolveActor(context.Background(), conn, data)
+	if err != nil || actor != "railgrid-helper[bot]" || actorType != "Bot" || appIdentityCalls != 1 {
+		t.Fatalf("app actor resolution failed: calls=%d actor=%q type=%q error=%v", appIdentityCalls, actor, actorType, err)
 	}
 	for _, field := range []string{"appID", "installationID", "privateKey"} {
 		original := data[field]
@@ -77,7 +89,7 @@ func TestGitHubInstallationCredentialIsSignedAndBounded(t *testing.T) {
 		}
 		data[field] = original
 	}
-	if calls != 1 {
+	if calls != 1 || appIdentityCalls != 1 {
 		t.Fatal("invalid credentials reached remote")
 	}
 }

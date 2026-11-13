@@ -1,3 +1,5 @@
+//go:build !windows
+
 /*
 Copyright 2026 The Railgrid Authors.
 

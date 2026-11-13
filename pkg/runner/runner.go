@@ -37,6 +37,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -45,8 +46,10 @@ import (
 )
 
 const (
-	maxIdentifierBytes = 128
-	maxMessageBytes    = 8 << 10
+	maxIdentifierBytes   = 128
+	maxMessageBytes      = 8 << 10
+	maxArtifactSpecs     = 8
+	maxArtifactTotalSize = 32 << 20
 
 	// serverReadHeaderTimeout bounds a connection that never sends a request
 	// head; serverIdleTimeout reaps keep-alive connections a client abandons
@@ -185,6 +188,7 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 	verificationCapabilities = appendUnique(verificationCapabilities, clarificationCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, permissionPromptCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, RemoteMCPCapability)
+	verificationCapabilities = appendUnique(verificationCapabilities, CompletionArtifactsCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, "cancel-unseen-v1")
 	verificationCapabilities = appendUnique(verificationCapabilities, "warm-environments-v1")
 	verificationCapabilities = appendUnique(verificationCapabilities, InputFilesCapability)
@@ -229,6 +233,7 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 		_ = lock.Close()
 		return nil, err
 	}
+	r.recoverProcessCleanupsAtStartup()
 	if removed := r.purgeLocked(time.Now()); removed > 0 {
 		log.Printf("retention: dropped %d expired attempt(s) at startup", removed)
 	}
@@ -525,7 +530,9 @@ func (r *Runner) Inspect(_ context.Context, attemptID string) (Receipt, error) {
 	if !ok {
 		return Receipt{}, protocolError(ErrorUnavailable, false, "attempt not found", nil)
 	}
-	return receiptForResponse(attempt.Receipt), nil
+	receipt := receiptForResponse(attempt.Receipt)
+	receipt.Cleanup = r.cleanupObservationLocked(attempt)
+	return receipt, nil
 }
 
 // Cancel requests adapter cancellation. Active attempts remain cancelling until
@@ -620,6 +627,9 @@ func (r *Runner) Resume(ctx context.Context, request ResumeRequest) (Receipt, er
 	attempt, err := r.attemptForMutationLocked(request.TaskID, request.AttemptID, request.AttemptEpoch)
 	if err != nil {
 		return Receipt{}, err
+	}
+	if attempt.ProcessCleanupUnconfirmed {
+		return Receipt{}, protocolError(ErrorUnavailable, true, "previous process scope cleanup is still unconfirmed; wait for recovery before resuming", &attempt.Receipt)
 	}
 	if attempt.Receipt.Phase != PhaseNeedsInput {
 		if attempt.Receipt.Phase.IsTerminal() {
@@ -881,6 +891,9 @@ func (r *Runner) startExecutionLocked(attemptID, instructions, model string) err
 	if !ok {
 		return errors.New("attempt not found")
 	}
+	if attempt.ProcessCleanupUnconfirmed {
+		return errors.New("previous process scope cleanup is still unconfirmed; wait for recovery before resuming")
+	}
 	// The credential is in memory only. Absent means this process never
 	// received one for this attempt — a restart, almost always — and there is
 	// nothing to run as. Say so instead of launching a harness that would
@@ -943,6 +956,21 @@ func (r *Runner) startExecutionLocked(attemptID, instructions, model string) err
 		ReasoningEffort: attempt.Start.ReasoningEffort,
 		Credential:      credential,
 		InputFiles:      inputFiles,
+		RegisterProcessScope: func(reference string) error {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			current := r.state.Attempts[attemptID]
+			if current == nil || current.Receipt.Phase.IsTerminal() {
+				return errors.New("attempt ended before process scope registration")
+			}
+			previous := current.ProcessCleanupReference
+			current.ProcessCleanupReference = reference
+			if err := r.persistLocked(); err != nil {
+				current.ProcessCleanupReference = previous
+				return fmt.Errorf("persist process scope reference: %w", err)
+			}
+			return nil
+		},
 	}
 	if attempt.Start.AskPermission {
 		// The adapter reaches a human through the runner, which is the only
@@ -993,6 +1021,16 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 		return
 	}
 	_, shutdown := r.shutdown[attemptID]
+	if errors.Is(runErr, harness.ErrProcessCleanupUnconfirmed) {
+		attempt.ProcessCleanupUnconfirmed = true
+		var cleanupErr *harness.ProcessCleanupError
+		if errors.As(runErr, &cleanupErr) && cleanupErr.Reference != "" {
+			attempt.ProcessCleanupReference = cleanupErr.Reference
+		}
+	} else {
+		attempt.ProcessCleanupUnconfirmed = false
+		attempt.ProcessCleanupReference = ""
+	}
 	if attempt.Receipt.LastError != nil {
 		blocker := attempt.Receipt.Blocker
 		if blocker == "" {
@@ -1067,6 +1105,11 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 		if !attempt.Start.ExportGitResult {
 			delete(r.running, attemptID)
 			delete(r.shutdown, attemptID)
+			if err := r.collectDeclaredArtifactsLocked(attempt); err != nil {
+				r.finishLocked(attempt, PhaseFailed, "collect declared artifacts: "+err.Error(), err)
+				r.mu.Unlock()
+				return
+			}
 			r.finishLocked(attempt, PhaseCompleted, "", nil)
 			r.mu.Unlock()
 			return
@@ -1112,6 +1155,12 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 		}
 		delete(r.running, attemptID)
 		delete(r.shutdown, attemptID)
+		if err := r.collectDeclaredArtifactsLocked(attempt); err != nil {
+			cleanupGitResultArtifacts(gitResult)
+			r.finishLocked(attempt, PhaseFailed, "collect declared artifacts: "+err.Error(), err)
+			r.mu.Unlock()
+			return
+		}
 		if err := r.finishGitResultLocked(attempt, gitResult); err != nil {
 			cleanupGitResultArtifacts(gitResult)
 			// The durable state transaction failed before a completed receipt
@@ -1269,6 +1318,13 @@ func firstHarnessFailure(attempt *attemptRecord) error {
 }
 
 func (r *Runner) recordArtifactLocked(attempt *attemptRecord, data json.RawMessage) error {
+	return r.recordArtifactLockedFrom(attempt, data, nil, 0)
+}
+
+// recordArtifactLockedFrom accepts a pre-opened source only for opt-in
+// completion collection. The rooted descriptor keeps a concurrent path swap
+// from redirecting the copy outside artifacts/.
+func (r *Runner) recordArtifactLockedFrom(attempt *attemptRecord, data json.RawMessage, opened *os.File, aggregateLimit int64) error {
 	var input struct {
 		Name      string `json:"name"`
 		Path      string `json:"path"`
@@ -1305,25 +1361,53 @@ func (r *Runner) recordArtifactLocked(attempt *attemptRecord, data json.RawMessa
 	if input.MediaType == "" {
 		input.MediaType = "application/octet-stream"
 	}
-	source, err := artifactSource(attempt.Receipt.Workdir, input.Path)
-	if err != nil {
-		return err
+	var f *os.File
+	var err error
+	if opened != nil {
+		f = opened
+	} else if spec.CollectOnCompletion {
+		f, err = openDeclaredArtifact(attempt.Receipt.Workdir, input.Path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		if aggregateLimit == 0 {
+			var collected int64
+			for _, prior := range attempt.Receipt.Artifacts {
+				for _, priorSpec := range attempt.ArtifactSpecs {
+					if prior.Name == priorSpec.Name && priorSpec.CollectOnCompletion {
+						collected += prior.Length
+						break
+					}
+				}
+			}
+			aggregateLimit = maxArtifactTotalSize - collected
+		}
+	} else {
+		source, resolveErr := artifactSource(attempt.Receipt.Workdir, input.Path)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		f, err = os.OpenFile(source, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
 	}
-	info, err := os.Stat(source)
+	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		if err == nil {
 			err = errors.New("artifact source is not a regular file")
 		}
 		return err
 	}
-	if info.Size() > r.cfg.MaxArtifactSize {
-		return fmt.Errorf("artifact exceeds %d-byte limit", r.cfg.MaxArtifactSize)
+	fileLimit := r.cfg.MaxArtifactSize
+	if aggregateLimit > 0 && aggregateLimit < fileLimit {
+		fileLimit = aggregateLimit
 	}
-	f, err := os.Open(source)
-	if err != nil {
-		return err
+	if info.Size() > fileLimit {
+		return fmt.Errorf("artifact exceeds %d-byte limit", fileLimit)
 	}
-	defer func() { _ = f.Close() }()
 	artifactDir := filepath.Join(r.cfg.StateDir, "artifacts", attempt.Receipt.AttemptID)
 	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
 		return err
@@ -1340,12 +1424,12 @@ func (r *Runner) recordArtifactLocked(attempt *attemptRecord, data json.RawMessa
 		_ = os.Remove(tmpName)
 	}()
 	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(tmp, hash), io.LimitReader(f, r.cfg.MaxArtifactSize+1))
+	written, err := io.Copy(io.MultiWriter(tmp, hash), io.LimitReader(f, fileLimit+1))
 	if err != nil {
 		return err
 	}
-	if written > r.cfg.MaxArtifactSize {
-		return fmt.Errorf("artifact exceeds %d-byte limit", r.cfg.MaxArtifactSize)
+	if written > fileLimit {
+		return fmt.Errorf("artifact exceeds %d-byte limit", fileLimit)
 	}
 	digest := "sha256:" + hex.EncodeToString(hash.Sum(nil))
 	if spec.Digest != "" && spec.Digest != digest {
@@ -1366,6 +1450,66 @@ func (r *Runner) recordArtifactLocked(attempt *attemptRecord, data json.RawMessa
 	artifact := Artifact{ID: artifactID, Name: input.Name, Digest: digest, Length: written, MediaType: input.MediaType, CreatedAt: eventNow()}
 	r.state.Artifacts[artifactID] = artifactRecord{Artifact: artifact, Path: dest}
 	attempt.Receipt.Artifacts = append(attempt.Receipt.Artifacts, artifact)
+	return nil
+}
+
+// collectDeclaredArtifactsLocked copies optional fixed paths after the
+// adapter completes. Harnesses can stay unaware of the artifact API; the
+// caller's allowlist is the only source of names and paths, and all bytes pass
+// through the same path, type, size and digest checks as emitted artifacts.
+func (r *Runner) collectDeclaredArtifactsLocked(attempt *attemptRecord) error {
+	for _, spec := range attempt.ArtifactSpecs {
+		if !spec.CollectOnCompletion {
+			continue
+		}
+		alreadyRecorded := false
+		for _, prior := range attempt.Receipt.Artifacts {
+			if prior.Name == spec.Name {
+				alreadyRecorded = true
+				break
+			}
+		}
+		if alreadyRecorded {
+			continue
+		}
+		f, err := openDeclaredArtifact(attempt.Receipt.Workdir, spec.Path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("open %q: %w", spec.Name, err)
+		}
+		info, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			return fmt.Errorf("inspect %q: %w", spec.Name, err)
+		}
+		var collectedBytes int64
+		for _, prior := range attempt.Receipt.Artifacts {
+			for _, priorSpec := range attempt.ArtifactSpecs {
+				if prior.Name == priorSpec.Name && priorSpec.CollectOnCompletion {
+					collectedBytes += prior.Length
+					break
+				}
+			}
+		}
+		if collectedBytes+info.Size() > maxArtifactTotalSize {
+			_ = f.Close()
+			return fmt.Errorf("collected artifacts exceed %d-byte aggregate limit", maxArtifactTotalSize)
+		}
+		data, err := json.Marshal(map[string]string{"name": spec.Name, "path": spec.Path, "mediaType": spec.MediaType, "digest": spec.Digest})
+		if err != nil {
+			return err
+		}
+		if err := r.recordArtifactLockedFrom(attempt, data, f, maxArtifactTotalSize-collectedBytes); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("collect %q: %w", spec.Name, err)
+		}
+		_ = f.Close()
+		if _, err := r.appendEventLocked(attempt.Receipt.AttemptID, EventArtifact, "Declared artifact collected: "+spec.Name, data); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1633,6 +1777,7 @@ func validateStartRequest(request StartRequest) error {
 		resourceNamesSeen[resource.Name] = struct{}{}
 	}
 	seen := map[string]struct{}{}
+	collectedArtifactCount := 0
 	for _, artifact := range request.Artifacts {
 		if err := validateIdentifier("artifact name", artifact.Name); err != nil {
 			return err
@@ -1644,12 +1789,15 @@ func validateStartRequest(request StartRequest) error {
 			return errors.New("artifact allowlist contains duplicate names")
 		}
 		seen[artifact.Name] = struct{}{}
-		if artifact.Path == "" {
-			return errors.New("artifact allowlist requires an approved relative path")
+		if artifact.CollectOnCompletion {
+			collectedArtifactCount++
 		}
 		if err := validateArtifactRelativePath(artifact.Path); err != nil {
 			return err
 		}
+	}
+	if collectedArtifactCount > maxArtifactSpecs {
+		return fmt.Errorf("completion-collected artifact allowlist exceeds %d entries", maxArtifactSpecs)
 	}
 	if request.Limits.MaxDurationSeconds < 0 || request.Limits.MaxOutputBytes < 0 || request.Limits.MaxTurns < 0 {
 		return errors.New("execution limits cannot be negative")

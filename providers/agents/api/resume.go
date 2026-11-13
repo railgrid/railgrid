@@ -74,6 +74,7 @@ type resumeIntent struct {
 	Stream    func(string, map[string]any)
 	// RecoveryClaimedAt identifies the revision claimed by the recovery caller.
 	RecoveryClaimedAt time.Time
+	RecoveryAgentUID  string
 }
 
 // resumeRun rehydrates a checkpointed run and continues it through the shared
@@ -125,7 +126,11 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		claimed = run
 	} else {
 		var claimErr error
-		claimed, claimErr = s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC(), intent.InboxItem.ID)
+		if s.cfg.ProcessID != "" {
+			claimed, claimErr = s.store.ClaimRunWithLease(ctx, agentScope, run.ID, newExecutionOwner(s.cfg.ProcessID), run.AgentUID, run.RecoveryIdentity, time.Now().UTC(), intent.InboxItem.ID)
+		} else {
+			claimed, claimErr = s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC(), intent.InboxItem.ID)
+		}
 		if claimErr != nil {
 			log.Printf("resume: run %s: %v", run.ID, claimErr)
 			if errors.Is(claimErr, store.ErrRunClaimConflict) {
@@ -133,6 +138,14 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 			}
 			return runResult{}, claimErr
 		}
+	}
+	if s.cfg.ProcessID != "" && claimed.ExecutionOwner != "" {
+		var stopLease func()
+		claimed, ctx, stopLease, err = s.startRunLease(ctx, agentScope, claimed)
+		if err != nil {
+			return runResult{}, err
+		}
+		defer stopLease()
 	}
 	// A crash after claiming a model question can leave its question
 	// checkpoint on the Running row. Replay the saved reply in that case.
@@ -206,6 +219,10 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		s.closeRunNow(ctx, agentScope, run, store.RunPhaseFailed, fmt.Sprintf("loading agent: %v", err))
 		return runResult{}, err
 	}
+	if intent.RecoveryAgentUID != "" && string(agent.UID) != intent.RecoveryAgentUID {
+		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, "the original Agent was replaced before recovery")
+		return runResult{}, store.ErrRunRecoveryUnrecoverable
+	}
 	if len(attachmentRefs) > 0 {
 		for _, receipt := range attachmentRefs {
 			if _, err := s.loadBoundAgentAttachment(ctx, agentScope, string(agent.UID), effectiveSessionID(run.SessionID, run.Trigger), attachmentOwner, run.ID, receipt); err != nil {
@@ -225,6 +242,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		Scope: agentScope, Agent: agent,
 		RunID: run.ID, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger,
 		ParentRunID: run.ParentRunID,
+		Limits:      runLimitsForStored(run.Limits),
 		SourceName:  ck.SourceName, NotifyChannel: ck.NotifyChannel,
 		ArtifactOwner: artifactOwner, ArtifactRefs: artifactRefs,
 		AttachmentOwner: attachmentOwner, AttachmentCaller: attachmentCaller, AttachmentRefs: attachmentRefs,
@@ -239,6 +257,9 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		Repository:      repositoryAttemptFromStored(run.Repository),
 		HarnessSettings: run.HarnessSettings,
 		ModelSettings:   run.ModelSettings,
+		ExecutionOwner:  claimed.ExecutionOwner,
+		ExecutionEpoch:  claimed.ExecutionEpoch,
+		AgentUID:        claimed.AgentUID,
 	}
 	access.applyTo(&tr)
 	if intent.Stream != nil {

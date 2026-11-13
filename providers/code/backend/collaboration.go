@@ -32,22 +32,29 @@ type PullRequestInput struct {
 	Commit string `json:"commit"`
 	Title  string `json:"title,omitempty"`
 	Body   string `json:"body,omitempty"`
+	Draft  bool   `json:"draft,omitempty"`
 }
 
 type PullRequest struct {
-	Number         int        `json:"number"`
-	URL            string     `json:"url"`
-	Repository     string     `json:"repository"`
-	HeadRepository string     `json:"headRepository"`
-	Head           string     `json:"head"`
-	Base           string     `json:"base"`
-	Commit         string     `json:"commit"`
-	State          string     `json:"state"`
-	Merged         bool       `json:"merged"`
-	MergeCommit    string     `json:"mergeCommit,omitempty"`
-	MergedAt       *time.Time `json:"mergedAt,omitempty"`
-	Merger         string     `json:"merger,omitempty"`
-	MergerType     string     `json:"mergerType,omitempty"`
+	Number           int        `json:"number"`
+	NodeID           string     `json:"nodeID,omitempty"`
+	URL              string     `json:"url"`
+	Repository       string     `json:"repository"`
+	HeadRepository   string     `json:"headRepository"`
+	Head             string     `json:"head"`
+	Base             string     `json:"base"`
+	Commit           string     `json:"commit"`
+	State            string     `json:"state"`
+	Merged           bool       `json:"merged"`
+	MergeCommit      string     `json:"mergeCommit,omitempty"`
+	MergedAt         *time.Time `json:"mergedAt,omitempty"`
+	Merger           string     `json:"merger,omitempty"`
+	MergerType       string     `json:"mergerType,omitempty"`
+	Draft            bool       `json:"draft,omitempty"`
+	BaseHead         string     `json:"baseHead,omitempty"`
+	BaseCurrent      *bool      `json:"baseCurrent,omitempty"`
+	BaseCurrentError string     `json:"baseCurrentError,omitempty"`
+	MergeableState   string     `json:"mergeableState,omitempty"`
 }
 
 type Check struct {
@@ -89,6 +96,13 @@ type CommentPage struct {
 // BranchLister lists a bounded page using the registered repository identity.
 type BranchLister interface {
 	ListBranches(context.Context, *api.Connection, Credential, *api.Repository, int) (*BranchPage, error)
+}
+
+// PullRequestBaseObserver optionally reads the current base branch tip and
+// compares it with the PR head. It is separate from ordinary PR reads because
+// ancestry checks are extra forge calls.
+type PullRequestBaseObserver interface {
+	ObservePullRequestBase(context.Context, *api.Connection, Credential, *api.Repository, *PullRequest) (string, *bool, string, error)
 }
 type BranchPage struct {
 	Branches []string `json:"branches"`

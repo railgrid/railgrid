@@ -58,7 +58,18 @@ type PullRequestList struct {
 }
 
 // PullRequestSpec is what the forge should show.
+// +kubebuilder:validation:XValidation:rule="!has(self.publication) || !has(self.desiredHead)",message="publication and desiredHead are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.publication) || has(self.publication)",message="publication cannot be cleared after opting in"
 type PullRequestSpec struct {
+	// Number adopts an existing pull request after validating its repository,
+	// head branch and base. Once status.number is recorded it must remain equal.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Number int `json:"number,omitempty"`
+	// Draft creates a new pull request as a draft. Unset preserves the historic
+	// ready-for-review creation behavior.
+	// +optional
+	Draft bool `json:"draft,omitempty"`
 	// RepositoryRef names the Repository (same workspace) the pull request
 	// belongs to.
 	// +required
@@ -97,6 +108,11 @@ type PullRequestSpec struct {
 	// first result exists; then every revision is a new value here.
 	// +optional
 	DesiredHead *PullRequestHead `json:"desiredHead,omitempty"`
+	// Publication opts into the durable immutable publication contract. It is
+	// mutually exclusive with desiredHead; legacy callers keep their existing
+	// behavior when this field is absent.
+	// +optional
+	Publication *PullRequestPublication `json:"publication,omitempty"`
 	// ObserveInterval is how often Code re-reads an open pull request from
 	// the forge: its head, state, reviews and comments. The coordinator sets
 	// it per line, because forges and review flows differ in how fast they
@@ -106,6 +122,74 @@ type PullRequestSpec struct {
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 	ObserveInterval *metav1.Duration `json:"observeInterval,omitempty"`
+}
+
+// PullRequestPublication is one immutable, caller-authorized branch update.
+// The controller persists acceptance before making any forge write.
+// +kubebuilder:validation:XValidation:rule="(has(self.expectedAbsent) && self.expectedAbsent) != has(self.expectedHead)",message="set exactly one of expectedHead or expectedAbsent"
+// +kubebuilder:validation:XValidation:rule="self.sequence >= oldSelf.sequence",message="publication sequence cannot decrease"
+// +kubebuilder:validation:XValidation:rule="self.sequence != oldSelf.sequence || (self.operationID == oldSelf.operationID && has(self.expectedAbsent) == has(oldSelf.expectedAbsent) && (!has(self.expectedAbsent) || self.expectedAbsent == oldSelf.expectedAbsent) && has(self.expectedHead) == has(oldSelf.expectedHead) && (!has(self.expectedHead) || self.expectedHead == oldSelf.expectedHead) && self.candidate == oldSelf.candidate)",message="publication identity and candidate are immutable within a sequence"
+// +kubebuilder:validation:XValidation:rule="self.sequence != oldSelf.sequence || !has(oldSelf.cancel) || !oldSelf.cancel || (has(self.cancel) && self.cancel)",message="publication cancellation cannot be cleared"
+type PullRequestPublication struct {
+	// +required
+	// +kubebuilder:validation:Minimum=1
+	Sequence int64 `json:"sequence"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	OperationID string `json:"operationID"`
+	// ExpectedHead is the exact branch head the caller authorized replacing.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{40}$`
+	ExpectedHead string `json:"expectedHead,omitempty"`
+	// ExpectedAbsent explicitly authorizes creating a branch that does not exist.
+	// +optional
+	ExpectedAbsent bool `json:"expectedAbsent,omitempty"`
+	// Candidate is the exact verified snapshot commit to publish.
+	// +required
+	Candidate PullRequestHead `json:"candidate"`
+	// Cancel fences an intent that has not yet been accepted. Once accepted,
+	// publication may finish and its result remains visible.
+	// +optional
+	Cancel bool `json:"cancel,omitempty"`
+}
+
+// PullRequestPublicationStatus is the latest durable publication receipt.
+// New sequences replace this receipt only after its prior operation is terminal.
+type PullRequestPublicationStatus struct {
+	// +required
+	Sequence int64 `json:"sequence"`
+	// +required
+	OperationID string `json:"operationID"`
+	// ParentUID prevents a recreated PullRequest with the same name from
+	// inheriting an earlier operation receipt.
+	// +required
+	ParentUID string `json:"parentUID"`
+	// +required
+	RepositoryUID string `json:"repositoryUID"`
+	// +required
+	ConnectionUID string `json:"connectionUID"`
+	// +required
+	Branch string `json:"branch"`
+	// +required
+	Base string `json:"base"`
+	// +required
+	// +kubebuilder:validation:Enum=Accepted;Published;Cancelled;Failed
+	Phase string `json:"phase"`
+	// +optional
+	ExpectedHead string `json:"expectedHead,omitempty"`
+	// +optional
+	ExpectedAbsent bool `json:"expectedAbsent,omitempty"`
+	// +required
+	Candidate PullRequestHead `json:"candidate"`
+	// +optional
+	ObservedHead string `json:"observedHead,omitempty"`
+	// +optional
+	Message string `json:"message,omitempty"`
+	// +optional
+	AcceptedAt *metav1.Time `json:"acceptedAt,omitempty"`
+	// +optional
+	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
 }
 
 // PullRequestHead identifies one staged, verified snapshot commit.
@@ -205,6 +289,48 @@ type PublishedAttachment struct {
 
 // PullRequestStatus is what the forge shows.
 type PullRequestStatus struct {
+	// Publication is the latest durable receipt for spec.publication. Its
+	// Published phase means the desired branch commit was confirmed; PR opening
+	// remains separately observed by number/state and uses find-before-create.
+	// +optional
+	Publication *PullRequestPublicationStatus `json:"publication,omitempty"`
+	// Draft is the forge's observed draft state.
+	// +optional
+	Draft bool `json:"draft,omitempty"`
+	// BaseHead and BaseCurrent describe the base branch commit and whether it
+	// is an ancestor of the current PR head. Nil means the forge could not say.
+	// +optional
+	BaseHead string `json:"baseHead,omitempty"`
+	// +optional
+	BaseCurrent *bool `json:"baseCurrent,omitempty"`
+	// BaseCurrentError distinguishes unavailable ancestry observations from a
+	// confirmed false result.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	BaseCurrentError string `json:"baseCurrentError,omitempty"`
+	// MergeableState is the forge's mergeability observation (including
+	// unknown/dirty/blocked states); it is never interpreted as CI success.
+	// +optional
+	MergeableState string `json:"mergeableState,omitempty"`
+	// Checks are observations for ChecksHead only. Empty checks do not mean pass.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	// +kubebuilder:validation:MaxItems=256
+	Checks []PullRequestCheck `json:"checks,omitempty"`
+	// ChecksTruncated reports that more check runs existed than are carried here.
+	// +optional
+	ChecksTruncated bool `json:"checksTruncated,omitempty"`
+	// ChecksHead pins the check snapshot to the exact commit queried.
+	// +optional
+	ChecksHead string `json:"checksHead,omitempty"`
+	// ChecksObservedAt is when that snapshot was read successfully.
+	// +optional
+	ChecksObservedAt *metav1.Time `json:"checksObservedAt,omitempty"`
+	// ChecksError records an unavailable or incomplete check observation.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	ChecksError string `json:"checksError,omitempty"`
 	// AttachmentRepositoryUID binds upload receipts to their destination repository.
 	// +optional
 	AttachmentRepositoryUID string `json:"attachmentRepositoryUID,omitempty"`
@@ -245,6 +371,18 @@ type PullRequestStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=64
 	Reviews []PullRequestReview `json:"reviews,omitempty"`
+	// ReviewOperations are durable idempotency receipts for review submissions.
+	// +optional
+	// +listType=map
+	// +listMapKey=key
+	// +kubebuilder:validation:MaxItems=64
+	ReviewOperations []PullRequestReviewOperation `json:"reviewOperations,omitempty"`
+	// CommentOperations are durable caller-keyed upsert receipts.
+	// +optional
+	// +listType=map
+	// +listMapKey=key
+	// +kubebuilder:validation:MaxItems=64
+	CommentOperations []PullRequestCommentOperation `json:"commentOperations,omitempty"`
 	// Comments are the conversation comments, oldest first; bounded to the
 	// newest 128. CommentsTruncated says the conversation is longer.
 	// +optional
@@ -260,4 +398,63 @@ type PullRequestStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// PullRequestReviewOperation records one caller-keyed review attempt so a
+// retry can recover a response lost after the forge accepted it.
+type PullRequestReviewOperation struct {
+	// +required
+	// +kubebuilder:validation:MaxLength=128
+	Key string `json:"key"`
+	// +required
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{40}$`
+	ExpectedHead string `json:"expectedHead"`
+	// PayloadFingerprint prevents reusing a key for different review contents.
+	// +required
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	PayloadFingerprint string `json:"payloadFingerprint"`
+	// +required
+	// +kubebuilder:validation:Enum=Accepted;Complete
+	Phase string `json:"phase"`
+	// +optional
+	ReviewID int64 `json:"reviewID,omitempty"`
+	// +optional
+	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
+}
+
+// PullRequestCommentOperation is an idempotency receipt for a managed comment.
+type PullRequestCommentOperation struct {
+	// +required
+	// +kubebuilder:validation:MaxLength=128
+	Key string `json:"key"`
+	// +required
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	PayloadFingerprint string `json:"payloadFingerprint"`
+	// +required
+	// +kubebuilder:validation:Enum=Accepted;Complete
+	Phase string `json:"phase"`
+	// +optional
+	CommentID int64 `json:"commentID,omitempty"`
+	// +optional
+	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
+}
+
+// PullRequestCheck is one forge check run, tied to its exact head commit.
+type PullRequestCheck struct {
+	// +required
+	ID int64 `json:"id"`
+	// +required
+	Name string `json:"name"`
+	// +optional
+	AppID int64 `json:"appID,omitempty"`
+	// +required
+	Head string `json:"head"`
+	// State preserves the forge's status and conclusion, including queued,
+	// in-progress, skipped, cancelled and action-required outcomes.
+	// +optional
+	Status string `json:"status,omitempty"`
+	// +optional
+	Conclusion string `json:"conclusion,omitempty"`
+	// +optional
+	DetailsURL string `json:"detailsURL,omitempty"`
 }

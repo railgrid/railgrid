@@ -102,6 +102,14 @@ type AgentChatAdmissionStore interface {
 	CreateAgentChatRun(context.Context, Scope, string, Message, Run, []AgentAttachmentReceipt, string, time.Time) error
 }
 
+// AgentChatOwnerAdmissionStore performs ordinary chat admission and, only for
+// a genuinely new transcript, binds its first caller as notification owner.
+// Existing or differently owned sessions are admitted without changing their
+// notification eligibility.
+type AgentChatOwnerAdmissionStore interface {
+	CreateOwnedAgentChatRun(context.Context, Scope, string, Message, Run, []AgentAttachmentReceipt, string, string, time.Time) error
+}
+
 type AgentAttachmentQuotaConfigurer interface {
 	ConfigureAgentAttachmentQuota(AgentAttachmentQuota) error
 }

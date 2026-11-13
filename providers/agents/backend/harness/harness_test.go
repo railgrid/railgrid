@@ -85,6 +85,10 @@ func (f *fakeRunner) Start(_ context.Context, req runner.StartRequest) (runner.R
 	return f.current(), nil
 }
 
+func (f *fakeRunner) Capabilities(context.Context) (runner.Capabilities, error) {
+	return runner.Capabilities{Verification: []string{runner.CompletionArtifactsCapability}}, nil
+}
+
 func (f *fakeRunner) Resume(_ context.Context, req runner.ResumeRequest) (runner.Receipt, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

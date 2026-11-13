@@ -113,7 +113,7 @@ func (r *Runner) purgeableLocked(id string, attempt *attemptRecord) bool {
 	if _, running := r.running[id]; running {
 		return false
 	}
-	if r.permissions[id] != nil || attempt.cleanupRunning {
+	if r.permissions[id] != nil || attempt.cleanupRunning || attempt.ProcessCleanupUnconfirmed {
 		return false
 	}
 	if env := r.state.Environments[attempt.Start.EnvironmentID]; env != nil && env.AttemptID == id {
@@ -196,6 +196,7 @@ func removeAttemptFiles(paths []string) {
 // background goroutine. It is the entry point for the periodic sweep and for
 // acceptance of a new attempt, where the cap is what keeps the state bounded.
 func (r *Runner) purgeLocked(now time.Time) int {
+	r.scheduleProcessCleanupRecoveryLocked()
 	removed, paths := r.purgeAttemptsLocked(now)
 	paths = append(paths, r.purgeStagedInputs(now)...)
 	r.lastPurge = now

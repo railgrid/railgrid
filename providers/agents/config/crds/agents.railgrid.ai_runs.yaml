@@ -147,6 +147,20 @@ spec:
                   belong on an API object.
                 maxLength: 2048
                 type: string
+              limits:
+                description: Limits are the hard allowances requested for this run,
+                  frozen at admission.
+                properties:
+                  maxOutputTokens:
+                    description: MaxOutputTokens caps aggregate model completion tokens
+                      across the run.
+                    format: int64
+                    maximum: 10000000
+                    minimum: 1
+                    type: integer
+                required:
+                - maxOutputTokens
+                type: object
               parentRunRef:
                 description: |-
                   ParentRunRef names the run that started this one, for delegation and
@@ -163,6 +177,33 @@ spec:
                   records what ran — never the clone credential, which is dispatch data
                   and is gone with the turn.
                 properties:
+                  artifacts:
+                    description: |-
+                      Artifacts lists fixed files collected from artifacts/ on completion.
+                      Missing files are omitted from the Run's artifact set.
+                    items:
+                      description: |-
+                        ArtifactSpec is an approved logical artifact. Path is relative to the task
+                        worktree and is only used when the adapter reports an artifact event.
+                      properties:
+                        collectOnCompletion:
+                          description: |-
+                            CollectOnCompletion asks Runner to copy this fixed path after a successful
+                            adapter run. Older event-only artifact declarations retain their behavior.
+                          type: boolean
+                        digest:
+                          type: string
+                        mediaType:
+                          type: string
+                        name:
+                          type: string
+                        path:
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    maxItems: 8
+                    type: array
                   baseCommit:
                     description: BaseCommit is the approved commit the attempt started
                       from.
@@ -287,6 +328,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              costBasis:
+                description: |-
+                  CostBasis identifies provider-reported charges, local catalog estimates,
+                  or unavailable cost evidence.
+                enum:
+                - provider_reported
+                - catalog_estimate
+                - unavailable
+                type: string
               deadlineAt:
                 description: |-
                   DeadlineAt is startedAt plus the agent's per-run timeout: when the run
@@ -405,6 +455,25 @@ spec:
                   timeout deadline is measured from it.
                 format: date-time
                 type: string
+              structuredResult:
+                description: StructuredResult is independent caller-requested JSON
+                  output metadata.
+                properties:
+                  digest:
+                    pattern: ^[a-f0-9]{64}$
+                    type: string
+                  size:
+                    format: int64
+                    type: integer
+                  state:
+                    enum:
+                    - valid
+                    - invalid
+                    - missing
+                    type: string
+                required:
+                - state
+                type: object
               transcriptRef:
                 description: |-
                   TranscriptRef locates the run's rows in the provider's store. It carries
@@ -466,6 +535,15 @@ spec:
                     format: int64
                     type: integer
                 type: object
+              usageCompleteness:
+                description: |-
+                  UsageCompleteness reports whether all, some, or none of the runtime's
+                  usage reports were observed.
+                enum:
+                - complete
+                - partial
+                - unavailable
+                type: string
             type: object
         type: object
     served: true

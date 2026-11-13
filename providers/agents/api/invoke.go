@@ -9,8 +9,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -51,9 +55,19 @@ const (
 	// STORE and not the event bus: the run may be executing on another replica,
 	// and Postgres is the only thing both replicas agree on.
 	waitPollInterval = 500 * time.Millisecond
+	// maxIdempotencyKeyBytes is safely below PostgreSQL's B-tree index key
+	// limit, avoiding an opaque retryable storage error for oversized input.
+	maxIdempotencyKeyBytes = 1024
 )
 
 type invokeRunRequest struct {
+	// PreventStart atomically reserves an absent idempotency key as an Aborted
+	// tombstone. If a Run already exists, it is returned unchanged for the caller
+	// to cancel through its ordinary Run verb.
+	PreventStart bool `json:"preventStart,omitempty"`
+	// ExpectedAgentUID lets a caller fence a name recreation between reading an
+	// Agent and submitting this invocation.
+	ExpectedAgentUID string `json:"expectedAgentUID,omitempty"`
 	// Model overrides the Agent model for this run; omitted inherits, empty selects the harness default.
 	Model *string `json:"model,omitempty"`
 	// ReasoningEffort follows the same inheritance rules and requires the existing run permission.
@@ -77,6 +91,57 @@ type invokeRunRequest struct {
 	// session, exporting a Git result the `artifact` verb then serves. See
 	// api/repository.go. Refused on a model-backed agent.
 	Repository *invokeRepository `json:"repository,omitempty"`
+	// Limits requests hard per-run allowances. Only maxOutputTokens is
+	// enforceable by the in-process model backend; maxUSD is rejected explicitly.
+	Limits *invokeRunLimits `json:"runLimits,omitempty"`
+}
+
+type invokeRunLimits struct {
+	MaxOutputTokens *int64 `json:"maxOutputTokens,omitempty"`
+	MaxUSD          *int64 `json:"maxUSD,omitempty"`
+}
+
+func invocationFingerprint(agentUID string, req *invokeRunRequest) string {
+	copy := *req
+	copy.PreventStart = false
+	copy.Wait = 0
+	copy.IdempotencyKey = ""
+	copy.ExpectedAgentUID = ""
+	if copy.Repository != nil {
+		repository := *copy.Repository
+		if repository.CloneSource != nil {
+			clone := *repository.CloneSource
+			clone.Token = ""
+			repository.CloneSource = &clone
+		}
+		if len(repository.ResultSchema) > 0 {
+			repository.ResultSchema = canonicalJSON(repository.ResultSchema)
+		}
+		if len(repository.ApprovedInput) > 0 {
+			repository.ApprovedInput = canonicalJSON(repository.ApprovedInput)
+		}
+		copy.Repository = &repository
+	}
+	data, _ := json.Marshal(struct {
+		AgentUID string           `json:"agentUID"`
+		Request  invokeRunRequest `json:"request"`
+	}{agentUID, copy})
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func canonicalJSON(raw json.RawMessage) json.RawMessage {
+	var value any
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	if d.Decode(&value) != nil {
+		return raw
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return raw
+	}
+	return data
 }
 
 type invokeRunResponse struct {
@@ -85,6 +150,9 @@ type invokeRunResponse struct {
 	// Reused reports that an idempotency key matched an existing run, so the
 	// caller knows this response is not a new unit of work.
 	Reused bool `json:"reused,omitempty"`
+	// Prevented confirms that an absent-key start fence was durably recorded.
+	// It is distinct from Reused: an existing admitted run may also be returned.
+	Prevented bool `json:"prevented,omitempty"`
 	// Run carries the full record once the run has settled (a wait that paid off).
 	Run *runDetail `json:"run,omitempty"`
 }
@@ -119,11 +187,19 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Task = strings.TrimSpace(req.Task)
-	if req.Task == "" {
+	if req.Task == "" && !req.PreventStart {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "task is required")
 		return
 	}
 	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	if err := validateIdempotencyKey(req.IdempotencyKey); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	if len(req.ExpectedAgentUID) > 128 {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "expectedAgentUID is too long")
+		return
+	}
 	if err := req.Callback.validate(); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
@@ -133,14 +209,31 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
+	limits, err := req.Limits.validate()
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
 	if repository != nil && strings.TrimSpace(req.SessionID) != "" {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "a repository run is a fresh checkout and cannot continue a session")
+		return
+	}
+	if req.PreventStart && req.IdempotencyKey == "" {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "preventStart requires idempotencyKey")
 		return
 	}
 
 	agent, err := c.Agents().Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
 		writeResourceError(w, err)
+		return
+	}
+	if limits != nil && (repository != nil || agent.Spec.Harness() != nil) {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "maxOutputTokens is not supported by harness-backed runs")
+		return
+	}
+	if req.ExpectedAgentUID != "" && req.ExpectedAgentUID != string(agent.UID) {
+		writeStatus(w, http.StatusConflict, "Conflict", "Agent identity changed since the invocation was prepared")
 		return
 	}
 	if repository != nil && !agent.Spec.HarnessBacked() {
@@ -150,6 +243,32 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scope := id.scope(name)
+	fingerprint := invocationFingerprint(string(agent.UID), &req)
+	if req.PreventStart {
+		existing, admitted, err := s.store.PreventStartRun(r.Context(), scope, req.IdempotencyKey, string(agent.UID), fingerprint, time.Now().UTC())
+		if errors.Is(err, store.ErrInvocationAgentChanged) {
+			writeStatus(w, http.StatusConflict, "Conflict", "idempotencyKey belongs to a different Agent identity")
+			return
+		}
+		if err != nil {
+			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "the invocation could not be fenced; retry or check the run")
+			return
+		}
+		if !admitted {
+			s.projectRun(r.Context(), scope, existing)
+		}
+		resp, ownerErr := reusedInvocationResponse(existing, string(agent.UID))
+		if ownerErr != nil {
+			writeStatus(w, http.StatusConflict, "Conflict", ownerErr.Error())
+			return
+		}
+		resp.Reused = admitted
+		if detail, derr := s.runDetailFor(r.Context(), scope, existing.ID); derr == nil {
+			resp.Run = &detail
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
 
 	// A retried delivery must not start the work again.
 	if req.IdempotencyKey != "" {
@@ -159,7 +278,24 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if found {
-			resp := invokeRunResponse{RunID: existing.ID, Phase: string(existing.Phase), Reused: true}
+			resp, ownerErr := reusedInvocationResponse(existing, string(agent.UID))
+			if ownerErr != nil {
+				writeStatus(w, http.StatusConflict, "Conflict", ownerErr.Error())
+				return
+			}
+			if existing.InvocationPrevented {
+				resp.Reused = true
+				if detail, derr := s.runDetailFor(r.Context(), scope, existing.ID); derr == nil {
+					resp.Run = &detail
+				}
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
+			if existing.InvocationFingerprint != "" && existing.InvocationFingerprint != fingerprint {
+				writeStatus(w, http.StatusConflict, "Conflict", "idempotencyKey was already used with different invocation input")
+				return
+			}
+			resp.Reused = true
 			if detail, derr := s.runDetailFor(r.Context(), scope, existing.ID); derr == nil {
 				resp.Run = &detail
 			}
@@ -194,11 +330,14 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 	}
 	tr := taskRun{
 		HarnessSettings: settings,
+		Limits:          limits,
 		SessionID:       strings.TrimSpace(req.SessionID), Task: req.Task,
-		Trigger:        agentsv1alpha1.RunTriggerAPI,
-		IdempotencyKey: req.IdempotencyKey,
-		Callback:       req.Callback,
-		Repository:     repository,
+		Trigger:               agentsv1alpha1.RunTriggerAPI,
+		IdempotencyKey:        req.IdempotencyKey,
+		InvocationFingerprint: fingerprint,
+		InvocationAgentUID:    string(agent.UID),
+		Callback:              req.Callback,
+		Repository:            repository,
 		// SourceName attributes the run to its caller in the activity view. The
 		// caller's name comes from the hub's verified header when there is one
 		// and is omitted otherwise — it is a label, never a trust root; the
@@ -226,6 +365,29 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "the run could not be recorded; retry later")
 		return
 	}
+	if admission.Reused && req.IdempotencyKey != "" {
+		existing, found, lookupErr := s.store.FindRunByIdempotencyKey(r.Context(), scope, req.IdempotencyKey)
+		if lookupErr != nil {
+			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "the previous run could not be checked; retry later")
+			return
+		}
+		if found {
+			resp, ownerErr := reusedInvocationResponse(existing, string(agent.UID))
+			if ownerErr != nil {
+				writeStatus(w, http.StatusConflict, "Conflict", ownerErr.Error())
+				return
+			}
+			if existing.InvocationPrevented {
+				resp.Reused = true
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
+		}
+		if found && existing.InvocationFingerprint != "" && existing.InvocationFingerprint != fingerprint {
+			writeStatus(w, http.StatusConflict, "Conflict", "idempotencyKey was already used with different invocation input")
+			return
+		}
+	}
 	runID := admission.ID
 	if !admission.Reused {
 		log.Printf("agents: %s started run %s on agent %s in %s", tr.SourceName, runID, name, id.clusterID)
@@ -247,6 +409,38 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, invokeRunResponse{RunID: runID, Phase: string(admission.Phase), Reused: admission.Reused})
+}
+
+func reusedInvocationResponse(run store.Run, agentUID string) (invokeRunResponse, error) {
+	if run.InvocationAgentUID != "" && run.InvocationAgentUID != agentUID {
+		return invokeRunResponse{}, store.ErrInvocationAgentChanged
+	}
+	return invokeRunResponse{
+		RunID: run.ID, Phase: string(run.Phase), Reused: true, Prevented: run.InvocationPrevented,
+	}, nil
+}
+
+func validateIdempotencyKey(key string) error {
+	if len(key) > maxIdempotencyKeyBytes {
+		return fmt.Errorf("idempotencyKey must be at most 1024 bytes")
+	}
+	return nil
+}
+
+func (l *invokeRunLimits) validate() (*agentsv1alpha1.RunLimits, error) {
+	if l == nil {
+		return nil, nil
+	}
+	if l.MaxUSD != nil {
+		return nil, fmt.Errorf("hard maxUSD limits are not currently enforceable")
+	}
+	if l.MaxOutputTokens == nil {
+		return nil, fmt.Errorf("runLimits must include maxOutputTokens")
+	}
+	if *l.MaxOutputTokens < 1 || *l.MaxOutputTokens > 10_000_000 {
+		return nil, fmt.Errorf("runLimits.maxOutputTokens must be between 1 and 10000000")
+	}
+	return &agentsv1alpha1.RunLimits{MaxOutputTokens: *l.MaxOutputTokens}, nil
 }
 
 // apiRunSource labels an API-invoked run with who asked for it, falling back to

@@ -335,3 +335,28 @@ func TestAFinishedRunWakesTheOldestQueuedRun(t *testing.T) {
 		}
 	}
 }
+
+func TestLeasedFinishWakesQueuedSibling(t *testing.T) {
+	s, run := newHarnessRunLifecycleFixture(t, &busyDispatcher{}, 60)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	queuedSibling(t, s, run, "waiting", now.Add(-5*time.Minute), now.Add(5*time.Minute))
+	if err := s.store.SaveRun(t.Context(), run.Scope, store.Run{
+		ID: "finishing", AgentName: run.Agent.Name, SessionID: run.SessionID, Trigger: run.Trigger,
+		Phase: store.RunPhasePending, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.store.ClaimFreshRun(t.Context(), run.Scope, "finishing", now, "worker/lease", "", store.RecoveryIdentityAgent, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(t.Context(), runLeaseContextKey{}, runLeaseIdentity{runID: claimed.ID, owner: claimed.ExecutionOwner, epoch: claimed.ExecutionEpoch})
+	end := time.Now().UTC()
+	if !s.finishRun(ctx, run.Scope, claimed.ID, runOutcome{Phase: store.RunPhaseSucceeded}, end) {
+		t.Fatal("finish failed")
+	}
+	woken, err := s.store.GetRun(t.Context(), run.Scope, "waiting")
+	if err != nil || woken.RetryAt == nil || !woken.RetryAt.Equal(end) {
+		t.Fatalf("queued sibling wake = %v, err=%v", woken.RetryAt, err)
+	}
+}

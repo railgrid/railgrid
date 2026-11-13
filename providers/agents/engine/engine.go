@@ -75,9 +75,26 @@ type (
 	Usage = backend.Tokens
 )
 
+// UsageEvidence records model response attempts and how many returned token
+// usage. It is checkpointed so a resumed run cannot reset accounting or a hard
+// output-token allowance.
+type UsageEvidence struct {
+	Responses         int `json:"responses,omitempty"`
+	ReportedResponses int `json:"reportedResponses,omitempty"`
+}
+
 // maxTurnImages caps how many tool-returned images are fed back to the model in
 // a single turn, so a fan-out of snapshot calls can't blow the token budget.
 const maxTurnImages = 8
+
+var ErrOutputTokenUsageUnavailable = errors.New("engine: output-token limit cannot continue because model usage was not reported")
+
+// OutputTokenLimitError reports that a provider exceeded the hard output limit.
+type OutputTokenLimitError struct{ Limit int64 }
+
+func (e *OutputTokenLimitError) Error() string {
+	return fmt.Sprintf("engine: model usage exceeded the hard output-token limit of %d", e.Limit)
+}
 
 // ContextCompactionFunc replaces an over-budget model history. The estimate
 // includes the bound tool schemas as well as all messages. The returned history
@@ -175,6 +192,9 @@ type TurnConfig struct {
 	// CheckpointEvery is how many iterations pass between OnCheckpoint offers.
 	// 0 disables periodic checkpointing.
 	CheckpointEvery int
+	// MaxOutputTokens is a hard aggregate completion-token ceiling. It requires
+	// usage metadata for every completed response before another request starts.
+	MaxOutputTokens int64
 }
 
 // Result is the outcome of a streaming turn. When Interrupt is non-nil the
@@ -188,9 +208,10 @@ type Result struct {
 	// is the latest model response on success, or the standalone tool-limit
 	// notice when the loop exhausts its allowance without a final response.
 	// Interrupts and errors leave it empty.
-	FinalContent string
-	Usage        Usage
-	Interrupt    *Interrupt
+	FinalContent  string
+	Usage         Usage
+	UsageEvidence UsageEvidence
+	Interrupt     *Interrupt
 }
 
 // Engine runs turns against a chat model. It holds no per-request state, so a
@@ -243,7 +264,8 @@ func (e *Engine) StreamTurnWithTools(
 	task := latestUserMessage(msgs)
 	var content strings.Builder
 	var usage Usage
-	return e.loop(ctx, active, byName, in, identities, schemaTokens, task, cfg.normalized(), 0, &content, &usage, nil, nil, cb)
+	var evidence UsageEvidence
+	return e.loop(ctx, active, byName, in, identities, schemaTokens, task, cfg.normalized(), 0, &content, &usage, &evidence, nil, nil, cb)
 }
 
 // normalized applies the defaults so the loop can read cfg without guarding.
@@ -305,6 +327,12 @@ func (e *Engine) ResumeTurnWithTools(
 	}
 	task := latestUserMessage(checkpointHistory)
 	cfg = cfg.normalized()
+	if ck.MaxOutputTokens > 0 {
+		if cfg.MaxOutputTokens > 0 && cfg.MaxOutputTokens != ck.MaxOutputTokens {
+			return Result{Usage: ck.Usage}, errors.New("engine: resumed output-token limit differs from its checkpoint")
+		}
+		cfg.MaxOutputTokens = ck.MaxOutputTokens
+	}
 	// A resume must be able to take at least one more step, even when the
 	// checkpoint already sits at the configured limit.
 	if cfg.MaxIters <= ck.Iter {
@@ -313,6 +341,10 @@ func (e *Engine) ResumeTurnWithTools(
 	var content strings.Builder
 	content.WriteString(ck.Content)
 	usage := ck.Usage
+	evidence := ck.UsageEvidence
+	if cfg.MaxOutputTokens > 0 && evidence.Responses == 0 && ck.Iter > 0 {
+		return Result{Usage: usage}, ErrOutputTokenUsageUnavailable
+	}
 	pending := ck.Pending
 	// A verdict answers the FIRST PENDING CALL of the checkpoint. A recovery
 	// snapshot has none (see Callbacks.OnCheckpoint), so there is nothing to
@@ -322,7 +354,7 @@ func (e *Engine) ResumeTurnWithTools(
 	if len(pending) > 0 {
 		dec = &decision{approve: approve, note: denyNote, question: ck.AwaitingReply}
 	}
-	return e.loop(ctx, active, byName, in, identities, schemaTokens, task, cfg, ck.Iter, &content, &usage, pending, dec, cb)
+	return e.loop(ctx, active, byName, in, identities, schemaTokens, task, cfg, ck.Iter, &content, &usage, &evidence, pending, dec, cb)
 }
 
 // decision is the user's verdict on the FIRST pending call of a resumed turn.
@@ -386,11 +418,15 @@ func (e *Engine) loop(
 	startIter int,
 	content *strings.Builder,
 	usage *Usage,
+	evidence *UsageEvidence,
 	pending []PendingCall,
 	dec *decision,
 	cb Callbacks,
 ) (Result, error) {
 	for iter := startIter; iter < cfg.MaxIters; iter++ {
+		if cfg.MaxOutputTokens > 0 && evidence.Responses > evidence.ReportedResponses {
+			return Result{Usage: *usage, UsageEvidence: *evidence}, ErrOutputTokenUsageUnavailable
+		}
 		if len(pending) == 0 {
 			if err := cb.abort(ctx); err != nil {
 				return Result{}, err
@@ -403,12 +439,12 @@ func (e *Engine) loop(
 			}
 			if compacted {
 				if err := rehydrateReferenceOnly(ctx, in, identities, byName, nil); err != nil {
-					return Result{Usage: *usage}, err
+					return Result{Usage: *usage, UsageEvidence: *evidence}, err
 				}
 				if cfg.ContextBudgetTokens > 0 {
 					estimate := requestContextEstimate(in, toolSchemaTokens, cfg.ContextBudgetTokens)
 					if estimate.TotalTokens > estimate.BudgetTokens {
-						return Result{Usage: *usage}, &ContextBudgetError{
+						return Result{Usage: *usage, UsageEvidence: *evidence}, &ContextBudgetError{
 							Estimate: estimate,
 							Reason:   "reopened reference-only tool results leave too little room for the current turn",
 						}
@@ -421,27 +457,45 @@ func (e *Engine) loop(
 			// would not otherwise fire, so recovery never restores stale history.
 			if cb.OnCheckpoint != nil && (compacted || (cfg.CheckpointEvery > 0 && iter > startIter && (iter-startIter)%cfg.CheckpointEvery == 0)) {
 				cb.checkpoint(Checkpoint{
-					Messages: checkpointMessagesWithIdentities(in, identities),
-					Content:  content.String(),
-					Usage:    *usage,
-					Iter:     iter,
+					Messages:        checkpointMessagesWithIdentities(in, identities),
+					Content:         content.String(),
+					Usage:           *usage,
+					UsageEvidence:   *evidence,
+					MaxOutputTokens: cfg.MaxOutputTokens,
+					Iter:            iter,
 				})
 			}
 			modelInput, hydrateErr := hydrateUserInputs(ctx, in, identities, cb.HydrateUserInput)
 			if hydrateErr != nil {
-				return Result{Usage: *usage}, hydrateErr
+				return Result{Usage: *usage, UsageEvidence: *evidence}, hydrateErr
 			}
 			if cfg.ContextBudgetTokens > 0 {
 				estimate := requestContextEstimate(modelInput, toolSchemaTokens, cfg.ContextBudgetTokens)
 				if estimate.TotalTokens > estimate.BudgetTokens {
-					return Result{Usage: *usage}, &ContextBudgetError{Estimate: estimate, Reason: "uploaded user input leaves too little room for this turn"}
+					return Result{Usage: *usage, UsageEvidence: *evidence}, &ContextBudgetError{Estimate: estimate, Reason: "uploaded user input leaves too little room for this turn"}
 				}
 			}
 			started := time.Now()
-			full, err := e.streamOnce(ctx, active, modelInput, content, usage, cb.OnDelta)
+			if cfg.MaxOutputTokens > 0 {
+				if usage.OutputTokens >= cfg.MaxOutputTokens {
+					return Result{Usage: *usage, UsageEvidence: *evidence}, &OutputTokenLimitError{Limit: cfg.MaxOutputTokens}
+				}
+			}
+			callTokens := int(cfg.MaxOutputTokens - usage.OutputTokens)
+			var opts []einomodel.Option
+			if cfg.MaxOutputTokens > 0 {
+				opts = append(opts, einomodel.WithMaxTokens(callTokens))
+			}
+			full, err := e.streamOnce(ctx, active, modelInput, content, usage, evidence, cb.OnDelta, opts...)
 			if err != nil {
 				cb.assistantMessage(AssistantMessage{Duration: time.Since(started)})
-				return Result{}, err
+				return Result{Usage: *usage, UsageEvidence: *evidence}, err
+			}
+			if cfg.MaxOutputTokens > 0 && usage.OutputTokens > cfg.MaxOutputTokens {
+				return Result{Usage: *usage, UsageEvidence: *evidence}, &OutputTokenLimitError{Limit: cfg.MaxOutputTokens}
+			}
+			if cfg.MaxOutputTokens > 0 && len(full.ToolCalls) > 0 && evidence.Responses > evidence.ReportedResponses {
+				return Result{Usage: *usage, UsageEvidence: *evidence}, ErrOutputTokenUsageUnavailable
 			}
 			if cb.HydrateToolCalls != nil && len(full.ToolCalls) > 0 {
 				full.ToolCalls = cloneToolCalls(cb.HydrateToolCalls(full))
@@ -457,7 +511,7 @@ func (e *Engine) loop(
 				Complete:     true, Duration: time.Since(started),
 			})
 			if len(full.ToolCalls) == 0 {
-				return Result{Content: content.String(), FinalContent: full.Content, Usage: *usage}, nil
+				return Result{Content: content.String(), FinalContent: full.Content, Usage: *usage, UsageEvidence: *evidence}, nil
 			}
 			// Feed the assistant's tool-call message back, then execute each
 			// call and append its observation.
@@ -510,17 +564,19 @@ func (e *Engine) loop(
 				// Pause: checkpoint the conversation with the un-executed calls
 				// (this one first) so the run resumes exactly here.
 				return Result{
-					Content: content.String(), Usage: *usage,
+					Content: content.String(), Usage: *usage, UsageEvidence: *evidence,
 					Interrupt: &Interrupt{
 						Tool: ie.Tool, Args: ie.Args, RequestID: ie.RequestID,
 						Question: ie.Question, Questions: ie.Questions,
 						Checkpoint: Checkpoint{
-							AwaitingReply: ie.Question != "",
-							Messages:      checkpointMessagesWithIdentities(in, identities),
-							Pending:       pending,
-							Content:       content.String(),
-							Usage:         *usage,
-							Iter:          iter,
+							AwaitingReply:   ie.Question != "",
+							Messages:        checkpointMessagesWithIdentities(in, identities),
+							Pending:         pending,
+							Content:         content.String(),
+							Usage:           *usage,
+							UsageEvidence:   *evidence,
+							MaxOutputTokens: cfg.MaxOutputTokens,
+							Iter:            iter,
 						},
 					},
 				}, nil
@@ -543,17 +599,17 @@ func (e *Engine) loop(
 					unavailable = true
 				} else {
 					if len(observation.Images) != 0 || strings.TrimSpace(observation.Text) == "" {
-						return Result{Usage: *usage}, ErrToolResultReferenceUnavailable
+						return Result{Usage: *usage, UsageEvidence: *evidence}, ErrToolResultReferenceUnavailable
 					}
 					ref, err := BindToolResultReference(pc.Name, pc.ID, pc.Args, observation.ResultReference, observation.Receipt)
 					if err != nil {
-						return Result{Usage: *usage}, ErrToolResultReferenceUnavailable
+						return Result{Usage: *usage, UsageEvidence: *evidence}, ErrToolResultReferenceUnavailable
 					}
 					resultReference = &ref
 				}
 			} else {
 				if len(observation.ResultReference) != 0 || len(observation.Receipt) != 0 {
-					return Result{Usage: *usage}, ErrToolResultReferenceUnavailable
+					return Result{Usage: *usage, UsageEvidence: *evidence}, ErrToolResultReferenceUnavailable
 				}
 				if execErr != nil {
 					result = "error: " + execErr.Error()
@@ -597,7 +653,7 @@ func (e *Engine) loop(
 		// final allowed tool round. Check before reporting a successful limit
 		// stop or issuing another model request.
 		if err := cb.abort(ctx); err != nil {
-			return Result{Usage: *usage}, err
+			return Result{Usage: *usage, UsageEvidence: *evidence}, err
 		}
 		if msg := imageUserMessage(turnImages); msg != nil {
 			in = append(in, msg)
@@ -609,7 +665,7 @@ func (e *Engine) loop(
 	// the transcript is honest about the truncation.
 	const toolCallLimitNotice = "[stopped: reached the tool-call limit for one turn]"
 	content.WriteString("\n\n" + toolCallLimitNotice)
-	return Result{Content: content.String(), FinalContent: toolCallLimitNotice, Usage: *usage}, nil
+	return Result{Content: content.String(), FinalContent: toolCallLimitNotice, Usage: *usage, UsageEvidence: *evidence}, nil
 }
 
 // execute runs one tool call, preferring the rich executor. The returned error
@@ -635,14 +691,16 @@ func execute(ctx context.Context, byName map[string]Tool, pc PendingCall) (Obser
 // streamOnce streams a single model response, forwarding content deltas and
 // accumulating usage, and returns the concatenated full message (which may
 // carry tool calls).
-func (e *Engine) streamOnce(ctx context.Context, model einomodel.BaseChatModel, in []*schema.Message, content *strings.Builder, usage *Usage, onDelta func(string)) (*schema.Message, error) {
-	stream, err := model.Stream(ctx, in)
+func (e *Engine) streamOnce(ctx context.Context, model einomodel.BaseChatModel, in []*schema.Message, content *strings.Builder, usage *Usage, evidence *UsageEvidence, onDelta func(string), opts ...einomodel.Option) (*schema.Message, error) {
+	evidence.Responses++
+	stream, err := model.Stream(ctx, in, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("engine: start stream: %w", err)
 	}
 	defer stream.Close()
 
 	var chunks []*schema.Message
+	var reported bool
 	for {
 		chunk, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -666,7 +724,11 @@ func (e *Engine) streamOnce(ctx context.Context, model einomodel.BaseChatModel, 
 			// response; add per response, not per chunk.
 			usage.InputTokens += int64(u.Usage.PromptTokens)
 			usage.OutputTokens += int64(u.Usage.CompletionTokens)
+			reported = true
 		}
+	}
+	if reported {
+		evidence.ReportedResponses++
 	}
 	if len(chunks) == 0 {
 		return nil, errors.New("engine: model returned an empty stream")
