@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="1200" height="400" role="img" aria-labelledby="t d">
+<title id="t">railgrid</title>
+<desc id="d">The railgrid hub at the centre of a grid: the portal, the CLI and AI agents call in on one side; providers, organization-owned providers and edges are reached on the other.</desc>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a0b12"/><stop offset="1" stop-color="#141329"/></linearGradient>
+<pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#1d2036"/></pattern>
+<linearGradient id="panel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#171830"/><stop offset="1" stop-color="#101122"/></linearGradient>
+</defs>
+<rect width="1200" height="400" rx="18" fill="url(#bg)"/>
+<rect width="1200" height="400" rx="18" fill="url(#grid)" opacity=".7"/>
+<polygon points="96.0,70.0 125.4,87.0 125.4,121.0 96.0,138.0 66.6,121.0 66.6,87.0" fill="none" stroke="#8b6bff" stroke-width="6.5" stroke-linejoin="round"/>
+<text x="146" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="68" font-weight="800" letter-spacing="-1.5" fill="#e9e9f2">railgrid</text>
+<text x="66" y="186" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="23" fill="#a9abc6">One control plane for platform teams.</text>
+<text x="66" y="216" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="23" fill="#a9abc6">APIs, actions and MCP tools in isolated workspaces.</text>
+<text x="66" y="262" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" fill="#2fd6a0">$ railgrid edge create my-cluster</text>
+<rect x="64" y="298" width="144" height="40" rx="20" fill="#0e0f1c" stroke="#8b6bff" stroke-width="1.5"/>
+<circle cx="84" cy="318" r="5" fill="#8b6bff"/>
+<text x="98" y="323.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#e9e9f2">Workspaces</text>
+<rect x="220" y="298" width="135" height="40" rx="20" fill="#0e0f1c" stroke="#5aa9ff" stroke-width="1.5"/>
+<circle cx="240" cy="318" r="5" fill="#5aa9ff"/>
+<text x="254" y="323.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#e9e9f2">Providers</text>
+<rect x="367" y="298" width="99" height="40" rx="20" fill="#0e0f1c" stroke="#2fd6a0" stroke-width="1.5"/>
+<circle cx="387" cy="318" r="5" fill="#2fd6a0"/>
+<text x="401" y="323.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#e9e9f2">Edges</text>
+<rect x="478" y="298" width="81" height="40" rx="20" fill="#0e0f1c" stroke="#f0a63a" stroke-width="1.5"/>
+<circle cx="498" cy="318" r="5" fill="#f0a63a"/>
+<text x="512" y="323.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#e9e9f2">MCP</text>
+<rect x="640" y="44" width="512" height="312" rx="14" fill="url(#panel)" stroke="#262a44" stroke-width="2"/>
+<circle cx="654" cy="58" r="3.5" fill="#33365a"/>
+<circle cx="1138" cy="58" r="3.5" fill="#33365a"/>
+<circle cx="654" cy="342" r="3.5" fill="#33365a"/>
+<circle cx="1138" cy="342" r="3.5" fill="#33365a"/>
+<text x="674" y="84" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" letter-spacing="2" fill="#6b6e8c">CALLERS</text>
+<text x="1118" y="84" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" letter-spacing="2" fill="#6b6e8c" text-anchor="end">WHAT THEY REACH</text>
+<path d="M782,140 H804 L856,192" fill="none" stroke="#05060c" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".6"/><path d="M782,140 H804 L856,192" fill="none" stroke="#b7a4ff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="760" y="145" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#c9cbe0" text-anchor="end">portal</text>
+<path d="M782,200 H856" fill="none" stroke="#05060c" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".6"/><path d="M782,200 H856" fill="none" stroke="#5aa9ff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="760" y="205" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#c9cbe0" text-anchor="end">CLI</text>
+<path d="M782,260 H804 L856,208" fill="none" stroke="#05060c" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".6"/><path d="M782,260 H804 L856,208" fill="none" stroke="#f0a63a" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="760" y="265" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#c9cbe0" text-anchor="end">AI agents</text>
+<path d="M936,192 L988,140 H1010" fill="none" stroke="#05060c" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".6"/><path d="M936,192 L988,140 H1010" fill="none" stroke="#b7a4ff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="1032" y="145" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#c9cbe0">providers</text>
+<path d="M936,200 H1010" fill="none" stroke="#05060c" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".6"/><path d="M936,200 H1010" fill="none" stroke="#f0a63a" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="1032" y="205" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#c9cbe0">BYO providers</text>
+<path d="M936,208 L988,260 H1010" fill="none" stroke="#05060c" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".6"/><path d="M936,208 L988,260 H1010" fill="none" stroke="#2fd6a0" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="1032" y="265" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#c9cbe0">edges</text>
+<circle cx="782" cy="140" r="12" fill="#0a0b12" stroke="#474b6e" stroke-width="2"/><circle cx="782" cy="140" r="6" fill="#b7a4ff"/>
+<circle cx="782" cy="200" r="12" fill="#0a0b12" stroke="#474b6e" stroke-width="2"/><circle cx="782" cy="200" r="6" fill="#5aa9ff"/>
+<circle cx="782" cy="260" r="12" fill="#0a0b12" stroke="#474b6e" stroke-width="2"/><circle cx="782" cy="260" r="6" fill="#f0a63a"/>
+<circle cx="1010" cy="140" r="12" fill="#0a0b12" stroke="#474b6e" stroke-width="2"/><circle cx="1010" cy="140" r="6" fill="#b7a4ff"/>
+<circle cx="1010" cy="200" r="12" fill="#0a0b12" stroke="#474b6e" stroke-width="2"/><circle cx="1010" cy="200" r="6" fill="#f0a63a"/>
+<circle cx="1010" cy="260" r="12" fill="#0a0b12" stroke="#474b6e" stroke-width="2"/><circle cx="1010" cy="260" r="6" fill="#2fd6a0"/>
+<circle cx="896" cy="200" r="70" fill="#8b6bff" opacity=".10"/>
+<polygon points="896.0,152.0 937.6,176.0 937.6,224.0 896.0,248.0 854.4,224.0 854.4,176.0" fill="#0c0d18" stroke="#8b6bff" stroke-width="4" stroke-linejoin="round"/>
+<text x="896" y="207" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#e9e9f2" text-anchor="middle">hub</text>
+<text x="896" y="330" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#6b6e8c" text-anchor="middle">every call is authorized as the caller</text>
+</svg>
