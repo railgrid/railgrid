@@ -122,6 +122,12 @@ the disclosure; generic results do not imply shell execution metadata. The
 composer reserves a bottom action row for send/stop, matching App Studio, while
 keyboard guidance remains in its accessible description and editor tooltip.
 
+Run Detail presents a bounded, redacted preview of the original request before
+the execution record and output. Failure and approval notices remain first.
+The request disclosure retains its state across refreshes and resets for a
+different run. Failed steps open by default; Review step diagnostics opens them
+and moves focus to the Execution heading.
+
 Agent creation preserves its non-secret draft when it opens Models to add a
 missing credential. Harness setup opens the identity family directly. Cancel
 returns to the unfinished agent; success selects the new identity or model.
@@ -413,3 +419,40 @@ PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs   node hack/agents-conversation-
 The runner writes screenshots and measurements under
 `.kcp/agents-conversation-visual/` by default. It uses the existing host-token
 fixture with the production Agents bundle and mocked session/history data.
+
+## Agent run investigation example
+
+Run the isolated example from the repository root:
+
+```sh
+./portal/node_modules/.bin/vite --config hack/agent-run-visual/vite.config.mjs
+```
+
+Open http://127.0.0.1:5200. The fixture mounts the Agents provider's
+[RunDetail](../../../providers/agents/portal/src/views/RunDetail.vue) with a
+synthetic failed deployment investigation. Open **Arguments and result** on
+the failed health check to inspect the request and diagnostic. The theme
+control switches between light and dark.
+
+The example illustrates these layout decisions:
+
+1. The agent identity and failed state appear before the execution record, so
+   an operator can identify the run and its outcome immediately.
+2. The execution list keeps the three steps in order. The failed step opens
+   automatically, placing its diagnostic beside the step that produced it.
+   Arguments stay behind a disclosure to keep the first scan concise.
+3. Partial output and the original request stay with the execution record.
+   Run identity, timing, and usage form a separate evidence region on wider
+   screens. Together they explain the task, what happened, and how to identify
+   the run.
+
+[Langfuse's session view](https://langfuse.com/changelog/2026-10-13-redesigned-session-view)
+informed the goal of retaining context while inspecting a step. This fixture
+shows the existing standalone Run Detail layout with synthetic data. It does
+not include a conversation or the embedded workbench, and its navigation and
+refresh controls do not connect to a live backend.
+
+Mobile fixture review covered 320px and 390px browser viewports. The failed
+diagnostic wraps within the activity panel, and its arguments disclosure can be
+opened. The fixture loads the AgentKit activity and conversation styles used by
+the provider.

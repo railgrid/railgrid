@@ -19,7 +19,7 @@ describe('Edges create guidance', () => {
     expect(services).toMatch(/hasEdges \? 'Create service' : 'Connect edge'/)
     expect(services).toMatch(/if \(hasEdges\.value\) emit\('create'\)[\s\S]*else emit\('connectEdge'\)/)
     expect(services).toMatch(/services\.value\.length === 0 && isCompleteFirstCursorPage\(/)
-    expect(services).toMatch(/<ResourceTable\s+v-else/)
+    expect(services).toMatch(/<div v-else class="services-table">\s*<ResourceTable/)
     expect(workloads).toMatch(/hasKubernetesEdges \? 'Create workload' : 'Connect edge'/)
     expect(workloads).not.toMatch(/Browse marketplace|MARKETPLACE_CATEGORIES|showMarket/)
     expect(workloads).toMatch(/workloads\.value\.length === 0 && isCompleteFirstCursorPage\(/)

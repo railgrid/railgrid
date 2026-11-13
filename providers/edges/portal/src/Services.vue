@@ -68,12 +68,12 @@ const error = ref<string | null>(null)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
 const serviceColumns = [
-  { key: 'name', label: 'Name', primary: true },
+  { key: 'name', label: 'Service', primary: true },
+  { key: 'status', label: 'Status' },
   { key: 'edgeName', label: 'Edge' },
   { key: 'typeLabel', label: 'Type' },
   { key: 'target', label: 'Target' },
-  { key: 'status', label: 'Status' },
-  { key: 'credentials', label: 'Creds' },
+  { key: 'credentials', label: 'Credentials' },
   { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
 const serviceRows = computed<Array<Record<string, unknown>>>(() => services.value.map(service => ({
@@ -455,7 +455,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
     <header class="edges-header">
       <div>
         <h1>Services</h1>
-        <p>Declare services reachable from your edges, add credentials when required, and expose their tools to AI.</p>
+        <p>Manage apps reachable from your edges and expose their tools to AI.</p>
       </div>
       <div v-if="(loaded || error) && !showFirstRun" class="header-actions">
         <button class="k-btn k-btn--ghost" :disabled="foregroundLoading" @click="refresh">
@@ -486,42 +486,48 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
       <template #icon><component :is="hasEdges ? Plug : Server" aria-hidden="true" /></template>
     </FirstRunGuide>
 
-    <ResourceTable
-      v-else
-      :columns="serviceColumns"
-      :rows="serviceRows"
-      aria-label="Services"
-      row-key="name"
-      :row-aria-label="serviceRowAriaLabel"
-      :loaded="loaded"
-      :loading="loading"
-      :refresh-mode="refreshMode"
-      :error="error"
-      :stale="loaded && !!error"
-      retryable
-      searchable
-      search-placeholder="Search services…"
-      :filters="serviceFilters"
-      :pagination-mode="tableMode"
-      :page="tablePage"
-      :page-size="tablePageSize"
-      :query="tableQuery"
-      :filter-values="filterValues"
-      :cursor="tableCursor"
-      :page-info="tablePageInfo"
-      paginated
-      empty-text="No services yet. Create one to expose its tools through MCP."
-      @retry="refresh"
-      @change="handleServiceTableChange"
-      @row-click="(row) => openEdit(row as unknown as EdgeService)"
-    >
-      <template #name="{ value, row }"><button class="k-btn k-btn--ghost k-table-resource-link" type="button" @click.stop="openEdit(row as unknown as EdgeService)">{{ value }}</button></template>
-      <template #edgeName="{ value }"><span class="muted">{{ value }}</span></template>
-      <template #typeLabel="{ value }"><span class="mono muted">{{ value }}</span></template>
-      <template #target="{ value }"><span class="mono muted">{{ value }}</span></template>
-      <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
-      <template #credentials="{ row }"><span :class="['credentials-status', row.hasCredentials ? 'credentials-status--configured' : 'muted']"><Check v-if="row.hasCredentials" :size="16" class="ok-check" aria-hidden="true" /><span>{{ row.credentials }}</span></span></template>
-      <template #actions="{ row }"><div class="row-actions"><ResourceTableEditButton :label="`Edit service ${String(row.name)}`" @click="openEdit(row as unknown as EdgeService)" /><ResourceTableDeleteButton :label="`Delete service ${String(row.name)}`" @click="onDelete(row as unknown as EdgeService)" /></div></template>
-    </ResourceTable>
+    <div v-else class="services-table">
+      <ResourceTable
+        :columns="serviceColumns"
+        :rows="serviceRows"
+        aria-label="Services"
+        row-key="name"
+        :row-aria-label="serviceRowAriaLabel"
+        :loaded="loaded"
+        :loading="loading"
+        :refresh-mode="refreshMode"
+        :error="error"
+        :stale="loaded && !!error"
+        retryable
+        searchable
+        search-placeholder="Search services…"
+        :filters="serviceFilters"
+        :pagination-mode="tableMode"
+        :page="tablePage"
+        :page-size="tablePageSize"
+        :query="tableQuery"
+        :filter-values="filterValues"
+        :cursor="tableCursor"
+        :page-info="tablePageInfo"
+        paginated
+        empty-text="No services yet. Create one to expose its tools through MCP."
+        @retry="refresh"
+        @change="handleServiceTableChange"
+        @row-click="(row) => openEdit(row as unknown as EdgeService)"
+      >
+        <template #name="{ value, row }">
+          <span class="service-name">
+            <button class="k-btn k-btn--ghost k-table-resource-link" type="button" @click.stop="openEdit(row as unknown as EdgeService)">{{ value }}</button>
+            <span class="service-mobile-status"><StatusBadge :status="String(row.status)" /></span>
+          </span>
+        </template>
+        <template #edgeName="{ value }"><span class="muted">{{ value }}</span></template>
+        <template #typeLabel="{ value }"><span class="mono muted">{{ value }}</span></template>
+        <template #target="{ value }"><span class="mono muted">{{ value }}</span></template>
+        <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
+        <template #credentials="{ row }"><span :class="['credentials-status', row.hasCredentials ? 'credentials-status--configured' : 'muted']"><Check v-if="row.hasCredentials" :size="16" class="ok-check" aria-hidden="true" /><span>{{ row.credentials }}</span></span></template>
+        <template #actions="{ row }"><div class="row-actions"><ResourceTableEditButton :label="`Edit service ${String(row.name)}`" @click="openEdit(row as unknown as EdgeService)" /><ResourceTableDeleteButton :label="`Delete service ${String(row.name)}`" @click="onDelete(row as unknown as EdgeService)" /></div></template>
+      </ResourceTable>
+    </div>
   </div>
 </template>

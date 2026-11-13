@@ -1093,6 +1093,7 @@ describe('RunDetail.vue', () => {
 
     expect(inputDetails.open).toBe(false)
     expect(text(view.element).split(originalInput)).toHaveLength(2)
+    expect(inputDetails.compareDocumentPosition(view.element.querySelector('.agents-run-activity')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('shows a redacted, bounded request preview inside the summary', async () => {

@@ -451,6 +451,23 @@ railgrid-provider-infrastructure .instance-detail__sections {
   gap: 14px;
 }
 
+railgrid-provider-infrastructure .instance-detail__summary {
+  display: grid;
+  gap: 16px;
+}
+
+railgrid-provider-infrastructure .instance-detail__attention {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+railgrid-provider-infrastructure .instance-detail__attention p {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
 railgrid-provider-infrastructure .instance-detail__sections .detail-field {
   padding-inline: 0;
 }
