@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 670" width="1200" height="670" role="img" aria-labelledby="t d">
+<title id="t">The kcp workspace tree</title>
+<desc id="d">root:railgrid holds three branches. system holds controllers (the platform APIExports), providers (the catalog), tenants (users, organizations, memberships) and one workspace per system service. providers holds one workspace per platform provider. tenants holds one workspace per organization, each with its team workspaces and a providers branch for providers the organization runs itself.</desc>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a0b12"/><stop offset="1" stop-color="#141329"/></linearGradient>
+
+
+</defs>
+<rect width="1200" height="670" rx="18" fill="url(#bg)"/>
+
+<path d="M72,82 V108 H92" fill="none" stroke="#3a3e63" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M106,120 V146 H126" fill="none" stroke="#3a3e63" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M106,120 V184 H126" fill="none" stroke="#3a3e63" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M106,120 V222 H126" fill="none" stroke="#3a3e63" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M106,120 V260 H126" fill="none" stroke="#3a3e63" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M72,82 V298 H92" fill="none" stroke="#3a3e63" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M106,310 V336 H126" fill="none" stroke="#3a3e63" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M72,82 V374 H92" fill="none" stroke="#3a3e63" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M106,386 V412 H126" fill="none" stroke="#3a3e63" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M140,424 V450 H160" fill="none" stroke="#3a3e63" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M140,424 V488 H160" fill="none" stroke="#3a3e63" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M174,500 V526 H194" fill="none" stroke="#3a3e63" stroke-width="1.5" stroke-linejoin="round"/>
+<rect x="64" y="57" width="128" height="26" rx="6" fill="#0a0b12" stroke="#e9e9f2" stroke-width="1.6"/>
+<text x="75" y="74.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#e9e9f2">root:railgrid</text>
+<path d="M202,70 H508" stroke="#262a44" stroke-width="1" stroke-dasharray="2 5"/>
+<text x="520" y="74.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#8a8ca6">everything railgrid owns in kcp</text>
+<rect x="98" y="95" width="71" height="26" rx="6" fill="#0a0b12" stroke="#8b6bff" stroke-width="1.2"/>
+<text x="109" y="112.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#8b6bff">system</text>
+<rect x="132" y="133" width="111" height="26" rx="6" fill="#0a0b12" stroke="#8b6bff" stroke-width="1.2"/>
+<text x="143" y="150.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#8b6bff">controllers</text>
+<path d="M253,146 H508" stroke="#262a44" stroke-width="1" stroke-dasharray="2 5"/>
+<text x="520" y="150.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#8a8ca6">every platform APIExport and schema, core.railgrid.ai among them</text>
+<rect x="132" y="171" width="95" height="26" rx="6" fill="#0a0b12" stroke="#8b6bff" stroke-width="1.2"/>
+<text x="143" y="188.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#8b6bff">providers</text>
+<path d="M237,184 H508" stroke="#262a44" stroke-width="1" stroke-dasharray="2 5"/>
+<text x="520" y="188.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#8a8ca6">Provider and CatalogEntry objects, WorkspaceSeeds</text>
+<rect x="132" y="209" width="79" height="26" rx="6" fill="#0a0b12" stroke="#8b6bff" stroke-width="1.2"/>
+<text x="143" y="226.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#8b6bff">tenants</text>
+<path d="M221,222 H508" stroke="#262a44" stroke-width="1" stroke-dasharray="2 5"/>
+<text x="520" y="226.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#8a8ca6">User, Organization, Membership objects</text>
+<rect x="132" y="247" width="95" height="26" rx="6" fill="#0a0b12" stroke="#8b6bff" stroke-width="1.2"/>
+<text x="143" y="264.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#8b6bff">&lt;service&gt;</text>
+<path d="M237,260 H508" stroke="#262a44" stroke-width="1" stroke-dasharray="2 5"/>
+<text x="520" y="264.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#8a8ca6">one per SystemWorkspace platform service</text>
+<rect x="98" y="285" width="95" height="26" rx="6" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.2"/>
+<text x="109" y="302.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#5aa9ff">providers</text>
+<rect x="132" y="323" width="71" height="26" rx="6" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.2"/>
+<text x="143" y="340.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#5aa9ff">&lt;name&gt;</text>
+<path d="M213,336 H508" stroke="#262a44" stroke-width="1" stroke-dasharray="2 5"/>
+<text x="520" y="340.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#8a8ca6">a platform provider: its APIExport, schemas, service account</text>
+<rect x="98" y="361" width="79" height="26" rx="6" fill="#0a0b12" stroke="#2fd6a0" stroke-width="1.2"/>
+<text x="109" y="378.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#2fd6a0">tenants</text>
+<rect x="132" y="399" width="95" height="26" rx="6" fill="#0a0b12" stroke="#2fd6a0" stroke-width="1.2"/>
+<text x="143" y="416.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#2fd6a0">&lt;orgUUID&gt;</text>
+<path d="M237,412 H508" stroke="#262a44" stroke-width="1" stroke-dasharray="2 5"/>
+<text x="520" y="416.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#8a8ca6">an organization</text>
+<rect x="166" y="437" width="144" height="26" rx="6" fill="#0a0b12" stroke="#2fd6a0" stroke-width="1.2"/>
+<text x="177" y="454.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#2fd6a0">&lt;workspaceUUID&gt;</text>
+<path d="M320,450 H508" stroke="#262a44" stroke-width="1" stroke-dasharray="2 5"/>
+<text x="520" y="454.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#8a8ca6">a team workspace: where edges, apps and agents live</text>
+<rect x="166" y="475" width="95" height="26" rx="6" fill="#0a0b12" stroke="#f0a63a" stroke-width="1.2"/>
+<text x="177" y="492.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#f0a63a">providers</text>
+<rect x="200" y="513" width="71" height="26" rx="6" fill="#0a0b12" stroke="#f0a63a" stroke-width="1.2"/>
+<text x="211" y="530.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#f0a63a">&lt;name&gt;</text>
+<path d="M281,526 H508" stroke="#262a44" stroke-width="1" stroke-dasharray="2 5"/>
+<text x="520" y="530.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#8a8ca6">a provider the organization runs itself</text>
+<text x="64" y="36" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" letter-spacing="2" fill="#6b6e8c">KCP WORKSPACE TREE</text>
+<rect x="36" y="568" width="1128" height="66" rx="10" fill="#0d0e18" stroke="#262a44" stroke-width="1"/>
+<text x="54" y="593" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" letter-spacing="1.5" fill="#6b6e8c">A NEW TEAM WORKSPACE IS BORN WITH</text>
+<rect x="54" y="602" width="308" height="24" rx="6" fill="#0a0b12" stroke="#8b6bff" stroke-width="1.2"/><text x="65" y="618.375" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#8b6bff">APIBinding railgrid → core.railgrid.ai</text>
+<rect x="372" y="602" width="150" height="24" rx="6" fill="#0a0b12" stroke="#2fd6a0" stroke-width="1.2"/><text x="383" y="618.375" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2fd6a0">Namespace default</text>
+<rect x="532" y="602" width="150" height="24" rx="6" fill="#0a0b12" stroke="#f0a63a" stroke-width="1.2"/><text x="543" y="618.375" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#f0a63a">MCPServer default</text>
+<rect x="692" y="602" width="97" height="24" rx="6" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.2"/><text x="703" y="618.375" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#5aa9ff">admin RBAC</text>
+<rect x="799" y="602" width="233" height="24" rx="6" fill="#0a0b12" stroke="#f472b6" stroke-width="1.2"/><text x="810" y="618.375" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#f472b6">every accepted WorkspaceSeed</text>
+</svg>
