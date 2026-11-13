@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 280" width="1200" height="280" role="img" aria-labelledby="t d">
+<title id="t">The contribution flow</title>
+<desc id="d">Seven steps: fork and branch, make the change, regenerate, verify locally, open a pull request, Prow CI and review, then Tide merges once approved and green.</desc>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a0b12"/><stop offset="1" stop-color="#141329"/></linearGradient>
+<pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#1d2036"/></pattern>
+<linearGradient id="rail" gradientUnits="userSpaceOnUse" x1="100" y1="0" x2="1100" y2="0"><stop offset="0" stop-color="#8b6bff"/><stop offset=".6" stop-color="#5aa9ff"/><stop offset="1" stop-color="#2fd6a0"/></linearGradient>
+</defs>
+<rect width="1200" height="280" rx="18" fill="url(#bg)"/>
+<rect width="1200" height="280" rx="18" fill="url(#grid)" opacity=".7"/>
+<path d="M100,96 H1100" stroke="#05060c" stroke-width="10" stroke-linecap="round" opacity=".6"/>
+<path d="M100,96 H1100" stroke="url(#rail)" stroke-width="5" stroke-linecap="round"/>
+<circle cx="100" cy="96" r="21" fill="#0a0b12" stroke="#8b6bff" stroke-width="2.5"/>
+<text x="100" y="102" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#8b6bff" text-anchor="middle">1</text>
+<text x="100" y="152" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e9e9f2" text-anchor="middle">Fork &amp; branch</text>
+<text x="100" y="176" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6" text-anchor="middle">from main, in your fork</text>
+<text x="100" y="194" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#2fd6a0" text-anchor="middle">git checkout -b fix-x</text>
+<circle cx="266.667" cy="96" r="21" fill="#0a0b12" stroke="#8b6bff" stroke-width="2.5"/>
+<text x="266.667" y="102" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#8b6bff" text-anchor="middle">2</text>
+<text x="266.667" y="152" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e9e9f2" text-anchor="middle">Change</text>
+<text x="266.667" y="176" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6" text-anchor="middle">code, tests, docs</text>
+<text x="266.667" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6" text-anchor="middle">in one focused PR</text>
+<circle cx="433.333" cy="96" r="21" fill="#0a0b12" stroke="#b7a4ff" stroke-width="2.5"/>
+<text x="433.333" y="102" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#b7a4ff" text-anchor="middle">3</text>
+<text x="433.333" y="152" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e9e9f2" text-anchor="middle">Regenerate</text>
+<text x="433.333" y="176" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#2fd6a0" text-anchor="middle">make codegen</text>
+<text x="433.333" y="194" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#2fd6a0" text-anchor="middle">make fix-lint</text>
+<circle cx="600" cy="96" r="21" fill="#0a0b12" stroke="#5aa9ff" stroke-width="2.5"/>
+<text x="600" y="102" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#5aa9ff" text-anchor="middle">4</text>
+<text x="600" y="152" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e9e9f2" text-anchor="middle">Verify</text>
+<text x="600" y="176" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6" text-anchor="middle">the CI gate, locally</text>
+<text x="600" y="194" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#2fd6a0" text-anchor="middle">make verify</text>
+<circle cx="766.667" cy="96" r="21" fill="#0a0b12" stroke="#5aa9ff" stroke-width="2.5"/>
+<text x="766.667" y="102" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#5aa9ff" text-anchor="middle">5</text>
+<text x="766.667" y="152" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e9e9f2" text-anchor="middle">Pull request</text>
+<text x="766.667" y="176" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6" text-anchor="middle">against main</text>
+<text x="766.667" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6" text-anchor="middle">say what and why</text>
+<circle cx="933.333" cy="96" r="21" fill="#0a0b12" stroke="#2fd6a0" stroke-width="2.5"/>
+<text x="933.333" y="102" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#2fd6a0" text-anchor="middle">6</text>
+<text x="933.333" y="152" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e9e9f2" text-anchor="middle">CI &amp; review</text>
+<text x="933.333" y="176" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6" text-anchor="middle">Prow: build, lint,</text>
+<text x="933.333" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6" text-anchor="middle">tests, e2e suites</text>
+<circle cx="1100" cy="96" r="21" fill="#0a0b12" stroke="#2fd6a0" stroke-width="2.5"/>
+<text x="1100" y="102" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#2fd6a0" text-anchor="middle">7</text>
+<text x="1100" y="152" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e9e9f2" text-anchor="middle">Merge</text>
+<text x="1100" y="176" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6" text-anchor="middle">Tide merges once</text>
+<text x="1100" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6" text-anchor="middle">approved and green</text>
+</svg>

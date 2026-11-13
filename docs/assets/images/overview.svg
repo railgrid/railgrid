@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 676" width="1200" height="676" role="img" aria-labelledby="t d">
+<title id="t">How railgrid fits together</title>
+<desc id="d">The portal, the CLI, kubectl and AI agents call one hub. The hub holds workspaces, identity, the provider registry and the MCP aggregate. It reaches platform providers running next to it and organization-owned providers over an edge. Edge agents on clusters and servers behind NAT dial out to the hub.</desc>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a0b12"/><stop offset="1" stop-color="#141329"/></linearGradient>
+
+<marker id="m0" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9a9cb8"/></marker>
+<marker id="m1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5aa9ff"/></marker>
+<marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f0a63a"/></marker>
+<marker id="m3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2fd6a0"/></marker>
+</defs>
+<rect width="1200" height="676" rx="18" fill="url(#bg)"/>
+
+<rect x="36" y="36" width="1128" height="112" rx="12" fill="#111320" stroke="#9a9cb8" stroke-width="1.5"/>
+<text x="54" y="64" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e9e9f2">Callers</text>
+<text x="54" y="83" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">one endpoint, over HTTPS and WebSockets</text>
+<rect x="54" y="98" width="69" height="26" rx="6" fill="#0a0b12" stroke="#b7a4ff" stroke-width="1.2"/><text x="65" y="115.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#b7a4ff">portal</text>
+<rect x="133" y="98" width="116" height="26" rx="6" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.2"/><text x="144" y="115.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5aa9ff">railgrid CLI</text>
+<rect x="259" y="98" width="77" height="26" rx="6" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.2"/><text x="270" y="115.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5aa9ff">kubectl</text>
+<rect x="346" y="98" width="163" height="26" rx="6" fill="#0a0b12" stroke="#f0a63a" stroke-width="1.2"/><text x="357" y="115.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#f0a63a">AI agents over MCP</text>
+<text x="1146" y="116" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6" text-anchor="end">signed in with OIDC, or a static token for one user</text>
+<rect x="36" y="222" width="1128" height="176" rx="12" fill="#12122a" stroke="#8b6bff" stroke-width="1.5"/>
+<text x="54" y="250" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e9e9f2">railgrid hub</text>
+<text x="54" y="269" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">the only component that has to be reachable</text>
+<rect x="54" y="284" width="259.5" height="94" rx="9" fill="#0d0e18" stroke="#262a44" stroke-width="1"/>
+<text x="68" y="308" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#dcdcf0">Workspaces</text>
+<text x="68" y="330" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">a Kubernetes-style API per</text>
+<text x="68" y="347" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">tenant, served by kcp</text>
+<rect x="331.5" y="284" width="259.5" height="94" rx="9" fill="#0d0e18" stroke="#262a44" stroke-width="1"/>
+<text x="345.5" y="308" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#dcdcf0">Identity</text>
+<text x="345.5" y="330" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">organizations, membership,</text>
+<text x="345.5" y="347" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">roles, RBAC on every call</text>
+<rect x="609" y="284" width="259.5" height="94" rx="9" fill="#0d0e18" stroke="#262a44" stroke-width="1"/>
+<text x="623" y="308" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#dcdcf0">Provider registry</text>
+<text x="623" y="330" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">catalog, enablement, UI</text>
+<text x="623" y="347" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">and backend proxies</text>
+<rect x="886.5" y="284" width="259.5" height="94" rx="9" fill="#0d0e18" stroke="#262a44" stroke-width="1"/>
+<text x="900.5" y="308" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#dcdcf0">MCP aggregate</text>
+<text x="900.5" y="330" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">every provider's and edge's</text>
+<text x="900.5" y="347" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">tools, one server per workspace</text>
+<rect x="36" y="472" width="360" height="168" rx="12" fill="#111320" stroke="#5aa9ff" stroke-width="1.5"/>
+<text x="54" y="500" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e9e9f2">Platform providers</text>
+<text x="54" y="519" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">run next to the hub</text>
+<rect x="54" y="536" width="61" height="26" rx="6" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.2"/><text x="65" y="553.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5aa9ff">edges</text>
+<rect x="125" y="536" width="132" height="26" rx="6" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.2"/><text x="136" y="553.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5aa9ff">infrastructure</text>
+<rect x="267" y="536" width="69" height="26" rx="6" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.2"/><text x="278" y="553.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5aa9ff">agents</text>
+<rect x="54" y="572" width="100" height="26" rx="6" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.2"/><text x="65" y="589.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5aa9ff">app-studio</text>
+<rect x="164" y="572" width="53" height="26" rx="6" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.2"/><text x="175" y="589.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5aa9ff">code</text>
+<rect x="227" y="572" width="61" height="26" rx="6" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.2"/><text x="238" y="589.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5aa9ff">kuery</text>
+<text x="54" y="622" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">APIs, controllers, a backend, a portal page</text>
+<rect x="420" y="472" width="360" height="168" rx="12" fill="#111320" stroke="#f0a63a" stroke-width="1.5"/>
+<text x="438" y="500" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e9e9f2">Organization-owned providers</text>
+<text x="438" y="519" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">run in your own cluster</text>
+<rect x="438" y="536" width="124" height="26" rx="6" fill="#0a0b12" stroke="#f0a63a" stroke-width="1.2"/><text x="449" y="553.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#f0a63a">your-provider</text>
+<text x="438" y="588" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">Same SDK and contract. Reached over an edge,</text>
+<text x="438" y="605" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">with a short-lived delegated token, never</text>
+<text x="438" y="622" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">the user's own.</text>
+<rect x="804" y="472" width="360" height="168" rx="12" fill="#111320" stroke="#2fd6a0" stroke-width="1.5"/>
+<text x="822" y="500" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e9e9f2">Edges</text>
+<text x="822" y="519" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">clusters and servers behind NAT</text>
+<rect x="822" y="536" width="155" height="26" rx="6" fill="#0a0b12" stroke="#2fd6a0" stroke-width="1.2"/><text x="833" y="553.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#2fd6a0">KubernetesCluster</text>
+<rect x="987" y="536" width="108" height="26" rx="6" fill="#0a0b12" stroke="#2fd6a0" stroke-width="1.2"/><text x="998" y="553.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#2fd6a0">LinuxServer</text>
+<text x="822" y="588" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">An agent dials out; nothing listens on the</text>
+<text x="822" y="605" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">edge. kubectl, SSH and MCP calls come back</text>
+<text x="822" y="622" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a8ca6">down the same tunnel.</text>
+<path d="M600,148 L600,216" fill="none" stroke="#9a9cb8" stroke-width="1.8" marker-end="url(#m0)"/>
+<text x="614" y="190" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#9a9cb8">every call authorized as the caller</text>
+<path d="M216,398 L216,466" fill="none" stroke="#5aa9ff" stroke-width="1.8" marker-end="url(#m1)"/>
+<text x="230" y="440" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#5aa9ff">provider APIs, actions, tools</text>
+<path d="M600,398 L600,466" fill="none" stroke="#f0a63a" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#m2)"/>
+<text x="614" y="440" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#f0a63a">the same, relayed over an edge</text>
+<path d="M984,472 L984,404" fill="none" stroke="#2fd6a0" stroke-width="1.8" marker-end="url(#m3)"/>
+<text x="998" y="440" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#2fd6a0">outbound tunnel</text>
+</svg>
