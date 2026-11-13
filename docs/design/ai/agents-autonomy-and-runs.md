@@ -233,10 +233,11 @@ argument disclosure and approval/denial controls above the table.
 Run detail leads with the agent and phase. Failed and aborted runs show a
 bounded, sanitized diagnostic excerpt and supported recovery navigation before
 execution evidence and partial output. Error steps start expanded; an error
-step alone is not proof of the run's terminal cause. Successful runs put the
-result first and start execution collapsed. Empty results and missing partial
-output are explicit. Pending approvals and questions retain their existing
-authority checks and actions above the evidence.
+step alone is not proof of the run's terminal cause. Review step diagnostics
+opens failed steps and moves focus to the Execution heading. Successful runs
+show the result before the execution record and start execution collapsed.
+Empty results and missing partial output are explicit. Pending approvals and
+questions retain their existing authority checks and actions above the evidence.
 
 Chat, the inbox, and run detail use the same question card. A single question
 with a runner-supplied choices block offers numbered choices and a custom
@@ -253,10 +254,12 @@ For a runner-managed Codex question, the runner owns the durable pause and
 ignores Codex's blocking flag and auto-resolution timer. The reply or skip
 instruction is supplied in a new turn on the saved Codex session.
 
-The full original request is a single collapsed disclosure below the result and
-execution sections. Its summary includes a bounded, redacted preview; truncation
-preserves Unicode code points. The diagnostic excerpt yields to the full
-technical diagnostic when that disclosure is open. Session, timestamps, duration, usage, copyable run ID,
+The original request appears in a single disclosure after any failure, approval,
+or question notice and before output and execution. The disclosure starts
+collapsed with a bounded, redacted preview that preserves Unicode code points
+when truncated. It retains its state across refreshes and resets for a different
+run. The diagnostic excerpt yields to the full technical diagnostic when that
+disclosure is open. Session, timestamps, duration, usage, copyable run ID,
 harness coordinates, attempts, and parent navigation occupy a secondary details
 column that stacks below the evidence in narrow containers. Child runs continue
 to use the shared simple `ResourceTable`. Output uses document styling, and
@@ -413,3 +416,40 @@ PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs   node hack/agents-conversation-
 The runner writes screenshots and measurements under
 `.kcp/agents-conversation-visual/` by default. It uses the existing host-token
 fixture with the production Agents bundle and mocked session/history data.
+
+## Agent run investigation example
+
+Run the isolated example from the repository root:
+
+```sh
+./portal/node_modules/.bin/vite --config hack/agent-run-visual/vite.config.mjs
+```
+
+Open http://127.0.0.1:5200. The fixture mounts the Agents provider's
+[RunDetail](../../../providers/agents/portal/src/views/RunDetail.vue) with a
+synthetic failed deployment investigation. Open **Arguments and result** on
+the failed health check to inspect the request and diagnostic. The theme
+control switches between light and dark.
+
+The example illustrates these layout decisions:
+
+1. The agent identity and failed state appear before the execution record, so
+   an operator can identify the run and its outcome immediately.
+2. The execution list keeps the three steps in order. The failed step opens
+   automatically, placing its diagnostic beside the step that produced it.
+   Arguments stay behind a disclosure to keep the first scan concise.
+3. Partial output and the original request stay with the execution record.
+   Run identity, timing, and usage form a separate evidence region on wider
+   screens. Together they explain the task, what happened, and how to identify
+   the run.
+
+[Langfuse's session view](https://langfuse.com/changelog/2026-10-13-redesigned-session-view)
+informed the goal of retaining context while inspecting a step. This fixture
+shows the existing standalone Run Detail layout with synthetic data. It does
+not include a conversation or the embedded workbench, and its navigation and
+refresh controls do not connect to a live backend.
+
+Mobile fixture review covered 320px and 390px browser viewports. The failed
+diagnostic wraps within the activity panel, and its arguments disclosure can be
+opened. The fixture loads the AgentKit activity and conversation styles used by
+the provider.

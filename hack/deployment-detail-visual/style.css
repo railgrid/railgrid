@@ -1,0 +1,18 @@
+@import "../../portal/src/assets/main.css";
+@source "../../portal/src/**/*.{vue,ts}";
+@source "../../provider-sdk/portalkit-vue/**/*.vue";
+
+.fixture { padding: 2rem; }
+.fixture-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .75rem; margin-bottom: 1.5rem; }
+.content { display: grid; gap: 1rem; }
+.inspect-link { width: fit-content; margin-top: 1rem; }
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.facts { display: grid; gap: .75rem; }
+.facts div { display: flex; justify-content: space-between; gap: 1rem; }
+.facts dt { color: var(--color-text-muted); }
+.facts dd, .logs { font-family: var(--font-mono); }
+.logs { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .fixture { padding: 1rem; }
+  .detail-grid { grid-template-columns: 1fr; }
+}

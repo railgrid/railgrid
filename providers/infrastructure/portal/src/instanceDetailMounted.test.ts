@@ -147,6 +147,36 @@ describe('mounted Infrastructure instance detail deletion behavior', () => {
     expect(host.textContent).toContain('retained-value')
   })
 
+  it('offers a focused path to reported conditions for a failed instance', async () => {
+    vi.mocked(api.getInstance).mockResolvedValue({
+      ...instance,
+      phase: 'Failed',
+      conditions: [{ type: 'Ready', status: 'False', reason: 'ReadinessTimeout', message: 'A replica is not ready.' }],
+    })
+    app = createApp(InstanceDetailPage, { instanceName: instance.name, tombstones: createResourceTombstones() })
+    app.mount(host)
+    await flush()
+
+    const action = host.querySelector<HTMLButtonElement>('.instance-detail__attention button')!
+    const conditions = host.querySelector<HTMLElement>('#instance-conditions')!
+    expect(action.textContent).toContain('Review conditions')
+    expect(conditions.textContent).toContain('ReadinessTimeout')
+    action.click()
+    expect(document.activeElement).toBe(conditions)
+  })
+
+  it('does not offer condition review for a ready instance or a failure without conditions', async () => {
+    app = createApp(InstanceDetailPage, { instanceName: instance.name, tombstones: createResourceTombstones() })
+    app.mount(host)
+    await flush()
+    expect(host.querySelector('.instance-detail__attention')).toBeNull()
+
+    vi.mocked(api.getInstance).mockResolvedValue({ ...instance, phase: 'Failed', conditions: [] })
+    host.querySelector<HTMLButtonElement>('.instance-detail__actions > button')!.click()
+    await flush()
+    expect(host.querySelector('.instance-detail__attention')).toBeNull()
+  })
+
   it('omits empty template detail groups while retaining meaningful groups', async () => {
     vi.mocked(api.getTemplate).mockResolvedValue({
       template: {

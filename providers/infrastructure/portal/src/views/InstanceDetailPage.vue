@@ -38,6 +38,7 @@ const loaded = ref(false)
 const error = ref<string | null>(null)
 const deleting = ref(false)
 const deleteError = ref<string | null>(null)
+const conditionsSection = ref<InstanceType<typeof ResourceSectionCard> | null>(null)
 let active = true
 let mounted = false
 let navigatingAway = false
@@ -69,6 +70,9 @@ const actionItems = computed<ActionMenuItem[]>(() => [{
   busy: deleting.value,
 }])
 const displayedPhase = computed(() => deletionInProgress.value ? 'Deleting' : inst.value?.phase ?? '')
+const needsConditionReview = computed(() =>
+  !deletionInProgress.value && ['failed', 'error'].includes(displayedPhase.value.toLowerCase()) && conditions.value.length > 0,
+)
 const displayedMessage = computed(() => {
   if (!inst.value) return undefined
   return deletionInProgress.value ? DELETING_MESSAGE : inst.value.message
@@ -87,6 +91,10 @@ const conditions = computed<ConditionInfo[]>(() => (inst.value?.conditions ?? []
   message: condition.message,
   lastTransitionTime: condition.time,
 })))
+function reviewConditions(): void {
+  const section = conditionsSection.value?.$el as HTMLElement | undefined
+  section?.focus()
+}
 const conditionObservedGeneration = computed(() => {
   if (inst.value?.observedGeneration !== undefined) return inst.value.observedGeneration
   return undefined
@@ -333,7 +341,13 @@ onUnmounted(() => {
         </div>
       </template>
       <template #summary>
-        <ResourceStatCards :cards="statCards" density="compact" aria-label="Instance summary" />
+        <div class="instance-detail__summary">
+          <div v-if="needsConditionReview" class="instance-detail__attention">
+            <p>Review the controller conditions for more information about this instance.</p>
+            <button class="k-btn k-btn--ghost" type="button" @click="reviewConditions">Review conditions</button>
+          </div>
+          <ResourceStatCards :cards="statCards" density="compact" aria-label="Instance summary" />
+        </div>
       </template>
       <template #body>
         <p v-if="deleting" class="instance-message" role="status" aria-live="polite">Deleting this instance. The last successful snapshot remains visible until the hub confirms removal.</p>
@@ -363,7 +377,7 @@ onUnmounted(() => {
             <pre>{{ JSON.stringify(inst.values, null, 2) }}</pre>
           </ResourceSectionCard>
 
-          <ResourceSectionCard id="instance-conditions" eyebrow="Diagnostics" title="Conditions" description="Controller conditions and generation freshness for this instance.">
+          <ResourceSectionCard ref="conditionsSection" id="instance-conditions" tabindex="-1" eyebrow="Diagnostics" title="Conditions" description="Controller conditions and generation freshness for this instance.">
             <ConditionsPanel
               :show-title="false"
               :conditions="conditions"
