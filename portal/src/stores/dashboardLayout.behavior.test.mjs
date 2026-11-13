@@ -24,7 +24,7 @@ function fixture(saved) {
   new Function('require', 'exports', 'setTimeout', 'clearTimeout', code)(id => modules[id], exports,
     callback => { timers.set(++timer, callback); return timer }, id => timers.delete(id))
   const store = exports.useDashboardLayoutStore()
-  return { store, requests, firstFreeSlot: exports.firstFreeSlot, catalogTileID: exports.ADD_PROVIDER_TILE_ID,
+  return { store, requests, catalogTileID: exports.ADD_PROVIDER_TILE_ID,
     saved: () => JSON.parse(storage.get('railgrid-dashboard-layout:ws')),
     flushWrites() { for (const callback of timers.values()) callback(); timers.clear() },
     cleanup() { if (previous === undefined) delete globalThis.localStorage; else globalThis.localStorage = previous },
@@ -34,18 +34,42 @@ const tile = (i, w = 3, y = 0) => ({ i, x: 0, y, w, h: 2 })
 const dto = (w = 1) => ({ gridColumns: 0, tiles: [{ name: 'agents', x: 0, y: 0, w, h: 2 }], hidden: [] })
 const answer = async (request, body) => { request.resolve({ ok: true, json: async () => body }); await Promise.resolve(); await Vue.nextTick() }
 
-test('catalog tile takes the first standard-size opening at each grid width', () => {
-  const f = fixture()
+test('catalog tile follows the last provider across gaps, compaction, and grid widths', () => {
+  const f = fixture({ cols: 0, hidden: [], tiles: [
+    tile('agents', 1), { ...tile('code', 1), x: 2 }, tile('edges', 1, 2),
+  ] })
   try {
-    const { firstFreeSlot } = f
-    assert.deepEqual(firstFreeSlot([], 3), { x: 0, y: 0 })
+    const { store, catalogTileID } = f
+    const names = ['agents', 'code', 'edges']
+    const expectSlot = (x, y) => assert.deepEqual(store.catalogTile.value, {
+      i: catalogTileID, x, y, w: 1, h: 2,
+    })
+    store.sync('org', 'ws', names, 3)
+    expectSlot(1, 2)
+    assert.deepEqual(store.layout.value.map(t => t.i), names)
 
-    const top = ['agents', 'code', 'edges'].map((name, x) => ({ ...tile(name, 1), x }))
-    const lower = tile('quickstart', 1, 2)
-    assert.deepEqual(firstFreeSlot(top, 3), { x: 0, y: 2 })
-    assert.deepEqual(firstFreeSlot([...top, lower], 3), { x: 1, y: 2 })
-    assert.deepEqual(firstFreeSlot([top[0], top[2], lower], 3), { x: 1, y: 0 })
-    assert.deepEqual(firstFreeSlot([top[0], lower], 1), { x: 0, y: 4 })
+    const [agents, code, edges] = store.layout.value
+    agents.h = 4
+    code.h = 6
+    edges.w = 2
+    edges.y = 4
+    expectSlot(0, 6)
+    code.h = 4
+    expectSlot(2, 4)
+    edges.x = 1
+    expectSlot(0, 6)
+    edges.w = 1
+    edges.y = 0
+    expectSlot(0, 4) // The rightmost tile in the row reaches the grid edge.
+
+    store.sync('org', 'ws', names, 1)
+    // Simulate the grid settling the collision after clamping to one column.
+    store.layout.value[1].y = 2
+    store.layout.value[2].y = 4
+    expectSlot(0, 6)
+
+    for (const name of names) store.hide(name)
+    expectSlot(0, 0)
   } finally { f.cleanup() }
 })
 
@@ -69,7 +93,7 @@ test('catalog tile visibility is saved per workspace without saving its position
   const f = fixture()
   try {
     const { store, catalogTileID } = f
-    const hasCatalogTile = () => store.layout.value.some(t => t.i === catalogTileID)
+    const hasCatalogTile = () => store.catalogTile.value !== null
     store.sync('org', 'ws', ['agents'], 3)
     assert.ok(hasCatalogTile())
     store.hide(catalogTileID)
