@@ -122,6 +122,8 @@ type LedgerRecord struct {
 	// UncommittedPaths are the paths that differ from the last commit.
 	UncommittedPaths []string
 	SourceDeletions  []SourceDeletion
+	// HasDevelopmentSandbox is derived from the Project spec by its ledger.
+	HasDevelopmentSandbox bool
 	// PendingCommit, when set, is the RepositoryCommit being followed up.
 	PendingCommit *PendingCommit
 	// Settlement, when set, is the receipt a landed commit left behind.

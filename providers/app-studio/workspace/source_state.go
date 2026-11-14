@@ -237,15 +237,13 @@ func clearSourceDeletions(record *LedgerRecord, paths []string) {
 // pruneSourceDeletions drops removals already applied to the development
 // sandbox and settled in Git. A failed sync or a pending commit keeps its intent.
 func pruneSourceDeletions(record *LedgerRecord) {
-	if record.LastPreviewCheckpoint == nil {
-		return
-	}
 	dirty := make(map[string]bool, len(record.UncommittedPaths))
 	for _, path := range record.UncommittedPaths {
 		dirty[path] = true
 	}
 	record.SourceDeletions = slices.DeleteFunc(record.SourceDeletions, func(deletion SourceDeletion) bool {
-		return deletion.Revision <= record.LastPreviewCheckpoint.SourceRevision && !dirty[deletion.Path]
+		return !dirty[deletion.Path] && (!record.HasDevelopmentSandbox ||
+			record.LastPreviewCheckpoint != nil && deletion.Revision <= record.LastPreviewCheckpoint.SourceRevision)
 	})
 }
 
