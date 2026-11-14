@@ -149,6 +149,7 @@ type ModelCredential struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.connectionRef) || size(self.connectionRef) == 0 || !has(self.anthropicWorkspaceID) || size(self.anthropicWorkspaceID) == 0",message="a referenced model inherits its Anthropic workspace from its connection"
 // +kubebuilder:validation:XValidation:rule="!has(self.connectionRef) || size(self.connectionRef) == 0 || !has(self.secretKey) || self.secretKey == 'apiKey'",message="a referenced model inherits its Secret key from its connection"
 // +kubebuilder:validation:XValidation:rule="!has(self.connectionRef) || size(self.connectionRef) == 0 || !has(self.provider) || self.provider == 'openai-compatible'",message="a referenced model inherits its provider from its connection"
+// +kubebuilder:validation:XValidation:rule="!has(self.default) || !self.default || !(has(self.provider) && self.provider in ['claude-code','codex'])",message="a harness identity cannot be the workspace default model"
 type ModelCredentialSpec struct {
 	// ConnectionRef names a ModelProviderConnection in this workspace that owns
 	// the provider endpoint, workspace, and Secret. A model binding supplies only
@@ -194,6 +195,14 @@ type ModelCredentialSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	Model string `json:"model,omitempty"`
+
+	// Default marks this credential as the workspace's default chat model: an
+	// agent created without naming a model credential gets this one, and the
+	// portal's create form starts on it. It changes nothing for agents that
+	// already name a credential. When several credentials are marked, the
+	// oldest wins. Not for harness identities.
+	// +optional
+	Default bool `json:"default,omitempty"`
 
 	// SecretRef names the Secret in namespace "default" of this workspace
 	// holding the API key.
