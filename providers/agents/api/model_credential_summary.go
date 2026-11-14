@@ -40,6 +40,7 @@ func listModelCredentialSummaries(ctx context.Context, c *agentsclient.Client) (
 		if cred.Spec.Model == "" && !agentsv1alpha1.IsHarnessProvider(cred.Spec.Provider) {
 			continue
 		}
+		isDefault := cred.Spec.Default
 		models := cred.Status.Models
 		ready := meta.IsStatusConditionTrue(cred.Status.Conditions, agentsv1alpha1.ConditionReady)
 		if cred.Spec.ConnectionRef != "" {
@@ -60,8 +61,36 @@ func listModelCredentialSummaries(ctx context.Context, c *agentsclient.Client) (
 				}
 			}
 		}
-		out.Credentials = append(out.Credentials, credentialSummary{Name: cred.Name, Provider: cred.Spec.Provider, BaseURL: cred.Spec.BaseURL, AnthropicWorkspaceID: cred.Spec.AnthropicWorkspaceID, Model: cred.Spec.Model, Ready: ready, Models: models})
+		out.Credentials = append(out.Credentials, credentialSummary{Default: isDefault, Name: cred.Name, Provider: cred.Spec.Provider, BaseURL: cred.Spec.BaseURL, AnthropicWorkspaceID: cred.Spec.AnthropicWorkspaceID, Model: cred.Spec.Model, Ready: ready, Models: models})
 	}
 	sort.Slice(out.Credentials, func(i, j int) bool { return out.Credentials[i].Name < out.Credentials[j].Name })
 	return out, nil
+}
+
+// defaultModelCredentialName returns the workspace's default chat credential:
+// the oldest ModelCredential with spec.default set that names a model and is
+// not a harness identity, or "" when there is none. Readiness is not asked:
+// a default that does not work yet should surface on the agent as that
+// credential's fault, not as "no model", and it heals without the agent
+// being touched.
+func defaultModelCredentialName(ctx context.Context, c *agentsclient.Client) (string, error) {
+	list, err := c.ModelCredentials().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", err
+	}
+	var chosen *agentsv1alpha1.ModelCredential
+	for i := range list.Items {
+		cred := &list.Items[i]
+		if !cred.Spec.Default || cred.Spec.Model == "" || agentsv1alpha1.IsHarnessProvider(cred.Spec.Provider) || !cred.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if chosen == nil || cred.CreationTimestamp.Before(&chosen.CreationTimestamp) ||
+			(cred.CreationTimestamp.Equal(&chosen.CreationTimestamp) && cred.Name < chosen.Name) {
+			chosen = cred
+		}
+	}
+	if chosen == nil {
+		return "", nil
+	}
+	return chosen.Name, nil
 }

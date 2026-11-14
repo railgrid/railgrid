@@ -242,7 +242,11 @@ const credentialOptions = computed(() => chatCredentials.value.filter(item => !c
 function selectOnlyModel(): void {
   if (modelCredential.value || !credentials.value.hasSnapshot || credentials.value.error) return
   const eligible = chatCredentials.value.filter(model => !credentialUnavailable(model))
-  if (eligible.length === 1 && eligible[0].ready === true) modelCredential.value = eligible[0].name
+  // The workspace default (spec.default) wins when it works; otherwise the
+  // only model there is. Several unmarked models are still the user's choice.
+  const preferred = eligible.find(model => model.default === true && model.ready === true)
+  if (preferred) modelCredential.value = preferred.name
+  else if (eligible.length === 1 && eligible[0].ready === true) modelCredential.value = eligible[0].name
 }
 watch([chatCredentials, credentials], selectOnlyModel, { immediate: true })
 

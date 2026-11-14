@@ -94,6 +94,47 @@ type ModelProviderConnectionSpec struct {
 	// +kubebuilder:default=apiKey
 	// +kubebuilder:validation:Enum=apiKey
 	SecretKey string `json:"secretKey,omitempty"`
+
+	// Models declares model bindings this connection brings with it. For each
+	// entry the controller adds one active binding to the workspace's Studio
+	// model registry, once, as soon as the key Secret resolves, so a connection
+	// created by something other than a person in the portal (a platform
+	// WorkspaceSeed, kubectl) is usable without a click. A declaration is an
+	// offer, not an invariant: an entry whose id is already an active binding
+	// is left alone, and a binding the workspace later edits, archives or
+	// deletes is not put back. status.declaredModels records what was offered.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	// +kubebuilder:validation:MaxItems=20
+	Models []ModelProviderConnectionModel `json:"models,omitempty"`
+}
+
+// ModelProviderConnectionModel is one model binding a connection declares.
+type ModelProviderConnectionModel struct {
+	// ID is the logical model id of the Studio binding, what a person picks.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	ID string `json:"id"`
+
+	// Model is the provider's own model identifier, sent upstream.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Model string `json:"model"`
+
+	// Name is what the model is called in the UI. Empty uses the id.
+	// +optional
+	// +kubebuilder:validation:MaxLength=80
+	Name string `json:"name,omitempty"`
+
+	// Default makes this binding the workspace's default model when the
+	// registry has none. A default the workspace already chose is never
+	// replaced.
+	// +optional
+	Default bool `json:"default,omitempty"`
 }
 
 // ModelProviderConnectionStatus reports key resolution and bounded endpoint
@@ -152,6 +193,15 @@ type ModelProviderConnectionStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	LastProbeError string `json:"lastProbeError,omitempty"`
+
+	// DeclaredModels lists the ids of spec.models the controller has already
+	// offered to the Studio registry: bound, or skipped because an active
+	// binding of that id existed. An id listed here is never offered again, so
+	// removing the binding in the workspace sticks.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=20
+	DeclaredModels []string `json:"declaredModels,omitempty"`
 }
 
 // +kubebuilder:object:root=true

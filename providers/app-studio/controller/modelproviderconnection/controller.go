@@ -62,6 +62,12 @@ const (
 	conditionSecretResolved              = "SecretResolved"
 	conditionReachable                   = "Reachable"
 	conditionReady                       = "Ready"
+	// reasonModelsDeclared is the Reachable reason of a connection that has
+	// not been probed and does not need to be: spec.models names its models.
+	reasonModelsDeclared = "ModelsDeclared"
+	// maxActiveStudioModels mirrors the Studio registry's bound on active
+	// bindings (controller/studio llmRegistryMaxModels).
+	maxActiveStudioModels = 20
 )
 
 var errRevisionHistoryFull = errors.New("studio model revision history is full")
@@ -252,8 +258,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			status.LastProbeTime = nil
 			status.LastProbeFingerprint = ""
 			status.Models = nil
-			status.LastProbeError = "run authorized model discovery to verify this endpoint"
-			setUnknownCondition(status, conditionReachable, "ExplicitDiscoveryRequired", status.LastProbeError, connection.Generation, now)
+			if len(connection.Spec.Models) > 0 {
+				// The connection names its models itself, so there is nothing a
+				// person has to discover before it can be used. Still no probe:
+				// configuration alone never authorizes a credential-bearing
+				// request, and none is needed to bind a declared model.
+				status.LastProbeError = ""
+				setUnknownCondition(status, conditionReachable, reasonModelsDeclared, "This connection declares its models; discovery has not been run.", connection.Generation, now)
+			} else {
+				status.LastProbeError = "run authorized model discovery to verify this endpoint"
+				setUnknownCondition(status, conditionReachable, "ExplicitDiscoveryRequired", status.LastProbeError, connection.Generation, now)
+			}
 		}
 	} else {
 		status.SecretUID = ""
@@ -269,6 +284,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	reachability := meta.FindStatusCondition(status.Conditions, conditionReachable)
 	probeCurrent := secretReason == "" && probeResultMatches(status, status.ConnectionFingerprint)
 	ready := probeCurrent && reachability != nil && (reachability.Status == metav1.ConditionTrue || (reachability.Status == metav1.ConditionUnknown && reachability.Reason == "DiscoveryUnavailable"))
+	if secretReason == "" && !probeCurrent && reachability != nil && reachability.Status == metav1.ConditionUnknown && reachability.Reason == reasonModelsDeclared {
+		ready = true
+	}
 	if ready {
 		setCondition(status, conditionReady, true, "Ready", "The provider connection is ready.", connection.Generation, now)
 	} else {
@@ -278,6 +296,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if secretReason == "" {
 		var admitted *aiv1alpha1.StudioLLMConnectionSnapshot
 		admitted, rolloverErr = r.admitConnectionSnapshot(ctx, c, reader, &connection, secret)
+		if rolloverErr == nil {
+			status.DeclaredModels, rolloverErr = r.bindDeclaredModels(ctx, c, reader, &connection, admitted, status.DeclaredModels)
+		}
 		if rolloverErr == nil {
 			status.ActiveSnapshot = admitted
 			setCondition(status, "BindingsReady", true, "Activated", "Model bindings use the admitted provider configuration.", connection.Generation, now)
@@ -641,6 +662,88 @@ func (r *Reconciler) rolloverBindings(ctx context.Context, c client.Client, read
 	}
 	studio.Spec.LLM.Models = models
 	return c.Update(ctx, &studio)
+}
+
+// bindDeclaredModels offers each model in spec.models to the Studio registry
+// once: it adds an active binding on this connection, with the admitted
+// snapshot, unless an active binding of that id already exists. It returns the
+// ids offered so far, which the caller stores in status.declaredModels; an id
+// in that list is never offered again, so a binding the workspace removes
+// stays removed. A declared default becomes the registry default only while
+// the registry has none.
+//
+// Nothing is recorded, and so everything is retried on the next Studio or
+// connection event, while the Studio does not exist yet or the registry has
+// no room.
+func (r *Reconciler) bindDeclaredModels(ctx context.Context, c client.Client, reader client.Reader, connection *aiv1alpha1.ModelProviderConnection, snapshot *aiv1alpha1.StudioLLMConnectionSnapshot, offered []string) ([]string, error) {
+	declared := map[string]bool{}
+	for _, model := range connection.Spec.Models {
+		declared[model.ID] = true
+	}
+	// Forget ids that are no longer declared, so declaring one again later
+	// offers it again.
+	kept := make([]string, 0, len(offered))
+	done := map[string]bool{}
+	for _, id := range offered {
+		if declared[id] && !done[id] {
+			done[id] = true
+			kept = append(kept, id)
+		}
+	}
+	if len(done) == len(declared) || !completeSnapshot(snapshot) {
+		return kept, nil
+	}
+	var studio aiv1alpha1.Studio
+	if err := reader.Get(ctx, types.NamespacedName{Name: aiv1alpha1.StudioName}, &studio); err != nil {
+		return kept, client.IgnoreNotFound(err)
+	}
+	registry := &aiv1alpha1.StudioLLM{}
+	if studio.Spec.LLM != nil {
+		registry = studio.Spec.LLM.DeepCopy()
+	}
+	active := map[string]bool{}
+	for _, model := range registry.Models {
+		if !model.Archived {
+			active[model.ID] = true
+		}
+	}
+	changed := false
+	for _, model := range connection.Spec.Models {
+		if done[model.ID] {
+			continue
+		}
+		if !active[model.ID] {
+			if len(active) >= maxActiveStudioModels || len(registry.Models) >= 200 {
+				continue
+			}
+			name := strings.TrimSpace(model.Name)
+			if name == "" {
+				name = model.ID
+			}
+			registry.Models = append(registry.Models, aiv1alpha1.StudioLLMModel{
+				ID:                 model.ID,
+				RevisionID:         uuid.NewString(),
+				Name:               name,
+				ConnectionRef:      connection.Name,
+				Model:              model.Model,
+				ConnectionSnapshot: snapshot.DeepCopy(),
+			})
+			active[model.ID] = true
+			changed = true
+			if model.Default && strings.TrimSpace(registry.DefaultModel) == "" {
+				registry.DefaultModel = model.ID
+			}
+		}
+		done[model.ID] = true
+		kept = append(kept, model.ID)
+	}
+	if changed {
+		studio.Spec.LLM = registry
+		if err := c.Update(ctx, &studio); err != nil {
+			return offered, err
+		}
+	}
+	return kept, nil
 }
 
 func completeSnapshot(snapshot *aiv1alpha1.StudioLLMConnectionSnapshot) bool {

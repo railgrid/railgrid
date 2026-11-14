@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261103-105cb122c.modelproviderconnections.ai.railgrid.ai
+  name: v261114-7e90bd2f.modelproviderconnections.ai.railgrid.ai
 spec:
   group: ai.railgrid.ai
   names:
@@ -67,6 +67,53 @@ spec:
               minLength: 1
               pattern: ^https?://[^\s]+$
               type: string
+            models:
+              description: |-
+                Models declares model bindings this connection brings with it. For each
+                entry the controller adds one active binding to the workspace's Studio
+                model registry, once, as soon as the key Secret resolves, so a connection
+                created by something other than a person in the portal (a platform
+                WorkspaceSeed, kubectl) is usable without a click. A declaration is an
+                offer, not an invariant: an entry whose id is already an active binding
+                is left alone, and a binding the workspace later edits, archives or
+                deletes is not put back. status.declaredModels records what was offered.
+              items:
+                description: ModelProviderConnectionModel is one model binding a connection
+                  declares.
+                properties:
+                  default:
+                    description: |-
+                      Default makes this binding the workspace's default model when the
+                      registry has none. A default the workspace already chose is never
+                      replaced.
+                    type: boolean
+                  id:
+                    description: ID is the logical model id of the Studio binding,
+                      what a person picks.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  model:
+                    description: Model is the provider's own model identifier, sent
+                      upstream.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is what the model is called in the UI. Empty
+                      uses the id.
+                    maxLength: 80
+                    type: string
+                required:
+                - id
+                - model
+                type: object
+              maxItems: 20
+              type: array
+              x-kubernetes-list-map-keys:
+              - id
+              x-kubernetes-list-type: map
             provider:
               default: openai-compatible
               description: Provider selects the model provider protocol.
@@ -245,6 +292,17 @@ spec:
               - api-key
               - service-account-json
               type: string
+            declaredModels:
+              description: |-
+                DeclaredModels lists the ids of spec.models the controller has already
+                offered to the Studio registry: bound, or skipped because an active
+                binding of that id existed. An id listed here is never offered again, so
+                removing the binding in the workspace sticks.
+              items:
+                type: string
+              maxItems: 20
+              type: array
+              x-kubernetes-list-type: set
             lastProbeError:
               description: LastProbeError is bounded and never contains an upstream
                 response body.
