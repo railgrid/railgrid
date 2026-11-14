@@ -227,7 +227,7 @@ func runServe() {
 		Subresources: subresources,
 		// Class (g): each Repository's GitHub "Issue comments" webhook,
 		// which records "/railgrid" commands for the reconciler to verify.
-		Extra: []serve.Route{{Prefix: "/webhooks/github/", Class: serve.ClassWebhook, Handler: commandhook.Handler(commandhook.KeyFromEnv(), providerCallers)}},
+		Extra: []serve.Route{{Prefix: "/webhooks/github/", Class: serve.ClassWebhook, Handler: commandhook.Handler(providerCallers)}},
 	})
 	if err != nil {
 		log.Fatalf("server: %v", err)

@@ -161,3 +161,30 @@ func TestTransientForgeErrorsRetry(t *testing.T) {
 		t.Fatalf("status after a transient error = %+v (%v)", got.Status, err)
 	}
 }
+
+func TestTerminalCommandsExpireFromVerificationTime(t *testing.T) {
+	for _, phase := range []string{api.PullRequestCommandVerified, api.PullRequestCommandRejected} {
+		t.Run(phase, func(t *testing.T) {
+			r, c, command := fixture(t, validForge())
+			if err := c.Get(t.Context(), client.ObjectKeyFromObject(command), command); err != nil {
+				t.Fatal(err)
+			}
+			verifiedAt := metav1.NewTime(now.Add(-terminalRetention + time.Minute))
+			command.Status = api.PullRequestCommandStatus{Phase: phase, VerifiedAt: &verifiedAt}
+			if err := c.Status().Update(t.Context(), command); err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.verify(t.Context(), c, command)
+			if err != nil || result.RequeueAfter != time.Minute {
+				t.Fatalf("retention result = %v, %v", result, err)
+			}
+			r.Now = func() time.Time { return now.Add(time.Minute) }
+			if _, err := r.verify(t.Context(), c, command); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(t.Context(), client.ObjectKeyFromObject(command), command); !apierrors.IsNotFound(err) {
+				t.Fatalf("expired command still present: %v", err)
+			}
+		})
+	}
+}

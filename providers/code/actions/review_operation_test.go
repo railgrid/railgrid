@@ -7,6 +7,8 @@ package actions
 
 import (
 	"context"
+	"errors"
+	"strconv"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -192,6 +194,46 @@ func TestForgetMissingRequiresMatchingPhaseFingerprintAndCommentID(t *testing.T)
 			entry := ops[0].(map[string]any)
 			if entry["phase"] != tc.phase || entry["payloadFingerprint"] != tc.storedFingerprint || entry["commentID"] != tc.storedID {
 				t.Fatalf("invalid ForgetMissing changed receipt: %v", entry)
+			}
+		})
+	}
+}
+
+func TestFullOperationHistoryPreservesUnconfirmedWrites(t *testing.T) {
+	const at = "2026-01-01T00:00:00Z"
+	ctx := t.Context()
+	for _, kind := range []string{"review", "comment"} {
+		t.Run(kind, func(t *testing.T) {
+			client := operationClient()
+			claim := func(key string) (bool, error) {
+				if kind == "review" {
+					return claimReviewOperation(ctx, client, "pr", "uid-a", "repo", "feature", "main", 7, key, "head", "fingerprint", at)
+				}
+				ok, _, err := claimCommentOperation(ctx, client, "pr", "uid-a", "repo", "feature", "main", 7, key, "fingerprint", at)
+				return ok, err
+			}
+			for i := range 64 {
+				if ok, err := claim(strconv.Itoa(i)); err != nil || !ok {
+					t.Fatalf("claim %d = %v, %v", i, ok, err)
+				}
+			}
+			if ok, err := claim("overflow"); ok || !errors.Is(err, errOperationHistoryFull) || operationClaimError(err).Code != "operation_history_full" {
+				t.Fatalf("overflow = %v, %v", ok, err)
+			}
+			if ok, err := claim("0"); ok || err != nil {
+				t.Fatalf("existing claim should still be recoverable: %v, %v", ok, err)
+			}
+			var err error
+			if kind == "review" {
+				err = completeReviewOperation(ctx, client, "pr", "uid-a", "repo", "feature", "main", 7, "0", "head", "fingerprint", 42)
+			} else {
+				err = completeCommentOperation(ctx, client, "pr", "uid-a", "repo", "feature", "main", 7, "0", "fingerprint", 42)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok, err := claim("overflow"); !ok || err != nil {
+				t.Fatalf("claim after recovery = %v, %v", ok, err)
 			}
 		})
 	}

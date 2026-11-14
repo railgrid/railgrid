@@ -8,8 +8,11 @@ package commandhook
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,9 +21,10 @@ import (
 	"k8s.io/klog/v2"
 
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/tenant"
 )
 
-// maxPayloadBytes bounds a delivery. The handler reads four fields from it.
+// maxPayloadBytes bounds the body before signature verification.
 const maxPayloadBytes = 1 << 20
 
 // RepositoryLabel names the Repository on every PullRequestCommand.
@@ -38,15 +42,19 @@ type ProviderClients interface {
 }
 
 // Handler serves POST Pattern.
-func Handler(key []byte, clients ProviderClients) http.Handler {
+func Handler(clients ProviderClients) http.Handler {
+	return newHandler(clients, time.Now)
+}
+
+func newHandler(clients ProviderClients, now func() time.Time) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("POST "+Pattern, &handler{key: key, clients: clients})
+	mux.Handle("POST "+Pattern, &handler{clients: clients, now: now})
 	return mux
 }
 
 type handler struct {
-	key     []byte
 	clients ProviderClients
+	now     func() time.Time
 }
 
 // delivery is the part of GitHub's issue_comment payload the handler reads.
@@ -54,8 +62,9 @@ type handler struct {
 type delivery struct {
 	Action  string `json:"action"`
 	Comment struct {
-		ID   int64  `json:"id"`
-		Body string `json:"body"`
+		ID        int64     `json:"id"`
+		Body      string    `json:"body"`
+		CreatedAt time.Time `json:"created_at"`
 	} `json:"comment"`
 	Issue struct {
 		Number      int              `json:"number"`
@@ -68,8 +77,25 @@ type delivery struct {
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cluster, name := r.PathValue("cluster"), r.PathValue("name")
-	if !ValidToken(h.key, cluster, name, r.PathValue("token")) {
+	signature := r.Header.Get("X-Hub-Signature-256")
+	if len(signature) != signatureLength || h.clients == nil {
 		http.NotFound(w, r)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPayloadBytes))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+	client, repository, status := h.authenticate(ctx, cluster, name, signature, body)
+	if status != 0 {
+		w.WriteHeader(status)
 		return
 	}
 	switch r.Header.Get("X-GitHub-Event") {
@@ -82,7 +108,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload delivery
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxPayloadBytes)).Decode(&payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
@@ -90,35 +116,65 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted) // not a new command on a pull request
 		return
 	}
-	if payload.Comment.ID <= 0 || payload.Repository.ID <= 0 {
+	if payload.Comment.ID <= 0 || payload.Repository.ID <= 0 || payload.Comment.CreatedAt.IsZero() {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
-	status, err := h.record(r.Context(), cluster, name, payload)
+	// Once the retained command is reaped, an old signed redelivery must
+	// still be too old to recreate it.
+	if h.now().After(payload.Comment.CreatedAt.Add(MaxCommandAge)) {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	status, err = record(ctx, client, repository, payload)
 	if err != nil {
 		klog.FromContext(r.Context()).Error(err, "recording pull request command", "cluster", cluster, "repository", name, "comment", payload.Comment.ID)
 	}
 	w.WriteHeader(status)
 }
 
-// record writes the unverified command, once per comment.
-func (h *handler) record(ctx context.Context, cluster, name string, payload delivery) (int, error) {
-	if h.clients == nil {
-		return http.StatusServiceUnavailable, nil
-	}
+// authenticate uses only this workspace's Repository and Secret. A URL
+// reader cannot enqueue commands or spend the repository's GitHub quota.
+func (h *handler) authenticate(ctx context.Context, cluster, name, signature string, body []byte) (dynamic.Interface, *unstructured.Unstructured, int) {
 	client, err := h.clients.AsProvider(cluster)
 	if err != nil {
-		return http.StatusServiceUnavailable, err
+		return nil, nil, http.StatusServiceUnavailable
 	}
 	repository, err := client.Resource(repositoriesGVR).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return http.StatusNotFound, nil
+		return nil, nil, http.StatusNotFound
 	}
 	if err != nil {
-		return http.StatusServiceUnavailable, err
+		return nil, nil, http.StatusServiceUnavailable
 	}
+	secretName, _, _ := unstructured.NestedString(repository.Object, "spec", "commandsWebhookSecretRef", "name")
+	if secretName == "" || repository.GetDeletionTimestamp() != nil {
+		return nil, nil, http.StatusNotFound
+	}
+	namespace, _, _ := unstructured.NestedString(repository.Object, "spec", "commandsWebhookSecretRef", "namespace")
+	key, _, _ := unstructured.NestedString(repository.Object, "spec", "commandsWebhookSecretRef", "key")
+	if key == "" {
+		key = SecretKey
+	}
+	secret, err := tenant.ResolveToken(ctx, client, namespace, secretName, key)
+	if errors.Is(err, tenant.ErrCredentialsMissing) || errors.Is(err, tenant.ErrAPIBindingMissing) {
+		return nil, nil, http.StatusNotFound
+	}
+	if err != nil {
+		klog.FromContext(ctx).Error(err, "reading command webhook Secret", "cluster", cluster, "repository", name)
+		return nil, nil, http.StatusServiceUnavailable
+	}
+	if !validSignature(secret, signature, body) {
+		return nil, nil, http.StatusNotFound
+	}
+	return client, repository, 0
+}
+
+// record writes the unverified command, once per comment.
+func record(ctx context.Context, client dynamic.Interface, repository *unstructured.Unstructured, payload delivery) (int, error) {
+	name := repository.GetName()
 	repoID, _, _ := unstructured.NestedString(repository.Object, "status", "repoID")
-	if repoID == "" || repoID != strconv.FormatInt(payload.Repository.ID, 10) || repository.GetDeletionTimestamp() != nil {
+	if repoID == "" || repoID != strconv.FormatInt(payload.Repository.ID, 10) {
 		return http.StatusNotFound, nil
 	}
 	command := &unstructured.Unstructured{Object: map[string]any{
@@ -133,7 +189,7 @@ func (h *handler) record(ctx context.Context, cluster, name string, payload deli
 		command.SetLabels(map[string]string{RepositoryLabel: name})
 	}
 	command.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: codev1alpha1.SchemeGroupVersion.String(), Kind: "Repository", Name: name, UID: repository.GetUID()}})
-	_, err = client.Resource(commandsGVR).Create(ctx, command, metav1.CreateOptions{})
+	_, err := client.Resource(commandsGVR).Create(ctx, command, metav1.CreateOptions{})
 	switch {
 	case err == nil, apierrors.IsAlreadyExists(err):
 		return http.StatusAccepted, nil

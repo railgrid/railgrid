@@ -1003,16 +1003,16 @@ onUnmounted(() => {
           <template v-if="commandsWebhookURL">
             <ol class="repo-commands__steps">
               <li>In GitHub, open this repository's <strong>Settings → Webhooks → Add webhook</strong>.</li>
-              <li>Paste the URL below as the <strong>Payload URL</strong> and choose <strong>application/json</strong>.</li>
+              <li>Paste the URL below as the <strong>Payload URL</strong> and choose <strong>application/json</strong>. Enter the signing secret configured for this repository in <strong>Secret</strong>.</li>
               <li>Under <strong>Which events</strong>, select only <strong>Issue comments</strong>, then add the webhook.</li>
             </ol>
             <div class="repo-commands__url">
               <button class="k-btn k-btn--ghost" type="button" :aria-expanded="commandsURLShown" aria-controls="repository-commands-url" @click="commandsURLShown = !commandsURLShown"><Eye :size="14" aria-hidden="true" />{{ commandsURLShown ? 'Hide webhook URL' : 'Show webhook URL' }}</button>
               <p v-if="commandsURLShown" id="repository-commands-url" class="mono repo-commands__value">{{ commandsWebhookURL }}</p>
             </div>
-            <p class="muted">Treat the URL like a password and share it only with repository admins. Code still checks every comment with GitHub before anything acts on it, including who wrote it and their access.</p>
+            <p class="muted">Code verifies the delivery signature, then checks who wrote the comment and their repository access with GitHub.</p>
           </template>
-          <p v-else class="muted">The webhook URL appears once the repository is ready.</p>
+          <p v-else class="muted">The webhook URL appears once the repository is ready and a webhook secret reference is configured.</p>
         </ResourceSectionCard>
 
         <ResourceSectionCard id="repository-conditions" eyebrow="Diagnostics" title="Health" description="Controller health and provider details for this repository.">

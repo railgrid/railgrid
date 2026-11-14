@@ -121,13 +121,6 @@ spec:
                   name: {{ .Values.hub.tokenSecretRef.name }}
                   key: {{ .Values.hub.tokenSecretRef.key }}
             {{- end }}
-            {{- if .Values.commandsWebhook.keySecretRef.name }}
-            - name: CODE_WEBHOOK_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.commandsWebhook.keySecretRef.name }}
-                  key: {{ .Values.commandsWebhook.keySecretRef.key }}
-            {{- end }}
             # Points the multicluster controller manager at the onboarded
             # provider kubeconfig (mounted below).
             - name: RAILGRID_PROVIDER_KUBECONFIG

@@ -19,6 +19,10 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
+// An uncertain write might already exist on the forge. Keep its receipt until
+// it settles to avoid turning a replay into a second write.
+var errOperationHistoryFull = errors.New("operation history is full of unconfirmed writes")
+
 // claimReviewOperation uses PullRequest status and Kubernetes resourceVersion
 // CAS to serialize same-key retries across Code replicas before the forge write.
 func claimReviewOperation(ctx context.Context, client dynamic.Interface, prName string, uid types.UID, repositoryRef, branch, base string, number int, key, head, fingerprint, claimedAt string) (bool, error) {
@@ -129,7 +133,7 @@ func updateCommentOperation(ctx context.Context, client dynamic.Interface, prNam
 				var evicted bool
 				ops, evicted = evictCompletedOperation(ops)
 				if !evicted {
-					return errors.New("comment operation history is full")
+					return errOperationHistoryFull
 				}
 			}
 			ops = append(ops, map[string]any{"key": key, "payloadFingerprint": fingerprint, "phase": "Accepted", "updatedAt": claimedAt})
@@ -215,7 +219,7 @@ func updateReviewOperation(ctx context.Context, client dynamic.Interface, prName
 				var evicted bool
 				ops, evicted = evictCompletedOperation(ops)
 				if !evicted {
-					return errors.New("review operation history is full")
+					return errOperationHistoryFull
 				}
 			}
 			ops = append(ops, map[string]any{"key": key, "expectedHead": head, "payloadFingerprint": fingerprint, "phase": "Accepted", "updatedAt": claimedAt})

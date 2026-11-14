@@ -273,9 +273,9 @@ railgrid-provider-code .repo-commands__url {
 railgrid-provider-code .repo-commands__value {
   margin: 8px 0 0;
   padding: 8px 10px;
-  border: 1px solid var(--color-border-subtle, #e4e4ee);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
-  background: var(--color-surface-raised, #f6f6fa);
+  background: var(--color-surface-raised, #111320);
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12px;
   line-height: 1.5;
