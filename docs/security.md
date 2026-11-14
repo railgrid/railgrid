@@ -260,6 +260,8 @@ For a remote shell, run `railgrid login --hub-url https://hub.example.com --devi
 
 After identity-provider sign-in, review the account, device code, request time, and CLI network before approving access. The hub releases credentials to the CLI only after approval. Approve only codes from your own terminal. Someone who convinces you to approve their code can sign in to Railgrid as you.
 
+Submitting a valid device code uses it once, before you sign in at the identity provider. If you close the tab or sign-in is interrupted, run `railgrid login --device` again to get a new code.
+
 ---
 
 ## Identity Connectors

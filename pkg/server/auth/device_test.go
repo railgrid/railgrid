@@ -340,6 +340,57 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 	}
 }
 
+func TestDeviceApprovalExpiry(t *testing.T) {
+	now := time.Now()
+	store := &testDeviceStore{values: map[string]testDeviceEntry{}, now: now}
+	h := NewBrowserSessionHandler(nil, nil)
+	h.deviceStore = store
+	browser := httptest.NewRequest(http.MethodGet, apiurl.PathAuthCallback, nil)
+	assertExpired := func(w *httptest.ResponseRecorder) {
+		t.Helper()
+		if w.Code != http.StatusGone || !strings.Contains(w.Body.String(), "Sign-in took too long") {
+			t.Fatalf("expected branded expiry response, got HTTP %d", w.Code)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	state := deviceBrowserState{deviceRequest: deviceRequest{ExpiresAt: now.Add(-time.Second)}}
+	if !h.showDeviceApproval(w, browser, state, deviceApproval{}) || len(store.values) != 0 {
+		t.Fatal("expired request should finish without storing approval or an error result")
+	}
+	assertExpired(w)
+
+	code := oauth2.GenerateVerifier()
+	state.PollKey = deviceDigest(code)
+	state.ExpiresAt = now.Add(time.Minute)
+	store.values["pending:"+state.PollKey] = testDeviceEntry{expires: state.ExpiresAt}
+	w = httptest.NewRecorder()
+	if !h.showDeviceApproval(w, browser, state, deviceApproval{TokenExpiresAt: now.Add(-time.Second).Unix()}) || w.Code != http.StatusOK {
+		t.Fatalf("rendering approval fixture: HTTP %d", w.Code)
+	}
+	match := regexp.MustCompile(`name="approval" value="([^"]+)"`).FindStringSubmatch(w.Body.String())
+	cookies := w.Result().Cookies()
+	if len(match) != 2 || len(cookies) != 1 {
+		t.Fatal("missing approval form or cookie")
+	}
+	form := url.Values{"approval": {match[1]}, "decision": {"approve"}}
+	request := func(path string, form url.Values) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return r
+	}
+	decision := request(apiurl.PathAuthDeviceApprove, form)
+	decision.AddCookie(cookies[0])
+	w = httptest.NewRecorder()
+	h.decideDeviceLogin(w, decision)
+	assertExpired(w)
+	w = httptest.NewRecorder()
+	h.pollDeviceLogin(w, request(apiurl.PathAuthDevicePoll, url.Values{"device_code": {code}}))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "expired_token") {
+		t.Fatalf("expected the CLI to receive expiry, got HTTP %d: %s", w.Code, w.Body)
+	}
+}
+
 func TestDeviceRequesterNetwork(t *testing.T) {
 	trusted := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")}
 	for _, test := range []struct {

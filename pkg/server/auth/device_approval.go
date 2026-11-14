@@ -22,15 +22,17 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/railgrid/provider-sdk/statuspage"
 	"golang.org/x/oauth2"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/sharedstore"
 )
+
+var errDeviceIdentityExpired = errors.New("verified device identity has expired")
 
 type deviceApproval struct {
 	Request               deviceRequest
@@ -53,8 +55,8 @@ func deviceApprovalCipher(secret string) (cipher.AEAD, error) {
 func (h *Handler) showDeviceApproval(w http.ResponseWriter, r *http.Request, state deviceBrowserState, approval deviceApproval) bool {
 	approval.Request = state.deviceRequest
 	if !time.Now().Before(approval.Request.ExpiresAt) {
-		http.Error(w, "Device sign-in expired. Start a new sign-in from the terminal.", http.StatusGone)
-		return false
+		renderDeviceApprovalExpired(w)
+		return true // The CLI's pending entry expires at the same deadline.
 	}
 	id, secret := oauth2.GenerateVerifier(), oauth2.GenerateVerifier()
 	key := "approval:" + id
@@ -141,6 +143,15 @@ func (h *Handler) decideDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	result := deviceResult{Error: "access_denied"}
 	if decision == "approve" {
 		response, err := h.approvedDeviceCredentials(r, approval)
+		if errors.Is(err, errDeviceIdentityExpired) {
+			renderDeviceApprovalExpired(w)
+			// Removing the pending entry makes the existing CLI report expiry.
+			if err := h.deviceStore.Delete(ctx, "pending:"+approval.Request.PollKey); err != nil {
+				h.logger.Error(err, "failed to expire CLI sign-in")
+				h.recordDeviceLoginFailure(ctx, approval.Request)
+			}
+			return
+		}
 		if err != nil {
 			h.deviceBrowserUnavailable(w, err)
 			h.recordDeviceLoginFailure(ctx, approval.Request)
@@ -156,7 +167,7 @@ func (h *Handler) decideDeviceLogin(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) approvedDeviceCredentials(r *http.Request, approval deviceApproval) (tenancyv1alpha1.LoginResponse, error) {
 	var resp tenancyv1alpha1.LoginResponse
 	if time.Now().Unix() >= approval.TokenExpiresAt {
-		return resp, fmt.Errorf("verified device identity has expired")
+		return resp, errDeviceIdentityExpired
 	}
 	ctx := r.Context()
 	userID, firstLogin, err := h.seedUser(ctx, approval.Identity)
@@ -173,4 +184,14 @@ func (h *Handler) approvedDeviceCredentials(r *http.Request, approval deviceAppr
 		IDToken: approval.IDToken, RefreshToken: approval.RefreshToken, ExpiresAt: approval.TokenExpiresAt,
 		IssuerURL: h.oidcConfig.IssuerURL, ClientID: h.oidcConfig.ClientID,
 	}, nil
+}
+
+func renderDeviceApprovalExpired(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusGone)
+	_ = statuspage.Render(w, statuspage.Page{
+		Title:   "CLI sign-in expired",
+		Heading: "Sign-in took too long",
+		Message: "Start a new sign-in from the terminal.",
+		State:   statuspage.Error,
+	})
 }
