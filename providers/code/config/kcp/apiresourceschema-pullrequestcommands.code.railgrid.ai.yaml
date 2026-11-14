@@ -1,0 +1,185 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v261114-7058e03a8.pullrequestcommands.code.railgrid.ai
+spec:
+  group: code.railgrid.ai
+  names:
+    categories:
+    - railgrid
+    kind: PullRequestCommand
+    listKind: PullRequestCommandList
+    plural: pullrequestcommands
+    shortNames:
+    - gprcmd
+    singular: pullrequestcommand
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.repositoryRef
+      name: Repository
+      type: string
+    - jsonPath: .status.number
+      name: Number
+      type: integer
+    - jsonPath: .status.command
+      name: Command
+      type: string
+    - jsonPath: .status.author
+      name: Author
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      description: |-
+        PullRequestCommand is one "/railgrid <command>" comment a person left on a
+        pull request in a registered Repository.
+
+        Code records it when the Repository's commands webhook rings, under a name
+        derived from the comment, so a redelivered webhook finds the object that is
+        already there. The webhook is only a doorbell: its payload is never
+        trusted. Code then reads the comment, its author's repository permission
+        and the pull request back from the forge with the Repository's own
+        credential and records what the forge confirmed in status. Code knows no
+        command vocabulary; a coordinator acts on a Verified command it
+        understands and ignores everything else.
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: PullRequestCommandSpec names the comment to verify. It is immutable.
+          properties:
+            commentID:
+              description: CommentID is the forge's identifier of the comment.
+              format: int64
+              minimum: 1
+              type: integer
+            repositoryRef:
+              description: RepositoryRef names the Repository (same workspace) the
+                comment is in.
+              maxLength: 253
+              minLength: 1
+              type: string
+          required:
+          - commentID
+          - repositoryRef
+          type: object
+          x-kubernetes-validations:
+          - message: spec is immutable
+            rule: self == oldSelf
+        status:
+          description: |-
+            PullRequestCommandStatus is what the forge confirmed about the comment and
+            its pull request when Code verified it. Verification happens once.
+          properties:
+            args:
+              items:
+                maxLength: 64
+                type: string
+              maxItems: 8
+              type: array
+            author:
+              description: Author is the commenter's login; AuthorType is "User" for
+                a person.
+              maxLength: 128
+              type: string
+            authorPermission:
+              description: |-
+                AuthorPermission is the commenter's repository permission when the
+                command was verified.
+              enum:
+              - admin
+              - write
+              - read
+              - none
+              type: string
+            authorType:
+              maxLength: 32
+              type: string
+            base:
+              maxLength: 256
+              type: string
+            command:
+              description: Command is the word after "/railgrid"; Args are the words
+                after it.
+              pattern: ^[a-z][a-z0-9-]{0,31}$
+              type: string
+            commentedAt:
+              description: |-
+                CommentedAt is when the comment was written; VerifiedAt when Code read
+                it back.
+              format: date-time
+              type: string
+            draft:
+              type: boolean
+            fork:
+              description: Fork is true when the head branch lives in another repository.
+              type: boolean
+            head:
+              description: |-
+                Head is the pull request's head commit when the command was verified;
+                a coordinator acts on that commit and no other.
+              pattern: ^[a-f0-9]{40}$
+              type: string
+            headBranch:
+              description: HeadBranch and Base are the pull request's branches.
+              maxLength: 256
+              type: string
+            merged:
+              type: boolean
+            number:
+              description: Number is the pull request the comment is on.
+              minimum: 1
+              type: integer
+            phase:
+              description: Phase is Pending until verified, then Verified or Rejected.
+              enum:
+              - Pending
+              - Verified
+              - Rejected
+              type: string
+            reason:
+              description: Reason says why a command was rejected.
+              maxLength: 512
+              type: string
+            state:
+              description: |-
+                State is the pull request's state (open or closed); Merged and Draft
+                qualify it.
+              maxLength: 16
+              type: string
+            url:
+              description: URL is the comment's browser URL.
+              maxLength: 2048
+              type: string
+            verifiedAt:
+              format: date-time
+              type: string
+          type: object
+      required:
+      - spec
+      type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

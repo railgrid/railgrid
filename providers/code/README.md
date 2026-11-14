@@ -445,6 +445,33 @@ Notes:
 Secret, the runtime kubeconfig Secret name, the `githubOAuth.*` block, the
 tenant credential namespace, and the CatalogEntry toggle.
 
+## Pull request commands
+
+People can drive automation from a pull request by commenting a `/railgrid`
+command, such as `/railgrid review`. Code receives and verifies the command.
+Acting on it is up to other providers (Factory), which watch `PullRequestCommand`.
+
+1. Once a Repository is ready, its detail page shows a webhook URL
+   (`status.commandsWebhookPath` on the hub origin). A repository admin adds it
+   in GitHub under **Settings → Webhooks** with content type `application/json`,
+   choosing only the **Issue comments** event.
+2. The URL is the credential. It embeds an HMAC token over the workspace and
+   Repository name, so treat it like a password. GitHub's signing secret is not
+   used.
+3. A delivery records only the comment ID, as a `PullRequestCommand` owned by
+   the Repository. Nothing from the payload is trusted beyond a repository ID
+   check.
+4. The `PullRequestCommand` reconciler re-reads the comment from GitHub with
+   the Repository's own credential. It checks that the comment is on a pull
+   request, is at most an hour old and parses as a command. Then it records
+   the author, the author's permission on the repository (`none` for bots),
+   and the pull request's head, branches, fork flag and state. The result is
+   `Verified` or `Rejected` with a reason. A comment GitHub doesn't have is
+   deleted.
+
+Consumers decide who may run what from `status.authorPermission`, and they act
+on `status.head`, not on whatever the branch points at later.
+
 ## MCP integration
 
 ```jsonc
@@ -566,6 +593,7 @@ request accounting.
 | `RAILGRID_HUB_CA_FILE` / `RAILGRID_HUB_CA_DATA` | (unset) | PEM bundle for the hub's serving certificate, added to the system roots; unset, the CA of `RAILGRID_PROVIDER_KUBECONFIG` is used |
 | `CODE_KUBECONFIG` | (unset → controllers disabled) | kcp kubeconfig for the multicluster controller manager |
 | `CODE_WORKSPACE_PATH` | `root:railgrid:providers:code` | Workspace the APIExportEndpointSlice is ensured in |
+| `CODE_WEBHOOK_KEY` | (unset → derived from the provider kubeconfig) | Key for pull request command webhook tokens; set it to keep webhook URLs stable across kubeconfig rotation |
 | `CODE_COMMIT_BUNDLE_DIR` | system temp dir | Directory for the transient RepositoryCommit source bundles and git snapshots ([architecture §9](../../docs/code-provider-architecture.md#9-transient-artifacts)); use shared storage before running multiple replicas |
 | `RAILGRID_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace the Connection credential Secret lives in |
 | `GITHUB_OAUTH_CLIENT_ID` | (unset → OAuth off) | GitHub OAuth App client ID |

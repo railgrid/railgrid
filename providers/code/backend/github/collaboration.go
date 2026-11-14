@@ -455,3 +455,52 @@ func normalizePermission(permission string) string {
 		return "none"
 	}
 }
+
+// IssueComment reads one conversation comment back by its identifier. The
+// issue number comes from the comment's own issue URL.
+func (b *Backend) IssueComment(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, id int64) (*backend.IssueComment, error) {
+	if id <= 0 {
+		return nil, errors.New("comment id required")
+	}
+	c, err := b.collaborationClient(ctx, conn, cred, repo)
+	if err != nil {
+		return nil, err
+	}
+	raw, response, err := c.Issues.GetComment(ctx, owner(conn, repo), repo.Spec.Name, id)
+	if err != nil {
+		if response != nil && response.StatusCode == http.StatusNotFound {
+			return nil, backend.ErrCommentNotFound
+		}
+		return nil, classify(response, err)
+	}
+	if raw.GetID() != id || raw.GetUser().GetLogin() == "" {
+		return nil, errors.New("invalid comment identity")
+	}
+	number, err := issueNumberFromURL(raw.GetIssueURL())
+	if err != nil {
+		return nil, err
+	}
+	return &backend.IssueComment{ID: raw.GetID(), IssueNumber: number, URL: raw.GetHTMLURL(), Body: raw.GetBody(), Author: raw.GetUser().GetLogin(), AuthorType: raw.GetUser().GetType(), CreatedAt: raw.GetCreatedAt().Time}, nil
+}
+
+func issueNumberFromURL(raw string) (int, error) {
+	index := strings.LastIndex(raw, "/issues/")
+	if index < 0 {
+		return 0, errors.New("comment has no issue")
+	}
+	number, err := strconv.Atoi(raw[index+len("/issues/"):])
+	if err != nil || number <= 0 {
+		return 0, errors.New("comment has an invalid issue number")
+	}
+	return number, nil
+}
+
+// RepositoryPermission is login's current permission on the repository:
+// admin, write, read or none.
+func (b *Backend) RepositoryPermission(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, login string) (string, error) {
+	c, err := b.collaborationClient(ctx, conn, cred, repo)
+	if err != nil {
+		return "", err
+	}
+	return reviewerPermissions{client: c, owner: owner(conn, repo), repo: repo.Spec.Name, levels: map[string]string{}}.of(ctx, login)
+}

@@ -66,13 +66,18 @@ spec:
     storage:
       crd: {}
   - group: code.railgrid.ai
+    name: pullrequestcommands
+    schema: v261114-7058e03a8.pullrequestcommands.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
     name: pullrequests
     schema: v261114-0af3eb5c4.pullrequests.code.railgrid.ai
     storage:
       crd: {}
   - group: code.railgrid.ai
     name: repositories
-    schema: v261031-c205dcb4.repositories.code.railgrid.ai
+    schema: v261114-7058e03a8.repositories.code.railgrid.ai
     storage:
       crd: {}
   - group: code.railgrid.ai
