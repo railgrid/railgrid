@@ -28,21 +28,28 @@ import (
 func TestSourceDeletionsFollowWorkspaceMutations(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		remove func(context.Context, *FileStore, Scope, string) error
+		remove func(*testing.T, context.Context, *FileStore, Scope, string) error
 	}{
-		{"delete", func(ctx context.Context, store *FileStore, scope Scope, version string) error {
+		{"delete", func(t *testing.T, ctx context.Context, store *FileStore, scope Scope, version string) error {
 			_, err := store.DeleteFile(ctx, scope, DeleteOptions{Path: "old.txt", ExpectedVersion: version})
 			return err
 		}},
-		{"move", func(ctx context.Context, store *FileStore, scope Scope, version string) error {
+		{"move", func(t *testing.T, ctx context.Context, store *FileStore, scope Scope, version string) error {
 			_, err := store.MoveFile(ctx, scope, MoveOptions{SourcePath: "old.txt", DestinationPath: "new.txt", ExpectedVersion: version})
 			return err
 		}},
-		{"batch", func(ctx context.Context, store *FileStore, scope Scope, version string) error {
+		{"batch", func(t *testing.T, ctx context.Context, store *FileStore, scope Scope, version string) error {
 			_, err := store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{{Path: "old.txt", Operation: ManagedFileDelete, ExpectedVersion: version}})
 			return err
 		}},
-		{"replace tree", func(ctx context.Context, store *FileStore, scope Scope, _ string) error {
+		{"restore snapshot", func(t *testing.T, ctx context.Context, store *FileStore, scope Scope, _ string) error {
+			writeMigrationSnapshot(t, store.root, scope, "before-create", migrationSnapshotEntry{
+				Path: "old.txt", AfterExisted: true, After: []byte("original"),
+			})
+			_, err := store.RestoreSnapshot(ctx, scope, "before-create")
+			return err
+		}},
+		{"replace tree", func(t *testing.T, ctx context.Context, store *FileStore, scope Scope, _ string) error {
 			_, err := store.ReplaceTree(ctx, scope, ReplaceTreeOptions{Files: []File{{Path: "new.txt", Content: "new"}}})
 			return err
 		}},
@@ -55,7 +62,7 @@ func TestSourceDeletionsFollowWorkspaceMutations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := tc.remove(ctx, store, scope, file.Version); err != nil {
+			if err := tc.remove(t, ctx, store, scope, file.Version); err != nil {
 				t.Fatal(err)
 			}
 			revision, err := store.SourceRevision(ctx, scope)
@@ -74,6 +81,45 @@ func TestSourceDeletionsFollowWorkspaceMutations(t *testing.T) {
 				t.Fatalf("deletions after recreating file = %v, %v", got, err)
 			}
 		})
+	}
+}
+
+func TestSourceDeletionSurvivesFailedRecreation(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	file, err := store.PutFile(ctx, scope, PutOptions{Path: "old.txt", Data: []byte("original")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteFile(ctx, scope, DeleteOptions{Path: "old.txt", ExpectedVersion: file.Version}); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("second batch write failed")
+	store.managedTransactionHook = func(change ManagedFileChange) error {
+		if change.Path == "z.txt" {
+			return failure
+		}
+		return nil
+	}
+	_, err = store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{
+		{Path: "old.txt", Operation: ManagedFileCreate, Content: "recreated"},
+		{Path: "z.txt", Operation: ManagedFileCreate, Content: "new"},
+	})
+	if !errors.Is(err, failure) {
+		t.Fatalf("batch error = %v, want %v", err, failure)
+	}
+	revision, err := store.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletions, err := store.SourceDeletions(ctx, scope, revision)
+	if err != nil || !reflect.DeepEqual(deletions, map[string]bool{"old.txt": true}) {
+		t.Fatalf("deletions after rollback = %v, %v", deletions, err)
+	}
+	exists, err := store.FileExists(ctx, scope, "old.txt")
+	if err != nil || exists {
+		t.Fatalf("recreated file after rollback = %t, %v", exists, err)
 	}
 }
 
