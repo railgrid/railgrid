@@ -18,8 +18,10 @@ package auth
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,6 +36,7 @@ type TokenCache struct {
 	RefreshToken string `json:"refreshToken"`
 	ExpiresAt    int64  `json:"expiresAt"` // Unix timestamp
 	IssuerURL    string `json:"issuerUrl"`
+	Account      string `json:"account,omitempty"`
 	ClientID     string `json:"clientId"`
 }
 
@@ -56,23 +59,39 @@ func cacheDir() (string, error) {
 }
 
 // cacheKey generates a filename-safe key from issuer URL and client ID.
-func cacheKey(issuerURL, clientID string) string {
-	h := sha256.Sum256([]byte(issuerURL + "\n" + clientID))
+func cacheKey(issuerURL, clientID, account string) string {
+	key := issuerURL + "\n" + clientID
+	if account != "" {
+		data := []byte("railgrid-account-cache-v1")
+		for _, value := range []string{issuerURL, clientID, account} {
+			data = binary.AppendUvarint(data, uint64(len(value)))
+			data = append(data, value...)
+		}
+		key = string(data)
+	}
+	h := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(h[:])[:32]
 }
 
+func firstAccount(account []string) string {
+	if len(account) == 0 {
+		return ""
+	}
+	return account[0]
+}
+
 // cachePath returns the path to the cache file for the given OIDC config.
-func cachePath(issuerURL, clientID string) (string, error) {
+func cachePath(issuerURL, clientID string, account ...string) (string, error) {
 	dir, err := cacheDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, cacheKey(issuerURL, clientID)+".json"), nil
+	return filepath.Join(dir, cacheKey(issuerURL, clientID, firstAccount(account))+".json"), nil
 }
 
 // LoadTokenCache reads the cached token for the given OIDC config.
-func LoadTokenCache(issuerURL, clientID string) (*TokenCache, error) {
-	path, err := cachePath(issuerURL, clientID)
+func LoadTokenCache(issuerURL, clientID string, account ...string) (*TokenCache, error) {
+	path, err := cachePath(issuerURL, clientID, account...)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +114,7 @@ func LoadTokenCache(issuerURL, clientID string) (*TokenCache, error) {
 // holding a refresh token that the IdP has already rotated, permanently
 // bricking the cache until the next interactive login.
 func SaveTokenCache(cache *TokenCache) error {
-	path, err := cachePath(cache.IssuerURL, cache.ClientID)
+	path, err := cachePath(cache.IssuerURL, cache.ClientID, cache.Account)
 	if err != nil {
 		return err
 	}
@@ -104,7 +123,45 @@ func SaveTokenCache(cache *TokenCache) error {
 	if err != nil {
 		return fmt.Errorf("marshaling token cache: %w", err)
 	}
+	return writeTokenCache(path, data)
+}
 
+// SaveLoginTokenCache holds the refresh lock through the kubeconfig write.
+// If that write fails, restore the prior cache before refresh can resume.
+func SaveLoginTokenCache(cache *TokenCache, writeKubeconfig func() error) error {
+	unlock, err := LockTokenCache(cache.IssuerURL, cache.ClientID, cache.Account)
+	if err != nil {
+		return fmt.Errorf("locking token cache: %w", err)
+	}
+	defer unlock()
+
+	path, err := cachePath(cache.IssuerURL, cache.ClientID, cache.Account)
+	if err != nil {
+		return err
+	}
+	previous, readErr := os.ReadFile(path)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return fmt.Errorf("reading prior token cache: %w", readErr)
+	}
+	if err := SaveTokenCache(cache); err != nil {
+		return err
+	}
+	if err := writeKubeconfig(); err != nil {
+		var restoreErr error
+		if readErr == nil {
+			restoreErr = writeTokenCache(path, previous)
+		} else {
+			_, restoreErr = RemoveTokenCache(cache.IssuerURL, cache.ClientID, cache.Account)
+		}
+		if restoreErr != nil {
+			return errors.Join(err, fmt.Errorf("restoring prior token cache: %w", restoreErr))
+		}
+		return err
+	}
+	return nil
+}
+
+func writeTokenCache(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tokencache-*")
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
@@ -144,19 +201,19 @@ func SaveTokenCache(cache *TokenCache) error {
 // save so that concurrent `railgrid get-token` invocations don't race on the
 // refresh-token rotation. On platforms where advisory locking isn't supported
 // the returned unlock is a no-op.
-func LockTokenCache(issuerURL, clientID string) (unlock func(), err error) {
+func LockTokenCache(issuerURL, clientID string, account ...string) (unlock func(), err error) {
 	dir, err := cacheDir()
 	if err != nil {
 		return nil, err
 	}
-	lockPath := filepath.Join(dir, cacheKey(issuerURL, clientID)+".lock")
+	lockPath := filepath.Join(dir, cacheKey(issuerURL, clientID, firstAccount(account))+".lock")
 	return acquireFileLock(lockPath)
 }
 
 // RemoveTokenCache deletes the cached tokens for the given OIDC config. It
 // reports whether a cache file existed.
-func RemoveTokenCache(issuerURL, clientID string) (bool, error) {
-	path, err := cachePath(issuerURL, clientID)
+func RemoveTokenCache(issuerURL, clientID string, account ...string) (bool, error) {
+	path, err := cachePath(issuerURL, clientID, account...)
 	if err != nil {
 		return false, err
 	}

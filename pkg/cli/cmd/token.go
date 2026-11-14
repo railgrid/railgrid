@@ -51,11 +51,11 @@ the refresh-token flow works against your identity provider.`,
 				return err
 			}
 			if auth.Exec != nil && forceRefresh {
-				issuer, clientID := execOIDCArgs(auth.Exec)
+				issuer, clientID, account := execOIDCArgs(auth.Exec)
 				if issuer == "" || clientID == "" {
 					return fmt.Errorf("the kubeconfig's exec plugin is not the railgrid OIDC plugin; cannot refresh")
 				}
-				expiry, err := forceTokenRefresh(ctx, issuer, clientID, globalInsecureTLS || hasInsecureArg(auth.Exec.Args))
+				expiry, err := forceTokenRefresh(ctx, issuer, clientID, globalInsecureTLS || hasInsecureArg(auth.Exec.Args), account)
 				if err != nil {
 					return err
 				}
@@ -90,14 +90,14 @@ func hasInsecureArg(args []string) bool {
 
 // forceTokenRefresh performs the refresh-token grant regardless of the cached
 // token's expiry and persists the rotated tokens. It returns the new expiry.
-func forceTokenRefresh(ctx context.Context, issuerURL, clientID string, insecure bool) (time.Time, error) {
-	unlock, err := cliauth.LockTokenCache(issuerURL, clientID)
+func forceTokenRefresh(ctx context.Context, issuerURL, clientID string, insecure bool, account ...string) (time.Time, error) {
+	unlock, err := cliauth.LockTokenCache(issuerURL, clientID, account...)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("locking token cache: %w", err)
 	}
 	defer unlock()
 
-	cache, err := cliauth.LoadTokenCache(issuerURL, clientID)
+	cache, err := cliauth.LoadTokenCache(issuerURL, clientID, account...)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("no cached token for this hub; run 'railgrid login' first (%w)", err)
 	}

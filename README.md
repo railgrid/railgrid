@@ -99,6 +99,8 @@ railgrid use
 
 For a self-hosted deployment, use your hub's URL. If it uses static-token authentication, add `--token <static-token>`. You can also set the hub URL through `RAILGRID_HUB_URL`.
 
+From an SSH session, add `--device`. Open the displayed URL and enter the code in your local browser to sign in on the remote host.
+
 ### 2. Connect a cluster
 
 ```bash
@@ -146,7 +148,7 @@ same way; `railgrid completion --help` sets up shell completion.
 
 | Command | What it does |
 |---|---|
-| `railgrid login --hub-url <hub> [--token t] [-i]` | Log in (browser OIDC with silent refresh, or a static token); writes the `railgrid` kubeconfig context |
+| `railgrid login --hub-url <hub> [--device \| --token t] [-i]` | Sign in with OIDC in a local browser or using a device code, or use a static token. Writes the `railgrid` kubeconfig context. |
 | `railgrid logout` | Forget the cached tokens and the railgrid contexts on this machine |
 | `railgrid use [--org O --workspace W]` | Switch the active organization and workspace (interactive picker without flags) |
 | `railgrid whoami [-o json]` | Hub, identity, token state, org/workspace with your roles, and what kubectl points at |

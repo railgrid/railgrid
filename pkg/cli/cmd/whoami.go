@@ -170,12 +170,12 @@ func describeAuth(v *whoamiView, auth *clientcmdapi.AuthInfo) {
 		v.Auth = "none"
 	case auth.Exec != nil:
 		v.Auth = "oidc"
-		issuer, clientID := execOIDCArgs(auth.Exec)
+		issuer, clientID, account := execOIDCArgs(auth.Exec)
 		if issuer == "" || clientID == "" {
 			v.TokenInfo = "exec plugin without OIDC arguments"
 			return
 		}
-		cache, err := cliauth.LoadTokenCache(issuer, clientID)
+		cache, err := cliauth.LoadTokenCache(issuer, clientID, account)
 		if err != nil {
 			v.TokenInfo = "no cached token (run 'railgrid login')"
 			return
@@ -195,7 +195,7 @@ func describeAuth(v *whoamiView, auth *clientcmdapi.AuthInfo) {
 
 // execOIDCArgs extracts the issuer and client id from the exec plugin args
 // 'railgrid login' wrote (--oidc-issuer-url=… --oidc-client-id=…).
-func execOIDCArgs(exec *clientcmdapi.ExecConfig) (issuer, clientID string) {
+func execOIDCArgs(exec *clientcmdapi.ExecConfig) (issuer, clientID, account string) {
 	for i := 0; i < len(exec.Args); i++ {
 		a := exec.Args[i]
 		val := func(flag string) (string, bool) {
@@ -212,9 +212,11 @@ func execOIDCArgs(exec *clientcmdapi.ExecConfig) (issuer, clientID string) {
 			issuer = v
 		} else if v, ok := val("--oidc-client-id"); ok {
 			clientID = v
+		} else if v, ok := val("--oidc-account"); ok {
+			account = v
 		}
 	}
-	return issuer, clientID
+	return issuer, clientID, account
 }
 
 // selfView is the caller's identity from GET /api/users/me.
