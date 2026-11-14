@@ -32,10 +32,10 @@ import (
 	"github.com/railgrid/provider-code/controller/shared"
 )
 
-// MaxCommandAge is how old a comment may be when Code verifies it. GitHub
-// delivers within seconds; an older comment is a replay or a long outage, and
-// the person can leave the command again.
-const MaxCommandAge = time.Hour
+// Keep verified and rejected commands available to consumers beyond the
+// webhook's redelivery window. The reconciler schedules one expiration per
+// terminal object from its persisted verification timestamp.
+const terminalRetention = 24 * time.Hour
 
 var commitPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
 
@@ -85,8 +85,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 }
 
 func (r *Reconciler) verify(ctx context.Context, c client.Client, command *codev1alpha1.PullRequestCommand) (ctrl.Result, error) {
-	if !command.DeletionTimestamp.IsZero() || command.Status.Phase == codev1alpha1.PullRequestCommandVerified || command.Status.Phase == codev1alpha1.PullRequestCommandRejected {
+	if !command.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
+	}
+	if command.Status.Phase == codev1alpha1.PullRequestCommandVerified || command.Status.Phase == codev1alpha1.PullRequestCommandRejected {
+		finishedAt := command.CreationTimestamp.Time
+		if command.Status.VerifiedAt != nil {
+			finishedAt = command.Status.VerifiedAt.Time
+		}
+		if wait := finishedAt.Add(terminalRetention).Sub(r.now()); wait > 0 {
+			return ctrl.Result{RequeueAfter: wait}, nil
+		}
+		return ctrl.Result{}, deleteCommand(ctx, c, command)
 	}
 	repo, err := shared.ResolveRepository(ctx, c, command.Spec.RepositoryRef)
 	if err != nil {
@@ -113,7 +123,7 @@ func (r *Reconciler) verify(ctx context.Context, c client.Client, command *codev
 		// The repository has no such comment: a forged or mistaken delivery.
 		// Nothing about it is worth keeping.
 		klog.FromContext(ctx).Info("dropping pull request command for a comment GitHub does not have", "command", command.Name)
-		return ctrl.Result{}, client.IgnoreNotFound(c.Delete(ctx, command))
+		return ctrl.Result{}, deleteCommand(ctx, c, command)
 	}
 	if err != nil {
 		return r.retry(err)
@@ -121,7 +131,7 @@ func (r *Reconciler) verify(ctx context.Context, c client.Client, command *codev
 	if !strings.Contains(comment.URL, fmt.Sprintf("/pull/%d", comment.IssueNumber)) {
 		return ctrl.Result{}, r.reject(ctx, c, command, "the comment is not on a pull request")
 	}
-	if age := r.now().Sub(comment.CreatedAt); age > MaxCommandAge {
+	if comment.CreatedAt.IsZero() || r.now().After(comment.CreatedAt.Add(commandhook.MaxCommandAge)) {
 		return ctrl.Result{}, r.reject(ctx, c, command, "the comment is more than an hour old; leave the command again")
 	}
 	name, args, reason, ok := commandhook.Parse(comment.Body)
@@ -151,6 +161,11 @@ func (r *Reconciler) verify(ctx context.Context, c client.Client, command *codev
 		CommentedAt: &commented, VerifiedAt: &verified,
 	}
 	return ctrl.Result{}, c.Status().Update(ctx, command)
+}
+
+func deleteCommand(ctx context.Context, c client.Client, command *codev1alpha1.PullRequestCommand) error {
+	// A delayed reconcile must not delete another object with the same name.
+	return client.IgnoreNotFound(c.Delete(ctx, command, client.Preconditions{UID: &command.UID, ResourceVersion: &command.ResourceVersion}))
 }
 
 func (r *Reconciler) retry(err error) (ctrl.Result, error) {

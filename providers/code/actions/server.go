@@ -178,6 +178,7 @@ var snapshotActions = map[string]bool{
 var statusFor = map[string]int{
 	"invalid_action_input":         http.StatusBadRequest,
 	"review_operation_conflict":    http.StatusConflict,
+	"operation_history_full":       http.StatusConflict,
 	"action_forbidden":             http.StatusForbidden,
 	"identity_conflict":            http.StatusConflict,
 	"unsupported_provider":         http.StatusUnprocessableEntity,

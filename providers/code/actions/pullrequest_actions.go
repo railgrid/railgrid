@@ -21,6 +21,16 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
+func operationClaimError(err error) *actionwire.Error {
+	if errors.Is(err, errOperationHistoryFull) {
+		return &actionwire.Error{
+			Code:    "operation_history_full",
+			Message: "The pull request has too many unconfirmed writes. Retry an existing review or comment operation to confirm its outcome before starting a new one.",
+		}
+	}
+	return wireError("review_operation_conflict")
+}
+
 func (s *Server) runPullRequest(ctx context.Context, provider dynamic.Interface, req dataplane.Request, visible *unstructured.Unstructured, raw json.RawMessage) (any, *actionwire.Error) {
 	in, err := decodeInput(raw)
 	if err != nil {
@@ -108,7 +118,7 @@ func (s *Server) runPullRequest(ctx context.Context, provider dynamic.Interface,
 		claimedAt := time.Now().UTC().Format(time.RFC3339Nano)
 		claimed, claimErr := claimReviewOperation(ctx, provider, req.Name, visible.GetUID(), pr.Spec.RepositoryRef, pr.Spec.Branch, pr.Spec.Base, pr.Status.Number, in.IdempotencyKey, in.ExpectedHead, fingerprint, claimedAt)
 		if claimErr != nil {
-			return nil, wireError("review_operation_conflict")
+			return nil, operationClaimError(claimErr)
 		}
 		reviewInput.RecoverOnly = !claimed
 		result, callErr := ops.SubmitReview(ctx, conn, credential, resolvedRepo, reviewInput)
@@ -148,7 +158,7 @@ func (s *Server) runPullRequest(ctx context.Context, provider dynamic.Interface,
 		claimedAt := time.Now().UTC().Format(time.RFC3339Nano)
 		claimed, commentID, claimErr := claimCommentOperation(ctx, provider, req.Name, visible.GetUID(), pr.Spec.RepositoryRef, pr.Spec.Branch, pr.Spec.Base, pr.Status.Number, in.CommentKey, fingerprint, claimedAt)
 		if claimErr != nil {
-			return nil, wireError("review_operation_conflict")
+			return nil, operationClaimError(claimErr)
 		}
 		commentInput.CommentID = commentID
 		commentInput.RecoverOnly = !claimed

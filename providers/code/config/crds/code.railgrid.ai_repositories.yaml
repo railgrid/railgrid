@@ -72,6 +72,33 @@ spec:
                   default branch immediately. Required if DeployKeys/clones must
                   succeed right after creation.
                 type: boolean
+              commandsWebhookSecretRef:
+                description: |-
+                  CommandsWebhookSecretRef enables the GitHub issue-comment webhook.
+                  Reference a dedicated Code-owned Secret in this workspace. The key
+                  defaults to "secret" and the namespace to the credentials namespace.
+                properties:
+                  key:
+                    description: |-
+                      Key is the entry within the Secret's data holding the value. For a
+                      Connection PAT this defaults to "token"; for a DeployKey private
+                      key the controller writes "ssh-privatekey".
+                    maxLength: 253
+                    type: string
+                  name:
+                    description: Name of the Secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the Secret. Empty resolves to the provider's
+                      convention namespace ("default").
+                    maxLength: 253
+                    type: string
+                required:
+                - name
+                type: object
               connectionRef:
                 description: ConnectionRef names the Connection (same workspace) whose
                   credential
@@ -129,10 +156,9 @@ spec:
                 description: |-
                   CommandsWebhookPath is the hub-relative URL that receives this
                   repository's GitHub "Issue comments" webhook, so people can leave
-                  "/railgrid" commands on its pull requests. The path is the credential
-                  (an HMAC over the workspace and Repository name), but Code trusts no
-                  payload: each delivery only prompts it to read the comment back from
-                  GitHub. Prefix it with the console's origin when adding the webhook.
+                  "/railgrid" commands on its pull requests. GitHub signs deliveries
+                  using the configured Secret. Prefix the path with the console's origin
+                  when adding the webhook.
                 maxLength: 512
                 type: string
               conditions:

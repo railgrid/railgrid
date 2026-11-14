@@ -6,14 +6,9 @@
 // Package commandhook receives a Repository's GitHub "Issue comments"
 // webhook and turns a "/railgrid <command>" comment into a PullRequestCommand.
 //
-// The webhook URL is the credential: an HMAC over the workspace and
-// Repository name under a provider-wide key, with nothing stored. Even so a
-// delivery is only a doorbell. The handler takes from the payload nothing
-// but which comment to look at and records it unverified; the PullRequestCommand
-// reconciler reads the comment, its author's permission and the pull request
-// back from GitHub with the Repository's own credential before anything can
-// act on it. A forged or replayed payload can at most make Code read a real
-// comment.
+// Code authenticates the raw delivery with the repository's webhook secret.
+// The command reconciler then reads the comment, the author's permissions and
+// the pull request back from GitHub before a consumer can act on it.
 package commandhook
 
 import (
@@ -21,69 +16,38 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // PathPrefix is where the hub forwards this provider's webhooks.
 const PathPrefix = "/services/providers/code/webhooks/github/"
 
 // Pattern is the route the provider serves, below the hub prefix.
-const Pattern = "/webhooks/github/{cluster}/{name}/{token}"
+const Pattern = "/webhooks/github/{cluster}/{name}"
 
-const kubeconfigSalt = "railgrid-code-commands-webhook"
+// MaxCommandAge bounds the age of a comment at both intake and verification.
+const MaxCommandAge = time.Hour
 
-// Key resolves the signing key: the explicit key when the operator set one
-// (CODE_WEBHOOK_KEY), else one derived from the provider kubeconfig, which is
-// stable across restarts and identical on every replica. Nil means no URL can
-// be minted or accepted.
-func Key(explicit, providerKubeconfig string) []byte {
-	if explicit != "" {
-		return []byte(explicit)
-	}
-	if providerKubeconfig != "" {
-		if b, err := os.ReadFile(providerKubeconfig); err == nil {
-			sum := sha256.Sum256(append(b, []byte(kubeconfigSalt)...))
-			return sum[:]
-		}
-	}
-	return nil
+// SecretKey is the default key of the Repository's webhook signing Secret.
+const SecretKey = "secret"
+
+const signaturePrefix = "sha256="
+const signatureLength = len(signaturePrefix) + sha256.Size*2
+
+// Path is the hub-relative webhook URL for a Repository.
+func Path(clusterID, name string) string {
+	return PathPrefix + clusterID + "/" + name
 }
 
-// KeyFromEnv is Key from this provider's environment.
-func KeyFromEnv() []byte {
-	kubeconfig := os.Getenv("RAILGRID_PROVIDER_KUBECONFIG")
-	if kubeconfig == "" {
-		kubeconfig = os.Getenv("CODE_KUBECONFIG")
+func validSignature(secret, signature string, body []byte) bool {
+	if secret == "" || len(signature) != signatureLength {
+		return false
 	}
-	return Key(os.Getenv("CODE_WEBHOOK_KEY"), kubeconfig)
-}
-
-// Token is the HMAC guarding one Repository's webhook URL; empty without a
-// key.
-func Token(key []byte, clusterID, name string) string {
-	if len(key) == 0 {
-		return ""
-	}
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(clusterID + "/" + name))
-	return hex.EncodeToString(mac.Sum(nil))[:32]
-}
-
-// Path is the hub-relative webhook URL for a Repository, or "" without a key.
-func Path(key []byte, clusterID, name string) string {
-	token := Token(key, clusterID, name)
-	if token == "" || clusterID == "" || name == "" {
-		return ""
-	}
-	return PathPrefix + clusterID + "/" + name + "/" + token
-}
-
-// ValidToken reports whether token guards clusterID/name, in constant time.
-func ValidToken(key []byte, clusterID, name, token string) bool {
-	want := Token(key, clusterID, name)
-	return want != "" && hmac.Equal([]byte(want), []byte(token))
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return hmac.Equal([]byte(signature), []byte(signaturePrefix+hex.EncodeToString(mac.Sum(nil))))
 }
 
 // ObjectName is the PullRequestCommand recorded for one comment. A

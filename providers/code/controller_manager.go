@@ -44,7 +44,6 @@ import (
 	"github.com/railgrid/provider-sdk/vwhealth"
 
 	"github.com/railgrid/provider-code/backend"
-	"github.com/railgrid/provider-code/commandhook"
 	"github.com/railgrid/provider-code/controller/collaborator"
 	"github.com/railgrid/provider-code/controller/connection"
 	"github.com/railgrid/provider-code/controller/deploykey"
@@ -150,7 +149,7 @@ func runControllerManager(ctx context.Context, config *rest.Config, registry *ba
 	if err := (&connection.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("connection controller: %w", err)
 	}
-	if err := (&repository.Reconciler{Backends: registry, CommandsWebhookKey: commandhook.KeyFromEnv()}).SetupWithManager(mgr); err != nil {
+	if err := (&repository.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("repository controller: %w", err)
 	}
 	if err := (&repositorycommit.Reconciler{Backends: registry, Bundles: stores.bundles}).SetupWithManager(mgr); err != nil {

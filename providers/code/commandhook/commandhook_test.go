@@ -7,10 +7,15 @@ package commandhook
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -48,19 +53,13 @@ func TestParseReadsOnlyTheFirstLine(t *testing.T) {
 	}
 }
 
-func TestTokensBindWorkspaceAndRepository(t *testing.T) {
-	key := []byte("key")
-	path := Path(key, "cluster", "app")
-	if !strings.HasPrefix(path, PathPrefix+"cluster/app/") {
-		t.Fatalf("path = %q", path)
+func TestGitHubSignature(t *testing.T) {
+	if !validSignature("It's a Secret to Everybody", "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17", []byte("Hello, World!")) {
+		t.Fatal("GitHub's documented signature was rejected")
 	}
-	token := path[strings.LastIndex(path, "/")+1:]
-	if !ValidToken(key, "cluster", "app", token) || ValidToken(key, "cluster", "other", token) || ValidToken(key, "other", "app", token) || ValidToken([]byte("rotated"), "cluster", "app", token) {
-		t.Fatal("a token must guard exactly one workspace and Repository under one key")
-	}
-	if Path(nil, "cluster", "app") != "" || ValidToken(nil, "cluster", "app", "") {
-		t.Fatal("no key must mean no URL and no accepted delivery")
-	}
+}
+
+func TestObjectNameBoundsLongRepositoryNames(t *testing.T) {
 	if name := ObjectName(strings.Repeat("r", 250), 42); len(name) > 253 || !strings.HasSuffix(name, "-comment-42") {
 		t.Fatalf("long object name = %q", name)
 	}
@@ -74,34 +73,53 @@ func repository(name, repoID string) *unstructured.Unstructured {
 	repo := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "code.railgrid.ai/v1alpha1", "kind": "Repository",
 		"metadata": map[string]any{"name": name, "uid": "repo-uid"},
+		"spec":     map[string]any{"commandsWebhookSecretRef": map[string]any{"name": "test-signing-secret", "namespace": "hooks"}},
 		"status":   map[string]any{"repoID": repoID},
 	}}
 	return repo
 }
 
-func deliver(t *testing.T, h http.Handler, path, event, body string) int {
+const signingSecret = "example webhook signing secret"
+
+var deliveryTime = time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+
+func webhookSecret(value string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "Secret",
+		"metadata": map[string]any{"name": "test-signing-secret", "namespace": "hooks"},
+		"data":     map[string]any{"secret": base64.StdEncoding.EncodeToString([]byte(value))},
+	}}
+}
+
+func deliverySignature(secret, body string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(body))
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func deliver(t *testing.T, h http.Handler, path, event, body, signature string) int {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("X-GitHub-Event", event)
+	req.Header.Set("X-Hub-Signature-256", signature)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec.Code
 }
 
-const commandPayload = `{"action":"created","comment":{"id":77,"body":"/railgrid review"},"issue":{"number":5,"pull_request":{"url":"x"}},"repository":{"id":4242}}`
+const commandPayload = `{"action":"created","comment":{"id":77,"created_at":"2026-11-14T11:59:00Z","body":"/railgrid review"},"issue":{"number":5,"pull_request":{"url":"x"}},"repository":{"id":4242}}`
 
 func TestHandlerRecordsACommandOncePerComment(t *testing.T) {
 	scheme := runtime.NewScheme()
 	gvrs := map[schema.GroupVersionResource]string{repositoriesGVR: "RepositoryList", commandsGVR: "PullRequestCommandList"}
-	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrs, repository("app", "4242"))
-	key := []byte("key")
-	h := Handler(key, fakeClients{client})
-	route := strings.TrimPrefix(Path(key, "cluster", "app"), "/services/providers/code")
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrs, repository("app", "4242"), webhookSecret(signingSecret))
+	h := newHandler(fakeClients{client}, func() time.Time { return deliveryTime })
+	route := strings.TrimPrefix(Path("cluster", "app"), "/services/providers/code")
 
-	if code := deliver(t, h, route+"x", "issue_comment", commandPayload); code != http.StatusNotFound {
-		t.Fatalf("wrong token = %d", code)
+	if code := deliver(t, h, route, "issue_comment", commandPayload, ""); code != http.StatusNotFound {
+		t.Fatalf("unsigned delivery = %d", code)
 	}
-	if code := deliver(t, h, route, "ping", `{}`); code != http.StatusNoContent {
+	if code := deliver(t, h, route, "ping", `{}`, deliverySignature(signingSecret, `{}`)); code != http.StatusNoContent {
 		t.Fatalf("ping = %d", code)
 	}
 	for _, body := range []string{
@@ -109,16 +127,26 @@ func TestHandlerRecordsACommandOncePerComment(t *testing.T) {
 		`{"action":"edited","comment":{"id":1,"body":"/railgrid review"},"issue":{"number":5,"pull_request":{}},"repository":{"id":4242}}`,
 		`{"action":"created","comment":{"id":1,"body":"/railgrid review"},"issue":{"number":5},"repository":{"id":4242}}`,
 	} {
-		if code := deliver(t, h, route, "issue_comment", body); code != http.StatusAccepted {
+		if code := deliver(t, h, route, "issue_comment", body, deliverySignature(signingSecret, body)); code != http.StatusAccepted {
 			t.Fatalf("ignored delivery = %d", code)
 		}
+	}
+	if code := deliver(t, h, route, "issue_comment", commandPayload+" ", deliverySignature(signingSecret, commandPayload)); code != http.StatusNotFound {
+		t.Fatalf("modified delivery = %d", code)
+	}
+	if code := deliver(t, h, route, "ping", `{}`, ""); code != http.StatusNotFound {
+		t.Fatalf("unsigned ping = %d", code)
+	}
+	stalePayload := strings.Replace(commandPayload, "11:59:00Z", "10:59:00Z", 1)
+	if code := deliver(t, h, route, "issue_comment", stalePayload, deliverySignature(signingSecret, stalePayload)); code != http.StatusAccepted {
+		t.Fatalf("expired delivery = %d", code)
 	}
 	if list, _ := client.Resource(commandsGVR).List(context.Background(), metav1.ListOptions{}); len(list.Items) != 0 {
 		t.Fatalf("ignored deliveries recorded %d commands", len(list.Items))
 	}
 
 	for range 2 { // a redelivery finds the same object
-		if code := deliver(t, h, route, "issue_comment", commandPayload); code != http.StatusAccepted {
+		if code := deliver(t, h, route, "issue_comment", commandPayload, deliverySignature(signingSecret, commandPayload)); code != http.StatusAccepted {
 			t.Fatalf("command delivery = %d", code)
 		}
 	}
@@ -140,13 +168,26 @@ func TestHandlerRecordsACommandOncePerComment(t *testing.T) {
 func TestHandlerRefusesAnotherRepository(t *testing.T) {
 	scheme := runtime.NewScheme()
 	gvrs := map[schema.GroupVersionResource]string{repositoriesGVR: "RepositoryList", commandsGVR: "PullRequestCommandList"}
-	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrs, repository("app", "9999"))
-	key := []byte("key")
-	h := Handler(key, fakeClients{client})
-	if code := deliver(t, h, strings.TrimPrefix(Path(key, "cluster", "app"), "/services/providers/code"), "issue_comment", commandPayload); code != http.StatusNotFound {
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrs, repository("app", "9999"), webhookSecret(signingSecret))
+	h := newHandler(fakeClients{client}, func() time.Time { return deliveryTime })
+	if code := deliver(t, h, strings.TrimPrefix(Path("cluster", "app"), "/services/providers/code"), "issue_comment", commandPayload, deliverySignature(signingSecret, commandPayload)); code != http.StatusNotFound {
 		t.Fatalf("mismatched repository = %d", code)
 	}
-	if code := deliver(t, h, strings.TrimPrefix(Path(key, "cluster", "missing"), "/services/providers/code"), "issue_comment", commandPayload); code != http.StatusNotFound {
+	if code := deliver(t, h, strings.TrimPrefix(Path("cluster", "missing"), "/services/providers/code"), "issue_comment", commandPayload, deliverySignature(signingSecret, commandPayload)); code != http.StatusNotFound {
 		t.Fatalf("missing repository = %d", code)
+	}
+}
+
+func TestHandlerUsesRotatedRepositorySecret(t *testing.T) {
+	const rotatedSecret = "rotated webhook signing secret"
+	gvrs := map[schema.GroupVersionResource]string{repositoriesGVR: "RepositoryList", commandsGVR: "PullRequestCommandList"}
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), gvrs, repository("app", "4242"), webhookSecret(rotatedSecret))
+	h := newHandler(fakeClients{client}, func() time.Time { return deliveryTime })
+	route := strings.TrimPrefix(Path("cluster", "app"), "/services/providers/code")
+	if code := deliver(t, h, route, "issue_comment", commandPayload, deliverySignature(signingSecret, commandPayload)); code != http.StatusNotFound {
+		t.Fatalf("old secret = %d", code)
+	}
+	if code := deliver(t, h, route, "issue_comment", commandPayload, deliverySignature(rotatedSecret, commandPayload)); code != http.StatusAccepted {
+		t.Fatalf("rotated secret = %d", code)
 	}
 }
