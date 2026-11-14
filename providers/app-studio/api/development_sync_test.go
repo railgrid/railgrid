@@ -32,6 +32,36 @@ import (
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
+func TestProjectWorkspaceSyncDistinguishesLostTreeFromDeletedFiles(t *testing.T) {
+	ctx := workspace.ContextWithLedger(context.Background(), workspace.NewMemoryLedger())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "uid-a"}
+	owner := workspace.NewFileStore(t.TempDir())
+	file, err := owner.PutFile(ctx, scope, workspace.PutOptions{Path: "index.html", Data: []byte("<html></html>")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.AddUncommittedPaths(ctx, scope, []string{"index.html"}); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement := &Server{workspaces: workspace.NewFileStore(t.TempDir())}
+	if _, err := replacement.projectWorkspaceSyncFiles(ctx, scope); !errors.Is(err, workspace.ErrSourceTreeUnavailable) {
+		t.Fatalf("sync with lost tree = %v, want ErrSourceTreeUnavailable", err)
+	}
+
+	if _, err := owner.DeleteFile(ctx, scope, workspace.DeleteOptions{Path: "index.html", ExpectedVersion: file.Version}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{workspaces: owner}
+	snapshot, err := server.projectWorkspaceSyncFiles(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Files) != 0 || strings.Join(snapshot.DeletedPaths, ",") != "index.html" {
+		t.Fatalf("sync after deleting the last file = %+v, want the explicit deletion", snapshot)
+	}
+}
+
 // devComponentPaths builds a component map from name → workspacePath for tests
 // that only exercise path routing. Tests covering the toolchain contract build
 // projectTemplateComponent values directly.

@@ -21,6 +21,10 @@ import (
 	"errors"
 )
 
+// ErrSourceTreeUnavailable means the project has a recorded working copy but
+// this replica has no copy of its files.
+var ErrSourceTreeUnavailable = errors.New("project workspace source is unavailable; restore the workspace volume or recover saved files from Git")
+
 // ReadSnapshot is a read-only view of the project files and source revision
 // while FileStore.WithReadSnapshot holds the store's mutation lock. Use its
 // read methods only inside that callback; their context is canceled when the
@@ -99,6 +103,17 @@ func (s *FileStore) WithReadSnapshot(
 	revision, err := s.sourceRevision(ctx, scope)
 	if err != nil {
 		return err
+	}
+	// A lost volume can leave the revision and dirty paths intact. Returning
+	// an empty snapshot would let sync treat those paths as deletions.
+	if revision > 1 {
+		exists, err := sourceTreeExists(dir)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return ErrSourceTreeUnavailable
+		}
 	}
 	limit := boundedPositive(opts.Limit, DefaultListLimit, MaxListLimit)
 	files, err := s.allFiles(ctx, dir, limit+1)

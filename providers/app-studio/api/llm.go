@@ -929,6 +929,9 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 	if err != nil {
 		return "", fmt.Errorf("capture project source revision: %w", err)
 	}
+	if err := s.workspaces.VerifySourceTree(ctx, scope, sourceRevision); err != nil {
+		return "", err
+	}
 	files := make([]codecommit.File, 0, len(cleanPaths))
 	writtenPaths := make([]string, 0, len(cleanPaths))
 	deletePaths := make([]string, 0)

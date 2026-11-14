@@ -462,6 +462,19 @@ func TestCommitWorkspaceReplaysWhenPendingCommitIsGone(t *testing.T) {
 	}
 }
 
+func TestCommitWorkspaceDoesNotCommitDeletionsAfterVolumeLoss(t *testing.T) {
+	env := newCommitTestEnv(t, nil, repositoryCommitObject("commit-1", "Running", ""))
+	env.r.Workspace = workspace.NewFileStore(t.TempDir())
+
+	dirty, err := env.commit()
+	if !dirty || !errors.Is(err, workspace.ErrSourceTreeUnavailable) {
+		t.Fatalf("commit with lost tree = dirty %t, err %v; want unavailable source with dirty paths retained", dirty, err)
+	}
+	if env.commits() != 0 || env.stages() != 0 {
+		t.Fatalf("commit with lost tree staged %d bundles and submitted %d commits", env.stages(), env.commits())
+	}
+}
+
 // The pending commit is ONE record now. It used to be two — an annotation
 // pointing at the RepositoryCommit and a file beside the tree holding what it
 // carried — which could disagree the moment a replica lost its volume, and the
