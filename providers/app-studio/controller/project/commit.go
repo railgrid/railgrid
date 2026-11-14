@@ -279,14 +279,18 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 		return commitOutcome{dirty: true, retry: true}, nil
 	}
 
-	// Build the payload: missing files are deletions, binaries travel base64
+	// Build the payload from current bytes and recorded deletions. Binaries travel base64
 	// (the action's schema declares the encoding, so there is nothing to
 	// probe for). A file that cannot be committed — over the per-file bound —
 	// is skipped and stays dirty without forcing a requeue, so it neither
 	// blocks text commits nor spins the reconciler. Files past the bundle
 	// bound are committed on an immediate requeue.
 	sort.Strings(paths)
-	bundle, err := r.buildCommitBundle(ctx, scope, paths)
+	deletions, err := r.Workspace.SourceDeletions(ctx, scope, sourceRevision)
+	if err != nil {
+		return commitOutcome{dirty: true, retry: errors.Is(err, workspace.ErrSourceRevisionConflict)}, err
+	}
+	bundle, err := r.buildCommitBundle(ctx, scope, paths, deletions)
 	if err != nil {
 		return commitOutcome{dirty: true}, err
 	}
@@ -407,7 +411,7 @@ func (b commitBundle) wireFiles() []codecommit.File {
 // buildCommitBundle reads dirty paths into one payload bounded by the Code
 // provider's limits (decoded bytes): 2 MiB per text file, 25 MiB per binary,
 // 48 MiB and 500 files per commit.
-func (r *Reconciler) buildCommitBundle(ctx context.Context, scope workspace.Scope, paths []string) (commitBundle, error) {
+func (r *Reconciler) buildCommitBundle(ctx context.Context, scope workspace.Scope, paths []string, deletions map[string]bool) (commitBundle, error) {
 	bundle := commitBundle{skipped: map[string]string{}}
 	var total int64
 	for _, path := range paths {
@@ -418,6 +422,9 @@ func (r *Reconciler) buildCommitBundle(ctx context.Context, scope workspace.Scop
 		data, err := r.Workspace.ReadFileBytes(ctx, scope, path, hubmcp.BinaryFileMaxBytes)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				if !deletions[path] {
+					return commitBundle{}, fmt.Errorf("workspace file %q is missing without a source deletion record", path)
+				}
 				bundle.deletePaths = append(bundle.deletePaths, path)
 				bundle.committed = append(bundle.committed, path)
 				continue

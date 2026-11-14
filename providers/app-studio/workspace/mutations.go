@@ -548,7 +548,7 @@ func (s *FileStore) DeleteFile(ctx context.Context, scope Scope, opts DeleteOpti
 	if err := os.Remove(target); err != nil {
 		return MutationResult{}, errors.Join(fmt.Errorf("delete %q: %w", clean, err), s.failSourceMutation(ctx, scope, mutation, true))
 	}
-	if err := s.completeSourceMutation(ctx, scope, mutation); err != nil {
+	if err := s.completeSourceMutation(ctx, scope, mutation, clean); err != nil {
 		return MutationResult{}, errors.Join(err, s.failSourceMutation(ctx, scope, mutation, false))
 	}
 	if current.content == nil || current.binary {
@@ -635,7 +635,7 @@ func (s *FileStore) MoveFile(ctx context.Context, scope Scope, opts MoveOptions)
 		}
 		return MutationResult{}, errors.Join(fmt.Errorf("move %q to %q: %w", source, destination, err), s.failSourceMutation(ctx, scope, mutation, treeRestored))
 	}
-	if err := s.completeSourceMutation(ctx, scope, mutation); err != nil {
+	if err := s.completeSourceMutation(ctx, scope, mutation, source); err != nil {
 		return MutationResult{}, errors.Join(err, s.failSourceMutation(ctx, scope, mutation, false))
 	}
 	var result MutationResult
