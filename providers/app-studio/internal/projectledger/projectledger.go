@@ -259,6 +259,7 @@ func (l *Ledger) project(ctx context.Context, scope workspace.Scope) (*aiv1alpha
 // recordFrom converts the CR's ledger into the workspace package's.
 func recordFromProject(project *aiv1alpha1.Project) workspace.LedgerRecord {
 	record := recordFrom(project.Status.Workspace)
+	record.SourceConsumersKnown = true
 	record.HasRepository = project.Spec.Repository != nil && strings.TrimSpace(project.Spec.Repository.RepositoryRef) != ""
 	for _, environment := range project.Spec.Environments {
 		if environment.Name == "development" && environment.Mode == aiv1alpha1.ProjectEnvironmentModeLive {

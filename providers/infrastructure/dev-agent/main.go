@@ -1725,7 +1725,7 @@ func restoreAuthoritativeWorkspaceFiles(root *os.Root, files []decodedSyncFile) 
 
 // prepareExplicitSyncPaths handles file/directory transitions before writes.
 func prepareExplicitSyncPaths(root *os.Root, deletions []string, incoming map[string]struct{}) ([]string, error) {
-	var removed []string
+	files := map[string]bool{}
 	directories := map[string]bool{}
 	for _, deleted := range deletions {
 		blocking := false
@@ -1750,17 +1750,24 @@ func prepareExplicitSyncPaths(root *os.Root, deletions []string, incoming map[st
 		if err != nil {
 			return nil, err
 		}
-		if didRemove, err := removeManagedWorkspaceFile(root, deleted); err != nil {
+		if err := ensureExecPathNoSymlink(root, deleted, true); err != nil {
 			return nil, err
-		} else if didRemove {
-			removed = append(removed, deleted)
 		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("managed path %q is not a regular file", deleted)
+		}
+		files[deleted] = true
 	}
+
+	// Check the entire removal and write plan before touching a listed file.
+	// A directory may contain runtime files outside the synchronization set.
+	var removeDirs []string
 	dirs := slices.Sorted(maps.Keys(directories))
 	slices.Reverse(dirs) // descendants sort after their parents
 	for _, dir := range dirs {
 		info, err := root.Lstat(dir)
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || err == nil && !info.IsDir() {
+			delete(directories, dir)
 			continue
 		}
 		if err != nil {
@@ -1769,11 +1776,61 @@ func prepareExplicitSyncPaths(root *os.Root, deletions []string, incoming map[st
 		if err := ensureExecPathNoSymlink(root, dir, true); err != nil {
 			return nil, err
 		}
-		if err := root.Remove(dir); err != nil {
-			return nil, err // never remove unlisted contents
+		entries, err := fs.ReadDir(root.FS(), dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			child := path.Join(dir, entry.Name())
+			if !files[child] && !directories[child] {
+				return nil, fmt.Errorf("cannot replace directory %q: unlisted path %q would remain", dir, child)
+			}
+		}
+		removeDirs = append(removeDirs, dir)
+	}
+	if len(files) == 0 && len(removeDirs) == 0 {
+		return nil, nil
+	}
+	for _, target := range slices.Sorted(maps.Keys(incoming)) {
+		for parent := path.Dir(target); parent != "."; parent = path.Dir(parent) {
+			if _, exists := incoming[parent]; exists {
+				return nil, fmt.Errorf("cannot write %q: parent %q is also an incoming file", target, parent)
+			}
+		}
+		current := ""
+		for part := range strings.SplitSeq(target, "/") {
+			current = path.Join(current, part)
+			if files[current] || directories[current] {
+				break // the original path will be gone by the time we write
+			}
+			info, err := root.Lstat(current)
+			if errors.Is(err, fs.ErrNotExist) {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			if current == target && !info.Mode().IsRegular() || current != target && !info.IsDir() {
+				return nil, fmt.Errorf("cannot write %q: conflicting path %q", target, current)
+			}
 		}
 	}
-	slices.Sort(removed)
+
+	var removed []string
+	for _, file := range slices.Sorted(maps.Keys(files)) {
+		didRemove, err := removeManagedWorkspaceFile(root, file)
+		if err != nil {
+			return nil, err
+		}
+		if didRemove {
+			removed = append(removed, file)
+		}
+	}
+	for _, dir := range removeDirs {
+		if err := root.Remove(dir); err != nil {
+			return nil, err
+		}
+	}
 	return removed, nil
 }
 

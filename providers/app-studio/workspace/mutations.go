@@ -541,15 +541,30 @@ func (s *FileStore) DeleteFile(ctx context.Context, scope Scope, opts DeleteOpti
 	if err := ctx.Err(); err != nil {
 		return MutationResult{}, err
 	}
+	backupDir, err := os.MkdirTemp(filepath.Dir(target), treeBackupPrefix)
+	if err != nil {
+		return MutationResult{}, fmt.Errorf("prepare backup for %q: %w", clean, err)
+	}
+	defer func() { _ = os.Remove(backupDir) }()
 	mutation, err := s.beginSourceMutation(ctx, scope, []string{clean})
 	if err != nil {
 		return MutationResult{}, err
 	}
-	if err := os.Remove(target); err != nil {
+	backup := filepath.Join(backupDir, "source")
+	if err := os.Rename(target, backup); err != nil {
 		return MutationResult{}, errors.Join(fmt.Errorf("delete %q: %w", clean, err), s.failSourceMutation(ctx, scope, mutation, true))
 	}
 	if err := s.completeSourceMutation(ctx, scope, mutation, clean); err != nil {
-		return MutationResult{}, errors.Join(err, s.failSourceMutation(ctx, scope, mutation, false))
+		// Capacity rejection happens before any status patch. Restore the exact
+		// file, without overwriting a new file that appeared at its old path.
+		if errors.Is(err, ErrLedgerCapacity) {
+			rollbackErr := linkAndRemoveSource(backup, target)
+			return MutationResult{}, errors.Join(err, rollbackErr, s.failSourceMutation(ctx, scope, mutation, rollbackErr == nil))
+		}
+		return MutationResult{}, errors.Join(err, os.Remove(backup), s.failSourceMutation(ctx, scope, mutation, false))
+	}
+	if err := os.Remove(backup); err != nil {
+		return MutationResult{}, fmt.Errorf("remove backup for %q: %w", clean, err)
 	}
 	if current.content == nil || current.binary {
 		result := binaryMutationResult("delete_file", clean, 0, "")
@@ -636,6 +651,10 @@ func (s *FileStore) MoveFile(ctx context.Context, scope Scope, opts MoveOptions)
 		return MutationResult{}, errors.Join(fmt.Errorf("move %q to %q: %w", source, destination, err), s.failSourceMutation(ctx, scope, mutation, treeRestored))
 	}
 	if err := s.completeSourceMutation(ctx, scope, mutation, source); err != nil {
+		if errors.Is(err, ErrLedgerCapacity) {
+			rollbackErr := linkAndRemoveSource(destinationTarget, sourceTarget)
+			return MutationResult{}, errors.Join(err, rollbackErr, s.failSourceMutation(ctx, scope, mutation, rollbackErr == nil))
+		}
 		return MutationResult{}, errors.Join(err, s.failSourceMutation(ctx, scope, mutation, false))
 	}
 	var result MutationResult

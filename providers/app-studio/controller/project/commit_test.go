@@ -195,6 +195,15 @@ func newCommitTestEnv(t *testing.T, respond func(call int) (string, string), obj
 				// Model Code accepting the request and persisting its object while
 				// the response is lost between providers.
 				commit := repositoryCommitObject(name, "Running", "")
+				commit.Object["spec"] = map[string]any{
+					"repositoryRef": "demo-repo",
+					"message":       envelope.Input["message"],
+					"branch":        envelope.Input["branch"],
+					"source": map[string]any{"bundleRef": map[string]any{
+						"name": envelope.Input["bundleRef"], "digest": envelope.Input["bundleDigest"],
+					}},
+				}
+				commit.SetAnnotations(map[string]string{"kcp.io/cluster": "cluster-a"})
 				if err := env.c.Create(env.ctx, commit); err != nil {
 					t.Errorf("persist accepted RepositoryCommit before losing response: %v", err)
 				}
@@ -502,6 +511,53 @@ func TestCommitWorkspaceDiscardsUnverifiedReservedBundle(t *testing.T) {
 	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
 	if err != nil || !ok || !pending.ExplicitDeletionsVerified || strings.Join(pending.Paths, ",") != "app.txt" {
 		t.Fatalf("rebuilt intent = %+v, %t, %v", pending, ok, err)
+	}
+}
+
+func TestCommitWorkspaceRecoversUnverifiedReservationAfterLostCommitResponse(t *testing.T) {
+	// Code's keyed name for cluster-a, repo-uid, and old-request. Keep the
+	// fixture independent of App Studio's lookup implementation.
+	const name = "commit-6b67656a1bd9f50e52b19c2504600254e068ca93"
+	env := newCommitTestEnv(t, func(int) (string, string) { return name, "lost_response" })
+	revision, err := env.files.SourceRevision(env.ctx, env.scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := workspace.PendingCommit{
+		RequestID: "old-request", RepositoryRef: "demo-repo", RepositoryUID: "repo-uid",
+		BundleRef: "old-bundle", BundleDigest: "sha256:old", Paths: []string{"app.txt"},
+		Message: "old commit", Branch: "main", SourceRevision: revision,
+	}
+	intent.WorkspaceDigest, err = env.files.WorkspaceDigest(env.ctx, env.scope, intent.Paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.files.ReservePendingCommit(env.ctx, env.scope, intent); err != nil {
+		t.Fatal(err)
+	}
+	// Submit using the old request path. The fake Code server stores the CR
+	// before returning an error, leaving the durable reservation unnamed.
+	if err := env.r.requestPendingCommit(env.ctx, env.project, env.repo, env.scope, intent); err == nil {
+		t.Fatal("expected lost response")
+	}
+	if got, ok := env.pendingCommit(); !ok || got != "" {
+		t.Fatalf("pending commit before recovery = %q, %t", got, ok)
+	}
+	if dirty, err := env.commit(); err != nil || !dirty {
+		t.Fatalf("recover accepted request: dirty=%t, err=%v", dirty, err)
+	}
+	if got, ok := env.pendingCommit(); !ok || got != name {
+		t.Fatalf("recovered pending commit = %q, %t", got, ok)
+	}
+	if dirty, err := env.commit(); err != nil || !dirty || len(env.pending()) != 1 {
+		t.Fatalf("follow running commit: dirty=%t, err=%v, paths=%v", dirty, err, env.pending())
+	}
+	env.setRepositoryCommit(name, "Succeeded", "landed-sha")
+	if _, err := env.commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := env.pendingCommit(); ok || len(env.pending()) != 0 || env.commits() != 1 || env.stages() != 0 {
+		t.Fatalf("settled pending=%t, paths=%v, calls=%v", ok, env.pending(), env.calls)
 	}
 }
 

@@ -70,6 +70,8 @@ package codecommit
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -483,4 +485,11 @@ func (e *StatusError) Error() string {
 		return fmt.Sprintf("%s: HTTP %d with a malformed response", e.Action, e.Status)
 	}
 	return fmt.Sprintf("%s: HTTP %d", e.Action, e.Status)
+}
+
+// KeyedCommitName is the name assigned by Code's keyed commit action. It also
+// lets callers find an accepted request without replaying its source bundle.
+func KeyedCommitName(cluster, repositoryUID, requestID string) string {
+	key := sha256.Sum256([]byte(cluster + "\x00" + repositoryUID + "\x00" + requestID))
+	return "commit-" + hex.EncodeToString(key[:20])
 }
