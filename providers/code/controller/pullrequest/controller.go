@@ -237,6 +237,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		next.Status.Number = adopted.Number
 		next.Status.URL = adopted.URL
 		next.Status.Head = adopted.Commit
+		// An adopted pull request keeps the title and description its author
+		// wrote. Code writes text only when the spec's text changes later.
+		next.Status.PublishedTextDigest = digest
 		// Until the adoption has been persisted, don't let this same pass turn
 		// the request into a publication operation.
 		if err := updateStatusIfChanged(ctx, c, &pr, next); err != nil {
