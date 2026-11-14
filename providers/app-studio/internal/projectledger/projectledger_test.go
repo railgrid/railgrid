@@ -644,6 +644,7 @@ func TestSourceDeletionRetirementUsesProjectConsumers(t *testing.T) {
 		{"standalone", false, false},
 		{"repository", true, false},
 		{"development sandbox", false, true},
+		{"both consumers", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -651,10 +652,11 @@ func TestSourceDeletionRetirementUsesProjectConsumers(t *testing.T) {
 			if tc.repository {
 				projects.project.Spec.Repository = &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo"}
 			}
+			projects.project.Spec.Environments = []aiv1alpha1.ProjectEnvironmentSpec{
+				{Name: "development", Mode: aiv1alpha1.ProjectEnvironmentModeLive},
+			}
 			if tc.sandbox {
-				projects.project.Spec.Environments = []aiv1alpha1.ProjectEnvironmentSpec{
-					{Name: "development", Mode: aiv1alpha1.ProjectEnvironmentModeLive},
-				}
+				projects.project.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "simple-webapp"}
 			}
 			scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
 			ledger := New(projects)
@@ -680,7 +682,7 @@ func TestSourceDeletionRetirementUsesProjectConsumers(t *testing.T) {
 					t.Fatal(err)
 				}
 				record, err = ledger.Read(ctx, scope)
-				if err != nil || len(record.SourceDeletions) != 0 || len(record.UncommittedPaths) != 0 {
+				if err != nil || (len(record.SourceDeletions) != 0) != tc.repository || (len(record.UncommittedPaths) != 0) != tc.repository {
 					t.Fatalf("after sandbox checkpoint, record=%+v, err=%v", record, err)
 				}
 			}

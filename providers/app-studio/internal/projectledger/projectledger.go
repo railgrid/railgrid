@@ -261,12 +261,9 @@ func recordFromProject(project *aiv1alpha1.Project) workspace.LedgerRecord {
 	record := recordFrom(project.Status.Workspace)
 	record.SourceConsumersKnown = true
 	record.HasRepository = project.Spec.Repository != nil && strings.TrimSpace(project.Spec.Repository.RepositoryRef) != ""
-	for _, environment := range project.Spec.Environments {
-		if environment.Name == "development" && environment.Mode == aiv1alpha1.ProjectEnvironmentModeLive {
-			record.HasDevelopmentSandbox = true
-			break
-		}
-	}
+	// A blank project has a development environment placeholder. Sync has
+	// a target only after a development template is selected.
+	record.HasDevelopmentSandbox = project.Spec.Template != nil && strings.TrimSpace(project.Spec.Template.Name) != ""
 	return record
 }
 
