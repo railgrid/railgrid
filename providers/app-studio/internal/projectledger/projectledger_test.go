@@ -175,6 +175,7 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 		record.LastSourceChange = &workspace.SourceChange{ThreadID: "thread-source", RunID: "run-source", SourceRevision: 7}
 		record.LastPreviewCheckpoint = &workspace.SourceChange{ThreadID: "thread-preview", RunID: "run-preview", SourceRevision: 6}
 		record.UncommittedPaths = []string{"src/b.ts", "src/a.ts"}
+		record.SourceDeletions = []workspace.SourceDeletion{{Path: "src/b.ts", Revision: 5}}
 		record.SourcePathAttributions = []workspace.SourcePathAttribution{
 			{Path: "src/a.ts", ThreadID: "thread-source", RunID: "run-source", SourceRevision: 7},
 			{Path: "src/b.ts", SourceRevision: 5},
@@ -194,6 +195,9 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	record, err := ledger.Read(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(record.SourceDeletions, []workspace.SourceDeletion{{Path: "src/b.ts", Revision: 5}}) {
+		t.Fatalf("source deletions = %+v", record.SourceDeletions)
 	}
 	if record.SourceRevision != 7 {
 		t.Fatalf("source revision = %d, want 7", record.SourceRevision)
@@ -243,6 +247,7 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 		record.PendingCommit = nil
 		record.Settlement = nil
 		record.UncommittedPaths = nil
+		record.SourceDeletions = nil
 		record.SourcePathAttributions = nil
 		return true, nil
 	}); err != nil {
@@ -252,7 +257,7 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.PendingCommit != nil || record.Settlement != nil || len(record.UncommittedPaths) != 0 || len(record.SourcePathAttributions) != 0 {
+	if record.PendingCommit != nil || record.Settlement != nil || len(record.UncommittedPaths) != 0 || len(record.SourcePathAttributions) != 0 || len(record.SourceDeletions) != 0 {
 		t.Fatalf("cleared ledger = %#v", record)
 	}
 	if record.SourceRevision != 7 {
