@@ -6,9 +6,9 @@ name: Split quickstart provider
 # Uses splitsh-lite (https://github.com/splitsh/lite) which is deterministic:
 # the same source always splits to the same commit sha1s, so pushes normally
 # fast-forward. Runs on every push to main (mirrors the branch); workflow_dispatch
-# is provided for the initial seed / manual re-sync. It also runs on PRs that touch the split
-# surface, but those only validate (install + split) — the deploy-key and push
-# steps are gated to non-PR events, so a PR never writes to the mirror.
+# is provided for the initial seed / manual re-sync. It does not run on pull
+# requests (Prow is the pull request gate, /.prow.yaml); the `!= 'pull_request'`
+# conditions below are inert and kept so re-adding the trigger is the whole change.
 #
 # This mirror is SOURCE ONLY: it tracks `main`, and does NOT receive release
 # tags. Provider images and charts are built+published from the monorepo by
@@ -23,11 +23,6 @@ name: Split quickstart provider
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
-    paths:
-      - 'providers/quickstart/**'
-      - '.github/workflows/split-quickstart.yaml'
   workflow_dispatch:
 
 permissions:
@@ -91,8 +86,7 @@ jobs:
 
           # Deterministic split of the provider subtree. The resulting commit
           # objects are written into the local object store, so they can be
-          # pushed directly by sha. Runs on every event (incl. PRs) so it
-          # validates the install + split end-to-end without publishing.
+          # pushed directly by sha.
           #
           # --origin takes a git REF, not a raw commit hash; HEAD is the
           # checked-out commit (the pushed tip, or the PR merge commit) and

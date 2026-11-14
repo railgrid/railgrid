@@ -1,9 +1,19 @@
 # CI selection
 
-The CI, E2E and container-image workflows always start on their existing PR
-triggers. Each runs the shared `ci-changes` action with full checkout history.
-`selection.py` compares the PR head with its merge base against the event's base
-SHA; validation jobs continue using the normal PR merge checkout.
+Pull requests are validated by Prow (`/.prow.yaml`, `hack/ci/prow/README.md`),
+not by GitHub Actions. What is left on Actions is publishing (releases, images,
+charts, the mirror splits, the CI image), the macOS job, which needs a macOS
+runner, and the goreleaser dry-run on changes to the release configuration.
+The CI and E2E workflows start only by manual dispatch, as the fallback for
+when the Prow cluster is unavailable; the container-image workflow starts where
+it publishes and by manual dispatch.
+
+The selection described here is shared by both: on a pull request Prow computes
+it with `hack/ci/prow/mode.py`, and the workflows compute it with the
+`ci-changes` action (always `full` there, since no managed workflow starts on
+`pull_request` any more). `selection.py` compares the PR head with its merge
+base against the base SHA. Where the text below says "CI", "E2E" or "the image
+workflow" for a pull request, read the Prow jobs that mirror them.
 
 Three modes. A nonempty diff entirely inside the known providers' `portal/`
 directories selects `provider-ui`. A diff made only of files under `docs/` and
@@ -36,10 +46,8 @@ owns this inventory as one selection rule per job; tests compare it with the
 actual workflow jobs, direct dependencies, and `if` conditions so newly added
 jobs cannot escape it. No repository rulesets are changed. If required checks
 are introduced later, use the stable `CI result`, `E2E result` and
-`Images result` names. Since Prow became the pull request gate
-(`hack/ci/prow/README.md`) the CI and E2E workflows run only on pushes and
-manual dispatch; on pull requests the same selection is computed by
-`hack/ci/prow/mode.py`. The Helm workflow runs only where it publishes (push to
+`Images result` names; on pull requests the gate is the Prow jobs themselves,
+none of which is optional. The Helm workflow runs only where it publishes (push to
 main and `v*` tags) and has no result job; chart validation on PRs is the
 `contracts` job.
 
@@ -52,6 +60,9 @@ so the layout keeps the job count down and never repeats expensive setup:
   every module in the repo, written by the CI `build` job on main after
   `go mod download` in each module, plus a build-cache scope per kind of
   compile (`build`, `race`, `lint`, `darwin`), each written by one job on main.
+  CI no longer runs on pushes, so the module cache is refreshed only by a
+  manual CI run on main; until then the macOS job restores the last entry and
+  downloads what changed since.
   PR refs restore through `restore-keys` and never save, so the repository's
   10 GB cache budget holds only entries every run reads. (Previously nineteen
   jobs shared one setup-go key that the first job to finish saved: a 92 MB

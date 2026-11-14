@@ -31,8 +31,9 @@ the app dir).
 ## Images
 
 [`.github/workflows/infrastructure-examples.yaml`](../../../../.github/workflows/infrastructure-examples.yaml)
-builds and pushes both on every change to `:latest` (multi-arch on `main`,
-build-only on PRs):
+builds and pushes both to `:latest` on every change that reaches `main`
+(multi-arch). Pull requests build them without pushing, in the Prow job
+`pull-railgrid-images`:
 
 - `ghcr.io/railgrid/railgrid-infrastructure-example-frontend:latest`
 - `ghcr.io/railgrid/railgrid-infrastructure-example-backend:latest`

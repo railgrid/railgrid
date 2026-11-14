@@ -8,22 +8,11 @@ name: Infrastructure Template E2E
 # tests miss (string-vs-int fields, non-standalone includeWhen expressions, an
 # image that resolved to "" surfacing as "Required value" only at apply time).
 # See providers/infrastructure/backend/kro/e2e_test.go.
+#
+# Pull requests run this suite in the Prow job
+# pull-railgrid-e2e-infrastructure-templates (/.prow.yaml). This workflow is
+# the manual fallback for when the Prow cluster is unavailable.
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'providers/infrastructure/install/templates/**'
-      - 'providers/infrastructure/backend/kro/**'
-      - 'providers/infrastructure/apis/**'
-      - '.github/workflows/infrastructure-templates-e2e.yaml'
-      - 'Makefile'
-  push:
-    branches: [main]
-    paths:
-      - 'providers/infrastructure/install/templates/**'
-      - 'providers/infrastructure/backend/kro/**'
-      - 'providers/infrastructure/apis/**'
-      - '.github/workflows/infrastructure-templates-e2e.yaml'
   workflow_dispatch:
 
 permissions:
