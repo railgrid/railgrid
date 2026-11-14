@@ -7,6 +7,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	api "github.com/railgrid/provider-code/apis/v1alpha1"
@@ -24,6 +25,30 @@ type Collaboration interface {
 	ListComments(context.Context, *api.Connection, Credential, *api.Repository, int, int) (*CommentPage, error)
 	AddComment(context.Context, *api.Connection, Credential, *api.Repository, int, string) (*Comment, error)
 	ReplyToReview(context.Context, *api.Connection, Credential, *api.Repository, int, int64, string) (*Comment, error)
+}
+
+// CommandReader is the optional host capability behind pull request
+// commands: reading a comment back by its identifier and a person's current
+// repository permission, so nothing a webhook claims is taken on trust.
+type CommandReader interface {
+	IssueComment(context.Context, *api.Connection, Credential, *api.Repository, int64) (*IssueComment, error)
+	RepositoryPermission(context.Context, *api.Connection, Credential, *api.Repository, string) (string, error)
+}
+
+// ErrCommentNotFound means the host has no comment under that identifier in
+// the repository.
+var ErrCommentNotFound = errors.New("comment not found")
+
+// IssueComment is a conversation comment as the host reports it, with the
+// issue or pull request it belongs to.
+type IssueComment struct {
+	ID          int64     `json:"id"`
+	IssueNumber int       `json:"issueNumber"`
+	URL         string    `json:"url"`
+	Body        string    `json:"body"`
+	Author      string    `json:"author"`
+	AuthorType  string    `json:"authorType"`
+	CreatedAt   time.Time `json:"createdAt"`
 }
 
 type PullRequestInput struct {

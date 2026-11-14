@@ -65,6 +65,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&PackageList{},
 		&PullRequest{},
 		&PullRequestList{},
+		&PullRequestCommand{},
+		&PullRequestCommandList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

@@ -584,3 +584,31 @@ func TestManagedCommentRecoveryEditsKnownIDAndFencesCreates(t *testing.T) {
 		})
 	}
 }
+
+func TestIssueCommentReadsTheCommentAndItsPullRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/repos/team/demo":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "full_name": "team/demo"})
+		case "/api/v3/repos/team/demo/issues/comments/77":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 77, "body": "/railgrid review", "html_url": "https://github.example/team/demo/pull/5#issuecomment-77", "issue_url": "https://github.example/api/v3/repos/team/demo/issues/5", "user": map[string]any{"login": "maintainer", "type": "User"}, "created_at": "2026-11-14T11:59:00Z"})
+		case "/api/v3/repos/team/demo/issues/comments/78":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		default:
+			t.Errorf("unexpected route %s", r.URL.Path)
+			w.WriteHeader(500)
+		}
+	}))
+	defer server.Close()
+	conn := &api.Connection{Spec: api.ConnectionSpec{Owner: "team", BaseURL: server.URL}}
+	repo := &api.Repository{Spec: api.RepositorySpec{Name: "demo"}, Status: api.RepositoryStatus{RepoID: "42"}}
+	cred := backend.Credential{Token: "test-token"}
+	comment, err := New().IssueComment(context.Background(), conn, cred, repo, 77)
+	if err != nil || comment.IssueNumber != 5 || comment.Author != "maintainer" || comment.AuthorType != "User" || comment.Body != "/railgrid review" || comment.CreatedAt.IsZero() {
+		t.Fatalf("comment = %+v, err %v", comment, err)
+	}
+	if _, err := New().IssueComment(context.Background(), conn, cred, repo, 78); !errors.Is(err, backend.ErrCommentNotFound) {
+		t.Fatalf("missing comment err = %v", err)
+	}
+}

@@ -46,6 +46,7 @@ import (
 	"github.com/railgrid/provider-code/actions"
 	"github.com/railgrid/provider-code/backend"
 	githubbackend "github.com/railgrid/provider-code/backend/github"
+	"github.com/railgrid/provider-code/commandhook"
 	"github.com/railgrid/provider-code/controller/shared"
 	"github.com/railgrid/provider-code/install"
 	"github.com/railgrid/provider-code/mcpserver"
@@ -224,6 +225,9 @@ func runServe() {
 		Actions:      codeActions,
 		OAuth:        oauthRoutes,
 		Subresources: subresources,
+		// Class (g): each Repository's GitHub "Issue comments" webhook,
+		// which records "/railgrid" commands for the reconciler to verify.
+		Extra: []serve.Route{{Prefix: "/webhooks/github/", Class: serve.ClassWebhook, Handler: commandhook.Handler(commandhook.KeyFromEnv(), providerCallers)}},
 	})
 	if err != nil {
 		log.Fatalf("server: %v", err)

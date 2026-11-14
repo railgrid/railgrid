@@ -34,6 +34,15 @@ hub:
   # Skip TLS verification on heartbeat — dev only, defaults off.
   insecure: false
 
+# Pull request command webhooks. Each Repository's webhook URL carries a token
+# derived from this key (CODE_WEBHOOK_KEY). Empty (the default) derives the key
+# from the provider kubeconfig, so rotating that kubeconfig changes every
+# webhook URL. Name a Secret to keep URLs stable; it must already exist.
+commandsWebhook:
+  keySecretRef:
+    name: ""
+    key: key
+
 # Secret the provider mounts read-only at
 # /var/run/secrets/railgrid/railgrid-provider-kubeconfig to reach kcp (CODE_KUBECONFIG).
 # The hub catalog controller mints it when it reconciles the CatalogEntry; the

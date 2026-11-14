@@ -44,11 +44,13 @@ import (
 	"github.com/railgrid/provider-sdk/vwhealth"
 
 	"github.com/railgrid/provider-code/backend"
+	"github.com/railgrid/provider-code/commandhook"
 	"github.com/railgrid/provider-code/controller/collaborator"
 	"github.com/railgrid/provider-code/controller/connection"
 	"github.com/railgrid/provider-code/controller/deploykey"
 	"github.com/railgrid/provider-code/controller/packages"
 	"github.com/railgrid/provider-code/controller/pullrequest"
+	"github.com/railgrid/provider-code/controller/pullrequestcommand"
 	"github.com/railgrid/provider-code/controller/repository"
 	"github.com/railgrid/provider-code/controller/repositorybuildstatus"
 	"github.com/railgrid/provider-code/controller/repositorycheckout"
@@ -148,7 +150,7 @@ func runControllerManager(ctx context.Context, config *rest.Config, registry *ba
 	if err := (&connection.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("connection controller: %w", err)
 	}
-	if err := (&repository.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
+	if err := (&repository.Reconciler{Backends: registry, CommandsWebhookKey: commandhook.KeyFromEnv()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("repository controller: %w", err)
 	}
 	if err := (&repositorycommit.Reconciler{Backends: registry, Bundles: stores.bundles}).SetupWithManager(mgr); err != nil {
@@ -171,6 +173,9 @@ func runControllerManager(ctx context.Context, config *rest.Config, registry *ba
 	}
 	if err := (&pullrequest.Reconciler{Backends: registry, Snapshots: stores.snapshots}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("pullrequest controller: %w", err)
+	}
+	if err := (&pullrequestcommand.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("pullrequestcommand controller: %w", err)
 	}
 
 	if err := setupUsage(mgr, config); err != nil {

@@ -125,6 +125,16 @@ spec:
                 description: CloneURL is the HTTPS clone URL.
                 maxLength: 2048
                 type: string
+              commandsWebhookPath:
+                description: |-
+                  CommandsWebhookPath is the hub-relative URL that receives this
+                  repository's GitHub "Issue comments" webhook, so people can leave
+                  "/railgrid" commands on its pull requests. The path is the credential
+                  (an HMAC over the workspace and Repository name), but Code trusts no
+                  payload: each delivery only prompts it to read the comment back from
+                  GitHub. Prefix it with the console's origin when adding the webhook.
+                maxLength: 512
+                type: string
               conditions:
                 description: Conditions follows the standard Kubernetes conditions
                   pattern.

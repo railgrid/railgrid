@@ -31,6 +31,7 @@ import (
 
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"
+	"github.com/railgrid/provider-code/commandhook"
 	"github.com/railgrid/provider-code/controller/shared"
 )
 
@@ -38,6 +39,9 @@ import (
 type Reconciler struct {
 	Manager  mcmanager.Manager
 	Backends *backend.Registry
+	// CommandsWebhookKey signs status.commandsWebhookPath; nil leaves it
+	// unset (see commandhook).
+	CommandsWebhookKey []byte
 }
 
 // SetupWithManager wires the reconciler into the multicluster manager.
@@ -143,6 +147,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	repo.Status.HTMLURL = res.HTMLURL
 	repo.Status.CloneURL = res.CloneURL
 	repo.Status.SSHURL = res.SSHURL
+	if path := commandhook.Path(r.CommandsWebhookKey, string(req.ClusterName), repo.Name); path != "" {
+		repo.Status.CommandsWebhookPath = path
+	}
 	shared.SetCondition(&repo.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionTrue, codev1alpha1.ReasonReady, "", repo.Generation)
 	if err := c.Status().Update(ctx, &repo); err != nil {
 		return ctrl.Result{}, err

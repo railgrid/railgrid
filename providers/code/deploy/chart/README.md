@@ -66,6 +66,9 @@ Prepend `bundleStore.s3.prefix` to both prefixes if one is set. On AWS:
 | `hub.tokenSecretRef.name` | `""` | Empty omits the Authorization header — the heartbeat endpoint does not require it. Set this ONLY when the Secret already exists in the release namespace; the reference is not optional, so a missing Secret wedges the pod in `CreateContainerConfigError`. |
 | `hub.tokenSecretRef.key` | `token` |  |
 | `hub.insecure` | `false` | Skip TLS verification on heartbeat — dev only, defaults off. |
+| `commandsWebhook` |  | Pull request command webhooks. Each Repository's webhook URL carries a token derived from this key (`CODE_WEBHOOK_KEY`). |
+| `commandsWebhook.keySecretRef.name` | `""` | Empty derives the key from the provider kubeconfig, so rotating that kubeconfig changes every webhook URL. Name a Secret to keep URLs stable; it must already exist in the release namespace. |
+| `commandsWebhook.keySecretRef.key` | `key` |  |
 | `providerKubeconfig` |  | Secret the provider mounts read-only at /var/run/secrets/railgrid/railgrid-provider-kubeconfig to reach kcp (CODE_KUBECONFIG). The hub catalog controller mints it when it reconciles the CatalogEntry; the volume is `optional`, so the pod stays schedulable and serves portal/MCP reads until the Secret app… |
 | `providerKubeconfig.secretName` | `railgrid-provider-kubeconfig` |  |
 | `githubOAuth` |  | GitHub "Connect with GitHub" OAuth App (optional). When enabled, the portal shows a "Connect with GitHub" button and mints OAuth tokens (with read:packages so the repository Packages panel works). Leave disabled to use pasted Personal Access Tokens only — repositories, deploy keys, collaborators… |
