@@ -67,7 +67,9 @@ type Handler struct {
 	devMode        bool
 	logger         klog.Logger
 	// rateLimiter protects auth endpoints against brute force attacks
-	rateLimiter *rateLimiter
+	rateLimiter   *rateLimiter
+	deviceStore   deviceStore
+	deviceLimiter *rateLimiter
 	// browserSessions is the hub-wide opaque portal session store.  It is
 	// shared by legacy OIDC, static-token bootstrap, and published-app SSO.
 	browserSessions *browsersession.Store
@@ -282,20 +284,43 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	code := r.URL.Query().Get("code")
 	stateParam := r.URL.Query().Get("state")
-	if code == "" || stateParam == "" {
-		http.Error(w, "missing code or state parameter", http.StatusBadRequest)
-		return
-	}
-
-	// Decode the state to get the CLI callback URL.
-	stateJSON, err := base64.URLEncoding.DecodeString(stateParam)
-	if err != nil {
-		http.Error(w, "invalid state parameter", http.StatusBadRequest)
-		return
-	}
 	var authCode tenancyv1alpha1.AuthCode
-	if err := json.Unmarshal(stateJSON, &authCode); err != nil {
-		http.Error(w, "invalid state payload", http.StatusBadRequest)
+	var device deviceRequest
+	var deviceFinished bool
+	isDevice := strings.HasPrefix(stateParam, deviceStatePrefix)
+	if isDevice {
+		state, ok := h.takeDeviceBrowserState(w, r, stateParam)
+		if !ok {
+			return
+		}
+		device = state.deviceRequest
+		defer func() {
+			if !deviceFinished {
+				if err := h.storeDeviceResult(ctx, device, deviceResult{Error: "server_error"}); err != nil {
+					h.logger.Error(err, "failed to record CLI sign-in failure")
+				}
+			}
+		}()
+		if r.URL.Query().Get("error") == "access_denied" {
+			deviceFinished = true
+			h.completeDeviceLogin(w, r, device, deviceResult{Error: "access_denied"})
+			return
+		}
+		authCode.CodeVerifier = state.Verifier
+	} else {
+		// Decode the state to get the legacy browser callback URL.
+		stateJSON, err := base64.URLEncoding.DecodeString(stateParam)
+		if err != nil {
+			http.Error(w, "invalid state parameter", http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal(stateJSON, &authCode); err != nil {
+			http.Error(w, "invalid state payload", http.StatusBadRequest)
+			return
+		}
+	}
+	if code == "" {
+		http.Error(w, "missing authorization code", http.StatusBadRequest)
 		return
 	}
 
@@ -393,6 +418,11 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		RefreshToken: token.RefreshToken,
 		IssuerURL:    h.oidcConfig.IssuerURL,
 		ClientID:     h.oidcConfig.ClientID,
+	}
+	if isDevice {
+		deviceFinished = true
+		h.completeDeviceLogin(w, r, device, deviceResult{LoginResponse: resp})
+		return
 	}
 	respJSON, err := json.Marshal(resp)
 	if err != nil {
@@ -585,6 +615,15 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc(apiurl.PathAuthAuthorize, h.HandleAuthorize).Methods("GET")
 	router.HandleFunc(apiurl.PathAuthCallback, h.HandleCallback).Methods("GET")
 	router.HandleFunc(apiurl.PathAuthRefresh, h.rateLimiter.middleware(h.HandleRefresh)).Methods("POST")
+	if h.deviceStore != nil {
+		h.registerDeviceLoginLimits()
+		sameOrigin := http.NewCrossOriginProtection()
+		router.Handle(apiurl.PathAuthDeviceStart, sameOrigin.Handler(h.deviceLimiter.middleware(h.startDeviceLogin))).Methods("POST")
+		router.HandleFunc(apiurl.PathAuthDeviceVerify, h.showDeviceCodePage).Methods("GET")
+		router.Handle(apiurl.PathAuthDeviceVerify, sameOrigin.Handler(h.deviceLimiter.middleware(h.approveDeviceLogin))).Methods("POST")
+		router.Handle(apiurl.PathAuthDevicePoll, sameOrigin.Handler(h.deviceLimiter.middleware(h.pollDeviceLogin))).Methods("POST")
+		router.Handle(apiurl.PathAuthDeviceAck, sameOrigin.Handler(h.deviceLimiter.middleware(h.ackDeviceLogin))).Methods("POST")
+	}
 	h.RegisterBrowserSessionRoutes(router)
 }
 
@@ -600,6 +639,9 @@ func (h *Handler) SetTrustedProxies(prefixes []netip.Prefix) {
 		h.rateLimiter = newRateLimiter(defaultRateLimit, defaultBurstDuration, klog.Background().WithName("auth-rate-limit"))
 	}
 	h.rateLimiter.trustedProxies = prefixes
+	if h.deviceLimiter != nil {
+		h.deviceLimiter.trustedProxies = prefixes
+	}
 }
 
 // RateLimitMiddleware exposes the auth rate limiter so auth-adjacent routes

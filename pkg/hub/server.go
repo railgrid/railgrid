@@ -484,6 +484,14 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		authHandler.SetBrowserSessionStore(browserSessionStore)
 		authHandler.SetTrustedProxies(trustedProxies)
+		if kcpConfig != nil {
+			deviceStore, err := sharedstore.New(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace, "railgrid-device-login")
+			if err != nil {
+				return fmt.Errorf("creating shared device login store: %w", err)
+			}
+			authHandler.SetDeviceLoginStore(deviceStore)
+			sharedStores = append(sharedStores, deviceStore)
+		}
 		// Auth routes registered below on the main router with /api/ prefix.
 		authHandler.RegisterRoutes(router)
 		logger.Info("OIDC auth routes registered", "issuer", s.opts.IDPIssuerURL)

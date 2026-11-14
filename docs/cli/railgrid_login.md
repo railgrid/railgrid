@@ -9,6 +9,7 @@ whose credentials refresh automatically (OIDC) or carry the static token.
 
   railgrid login --hub-url https://hub.example.com        # opens the browser
   railgrid login --hub-url https://hub.example.com -i     # …then pick org/workspace
+  railgrid login --hub-url https://hub.example.com --device  # sign in from another device
   railgrid login --hub-url https://hub.example.com --token <token>
   export RAILGRID_HUB_URL=https://hub.example.com          # instead of --hub-url
 
@@ -22,6 +23,7 @@ railgrid login [flags]
 ### Options
 
 ```
+      --device           Sign in using a code in a browser on another device
   -h, --help             help for login
       --hub-url string   Hub server URL (or set RAILGRID_HUB_URL)
   -i, --interactive      After login, interactively pick the organization and workspace

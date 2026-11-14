@@ -95,3 +95,36 @@ func TestLockTokenCache_Serialises(t *testing.T) {
 		t.Errorf("max concurrent holders = %d; want 1 (lock failed to serialise)", got)
 	}
 }
+
+func TestSaveLoginTokenCacheWaitsForRefresh(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	old := TokenCache{IssuerURL: "https://issuer.test", ClientID: "test-client", IDToken: "old"}
+	newLogin := old
+	newLogin.IDToken = "new"
+	unlock, err := LockTokenCache(old.IssuerURL, old.ClientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- SaveLoginTokenCache(&newLogin, func() error { return nil })
+	}()
+	select {
+	case err := <-done:
+		unlock()
+		t.Fatalf("login completed while refresh held the lock: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	err = SaveTokenCache(&old)
+	unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	cache, err := LoadTokenCache(old.IssuerURL, old.ClientID)
+	if err != nil || *cache != newLogin {
+		t.Fatal("login credentials did not replace the old refresh result")
+	}
+}
