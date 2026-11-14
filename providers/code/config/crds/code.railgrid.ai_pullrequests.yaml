@@ -644,6 +644,18 @@ spec:
                   properties:
                     author:
                       type: string
+                    authorPermission:
+                      description: |-
+                        AuthorPermission is the reviewer's permission on the repository when the
+                        review was observed: admin, write, read or none. It is read only for a
+                        person's CHANGES_REQUESTED review, so a coordinator can act on a request
+                        for changes from someone with write access and ignore anyone else's.
+                      enum:
+                      - admin
+                      - write
+                      - read
+                      - none
+                      type: string
                     authorType:
                       description: |-
                         AuthorType is the forge's actor type: "User" for a person, "Bot" for

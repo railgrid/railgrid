@@ -602,7 +602,7 @@ func (r *Reconciler) observeConversation(ctx context.Context, host forge, conn *
 	reviews := make([]codev1alpha1.PullRequestReview, 0, len(feedback.Reviews))
 	for _, review := range feedback.Reviews {
 		at := metav1.NewTime(review.SubmittedAt)
-		reviews = append(reviews, codev1alpha1.PullRequestReview{ID: review.ID, Author: review.Login, AuthorType: review.ActorType, State: review.State, Commit: review.Commit, Body: bounded(review.Body), SubmittedAt: &at})
+		reviews = append(reviews, codev1alpha1.PullRequestReview{ID: review.ID, Author: review.Login, AuthorType: review.ActorType, State: review.State, Commit: review.Commit, Body: bounded(review.Body), SubmittedAt: &at, AuthorPermission: review.AuthorPermission})
 	}
 	if len(reviews) > maxReviews {
 		reviews = reviews[len(reviews)-maxReviews:]

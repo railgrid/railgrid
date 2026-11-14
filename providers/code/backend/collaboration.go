@@ -75,6 +75,10 @@ type Review struct {
 	State       string    `json:"state"`
 	Body        string    `json:"body"`
 	SubmittedAt time.Time `json:"submittedAt"`
+	// AuthorPermission is the reviewer's current permission on the
+	// repository — admin, write, read or none — read only for a person's
+	// CHANGES_REQUESTED review; empty when it was not read.
+	AuthorPermission string `json:"authorPermission,omitempty"`
 }
 type Feedback struct {
 	Checks  []Check  `json:"checks"`

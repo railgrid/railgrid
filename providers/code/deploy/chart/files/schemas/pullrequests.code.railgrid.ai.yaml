@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261112-09bc5d78c.pullrequests.code.railgrid.ai
+  name: v261114-0af3eb5c4.pullrequests.code.railgrid.ai
 spec:
   group: code.railgrid.ai
   names:
@@ -637,6 +637,18 @@ spec:
                   reports it.
                 properties:
                   author:
+                    type: string
+                  authorPermission:
+                    description: |-
+                      AuthorPermission is the reviewer's permission on the repository when the
+                      review was observed: admin, write, read or none. It is read only for a
+                      person's CHANGES_REQUESTED review, so a coordinator can act on a request
+                      for changes from someone with write access and ignore anyone else's.
+                    enum:
+                    - admin
+                    - write
+                    - read
+                    - none
                     type: string
                   authorType:
                     description: |-

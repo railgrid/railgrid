@@ -242,6 +242,7 @@ func (b *Backend) PullRequestFeedback(ctx context.Context, conn *api.Connection,
 	expectedChecks := -1
 	seenChecks := map[int64]bool{}
 	seenReviews := map[int64]bool{}
+	permissions := reviewerPermissions{client: c, owner: owner(conn, repo), repo: repo.Spec.Name, levels: map[string]string{}}
 	for page := 1; page <= 20; page++ {
 		checks, response, err := c.Checks.ListCheckRunsForRef(ctx, owner(conn, repo), repo.Spec.Name, commit, &gh.ListCheckRunsOptions{ListOptions: gh.ListOptions{Page: page, PerPage: 50}})
 		if err != nil {
@@ -303,7 +304,14 @@ func (b *Backend) PullRequestFeedback(ctx context.Context, conn *api.Connection,
 			if err != nil {
 				return nil, err
 			}
-			result.Reviews = append(result.Reviews, backend.Review{ID: review.GetID(), Login: review.GetUser().GetLogin(), ActorType: review.GetUser().GetType(), Commit: review.GetCommitID(), State: review.GetState(), Body: body, SubmittedAt: review.GetSubmittedAt().Time})
+			permission := ""
+			if review.GetState() == "CHANGES_REQUESTED" && review.GetUser().GetType() == "User" {
+				permission, err = permissions.of(ctx, review.GetUser().GetLogin())
+				if err != nil {
+					return nil, err
+				}
+			}
+			result.Reviews = append(result.Reviews, backend.Review{ID: review.GetID(), Login: review.GetUser().GetLogin(), ActorType: review.GetUser().GetType(), Commit: review.GetCommitID(), State: review.GetState(), Body: body, SubmittedAt: review.GetSubmittedAt().Time, AuthorPermission: permission})
 		}
 		if response == nil || response.NextPage == 0 {
 			break
@@ -410,4 +418,40 @@ func (b *Backend) ListBranches(ctx context.Context, conn *api.Connection, cred b
 		return nil, errors.New("invalid next branch page")
 	}
 	return result, nil
+}
+
+// reviewerPermissions reads, once per login, the permission a reviewer holds
+// on the repository now. A coordinator acts on a request for changes only
+// from someone who could push the change themselves.
+type reviewerPermissions struct {
+	client      *gh.Client
+	owner, repo string
+	levels      map[string]string
+}
+
+func (p reviewerPermissions) of(ctx context.Context, login string) (string, error) {
+	if level, ok := p.levels[login]; ok {
+		return level, nil
+	}
+	level, response, err := p.client.Repositories.GetPermissionLevel(ctx, p.owner, p.repo, login)
+	switch {
+	case err == nil:
+		p.levels[login] = normalizePermission(level.GetPermission())
+	case response != nil && (response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusForbidden):
+		// Not a collaborator, or the credential cannot read collaborators:
+		// either way the review carries no write authority.
+		p.levels[login] = "none"
+	default:
+		return "", classify(response, err)
+	}
+	return p.levels[login], nil
+}
+
+func normalizePermission(permission string) string {
+	switch permission {
+	case "admin", "write", "read":
+		return permission
+	default:
+		return "none"
+	}
 }
