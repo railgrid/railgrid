@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -50,6 +51,7 @@ func newLoginCommand() *cobra.Command {
 		hubURL      string
 		token       string
 		interactive bool
+		device      bool
 	)
 
 	cmd := &cobra.Command{
@@ -60,11 +62,14 @@ whose credentials refresh automatically (OIDC) or carry the static token.
 
   railgrid login --hub-url https://hub.example.com        # opens the browser
   railgrid login --hub-url https://hub.example.com -i     # …then pick org/workspace
+  railgrid login --hub-url https://hub.example.com --device  # sign in from another device
   railgrid login --hub-url https://hub.example.com --token <token>
   export RAILGRID_HUB_URL=https://hub.example.com          # instead of --hub-url
 
 On a self-signed hub add --insecure-skip-tls-verify. After login, 'railgrid use'
-switches organization and workspace and 'railgrid whoami' shows the session.`,
+switches organization and workspace and 'railgrid whoami' shows the session.
+After upgrading the CLI and hub, sign in again and re-download any workspace
+kubeconfigs from the hub so they can use the new account-specific credentials.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			insecureSkipTLSVerify := globalInsecureTLS
@@ -91,7 +96,12 @@ switches organization and workspace and 'railgrid whoami' shows the session.`,
 				}
 				ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 				defer cancel()
-				if err := runLogin(ctx, out, hubURL); err != nil {
+				if device {
+					err = runDeviceLogin(ctx, out, hubURL, insecureSkipTLSVerify)
+				} else {
+					err = runLogin(ctx, out, hubURL)
+				}
+				if err != nil {
 					return err
 				}
 			}
@@ -105,7 +115,9 @@ switches organization and workspace and 'railgrid whoami' shows the session.`,
 
 	cmd.Flags().StringVar(&hubURL, "hub-url", "", "Hub server URL (or set "+hubURLEnv+")")
 	cmd.Flags().StringVar(&token, "token", "", "Static bearer token (skips OIDC browser flow)")
+	cmd.Flags().BoolVar(&device, "device", false, "Sign in using a code in a browser on another device")
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "After login, interactively pick the organization and workspace")
+	cmd.MarkFlagsMutuallyExclusive("device", "token")
 
 	return cmd
 }
@@ -229,10 +241,23 @@ func runLogin(ctx context.Context, out io.Writer, hubURL string) error {
 		return fmt.Errorf("waiting for login response: %w", err)
 	}
 
-	// 7. Save OIDC token cache so the exec credential plugin can use it.
+	return saveOIDCLogin(out, resp)
+}
+
+func saveOIDCLogin(out io.Writer, resp tenancyv1alpha1.LoginResponse) error {
+	// Save the OIDC token cache so the exec credential plugin can use it.
 	// ClientSecret is intentionally not cached — PKCE public client refresh
 	// needs only the refresh token, issuer URL, and client ID.
 	var expiresAt *time.Time
+	var contextName string
+	writeKubeconfig := func() error {
+		var err error
+		contextName, err = mergeKubeconfig(resp.Kubeconfig, resp.UserID)
+		if err != nil {
+			return fmt.Errorf("merging kubeconfig: %w", err)
+		}
+		return nil
+	}
 	if resp.IDToken != "" && resp.IssuerURL != "" {
 		if resp.RefreshToken == "" {
 			fmt.Fprintf(os.Stderr, "Warning: the identity provider issued no refresh token; you will have to log in again when the token expires.\n"+
@@ -248,16 +273,13 @@ func runLogin(ctx context.Context, out io.Writer, hubURL string) error {
 			ExpiresAt:    resp.ExpiresAt,
 			IssuerURL:    resp.IssuerURL,
 			ClientID:     resp.ClientID,
+			Account:      resp.UserID,
 		}
-		if err := cliauth.SaveTokenCache(cache); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to save token cache: %v\n", err)
+		if err := cliauth.SaveLoginTokenCache(cache, writeKubeconfig); err != nil {
+			return fmt.Errorf("saving OIDC login: %w", err)
 		}
-	}
-
-	// 8. Merge the received kubeconfig into ~/.kube/config.
-	contextName, err := mergeKubeconfig(resp.Kubeconfig)
-	if err != nil {
-		return fmt.Errorf("merging kubeconfig: %w", err)
+	} else if err := writeKubeconfig(); err != nil {
+		return err
 	}
 
 	printLoginSuccess(out, resp.Email, resp.UserID, contextName, expiresAt)
@@ -267,7 +289,7 @@ func runLogin(ctx context.Context, out io.Writer, hubURL string) error {
 // mergeKubeconfig merges the received kubeconfig bytes into the default
 // kubeconfig file and returns the name of the context it made current. The hub
 // picks that name, so callers must not assume it.
-func mergeKubeconfig(kubeconfigBytes []byte) (string, error) {
+func mergeKubeconfig(kubeconfigBytes []byte, account ...string) (string, error) {
 	// Parse the new kubeconfig.
 	newConfig, err := clientcmd.Load(kubeconfigBytes)
 	if err != nil {
@@ -280,6 +302,17 @@ func mergeKubeconfig(kubeconfigBytes []byte) (string, error) {
 	// would fail to exec the plugin. Rewrite to the absolute path of the
 	// running binary so both install modes work.
 	rewriteRailgridExecCommand(newConfig)
+	if len(account) != 0 && account[0] != "" {
+		for _, auth := range newConfig.AuthInfos {
+			if auth == nil || auth.Exec == nil {
+				continue
+			}
+			issuer, clientID, _ := execOIDCArgs(auth.Exec)
+			if issuer != "" && clientID != "" {
+				auth.Exec.Args = append(auth.Exec.Args, "--oidc-account="+account[0])
+			}
+		}
+	}
 
 	// Load and write the kubeconfig selected for the CLI. --kubeconfig has the
 	// same precedence here as it does for other commands; when omitted, the
@@ -303,7 +336,9 @@ func mergeKubeconfig(kubeconfigBytes []byte) (string, error) {
 		if prev := existingConfig.Clusters[k]; prev != nil && strings.Contains(prev.Server, "/clusters/") {
 			prevBase, prevCluster := apiurl.SplitBaseAndCluster(prev.Server)
 			newBase, newCluster := apiurl.SplitBaseAndCluster(v.Server)
-			if prevBase == newBase && prevCluster != newCluster {
+			previousContext := existingConfig.Contexts[newConfig.CurrentContext]
+			nextContext := newConfig.Contexts[newConfig.CurrentContext]
+			if prevBase == newBase && prevCluster != newCluster && previousContext != nil && nextContext != nil && previousContext.AuthInfo == nextContext.AuthInfo {
 				v.Server = prev.Server
 				fmt.Printf("Keeping previously selected workspace: %s\n", prev.Server)
 			}
@@ -320,11 +355,62 @@ func mergeKubeconfig(kubeconfigBytes []byte) (string, error) {
 
 	// Write back.
 	configPath := loadingRules.GetDefaultFilename()
-	if err := clientcmd.WriteToFile(*existingConfig, configPath); err != nil {
+	if err := writeLoginKubeconfig(*existingConfig, configPath); err != nil {
 		return "", fmt.Errorf("writing kubeconfig to %s: %w", configPath, err)
 	}
 
 	return existingConfig.CurrentContext, nil
+}
+
+func writeLoginKubeconfig(config clientcmdapi.Config, path string) error {
+	content, err := clientcmd.Write(config)
+	if err != nil {
+		return err
+	}
+	// Preserve kubeconfig symlinks and replace the file they point to.
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		path, err = filepath.EvalSymlinks(path)
+		if err != nil {
+			return err
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if info, err := os.Stat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("kubeconfig destination must be a regular file")
+		}
+		// Check the destination's existing write permissions without truncating it.
+		file, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".railgrid-kubeconfig-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) //nolint:errcheck
+	defer tmp.Close()           //nolint:errcheck
+	if _, err := tmp.Write(content); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // rewriteRailgridExecCommand replaces the sentinel `railgrid` command in any exec

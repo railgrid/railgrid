@@ -52,8 +52,9 @@ const (
 	// collection, so the sweeper can list one kind without touching the other.
 	LabelKind = "railgrid.ai/shared-store"
 
-	dataKeyValue     = "value"
-	dataKeyExpiresAt = "expiresAt"
+	dataKeyValue       = "value"
+	dataKeyExpiresAt   = "expiresAt"
+	lastUsedAnnotation = "railgrid.ai/shared-store-last-used"
 )
 
 // Store is one logical collection of entries (all sharing a `kind`) inside a
@@ -185,6 +186,48 @@ func (s *Store) Take(ctx context.Context, key string) ([]byte, error) {
 		return nil, ErrNotFound
 	}
 	return secret.Data[dataKeyValue], nil
+}
+
+// AllowInterval atomically admits one use per interval across replicas for an
+// existing, unexpired entry. The first use is always eligible.
+func (s *Store) AllowInterval(ctx context.Context, key string, interval time.Duration) (bool, error) {
+	secrets := s.client.CoreV1().Secrets(s.namespace)
+	entry, err := secrets.Get(ctx, s.objectName(key), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("sharedstore: reading %s entry: %w", s.kind, err)
+	}
+	if s.expired(entry) {
+		_ = s.deleteExact(ctx, entry)
+		return false, ErrNotFound
+	}
+	now := s.now()
+	if raw := entry.Annotations[lastUsedAnnotation]; raw != "" {
+		last, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			return false, fmt.Errorf("sharedstore: invalid last-used timestamp: %w", err)
+		}
+		if now.Before(last.Add(interval)) {
+			return false, nil
+		}
+	}
+	if entry.Annotations == nil {
+		entry.Annotations = make(map[string]string)
+	}
+	entry.Annotations[lastUsedAnnotation] = now.UTC().Format(time.RFC3339Nano)
+	_, err = secrets.Update(ctx, entry, metav1.UpdateOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, ErrNotFound
+	case apierrors.IsConflict(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("sharedstore: updating %s entry: %w", s.kind, err)
+	default:
+		return true, nil
+	}
 }
 
 // Delete removes an entry. It is idempotent, which makes logout safe to retry.

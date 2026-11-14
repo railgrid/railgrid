@@ -49,9 +49,9 @@ hub-side session is untouched; log in again with 'railgrid login'.`,
 
 			// 1. Token cache, keyed by the issuer/client the exec plugin uses.
 			if auth := raw.AuthInfos[kctx.AuthInfo]; auth != nil && auth.Exec != nil {
-				issuer, clientID := execOIDCArgs(auth.Exec)
+				issuer, clientID, account := execOIDCArgs(auth.Exec)
 				if issuer != "" && clientID != "" {
-					removed, err := cliauth.RemoveTokenCache(issuer, clientID)
+					removed, err := cliauth.RemoveTokenCache(issuer, clientID, account)
 					if err != nil {
 						return fmt.Errorf("removing token cache: %w", err)
 					}

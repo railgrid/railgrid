@@ -256,6 +256,10 @@ railgrid login --hub-url https://hub.example.com
 
 This opens a browser for the OIDC flow. After authenticating with your identity provider, you're redirected back and your kubeconfig is configured.
 
+For a remote shell, run `railgrid login --hub-url https://hub.example.com --device` on the remote host. Open the printed URL in your local browser, enter the displayed code, and sign in. The remote CLI retrieves your credentials over HTTPS and writes the kubeconfig on that host. Device sign-in requires an OIDC-enabled hub with kcp.
+
+The confirmation page shows the code, the request time, and the requester's network prefix. Approve only codes from your own terminal. Someone who convinces you to approve their code can sign in to Railgrid as you.
+
 ---
 
 ## Identity Connectors
