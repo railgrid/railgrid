@@ -4,7 +4,6 @@ import copy
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
@@ -13,7 +12,6 @@ import unittest
 import yaml
 
 from result import MODES, POLICIES, check_results, expected_jobs
-from selection import MATRICES, SELECTION_INPUTS
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -291,17 +289,22 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual("pull_request" in events or "pull_request_target" in events,
                                  path.name in allowed, "pull requests are validated by Prow (/.prow.yaml)")
 
-    def test_prow_images_job_starts_for_every_image_input(self):
+    def test_every_prow_job_is_required_and_starts_on_every_non_docs_pull_request(self):
         jobs = {job["name"]: job for job in yaml.safe_load((ROOT / ".prow.yaml").read_text())["presubmits"]}
-        trigger = re.compile(jobs["pull-railgrid-images"]["run_if_changed"])
-        inputs = {path for entry in MATRICES["images"] for path in entry["inputs"]} | set(SELECTION_INPUTS)
-        inputs.add("providers/infrastructure/examples/application/apps/")
-        for path in sorted(inputs):
-            with self.subTest(path=path):
-                self.assertTrue(trigger.search(path + ("x" if path.endswith("/") else "")))
-        self.assertFalse(trigger.search("docs/index.md"))
+        for name, job in jobs.items():
+            with self.subTest(job=name):
+                self.assertNotIn("optional", job)
+                self.assertNotIn("run_if_changed", job, "narrow the work inside job.sh; the job itself always starts")
+                self.assertTrue(job.get("always_run") or job.get("skip_if_only_changed") == r"^docs/|\.md$")
+        # One Prow job for each pull_request trigger that left GitHub Actions.
+        self.assertLessEqual({"pull-railgrid-images", "pull-railgrid-e2e-infrastructure-templates",
+                              "pull-railgrid-split"}, set(jobs))
+        script = (ROOT / "hack/ci/prow/job.sh").read_text()
         for job in jobs.values():
-            self.assertNotIn("optional", job)
+            self.assertIn(f"\n  {job['spec']['containers'][0]['args'][1]})\n", script)
+        for path in sorted((ROOT / ".github/workflows").glob("split-*.yaml")):
+            env = yaml.safe_load(path.read_text())["env"]
+            self.assertTrue(env["PREFIX"] and env["SPLITSH_VERSION"], path.name)
 
     def test_macos_runs_only_the_darwin_specific_half_on_relevant_paths(self):
         events = self.macos.get("on", self.macos.get(True))

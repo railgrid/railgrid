@@ -32,12 +32,19 @@ What is left on GitHub Actions:
 | `ci.yaml`, `e2e.yaml`, `infrastructure-templates-e2e.yaml`, `tilt-e2e.yaml` | Manual dispatch only: the fallback when the Prow cluster is unavailable |
 
 `hack/ci/test_workflows.py` fails if any other workflow starts on
-`pull_request`. Not ported: the split dry-run that pull requests touching a
-provider used to get; a split now runs for the first time on `main`.
+`pull_request`. Every check those workflows ran on pull requests has a Prow
+job:
 
-`pull-railgrid-images` and `pull-railgrid-e2e-infrastructure-templates` start
-only when a pull request changes their inputs (`run_if_changed`); `/test
-<job>` runs one anyway.
+| Was, on pull requests | Prow job |
+| --------------------- | -------- |
+| `images.yaml` provider images, `infrastructure-examples.yaml` | `pull-railgrid-images` |
+| `infrastructure-templates-e2e.yaml` | `pull-railgrid-e2e-infrastructure-templates` |
+| `split-*.yaml` dry run | `pull-railgrid-split` |
+
+No job is optional or path-triggered: all of them start on every pull request
+that is not docs-only, and Tide waits for each. These three narrow their work
+inside `job.sh` to what the pull request touched (the workflows' old path
+filters and image selection) and succeed at once when that is nothing.
 
 ## Working with it
 
