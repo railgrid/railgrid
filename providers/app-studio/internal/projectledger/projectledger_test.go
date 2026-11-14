@@ -636,6 +636,91 @@ func TestLedgerWritesNothingWhenTheMutationChangesNothing(t *testing.T) {
 // derived from the 500-file tree cap, so overflowing it is a bug in some other
 // bound. Truncating would mean a file that never reaches git, so it is an
 // error instead.
+func TestSourceDeletionRetirementUsesProjectConsumers(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		repository, sandbox bool
+	}{
+		{"standalone", false, false},
+		{"repository", true, false},
+		{"development sandbox", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			projects := newFakeProjects()
+			if tc.repository {
+				projects.project.Spec.Repository = &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo"}
+			}
+			if tc.sandbox {
+				projects.project.Spec.Environments = []aiv1alpha1.ProjectEnvironmentSpec{
+					{Name: "development", Mode: aiv1alpha1.ProjectEnvironmentModeLive},
+				}
+			}
+			scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+			ledger := New(projects)
+			store := workspace.NewFileStore(t.TempDir())
+			store.SetLedger(ledger)
+			file, err := store.PutFile(ctx, scope, workspace.PutOptions{Path: "old.txt", Data: []byte("test")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.DeleteFile(ctx, scope, workspace.DeleteOptions{Path: "old.txt", ExpectedVersion: file.Version}); err != nil {
+				t.Fatal(err)
+			}
+			record, err := ledger.Read(ctx, scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantPending := tc.repository || tc.sandbox
+			if (len(record.SourceDeletions) != 0) != wantPending || (len(record.UncommittedPaths) != 0) != wantPending {
+				t.Fatalf("deletions=%v, dirty=%v, want pending=%t", record.SourceDeletions, record.UncommittedPaths, wantPending)
+			}
+			if tc.sandbox {
+				if err := store.RecordPreviewCheckpoint(ctx, scope, workspace.SourceChange{SourceRevision: record.SourceRevision}); err != nil {
+					t.Fatal(err)
+				}
+				record, err = ledger.Read(ctx, scope)
+				if err != nil || len(record.SourceDeletions) != 0 || len(record.UncommittedPaths) != 0 {
+					t.Fatalf("after sandbox checkpoint, record=%+v, err=%v", record, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDeletionCapacityFailureRestoresSource(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	projects.project.Spec.Repository = &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo"}
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	store := workspace.NewFileStore(t.TempDir())
+	store.SetLedger(ledger)
+	file, err := store.PutFile(ctx, scope, workspace.PutOptions{Path: "old.txt", Data: []byte("original")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		for i := 0; i < MaxUncommittedPaths; i++ {
+			record.UncommittedPaths = append(record.UncommittedPaths, fmt.Sprintf("f%05d.ts", i))
+		}
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteFile(ctx, scope, workspace.DeleteOptions{Path: "old.txt", ExpectedVersion: file.Version}); !errors.Is(err, workspace.ErrLedgerCapacity) {
+		t.Fatalf("delete error=%v, want ledger capacity rejection", err)
+	}
+	got, err := store.ReadFileBytes(ctx, scope, "old.txt", 100)
+	if err != nil || string(got) != "original" {
+		t.Fatalf("bytes after rejected deletion=%q, err=%v", got, err)
+	}
+	record, err := ledger.Read(ctx, scope)
+	if err != nil || len(record.SourceDeletions) != 0 || len(record.UncommittedPaths) != MaxUncommittedPaths {
+		t.Fatalf("rejected deletion changed the ledger: paths=%d deletions=%v err=%v", len(record.UncommittedPaths), record.SourceDeletions, err)
+	}
+}
+
 func TestLedgerRefusesToSilentlyDropPathsPastTheBound(t *testing.T) {
 	ctx := context.Background()
 	projects := newFakeProjects()

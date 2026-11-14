@@ -569,6 +569,9 @@ func (s *FileStore) completeSourceMutation(ctx context.Context, scope Scope, mut
 		recordSourcePathChanges(record, mutation.paths, origin)
 		recordSourceDeletions(record, mutation.paths, deleted, mutation.revision)
 		record.UncommittedPaths = normalizeLedgerPaths(append(record.UncommittedPaths, deleted...))
+		if record.SourceConsumersKnown && !record.HasRepository && !record.HasDevelopmentSandbox {
+			pruneSourceDeletions(record)
+		}
 		return true, nil
 	})
 	if err != nil {
@@ -956,6 +959,9 @@ func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected 
 		} else {
 			recordSourcePathChanges(record, clean, origin)
 			record.UncommittedPaths = normalizeLedgerPaths(append(append([]string(nil), record.UncommittedPaths...), clean...))
+		}
+		if record.SourceConsumersKnown && !record.HasRepository && !record.HasDevelopmentSandbox {
+			pruneSourceDeletions(record)
 		}
 		return true, nil
 	})

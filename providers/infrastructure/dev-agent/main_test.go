@@ -1246,6 +1246,56 @@ func TestExplicitSyncFileDirectoryTransitions(t *testing.T) {
 	}
 }
 
+func TestExplicitSyncTransitionConflictPreservesFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name, conflict string
+		incoming       []syncFile
+	}{
+		{"unlisted sibling", "src/nested/unmanaged.txt", []syncFile{{Path: "src", Content: "new"}}},
+		{"unrelated write conflict", "other.txt", []syncFile{{Path: "src", Content: "new"}, {Path: "other.txt/child", Content: "new"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workdir := t.TempDir()
+			srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+			const managed = "src/nested/main.go"
+			before := []syncFile{{Path: managed, Content: "managed"}}
+			digest, err := digestSyncFiles(before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seed, _ := doSync(t, srv, syncRequest{Files: before, SourceRevision: 1, ExplicitSourceDigest: digest})
+			if seed.Code != http.StatusOK {
+				t.Fatalf("seed: %d %s", seed.Code, seed.Body.String())
+			}
+			if err := os.WriteFile(filepath.Join(workdir, tc.conflict), []byte("unmanaged"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			digest, err = digestSyncFiles(tc.incoming)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := syncRequest{Files: tc.incoming, DeletePaths: []string{managed}, SourceRevision: 2, ExplicitSourceDigest: digest}
+			result, _ := doSync(t, srv, req)
+			if result.Code != http.StatusConflict {
+				t.Fatalf("conflict: %d %s", result.Code, result.Body.String())
+			}
+			for file, want := range map[string]string{managed: "managed", tc.conflict: "unmanaged"} {
+				got, err := os.ReadFile(filepath.Join(workdir, file))
+				if err != nil || string(got) != want {
+					t.Fatalf("%s after rejected sync = %q, %v", file, got, err)
+				}
+			}
+			if err := os.Remove(filepath.Join(workdir, tc.conflict)); err != nil {
+				t.Fatal(err)
+			}
+			retry, response := doSync(t, srv, req)
+			if retry.Code != http.StatusOK || !slices.Equal(response.Deleted, req.DeletePaths) {
+				t.Fatalf("retry: %d %s", retry.Code, retry.Body.String())
+			}
+		})
+	}
+}
+
 func TestExplicitSyncKeepsOmittedFilesUntilDeletionIsRequested(t *testing.T) {
 	workdir := t.TempDir()
 	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})

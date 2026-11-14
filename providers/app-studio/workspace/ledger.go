@@ -123,7 +123,8 @@ type LedgerRecord struct {
 	// UncommittedPaths are the paths that differ from the last commit.
 	UncommittedPaths []string
 	SourceDeletions  []SourceDeletion
-	// HasDevelopmentSandbox is derived from the Project spec by its ledger.
+	// Consumer topology is derived from the Project spec by its ledger.
+	SourceConsumersKnown  bool
 	HasDevelopmentSandbox bool
 	HasRepository         bool
 	// PendingCommit, when set, is the RepositoryCommit being followed up.
@@ -135,7 +136,7 @@ type LedgerRecord struct {
 // DeepCopy returns a record that shares nothing with the receiver, so a
 // Ledger implementation can hand callers a record it also caches.
 func (r LedgerRecord) DeepCopy() LedgerRecord {
-	out := LedgerRecord{SourceRevision: r.SourceRevision, SourceMutationID: r.SourceMutationID}
+	out := r
 	if r.LastSourceChange != nil {
 		change := *r.LastSourceChange
 		out.LastSourceChange = &change

@@ -175,8 +175,7 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 	// An older bundle may contain inferred deletions. Rebuild from the
 	// current ledger and leave any already-created RepositoryCommit to settle.
 	if hasPending && pending.RequestID != "" && pending.Name == "" && !pending.ExplicitDeletionsVerified {
-		cleared, err := r.Workspace.DiscardUnverifiedReservation(ctx, scope, pending.RequestID)
-		return commitOutcome{dirty: true, retry: cleared}, err
+		return r.recoverUnverifiedCommit(ctx, c, p, scope, pending)
 	}
 	if hasPending && pending.BlockedReason == repositoryCommitFailedReason {
 		return r.failedPendingCommitCooldown(ctx, c, p, repo, scope, pending)
@@ -528,6 +527,49 @@ func shortSHA(sha string) string {
 
 // repositoryCommitGVK is the Code provider's RepositoryCommit resource.
 var repositoryCommitGVK = schema.GroupVersionKind{Group: "code.railgrid.ai", Version: "v1alpha1", Kind: "RepositoryCommit"}
+
+// recoverUnverifiedCommit looks up the keyed object without submitting an old
+// bundle, which may contain inferred deletions. Code may have accepted it
+// before App Studio lost the response. Only a confirmed absence permits a
+// replacement request.
+func (r *Reconciler) recoverUnverifiedCommit(ctx context.Context, c client.Client, p *aiv1alpha1.Project, scope workspace.Scope, pending workspace.PendingCommit) (commitOutcome, error) {
+	outcome := commitOutcome{dirty: true, retry: true}
+	cluster := clusterOf(p)
+	if c == nil || cluster == "" || pending.RepositoryUID == "" {
+		return outcome, fmt.Errorf("cannot look up reserved RepositoryCommit")
+	}
+	name := codecommit.KeyedCommitName(cluster, pending.RepositoryUID, pending.RequestID)
+	obj, err := readRepositoryCommit(ctx, c, name)
+	if apierrors.IsNotFound(err) {
+		outcome.retry, err = r.Workspace.DiscardUnverifiedReservation(ctx, scope, pending.RequestID)
+		return outcome, err
+	}
+	if err != nil {
+		return outcome, fmt.Errorf("look up reserved RepositoryCommit %q: %w", name, err)
+	}
+	if obj.GetAnnotations()["kcp.io/cluster"] != cluster {
+		return outcome, fmt.Errorf("reserved RepositoryCommit %q does not belong to logical cluster %q", name, cluster)
+	}
+	for _, field := range []struct {
+		path []string
+		want string
+	}{
+		{[]string{"spec", "repositoryRef"}, pending.RepositoryRef},
+		{[]string{"spec", "message"}, pending.Message},
+		{[]string{"spec", "branch"}, pending.Branch},
+		{[]string{"spec", "source", "bundleRef", "name"}, pending.BundleRef},
+		{[]string{"spec", "source", "bundleRef", "digest"}, pending.BundleDigest},
+	} {
+		value, _, err := unstructured.NestedString(obj.Object, field.path...)
+		if err != nil || value != field.want {
+			return outcome, fmt.Errorf("reserved RepositoryCommit %q does not match the recorded intent", name)
+		}
+	}
+	if err := r.Workspace.BindPendingCommitName(ctx, scope, pending.RequestID, name); err != nil && !errors.Is(err, workspace.ErrPendingCommitChanged) {
+		return outcome, fmt.Errorf("bind recovered RepositoryCommit %q: %w", name, err)
+	}
+	return outcome, nil
+}
 
 // readRepositoryCommit reads one RepositoryCommit by name through the
 // manager's client for the request's cluster.
