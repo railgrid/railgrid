@@ -74,6 +74,7 @@ type deviceRequest struct {
 
 type deviceBrowserState struct {
 	deviceRequest
+	DisplayCode string
 	Verifier    string
 	BrowserHash string
 }
@@ -210,7 +211,7 @@ func (h *Handler) showDeviceCodePage(w http.ResponseWriter, _ *http.Request) {
 	renderDevicePage(w, http.StatusOK, devicePage{})
 }
 
-func (h *Handler) approveDeviceLogin(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) beginDeviceSignIn(w http.ResponseWriter, r *http.Request) {
 	deviceBrowserHeaders(w)
 	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	if err := r.ParseForm(); err != nil {
@@ -219,52 +220,32 @@ func (h *Handler) approveDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	code := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(r.PostForm.Get("user_code"))), "-", "")
 	if len(code) == 8 {
-		confirm := r.PostForm.Get("confirm") == "1"
-		load := h.deviceStore.Get
-		if confirm {
-			cookie, err := r.Cookie(deviceBrowserCookie("confirm:"+code, "", 0).Name)
-			confirmation := r.PostForm.Get("confirmation")
-			if err != nil || len(confirmation) != 43 || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(confirmation)) != 1 {
-				renderDevicePage(w, http.StatusBadRequest, devicePage{Error: "Enter the code again to review the sign-in request."})
-				return
-			}
-			load = h.deviceStore.Take
-		}
-		payload, err := load(r.Context(), "user:"+code)
+		payload, err := h.deviceStore.Take(r.Context(), "user:"+code)
 		switch {
 		case err == nil:
 			var request deviceRequest
 			if err := json.Unmarshal(payload, &request); err != nil {
-				h.deviceUnavailable(w, err)
+				h.deviceBrowserUnavailable(w, err)
 				return
 			}
-			if confirm {
-				http.SetCookie(w, deviceBrowserCookie("confirm:"+code, "", -1))
-				if !h.authorizeDeviceBrowser(w, r, request) {
-					h.recordDeviceLoginFailure(r.Context(), request)
-				}
-			} else {
-				confirmation := oauth2.GenerateVerifier()
-				http.SetCookie(w, deviceBrowserCookie("confirm:"+code, confirmation, int(time.Until(request.ExpiresAt).Seconds())+1))
-				renderDevicePage(w, http.StatusOK, devicePage{
-					Code: code, DisplayCode: code[:4] + "-" + code[4:], Network: request.Network,
-					StartedAt: request.StartedAt.UTC().Format("2006-01-02 15:04:05 UTC"), Confirmation: confirmation,
-				})
+			if !h.authorizeDeviceBrowser(w, r, request, code[:4]+"-"+code[4:]) {
+				h.recordDeviceLoginFailure(r.Context(), request)
 			}
 			return
 		case !errors.Is(err, sharedstore.ErrNotFound):
-			h.deviceUnavailable(w, err)
+			h.deviceBrowserUnavailable(w, err)
 			return
 		}
 	}
 	renderDevicePage(w, http.StatusBadRequest, devicePage{Error: "That code is invalid, expired, or already used. Check your terminal or start a new sign-in."})
 }
 
-func (h *Handler) authorizeDeviceBrowser(w http.ResponseWriter, r *http.Request, request deviceRequest) bool {
+func (h *Handler) authorizeDeviceBrowser(w http.ResponseWriter, r *http.Request, request deviceRequest, displayCode string) bool {
 	state := deviceStatePrefix + oauth2.GenerateVerifier()
 	browserSecret := oauth2.GenerateVerifier()
 	record := deviceBrowserState{
 		deviceRequest: request,
+		DisplayCode:   displayCode,
 		Verifier:      oauth2.GenerateVerifier(),
 		BrowserHash:   deviceDigest(browserSecret),
 	}

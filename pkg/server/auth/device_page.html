@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{if .Confirmation}}Confirm CLI sign-in{{else}}Sign in to Railgrid CLI{{end}}</title>
+  <title>{{if .Approval}}Approve Railgrid CLI access{{else}}Sign in to Railgrid CLI{{end}}</title>
   <style>
     /* Violet Circuit standalone auth palette, as used by Dex and statuspage. */
     :root {
@@ -63,6 +63,19 @@
     }
     p { margin: 0; }
     .device-intro { margin-top: 8px; color: var(--railgrid-text-secondary); }
+    .device-account {
+      margin-top: 16px;
+      padding: 10px 12px;
+      border-left: 2px solid var(--railgrid-accent);
+      background: var(--railgrid-surface-overlay);
+      overflow-wrap: anywhere;
+    }
+    .device-account strong { display: block; }
+    .device-account span { color: var(--railgrid-text-secondary); }
+    .device-access { margin-top: 20px; }
+    .device-access h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+    .device-access ul { margin: 0; padding-inline-start: 20px; color: var(--railgrid-text-secondary); }
+    .device-access li + li { margin-top: 4px; }
     form, dl { margin: 20px 0 0; }
     label { display: block; margin-bottom: 6px; font-weight: 600; }
     input:not([type="hidden"]) {
@@ -156,22 +169,31 @@
         </svg>
         Railgrid
       </div>
-      {{if .Confirmation}}
-      <h1 id="device-heading">Confirm CLI sign-in</h1>
+      {{if .Approval}}
+      <h1 id="device-heading">Approve Railgrid CLI access</h1>
+      <div class="device-account">
+        <span>Signed in as</span>
+        {{if .AccountName}}<strong>{{.AccountName}}</strong><span>{{.Account}}</span>{{else}}<strong>{{.Account}}</strong>{{end}}
+      </div>
       <dl>
         <div class="device-detail"><dt>Device code</dt><dd>{{.DisplayCode}}</dd></div>
         <div class="device-detail"><dt>Requested at</dt><dd>{{.StartedAt}}</dd></div>
         <div class="device-detail"><dt>CLI network</dt><dd>{{.Network}}</dd></div>
       </dl>
+      <section class="device-access" id="device-access" aria-labelledby="device-access-heading">
+        <h2 id="device-access-heading">What the CLI can do</h2>
+        <ul>
+          <li>Use your Railgrid workspace permissions, including through kubectl.</li>
+          <li>Save sign-in credentials on the machine that requested access.{{if .CanRefresh}} That machine can refresh them after you close this page.{{end}}</li>
+        </ul>
+      </section>
       <div class="device-warning" id="device-warning">
         <p>Approve only if you ran the sign-in command and the code matches your terminal. If someone sent you the code, cancel.</p>
-        <p>Approval gives the requesting CLI access to Railgrid as you.</p>
       </div>
-      <form class="device-actions" method="post">
-        <input type="hidden" name="user_code" value="{{.Code}}">
-        <input type="hidden" name="confirmation" value="{{.Confirmation}}">
-        <button class="device-button device-primary" type="submit" name="confirm" value="1" aria-describedby="device-warning">Approve sign-in</button>
-        <a class="device-button device-cancel" href="/auth/device">Cancel</a>
+      <form class="device-actions" method="post" action="/auth/device/approve">
+        <input type="hidden" name="approval" value="{{.Approval}}">
+        <button class="device-button device-primary" type="submit" name="decision" value="approve" aria-describedby="device-access device-warning">Approve access</button>
+        <button class="device-button device-cancel" type="submit" name="decision" value="decline">Cancel</button>
       </form>
       {{else}}
       <h1 id="device-heading">Sign in to Railgrid CLI</h1>

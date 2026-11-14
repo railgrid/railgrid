@@ -23,8 +23,10 @@ import (
 )
 
 type devicePage struct {
-	Error                                               string
-	Code, DisplayCode, Network, StartedAt, Confirmation string
+	Error                           string
+	Approval, Account, AccountName  string
+	DisplayCode, Network, StartedAt string
+	CanRefresh                      bool
 }
 
 //go:embed device_page.html
