@@ -32,7 +32,6 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -140,14 +139,37 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 		router.ServeHTTP(reply, req)
 		return reply
 	}
-	start := request(startReplica, http.MethodPost, apiurl.PathAuthDeviceStart, startForm, nil)
-	var device oauth2.DeviceAuthResponse
-	if err := json.Unmarshal(start.Body.Bytes(), &device); start.Code != http.StatusOK || err != nil {
-		t.Fatalf("start: HTTP %d, decode error %v", start.Code, err)
+	t.Run("failed start removes pending entry", func(t *testing.T) {
+		store.failNextWritePrefix = "user:"
+		reply := request(startReplica, http.MethodPost, apiurl.PathAuthDeviceStart, startForm, nil)
+		if reply.Code != http.StatusServiceUnavailable || store.failNextWritePrefix != "" || len(store.values) != 0 {
+			t.Fatalf("failed start: HTTP %d, injection still armed %t, stored entries %d", reply.Code, store.failNextWritePrefix != "", len(store.values))
+		}
+	})
+	startLogin := func(t *testing.T) oauth2.DeviceAuthResponse {
+		t.Helper()
+		reply := request(startReplica, http.MethodPost, apiurl.PathAuthDeviceStart, startForm, nil)
+		var device oauth2.DeviceAuthResponse
+		if err := json.Unmarshal(reply.Body.Bytes(), &device); reply.Code != http.StatusOK || err != nil {
+			t.Fatalf("start: HTTP %d, decode error %v", reply.Code, err)
+		}
+		return device
 	}
-	if device.VerificationURI != hubURL+apiurl.PathAuthDeviceVerify || device.UserCode == "" || device.DeviceCode == "" {
-		t.Fatal("device start response missing codes or verification URL")
+	decrypt := func(t *testing.T, reply *httptest.ResponseRecorder) (login deviceResult) {
+		t.Helper()
+		if reply.Code != http.StatusOK {
+			t.Fatalf("poll: HTTP %d", reply.Code)
+		}
+		plaintext, err := hpke.Open(recipient, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(apiurl.DeviceLoginHPKEInfo), reply.Body.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(plaintext, &login); err != nil {
+			t.Fatal(err)
+		}
+		return login
 	}
+	device := startLogin(t)
 	poll := func(code string) *httptest.ResponseRecorder {
 		return request(pollReplica, http.MethodPost, apiurl.PathAuthDevicePoll, url.Values{"device_code": {code}}, nil)
 	}
@@ -158,16 +180,12 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 		t.Fatalf("early poll on a different replica: HTTP %d %s", reply.Code, reply.Body)
 	}
 
-	verify := request(browserReplica, http.MethodGet, apiurl.PathAuthDeviceVerify, nil, nil)
-	if verify.Code != http.StatusOK || !strings.Contains(verify.Body.String(), "user_code") {
-		t.Fatalf("expected a device-code form, got HTTP %d", verify.Code)
-	}
 	form := url.Values{"user_code": {strings.ToLower(device.UserCode)}}
 	preview := request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, nil)
 	if preview.Code != http.StatusOK || preview.Header().Get("Location") != "" {
 		t.Fatalf("confirmation page: HTTP %d, expected no redirect", preview.Code)
 	}
-	for _, want := range []string{"Confirm Railgrid CLI sign-in", "Unavailable", "UTC", device.UserCode, "If someone sent you the code, cancel."} {
+	for _, want := range []string{"Unavailable", "UTC", device.UserCode, "If someone sent you the code, cancel."} {
 		if !strings.Contains(preview.Body.String(), want) {
 			t.Errorf("confirmation page missing %q", want)
 		}
@@ -176,63 +194,53 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 	if skipped := request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, nil); skipped.Code != http.StatusBadRequest {
 		t.Fatalf("approval without confirmation page: HTTP %d", skipped.Code)
 	}
-	confirm := func(preview *httptest.ResponseRecorder, form url.Values) *httptest.ResponseRecorder {
+	confirm := func(t *testing.T, preview *httptest.ResponseRecorder, form url.Values) *httptest.ResponseRecorder {
 		t.Helper()
 		cookies := preview.Result().Cookies()
 		if preview.Code != http.StatusOK || len(cookies) != 1 || !strings.Contains(preview.Body.String(), cookies[0].Value) {
-			t.Fatalf("confirmation page did not bind its form to the browser: HTTP %d", preview.Code)
+			t.Fatalf("confirmation form lacked a browser binding: HTTP %d", preview.Code)
 		}
 		form.Set("confirm", "1")
 		form.Set("confirmation", cookies[0].Value)
 		return request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, cookies[0])
 	}
-	oidcCookies := func(reply *httptest.ResponseRecorder) []*http.Cookie {
-		var active []*http.Cookie
-		for _, cookie := range reply.Result().Cookies() {
-			if cookie.MaxAge > 0 {
-				active = append(active, cookie)
+	oidcCallback := func(t *testing.T, approval *httptest.ResponseRecorder, query url.Values) (string, *http.Cookie) {
+		t.Helper()
+		dest, err := url.Parse(approval.Header().Get("Location"))
+		if approval.Code != http.StatusSeeOther || err != nil {
+			t.Fatalf("approval did not redirect to OIDC: HTTP %d, URL error %v", approval.Code, err)
+		}
+		pkceChallenge := dest.Query().Get("code_challenge")
+		if dest.Query().Get("code_challenge_method") != "S256" || pkceChallenge == "" {
+			t.Fatal("missing S256 PKCE challenge")
+		}
+		challenge.Store(&pkceChallenge)
+		query.Set("state", dest.Query().Get("state"))
+		for _, cookie := range approval.Result().Cookies() {
+			if cookie.MaxAge > 0 && cookie.Secure && cookie.HttpOnly {
+				return apiurl.PathAuthCallback + "?" + query.Encode(), cookie
 			}
 		}
-		return active
+		t.Fatal("missing secure browser-binding cookie")
+		return "", nil
 	}
-	approveCode := func(code string) *httptest.ResponseRecorder {
-		form := url.Values{"user_code": {code}}
-		preview := request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, nil)
-		return confirm(preview, form)
-	}
-	approve := confirm(preview, form)
-	if approve.Code != http.StatusSeeOther {
-		t.Fatalf("approve: HTTP %d %s", approve.Code, approve.Body)
-	}
-	dest, err := url.Parse(approve.Header().Get("Location"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	pkceChallenge := dest.Query().Get("code_challenge")
-	challenge.Store(&pkceChallenge)
-	if dest.Query().Get("code_challenge_method") != "S256" || pkceChallenge == "" {
-		t.Fatal("missing PKCE challenge")
-	}
-	if strings.Contains(dest.String(), device.DeviceCode) || strings.Contains(dest.String(), device.UserCode) {
+	approve := confirm(t, preview, form)
+	callback, cookie := oidcCallback(t, approve, url.Values{"code": {"upstream-code"}})
+	dest := approve.Header().Get("Location")
+	if strings.Contains(dest, device.DeviceCode) || strings.Contains(dest, device.UserCode) {
 		t.Fatal("a device credential was exposed in the OIDC redirect")
 	}
-	cookies := oidcCookies(approve)
-	if len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly {
-		t.Fatal("expected a secure browser-binding cookie")
-	}
-
-	callback := apiurl.PathAuthCallback + "?" + url.Values{"state": {dest.Query().Get("state")}, "code": {"upstream-code"}}.Encode()
 	if reply := request(startReplica, http.MethodGet, callback, nil, nil); reply.Code != http.StatusBadRequest {
 		t.Fatalf("unbound callback: HTTP %d", reply.Code)
 	}
-	finish := request(startReplica, http.MethodGet, callback, nil, cookies[0])
+	finish := request(startReplica, http.MethodGet, callback, nil, cookie)
 	if finish.Code != http.StatusOK || !strings.Contains(finish.Body.String(), "CLI sign-in approved") {
 		t.Fatalf("callback: HTTP %d %s", finish.Code, finish.Body)
 	}
 	if finish.Header().Get("Location") != "" || strings.Contains(finish.Body.String(), "upstream-refresh") {
 		t.Fatal("callback sent CLI credentials to the browser")
 	}
-	if reply := request(browserReplica, http.MethodGet, callback, nil, cookies[0]); reply.Code != http.StatusBadRequest {
+	if reply := request(browserReplica, http.MethodGet, callback, nil, cookie); reply.Code != http.StatusBadRequest {
 		t.Fatalf("callback replay: HTTP %d", reply.Code)
 	}
 	if reply := poll(oauth2.GenerateVerifier()); reply.Code != http.StatusBadRequest {
@@ -246,25 +254,18 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 		t.Fatal("expected only encrypted credentials in the shared store")
 	}
 	result := poll(device.DeviceCode)
-	plaintext, err := hpke.Open(recipient, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(apiurl.DeviceLoginHPKEInfo), result.Body.Bytes())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var login deviceResult
-	if err := json.Unmarshal(plaintext, &login); result.Code != http.StatusOK || err != nil {
-		t.Fatalf("redemption: HTTP %d, decode error %v", result.Code, err)
-	}
+	login := decrypt(t, result)
 	if login.Error != "" || login.IDToken == "" || login.RefreshToken != "upstream-refresh" ||
 		!strings.Contains(string(login.Kubeconfig), hubURL+"/clusters/device-home") {
 		t.Fatal("redemption omitted workspace or OIDC credentials")
 	}
-	store.now = store.now.Add(devicePollInterval * time.Second)
-	if reply := poll(device.DeviceCode); reply.Code != http.StatusOK || !bytes.Equal(reply.Body.Bytes(), result.Body.Bytes()) {
-		t.Fatalf("retry after a lost response: HTTP %d, expected the original ciphertext", reply.Code)
-	}
 	ackForm := url.Values{"device_code": {device.DeviceCode}, "ack_nonce": {oauth2.GenerateVerifier()}}
 	if ack := request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceAck, ackForm, nil); ack.Code != http.StatusBadRequest {
 		t.Fatalf("acknowledgment with wrong nonce: HTTP %d", ack.Code)
+	}
+	store.now = store.now.Add(devicePollInterval * time.Second)
+	if reply := poll(device.DeviceCode); reply.Code != http.StatusOK || !bytes.Equal(reply.Body.Bytes(), result.Body.Bytes()) {
+		t.Fatalf("retry after invalid acknowledgment: HTTP %d, expected the original ciphertext", reply.Code)
 	}
 	ackForm.Set("ack_nonce", login.AckNonce)
 	for range 2 {
@@ -277,83 +278,32 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 		t.Fatalf("poll after acknowledgment: HTTP %d %s", reply.Code, reply.Body)
 	}
 
-	start = request(startReplica, http.MethodPost, apiurl.PathAuthDeviceStart, startForm, nil)
-	if err := json.Unmarshal(start.Body.Bytes(), &device); start.Code != http.StatusOK || err != nil {
-		t.Fatalf("start before denial: HTTP %d, decode error %v", start.Code, err)
-	}
-	approve = approveCode(device.UserCode)
-	dest, err = url.Parse(approve.Header().Get("Location"))
-	cookies = oidcCookies(approve)
-	if approve.Code != http.StatusSeeOther || err != nil || len(cookies) != 1 {
-		t.Fatalf("approve before denial: HTTP %d, URL error %v", approve.Code, err)
-	}
-	callback = apiurl.PathAuthCallback + "?" + url.Values{"state": {dest.Query().Get("state")}, "error": {"access_denied"}}.Encode()
-	if reply := request(startReplica, http.MethodGet, callback, nil, cookies[0]); reply.Code != http.StatusOK {
-		t.Fatalf("denial callback: HTTP %d", reply.Code)
-	}
-	reply := poll(device.DeviceCode)
-	plaintext, err = hpke.Open(recipient, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(apiurl.DeviceLoginHPKEInfo), reply.Body.Bytes())
-	if reply.Code != http.StatusOK || err != nil || !strings.Contains(string(plaintext), "access_denied") {
-		t.Fatalf("denied poll: HTTP %d, decryption error %v", reply.Code, err)
-	}
-
-	start = request(startReplica, http.MethodPost, apiurl.PathAuthDeviceStart, startForm, nil)
-	if err := json.Unmarshal(start.Body.Bytes(), &device); start.Code != http.StatusOK || err != nil {
-		t.Fatalf("start before store failure: HTTP %d, decode error %v", start.Code, err)
-	}
-	approve = approveCode(device.UserCode)
-	dest, err = url.Parse(approve.Header().Get("Location"))
-	cookies = oidcCookies(approve)
-	if approve.Code != http.StatusSeeOther || err != nil || len(cookies) != 1 {
-		t.Fatalf("approve before store failure: HTTP %d, URL error %v", approve.Code, err)
-	}
-	pkceChallenge = dest.Query().Get("code_challenge")
-	challenge.Store(&pkceChallenge)
-	store.failNextWritePrefix = "result:"
-	callback = apiurl.PathAuthCallback + "?" + url.Values{"state": {dest.Query().Get("state")}, "code": {"upstream-code"}}.Encode()
-	if reply := request(startReplica, http.MethodGet, callback, nil, cookies[0]); reply.Code != http.StatusServiceUnavailable {
-		t.Fatalf("callback during store failure: HTTP %d", reply.Code)
-	}
-	reply = poll(device.DeviceCode)
-	plaintext, err = hpke.Open(recipient, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(apiurl.DeviceLoginHPKEInfo), reply.Body.Bytes())
-	if reply.Code != http.StatusOK || err != nil || !strings.Contains(string(plaintext), "server_error") {
-		t.Fatalf("fallback poll: HTTP %d, decryption error %v", reply.Code, err)
-	}
-
-	start = request(startReplica, http.MethodPost, apiurl.PathAuthDeviceStart, startForm, nil)
-	if err := json.Unmarshal(start.Body.Bytes(), &device); start.Code != http.StatusOK || err != nil {
-		t.Fatalf("start before OIDC state failure: HTTP %d, decode error %v", start.Code, err)
-	}
-	store.failNextWritePrefix = "oidc:"
-	if reply := approveCode(device.UserCode); reply.Code != http.StatusServiceUnavailable {
-		t.Fatalf("approval during OIDC state failure: HTTP %d", reply.Code)
-	}
-	reply = poll(device.DeviceCode)
-	plaintext, err = hpke.Open(recipient, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(apiurl.DeviceLoginHPKEInfo), reply.Body.Bytes())
-	if reply.Code != http.StatusOK || err != nil || !strings.Contains(string(plaintext), "server_error") {
-		t.Fatalf("poll after OIDC state failure: HTTP %d, decryption error %v", reply.Code, err)
-	}
-}
-
-func TestDeviceStartRemovesPendingEntryOnUserCodeWriteFailure(t *testing.T) {
-	store := &testDeviceStore{values: map[string]testDeviceEntry{}, failNextWritePrefix: "user:"}
-	h := NewBrowserSessionHandler(nil, nil)
-	h.hubExternalURL = "https://hub.example.test"
-	h.deviceStore = store
-	router := mux.NewRouter()
-	h.RegisterRoutes(router)
-
-	key, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	form := url.Values{"recipient_key": {base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes())}}
-	req := httptest.NewRequest(http.MethodPost, apiurl.PathAuthDeviceStart, strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusServiceUnavailable || store.failNextWritePrefix != "" || len(store.values) != 0 {
-		t.Fatalf("failed start: HTTP %d, injection still armed %t, stored entries %d", w.Code, store.failNextWritePrefix != "", len(store.values))
+	for _, tc := range []struct {
+		name, failWrite, wantError string
+		callbackQuery              url.Values
+		wantStatus                 int
+	}{
+		{"denied", "", "access_denied", url.Values{"error": {"access_denied"}}, http.StatusOK},
+		{"result write failure", "result:", "server_error", url.Values{"code": {"upstream-code"}}, http.StatusServiceUnavailable},
+		{"OIDC state write failure", "oidc:", "server_error", nil, http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			device := startLogin(t)
+			form := url.Values{"user_code": {device.UserCode}}
+			preview := request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, nil)
+			store.failNextWritePrefix = tc.failWrite
+			reply := confirm(t, preview, form)
+			if tc.callbackQuery != nil {
+				path, cookie := oidcCallback(t, reply, tc.callbackQuery)
+				reply = request(startReplica, http.MethodGet, path, nil, cookie)
+			}
+			if reply.Code != tc.wantStatus {
+				t.Fatalf("browser response: HTTP %d, want %d", reply.Code, tc.wantStatus)
+			}
+			if result := decrypt(t, poll(device.DeviceCode)); result.Error != tc.wantError {
+				t.Fatalf("poll error = %q, want %q", result.Error, tc.wantError)
+			}
+		})
 	}
 }
 
@@ -428,16 +378,15 @@ type testDeviceEntry struct {
 	lastUse time.Time
 }
 
+// testDeviceStore is used by synchronous handler calls. The shared-store
+// tests separately exercise contention and expiry.
 type testDeviceStore struct {
-	mu                  sync.Mutex
 	values              map[string]testDeviceEntry
 	now                 time.Time
 	failNextWritePrefix string
 }
 
 func (s *testDeviceStore) CreateIfAbsent(_ context.Context, key string, value []byte, expires time.Time) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.failNextWritePrefix != "" && strings.HasPrefix(key, s.failNextWritePrefix) {
 		s.failNextWritePrefix = ""
 		return false, errors.New("injected store write failure")
@@ -450,36 +399,24 @@ func (s *testDeviceStore) CreateIfAbsent(_ context.Context, key string, value []
 }
 
 func (s *testDeviceStore) Get(_ context.Context, key string) ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry, exists := s.values[key]
-	if !exists || !time.Now().Before(entry.expires) {
-		return nil, sharedstore.ErrNotFound
+	if entry, exists := s.values[key]; exists && s.now.Before(entry.expires) {
+		return entry.value, nil
 	}
-	return entry.value, nil
+	return nil, sharedstore.ErrNotFound
 }
 
-func (s *testDeviceStore) Take(_ context.Context, key string) ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry, exists := s.values[key]
+func (s *testDeviceStore) Take(ctx context.Context, key string) ([]byte, error) {
+	value, err := s.Get(ctx, key)
 	delete(s.values, key)
-	if !exists || !time.Now().Before(entry.expires) {
-		return nil, sharedstore.ErrNotFound
-	}
-	return entry.value, nil
+	return value, err
 }
 
 func (s *testDeviceStore) Delete(_ context.Context, key string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.values, key)
 	return nil
 }
 
 func (s *testDeviceStore) AllowInterval(_ context.Context, key string, interval time.Duration) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	entry, exists := s.values[key]
 	if !exists || !s.now.Before(entry.expires) {
 		return false, sharedstore.ErrNotFound

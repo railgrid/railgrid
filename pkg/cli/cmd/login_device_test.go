@@ -42,7 +42,7 @@ import (
 	cliauth "github.com/railgrid/railgrid/pkg/cli/auth"
 )
 
-func TestDeviceLoginSavesCredentialsAndKubeconfig(t *testing.T) {
+func TestDeviceLoginRetriesBeforeAcknowledging(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	configPath := filepath.Join(home, "remote-kubeconfig")
@@ -59,30 +59,19 @@ func TestDeviceLoginSavesCredentialsAndKubeconfig(t *testing.T) {
 	ackNonce := oauth2.GenerateVerifier()
 	var polls atomic.Int32
 	var acknowledgments atomic.Int32
-	var publicKey atomic.Pointer[ecdh.PublicKey]
+	var ciphertext atomic.Pointer[[]byte]
 	router := http.NewServeMux()
 	router.HandleFunc(apiurl.PathHealthz, func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, map[string]bool{"oidc": true})
 	})
 	router.HandleFunc("POST "+apiurl.PathAuthDeviceStart, func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			t.Error(err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		encodedKey, err := base64.RawURLEncoding.DecodeString(r.PostForm.Get("recipient_key"))
+		sealed, err := sealTestDeviceResult(r.FormValue("recipient_key"), deviceLoginResult{LoginResponse: result, AckNonce: ackNonce})
 		if err != nil {
 			t.Error(err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		key, err := ecdh.X25519().NewPublicKey(encodedKey)
-		if err != nil {
-			t.Error(err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		publicKey.Store(key)
+		ciphertext.Store(&sealed)
 		_ = json.NewEncoder(w).Encode(oauth2.DeviceAuthResponse{
 			DeviceCode: deviceCode, UserCode: "ABCD-2345", VerificationURI: "https://hub.example.com/auth/device",
 			Expiry: time.Now().Add(time.Minute), Interval: 1,
@@ -94,40 +83,21 @@ func TestDeviceLoginSavesCredentialsAndKubeconfig(t *testing.T) {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		attempt := polls.Add(1)
-		if attempt == 1 {
+		sealed := *ciphertext.Load()
+		switch polls.Add(1) {
+		case 1:
 			writeOAuthError(w, "authorization_pending")
 			return
-		}
-		recipient, err := hpke.NewDHKEMPublicKey(publicKey.Load())
-		if err != nil {
-			t.Error(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		payload, err := json.Marshal(deviceLoginResult{LoginResponse: result, AckNonce: ackNonce})
-		if err != nil {
-			t.Error(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		sealed, err := hpke.Seal(recipient, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(apiurl.DeviceLoginHPKEInfo), payload)
-		if err != nil {
-			t.Error(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		if attempt == 2 {
+		case 2:
 			w.Header().Set("Content-Length", strconv.Itoa(len(sealed)))
-			_, _ = w.Write(sealed[:len(sealed)/2])
-			return
+			sealed = sealed[:len(sealed)/2]
 		}
 		_, _ = w.Write(sealed)
 	})
 	router.HandleFunc("POST "+apiurl.PathAuthDeviceAck, func(w http.ResponseWriter, r *http.Request) {
 		cache, err := cliauth.LoadTokenCache(result.IssuerURL, result.ClientID, result.UserID)
 		_, configErr := os.Stat(configPath)
-		if err != nil || cache.IDToken != result.IDToken || configErr != nil ||
+		if err != nil || cache.IDToken != result.IDToken || cache.RefreshToken != result.RefreshToken || configErr != nil ||
 			r.ParseForm() != nil || r.PostForm.Get("device_code") != deviceCode || r.PostForm.Get("ack_nonce") != ackNonce {
 			t.Error("acknowledgment must follow a successful local login and carry its device code")
 		}
@@ -156,13 +126,26 @@ func TestDeviceLoginSavesCredentialsAndKubeconfig(t *testing.T) {
 	if got := mergedServer(t, configPath); got != serverURL {
 		t.Fatalf("kubeconfig server = %q, want %q", got, serverURL)
 	}
-	cache, err := cliauth.LoadTokenCache(result.IssuerURL, result.ClientID, result.UserID)
+}
+
+func sealTestDeviceResult(encodedKey string, result deviceLoginResult) ([]byte, error) {
+	keyBytes, err := base64.RawURLEncoding.DecodeString(encodedKey)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	if cache.IDToken != result.IDToken || cache.RefreshToken != result.RefreshToken {
-		t.Fatal("device sign-in did not save the OIDC credentials")
+	key, err := ecdh.X25519().NewPublicKey(keyBytes)
+	if err != nil {
+		return nil, err
 	}
+	recipient, err := hpke.NewDHKEMPublicKey(key)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	return hpke.Seal(recipient, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(apiurl.DeviceLoginHPKEInfo), payload)
 }
 
 func TestOIDCLoginCacheWriteFailurePreservesKubeconfig(t *testing.T) {
@@ -228,20 +211,19 @@ func TestOIDCLoginKeepsAccountsSeparate(t *testing.T) {
 	if err := cliauth.SaveTokenCache(&cliauth.TokenCache{IssuerURL: issuer, ClientID: client, IDToken: "legacy"}); err != nil {
 		t.Fatal(err)
 	}
+	cfg, err := clientcmd.Load(loginKubeconfig(t, "https://hub.example.com/clusters/home"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := cfg.AuthInfos["user-abc"]
+	auth.Token = ""
+	auth.Exec = &clientcmdapi.ExecConfig{Command: "railgrid", Args: []string{"get-token", "--oidc-issuer-url=" + issuer, "--oidc-client-id=" + client}}
+	data, err := clientcmd.Write(*cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, account := range []string{"alice", "bob"} {
 		setLoginKubeconfig(t, filepath.Join(home, account))
-		data := loginKubeconfig(t, "https://hub.example.com/clusters/home")
-		cfg, err := clientcmd.Load(data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		auth := cfg.AuthInfos["user-abc"]
-		auth.Token = ""
-		auth.Exec = &clientcmdapi.ExecConfig{Command: "railgrid", Args: []string{"get-token", "--oidc-issuer-url=" + issuer, "--oidc-client-id=" + client}}
-		data, err = clientcmd.Write(*cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
 		err = saveOIDCLogin(&bytes.Buffer{}, tenancyv1alpha1.LoginResponse{
 			Kubeconfig: data, UserID: account, IssuerURL: issuer, ClientID: client, IDToken: account,
 			ExpiresAt: time.Now().Add(time.Hour).Unix(),
