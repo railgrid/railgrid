@@ -293,6 +293,10 @@ func writeDevelopmentSyncError(w http.ResponseWriter, err error) {
 		writeProjectRuntimeOperationConflict(w)
 		return
 	}
+	if errors.Is(err, workspace.ErrSourceTreeUnavailable) {
+		writeStatus(w, http.StatusServiceUnavailable, "WorkspaceSourceUnavailable", err.Error())
+		return
+	}
 	if errors.Is(err, errProjectRuntimeOperationContention) || errors.Is(err, errProjectRuntimeOperationWaitTimeout) || errors.Is(err, errProjectDevelopmentInstanceReplacing) {
 		writeStatus(w, http.StatusConflict, "Conflict", err.Error())
 		return

@@ -260,6 +260,9 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 	if len(paths) == 0 {
 		return commitOutcome{}, nil
 	}
+	if err := r.Workspace.VerifySourceTree(ctx, scope, sourceRevision); err != nil {
+		return commitOutcome{dirty: true}, err
+	}
 	if !repositoryReady(repo) {
 		return commitOutcome{dirty: true}, nil // repository still provisioning; its watch wakes us
 	}

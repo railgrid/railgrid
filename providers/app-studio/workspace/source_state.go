@@ -107,6 +107,10 @@ func (s *FileStore) SourceTreeExists(ctx context.Context, scope Scope) (bool, er
 	if err != nil {
 		return false, err
 	}
+	return sourceTreeExists(dir)
+}
+
+func sourceTreeExists(dir string) (bool, error) {
 	info, err := os.Stat(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
@@ -118,6 +122,22 @@ func (s *FileStore) SourceTreeExists(ctx context.Context, scope Scope) (bool, er
 		return false, fmt.Errorf("workspace source is not a directory")
 	}
 	return true, nil
+}
+
+// VerifySourceTree checks that a previously recorded working copy is still
+// present before its missing files can be used as deletions.
+func (s *FileStore) VerifySourceTree(ctx context.Context, scope Scope, revision uint64) error {
+	if revision <= 1 {
+		return nil
+	}
+	exists, err := s.SourceTreeExists(ctx, scope)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrSourceTreeUnavailable
+	}
+	return nil
 }
 
 // HasSourceTree reports whether this replica holds a materialized tree for the
