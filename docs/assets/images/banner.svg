@@ -30,8 +30,6 @@
 <circle cx="1138" cy="58" r="3.5" fill="#33365a"/>
 <circle cx="654" cy="342" r="3.5" fill="#33365a"/>
 <circle cx="1138" cy="342" r="3.5" fill="#33365a"/>
-<text x="674" y="84" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" letter-spacing="2" fill="#6b6e8c">CALLERS</text>
-<text x="1118" y="84" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" letter-spacing="2" fill="#6b6e8c" text-anchor="end">WHAT THEY REACH</text>
 <path d="M782,140 H804 L856,192" fill="none" stroke="#05060c" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".6"/><path d="M782,140 H804 L856,192" fill="none" stroke="#b7a4ff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
 <text x="760" y="145" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#c9cbe0" text-anchor="end">portal</text>
 <path d="M782,200 H856" fill="none" stroke="#05060c" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".6"/><path d="M782,200 H856" fill="none" stroke="#5aa9ff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -53,5 +51,4 @@
 <circle cx="896" cy="200" r="70" fill="#8b6bff" opacity=".10"/>
 <polygon points="896.0,152.0 937.6,176.0 937.6,224.0 896.0,248.0 854.4,224.0 854.4,176.0" fill="#0c0d18" stroke="#8b6bff" stroke-width="4" stroke-linejoin="round"/>
 <text x="896" y="207" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#e9e9f2" text-anchor="middle">hub</text>
-<text x="896" y="330" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#6b6e8c" text-anchor="middle">every call is authorized as the caller</text>
 </svg>
