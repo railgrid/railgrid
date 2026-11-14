@@ -67,6 +67,56 @@ func TestRunAdmissionPersistsDefaultSessionBeforeExecution(t *testing.T) {
 	})
 }
 
+func TestRepositoryRunAdmissionPersistsSeparateTranscripts(t *testing.T) {
+	st := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "agent"}
+	if _, err := st.AddUsage(t.Context(), scope, scope.AgentName, 2, 0, 0, time.Now(), 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, events: newEventBus()}
+	agent := &agentsv1alpha1.Agent{}
+	agent.Name = scope.AgentName
+	agent.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "day", TokenLimit: 1}
+
+	start := func(key string) runAdmission {
+		t.Helper()
+		run, err := s.startRun(t.Context(), scope, agent, taskRun{
+			Trigger: agentsv1alpha1.RunTriggerAPI, Task: "repository work",
+			IdempotencyKey: key, Repository: &repositoryAttempt{},
+		}, runAccess{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return run
+	}
+	first := start("first")
+	second := start("second")
+	retry := start("first")
+	if first.ID == second.ID || !retry.Reused || retry.ID != first.ID {
+		t.Fatalf("expected two runs and one replay: first=%+v second=%+v retry=%+v", first, second, retry)
+	}
+
+	for _, admission := range []runAdmission{first, second} {
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			run, err := st.GetRun(t.Context(), scope, admission.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.SessionID != run.ID {
+				t.Fatalf("repository Run %q used transcript %q", run.ID, run.SessionID)
+			}
+			if run.Phase == store.RunPhaseFailed {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("admitted run did not settle: %+v", run)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
 func TestProcessIDStillClaimsPreAdmittedRun(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemoryStore()

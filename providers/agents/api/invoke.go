@@ -74,8 +74,9 @@ type invokeRunRequest struct {
 	ReasoningEffort *string `json:"reasoningEffort,omitempty"`
 	// Task is the prompt the agent runs. Required.
 	Task string `json:"task"`
-	// SessionID continues an existing conversation; empty starts a fresh one, so
-	// unrelated API calls do not accumulate into one context.
+	// SessionID selects a transcript for a general API run. An empty value
+	// uses the default API transcript. Repository runs get their own transcript
+	// and require this field to be empty.
 	SessionID string `json:"sessionId,omitempty"`
 	// IdempotencyKey de-duplicates retries: the same key returns the run it
 	// already started instead of doing the work twice.
