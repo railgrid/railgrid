@@ -1530,9 +1530,13 @@ type runAdmission struct {
 func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, tr taskRun, access runAccess) (runAdmission, error) {
 	runID := uuid.NewString()
 	now := time.Now().UTC()
-	// Save the effective transcript identity before Pending is admitted. The
-	// Postgres run row treats session_id as immutable on later phase updates.
-	tr.SessionID = effectiveSessionID(tr.SessionID, tr.Trigger)
+	// Repository runs each own a transcript. Persist its identity at admission
+	// because the run row treats session_id as immutable on phase updates.
+	if tr.Repository != nil {
+		tr.SessionID = runID
+	} else {
+		tr.SessionID = effectiveSessionID(tr.SessionID, tr.Trigger)
+	}
 	tr.RunID = runID
 	tr.Scope = scope
 	tr.Agent = agent
