@@ -143,6 +143,7 @@ func (m *Manager) buildWorkspaceKubeconfig(userID, clusterName, staticToken, exe
 			"get-token",
 			"--oidc-issuer-url=" + m.kubeconfig.OIDCIssuerURL,
 			"--oidc-client-id=" + m.kubeconfig.OIDCClientID,
+			"--oidc-account=" + userID,
 		}
 		if m.kubeconfig.DevMode {
 			args = append(args, "--insecure-skip-tls-verify")

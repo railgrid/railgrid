@@ -26,6 +26,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -161,7 +162,44 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 		t.Fatalf("expected a device-code form, got HTTP %d", verify.Code)
 	}
 	form := url.Values{"user_code": {strings.ToLower(device.UserCode)}}
-	approve := request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, nil)
+	preview := request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, nil)
+	if preview.Code != http.StatusOK || preview.Header().Get("Location") != "" {
+		t.Fatalf("confirmation page: HTTP %d, expected no redirect", preview.Code)
+	}
+	for _, want := range []string{"Confirm Railgrid CLI sign-in", "192.0.2.0/24", "UTC", device.UserCode, "If someone sent you the code, cancel."} {
+		if !strings.Contains(preview.Body.String(), want) {
+			t.Errorf("confirmation page missing %q", want)
+		}
+	}
+	form.Set("confirm", "1")
+	if skipped := request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, nil); skipped.Code != http.StatusBadRequest {
+		t.Fatalf("approval without confirmation page: HTTP %d", skipped.Code)
+	}
+	confirm := func(preview *httptest.ResponseRecorder, form url.Values) *httptest.ResponseRecorder {
+		t.Helper()
+		cookies := preview.Result().Cookies()
+		if preview.Code != http.StatusOK || len(cookies) != 1 || !strings.Contains(preview.Body.String(), cookies[0].Value) {
+			t.Fatalf("confirmation page did not bind its form to the browser: HTTP %d", preview.Code)
+		}
+		form.Set("confirm", "1")
+		form.Set("confirmation", cookies[0].Value)
+		return request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, cookies[0])
+	}
+	oidcCookies := func(reply *httptest.ResponseRecorder) []*http.Cookie {
+		var active []*http.Cookie
+		for _, cookie := range reply.Result().Cookies() {
+			if cookie.MaxAge > 0 {
+				active = append(active, cookie)
+			}
+		}
+		return active
+	}
+	approveCode := func(code string) *httptest.ResponseRecorder {
+		form := url.Values{"user_code": {code}}
+		preview := request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, nil)
+		return confirm(preview, form)
+	}
+	approve := confirm(preview, form)
 	if approve.Code != http.StatusSeeOther {
 		t.Fatalf("approve: HTTP %d %s", approve.Code, approve.Body)
 	}
@@ -177,7 +215,7 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 	if strings.Contains(dest.String(), device.DeviceCode) || strings.Contains(dest.String(), device.UserCode) {
 		t.Fatal("a device credential was exposed in the OIDC redirect")
 	}
-	cookies := approve.Result().Cookies()
+	cookies := oidcCookies(approve)
 	if len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly {
 		t.Fatal("expected a secure browser-binding cookie")
 	}
@@ -242,9 +280,9 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 	if err := json.Unmarshal(start.Body.Bytes(), &device); start.Code != http.StatusOK || err != nil {
 		t.Fatalf("start before denial: HTTP %d, decode error %v", start.Code, err)
 	}
-	approve = request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, url.Values{"user_code": {device.UserCode}}, nil)
+	approve = approveCode(device.UserCode)
 	dest, err = url.Parse(approve.Header().Get("Location"))
-	cookies = approve.Result().Cookies()
+	cookies = oidcCookies(approve)
 	if approve.Code != http.StatusSeeOther || err != nil || len(cookies) != 1 {
 		t.Fatalf("approve before denial: HTTP %d, URL error %v", approve.Code, err)
 	}
@@ -257,6 +295,29 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 	if reply.Code != http.StatusOK || err != nil || !strings.Contains(string(plaintext), "access_denied") {
 		t.Fatalf("denied poll: HTTP %d, decryption error %v", reply.Code, err)
 	}
+
+	start = request(startReplica, http.MethodPost, apiurl.PathAuthDeviceStart, startForm, nil)
+	if err := json.Unmarshal(start.Body.Bytes(), &device); start.Code != http.StatusOK || err != nil {
+		t.Fatalf("start before store failure: HTTP %d, decode error %v", start.Code, err)
+	}
+	approve = approveCode(device.UserCode)
+	dest, err = url.Parse(approve.Header().Get("Location"))
+	cookies = oidcCookies(approve)
+	if approve.Code != http.StatusSeeOther || err != nil || len(cookies) != 1 {
+		t.Fatalf("approve before store failure: HTTP %d, URL error %v", approve.Code, err)
+	}
+	pkceChallenge = dest.Query().Get("code_challenge")
+	challenge.Store(&pkceChallenge)
+	store.failNextResultWrite = true
+	callback = apiurl.PathAuthCallback + "?" + url.Values{"state": {dest.Query().Get("state")}, "code": {"upstream-code"}}.Encode()
+	if reply := request(startReplica, http.MethodGet, callback, nil, cookies[0]); reply.Code != http.StatusServiceUnavailable {
+		t.Fatalf("callback during store failure: HTTP %d", reply.Code)
+	}
+	reply = poll(device.DeviceCode)
+	plaintext, err = hpke.Open(recipient, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(apiurl.DeviceLoginHPKEInfo), reply.Body.Bytes())
+	if reply.Code != http.StatusOK || err != nil || !strings.Contains(string(plaintext), "server_error") {
+		t.Fatalf("fallback poll: HTTP %d, decryption error %v", reply.Code, err)
+	}
 }
 
 func TestDeviceRateLimitDoesNotExhaustBrowserSessionBudget(t *testing.T) {
@@ -264,6 +325,18 @@ func TestDeviceRateLimitDoesNotExhaustBrowserSessionBudget(t *testing.T) {
 	h.deviceStore = &testDeviceStore{}
 	router := mux.NewRouter()
 	h.RegisterRoutes(router)
+
+	for i := 0; i <= deviceStartsPerMinute; i++ {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, apiurl.PathAuthDeviceStart, nil))
+		want := http.StatusServiceUnavailable
+		if i == deviceStartsPerMinute {
+			want = http.StatusTooManyRequests
+		}
+		if w.Code != want {
+			t.Fatalf("device start %d: HTTP %d, want %d", i, w.Code, want)
+		}
+	}
 
 	poll := func() int {
 		w := httptest.NewRecorder()
@@ -292,14 +365,19 @@ type testDeviceEntry struct {
 }
 
 type testDeviceStore struct {
-	mu     sync.Mutex
-	values map[string]testDeviceEntry
-	now    time.Time
+	mu                  sync.Mutex
+	values              map[string]testDeviceEntry
+	now                 time.Time
+	failNextResultWrite bool
 }
 
 func (s *testDeviceStore) CreateIfAbsent(_ context.Context, key string, value []byte, expires time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failNextResultWrite && strings.HasPrefix(key, "result:") {
+		s.failNextResultWrite = false
+		return false, errors.New("injected result write failure")
+	}
 	if _, exists := s.values[key]; exists {
 		return false, nil
 	}

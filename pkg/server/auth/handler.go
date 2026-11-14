@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -44,6 +45,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/browsersession"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
+	"github.com/railgrid/railgrid/pkg/hub/sharedstore"
 	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
@@ -67,9 +69,10 @@ type Handler struct {
 	devMode        bool
 	logger         klog.Logger
 	// rateLimiter protects auth endpoints against brute force attacks
-	rateLimiter   *rateLimiter
-	deviceStore   deviceStore
-	deviceLimiter *rateLimiter
+	rateLimiter        *rateLimiter
+	deviceStore        deviceStore
+	deviceLimiter      *rateLimiter
+	deviceStartLimiter *rateLimiter
 	// browserSessions is the hub-wide opaque portal session store.  It is
 	// shared by legacy OIDC, static-token bootstrap, and published-app SSO.
 	browserSessions *browsersession.Store
@@ -296,14 +299,15 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		device = state.deviceRequest
 		defer func() {
 			if !deviceFinished {
-				if err := h.storeDeviceResult(ctx, device, deviceResult{Error: "server_error"}); err != nil {
+				fallbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				if err := h.storeDeviceResult(fallbackCtx, device, deviceResult{Error: "server_error"}); err != nil && !errors.Is(err, sharedstore.ErrNotFound) {
 					h.logger.Error(err, "failed to record CLI sign-in failure")
 				}
 			}
 		}()
 		if r.URL.Query().Get("error") == "access_denied" {
-			deviceFinished = true
-			h.completeDeviceLogin(w, r, device, deviceResult{Error: "access_denied"})
+			deviceFinished = h.completeDeviceLogin(w, r, device, deviceResult{Error: "access_denied"})
 			return
 		}
 		authCode.CodeVerifier = state.Verifier
@@ -420,8 +424,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		ClientID:     h.oidcConfig.ClientID,
 	}
 	if isDevice {
-		deviceFinished = true
-		h.completeDeviceLogin(w, r, device, deviceResult{LoginResponse: resp})
+		deviceFinished = h.completeDeviceLogin(w, r, device, deviceResult{LoginResponse: resp})
 		return
 	}
 	respJSON, err := json.Marshal(resp)
@@ -618,7 +621,7 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	if h.deviceStore != nil {
 		h.registerDeviceLoginLimits()
 		sameOrigin := http.NewCrossOriginProtection()
-		router.Handle(apiurl.PathAuthDeviceStart, sameOrigin.Handler(h.deviceLimiter.middleware(h.startDeviceLogin))).Methods("POST")
+		router.Handle(apiurl.PathAuthDeviceStart, sameOrigin.Handler(h.deviceStartLimiter.middleware(h.startDeviceLogin))).Methods("POST")
 		router.HandleFunc(apiurl.PathAuthDeviceVerify, h.showDeviceCodePage).Methods("GET")
 		router.Handle(apiurl.PathAuthDeviceVerify, sameOrigin.Handler(h.deviceLimiter.middleware(h.approveDeviceLogin))).Methods("POST")
 		router.Handle(apiurl.PathAuthDevicePoll, sameOrigin.Handler(h.deviceLimiter.middleware(h.pollDeviceLogin))).Methods("POST")
@@ -641,6 +644,7 @@ func (h *Handler) SetTrustedProxies(prefixes []netip.Prefix) {
 	h.rateLimiter.trustedProxies = prefixes
 	if h.deviceLimiter != nil {
 		h.deviceLimiter.trustedProxies = prefixes
+		h.deviceStartLimiter.trustedProxies = prefixes
 	}
 }
 

@@ -2331,6 +2331,9 @@ func TestDownloadKubeconfig_InstallVariant(t *testing.T) {
 			if !bytes.Contains(body, []byte(want)) {
 				t.Errorf("response missing %q\nbody:\n%s", want, body)
 			}
+			if !bytes.Contains(body, []byte("--oidc-account=alice")) {
+				t.Error("downloaded kubeconfig is missing the account-scoped credential argument")
+			}
 		})
 	}
 }

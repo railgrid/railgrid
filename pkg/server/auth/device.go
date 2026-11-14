@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -42,6 +43,7 @@ import (
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/sharedstore"
+	"github.com/railgrid/railgrid/pkg/server/proxy"
 )
 
 const (
@@ -49,6 +51,7 @@ const (
 	devicePollInterval      = 5
 	deviceStatePrefix       = "device."
 	deviceRequestsPerMinute = 120
+	deviceStartsPerMinute   = 6
 )
 
 var deviceUserCodes = base32.NewEncoding("ABCDEFGHJKLMNPQRSTUVWXYZ23456789").WithPadding(base32.NoPadding)
@@ -63,6 +66,8 @@ type deviceStore interface {
 
 type deviceRequest struct {
 	PollKey      string
+	StartedAt    time.Time
+	Network      string
 	ExpiresAt    time.Time
 	RecipientKey []byte
 }
@@ -92,6 +97,21 @@ func (h *Handler) SetDeviceLoginStore(store *sharedstore.Store) {
 func (h *Handler) registerDeviceLoginLimits() {
 	h.deviceLimiter = newRateLimiter(deviceRequestsPerMinute, time.Minute, klog.Background().WithName("device-auth-rate-limit"))
 	h.deviceLimiter.trustedProxies = h.rateLimiter.trustedProxies
+	h.deviceStartLimiter = newRateLimiter(deviceStartsPerMinute, time.Minute, klog.Background().WithName("device-start-rate-limit"))
+	h.deviceStartLimiter.trustedProxies = h.rateLimiter.trustedProxies
+}
+
+func deviceRequesterNetwork(clientIP string) string {
+	addr, err := netip.ParseAddr(clientIP)
+	if err != nil {
+		return "Unavailable"
+	}
+	addr = addr.Unmap()
+	bits := 48
+	if addr.Is4() {
+		bits = 24
+	}
+	return netip.PrefixFrom(addr, bits).Masked().String()
 }
 
 func deviceDigest(value string) string {
@@ -117,8 +137,10 @@ func (h *Handler) startDeviceLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deviceCode := oauth2.GenerateVerifier()
+	now := time.Now()
 	request := deviceRequest{
-		PollKey: deviceDigest(deviceCode), ExpiresAt: time.Now().Add(deviceLoginTTL), RecipientKey: key,
+		PollKey: deviceDigest(deviceCode), StartedAt: now, ExpiresAt: now.Add(deviceLoginTTL), RecipientKey: key,
+		Network: deviceRequesterNetwork(proxy.ClientIP(r, h.deviceStartLimiter.trustedProxies)),
 	}
 	payload, err := json.Marshal(request)
 	if err != nil {
@@ -132,6 +154,17 @@ func (h *Handler) startDeviceLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	issued := false
+	defer func() {
+		if issued {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		if err := h.deviceStore.Delete(cleanupCtx, pendingKey); err != nil {
+			h.logger.Error(err, "failed to remove incomplete CLI sign-in")
+		}
+	}()
 	for range 3 {
 		var randomCode [5]byte
 		rand.Read(randomCode[:])
@@ -142,6 +175,7 @@ func (h *Handler) startDeviceLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if created {
+			issued = true
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(oauth2.DeviceAuthResponse{
 				DeviceCode:      deviceCode,
@@ -171,7 +205,34 @@ var deviceCodePage = template.Must(template.New("device-code").Parse(`<!doctype 
     <form method="post">
       <label for="user_code">Device code</label>
       <input id="user_code" name="user_code" type="text" autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off" maxlength="9" required>
-      <button type="submit">Approve CLI sign-in</button>
+      <button type="submit">Continue</button>
+    </form>
+  </main>
+</body>
+</html>`))
+
+var deviceConfirmPage = template.Must(template.New("device-confirm").Parse(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Confirm Railgrid CLI sign-in</title>
+</head>
+<body>
+  <main>
+    <h1>Confirm Railgrid CLI sign-in</h1>
+    <dl>
+      <dt>Request network</dt><dd>{{.Network}}</dd>
+      <dt>Requested at</dt><dd>{{.StartedAt}}</dd>
+      <dt>Device code</dt><dd>{{.DisplayCode}}</dd>
+    </dl>
+    <p>Approving gives the CLI that requested this code access to Railgrid as you.</p>
+    <p>Continue only if you ran <code>railgrid login --device</code> yourself and the code matches your terminal. If someone sent you the code, cancel.</p>
+    <form method="post">
+      <input type="hidden" name="user_code" value="{{.Code}}">
+      <input type="hidden" name="confirmation" value="{{.Confirmation}}">
+      <button type="submit" name="confirm" value="1">Approve CLI sign-in</button>
+      <a href="/auth/device">Cancel</a>
     </form>
   </main>
 </body>
@@ -198,10 +259,39 @@ func (h *Handler) approveDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	code := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(r.PostForm.Get("user_code"))), "-", "")
 	if len(code) == 8 {
-		payload, err := h.deviceStore.Take(r.Context(), "user:"+code)
+		confirm := r.PostForm.Get("confirm") == "1"
+		load := h.deviceStore.Get
+		if confirm {
+			cookie, err := r.Cookie(deviceBrowserCookie("confirm:"+code, "", 0).Name)
+			confirmation := r.PostForm.Get("confirmation")
+			if err != nil || len(confirmation) != 43 || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(confirmation)) != 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = deviceCodePage.Execute(w, "Enter the code again to review the sign-in request.")
+				return
+			}
+			load = h.deviceStore.Take
+		}
+		payload, err := load(r.Context(), "user:"+code)
 		switch {
 		case err == nil:
-			h.authorizeDeviceBrowser(w, r, payload)
+			var request deviceRequest
+			if err := json.Unmarshal(payload, &request); err != nil {
+				h.deviceUnavailable(w, err)
+				return
+			}
+			if confirm {
+				http.SetCookie(w, deviceBrowserCookie("confirm:"+code, "", -1))
+				h.authorizeDeviceBrowser(w, r, request)
+			} else {
+				confirmation := oauth2.GenerateVerifier()
+				http.SetCookie(w, deviceBrowserCookie("confirm:"+code, confirmation, int(time.Until(request.ExpiresAt).Seconds())+1))
+				_ = deviceConfirmPage.Execute(w, struct {
+					Code, DisplayCode, Network, StartedAt, Confirmation string
+				}{
+					Code: code, DisplayCode: code[:4] + "-" + code[4:], Network: request.Network,
+					StartedAt: request.StartedAt.UTC().Format("2006-01-02 15:04:05 UTC"), Confirmation: confirmation,
+				})
+			}
 			return
 		case !errors.Is(err, sharedstore.ErrNotFound):
 			h.deviceUnavailable(w, err)
@@ -212,12 +302,7 @@ func (h *Handler) approveDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	_ = deviceCodePage.Execute(w, "That code is invalid, expired, or already used. Check your terminal or start a new sign-in.")
 }
 
-func (h *Handler) authorizeDeviceBrowser(w http.ResponseWriter, r *http.Request, payload []byte) {
-	var request deviceRequest
-	if err := json.Unmarshal(payload, &request); err != nil {
-		h.deviceUnavailable(w, err)
-		return
-	}
+func (h *Handler) authorizeDeviceBrowser(w http.ResponseWriter, r *http.Request, request deviceRequest) {
 	state := deviceStatePrefix + oauth2.GenerateVerifier()
 	browserSecret := oauth2.GenerateVerifier()
 	record := deviceBrowserState{
@@ -286,15 +371,15 @@ func (h *Handler) takeDeviceBrowserState(w http.ResponseWriter, r *http.Request,
 	return record, true
 }
 
-func (h *Handler) completeDeviceLogin(w http.ResponseWriter, r *http.Request, request deviceRequest, result deviceResult) {
+func (h *Handler) completeDeviceLogin(w http.ResponseWriter, r *http.Request, request deviceRequest, result deviceResult) bool {
 	err := h.storeDeviceResult(r.Context(), request, result)
 	if errors.Is(err, sharedstore.ErrNotFound) {
 		http.Error(w, "Device sign-in expired. Start a new sign-in from the terminal.", http.StatusGone)
-		return
+		return true
 	}
 	if err != nil {
 		h.deviceUnavailable(w, err)
-		return
+		return false
 	}
 	page := statuspage.Page{
 		Title:   "CLI sign-in approved",
@@ -308,6 +393,7 @@ func (h *Handler) completeDeviceLogin(w http.ResponseWriter, r *http.Request, re
 		page.State = statuspage.Error
 	}
 	_ = statuspage.Render(w, page)
+	return true
 }
 
 func (h *Handler) storeDeviceResult(ctx context.Context, request deviceRequest, result deviceResult) error {
