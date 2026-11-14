@@ -515,6 +515,10 @@ spec:
                           in Code.
                         maxLength: 253
                         type: string
+                      explicitDeletionsVerified:
+                        description: ExplicitDeletionsVerified identifies bundles
+                          built using source deletion records.
+                        type: boolean
                       message:
                         description: Message is captured before submission and preserved
                           on retries.

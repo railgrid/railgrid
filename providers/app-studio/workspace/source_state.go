@@ -241,10 +241,21 @@ func pruneSourceDeletions(record *LedgerRecord) {
 	for _, path := range record.UncommittedPaths {
 		dirty[path] = true
 	}
+	var retired []string
 	record.SourceDeletions = slices.DeleteFunc(record.SourceDeletions, func(deletion SourceDeletion) bool {
-		return !dirty[deletion.Path] && (!record.HasDevelopmentSandbox ||
-			record.LastPreviewCheckpoint != nil && deletion.Revision <= record.LastPreviewCheckpoint.SourceRevision)
+		sandboxSettled := !record.HasDevelopmentSandbox || record.LastPreviewCheckpoint != nil && deletion.Revision <= record.LastPreviewCheckpoint.SourceRevision
+		if !sandboxSettled || record.HasRepository && dirty[deletion.Path] {
+			return false
+		}
+		if !record.HasRepository {
+			retired = append(retired, deletion.Path)
+		}
+		return true
 	})
+	if len(retired) > 0 {
+		record.UncommittedPaths = removeLedgerPaths(record.UncommittedPaths, retired)
+		record.SourcePathAttributions = removeSourcePathAttributions(record.SourcePathAttributions, retired)
+	}
 }
 
 // AddUncommittedPaths durably unions changed source paths into the current
@@ -491,7 +502,6 @@ func (s *FileStore) beginSourceMutation(ctx context.Context, scope Scope, paths 
 				mutation.previousDeletions = append(mutation.previousDeletions, deletion)
 			}
 		}
-		clearSourceDeletions(record, cleanPaths)
 		record.SourceRevision = mutation.revision
 		record.SourceMutationID = mutation.id
 		// Reserve the revision without claiming that bytes or their provenance

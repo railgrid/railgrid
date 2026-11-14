@@ -172,6 +172,12 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 	if err != nil {
 		return commitOutcome{dirty: true}, fmt.Errorf("read pending commit: %w", err)
 	}
+	// An older bundle may contain inferred deletions. Rebuild from the
+	// current ledger and leave any already-created RepositoryCommit to settle.
+	if hasPending && pending.RequestID != "" && pending.Name == "" && !pending.ExplicitDeletionsVerified {
+		cleared, err := r.Workspace.DiscardUnverifiedReservation(ctx, scope, pending.RequestID)
+		return commitOutcome{dirty: true, retry: cleared}, err
+	}
 	if hasPending && pending.BlockedReason == repositoryCommitFailedReason {
 		return r.failedPendingCommitCooldown(ctx, c, p, repo, scope, pending)
 	}
@@ -328,16 +334,17 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 		return commitOutcome{dirty: true, retry: true}, fmt.Errorf("stage workspace commit: %w", err)
 	}
 	intent := workspace.PendingCommit{
-		RequestID:       requestID,
-		RepositoryRef:   b.RepositoryRef,
-		RepositoryUID:   string(repo.GetUID()),
-		BundleRef:       staged.BundleRef,
-		BundleDigest:    staged.BundleDigest,
-		Message:         message,
-		WorkspaceDigest: digest,
-		Paths:           bundle.committed,
-		SourceRevision:  sourceRevision,
-		Attributions:    attributions,
+		RequestID:                 requestID,
+		RepositoryRef:             b.RepositoryRef,
+		RepositoryUID:             string(repo.GetUID()),
+		BundleRef:                 staged.BundleRef,
+		BundleDigest:              staged.BundleDigest,
+		ExplicitDeletionsVerified: true,
+		Message:                   message,
+		WorkspaceDigest:           digest,
+		Paths:                     bundle.committed,
+		SourceRevision:            sourceRevision,
+		Attributions:              attributions,
 	}
 	if err := r.Workspace.ReservePendingCommit(ctx, scope, intent); err != nil {
 		if errors.Is(err, workspace.ErrPendingCommitExists) || errors.Is(err, workspace.ErrSourceRevisionConflict) {
@@ -846,6 +853,9 @@ func (r *Reconciler) resolvePendingCommit(ctx context.Context, c client.Client, 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			if pending.RequestID != "" {
+				if !pending.ExplicitDeletionsVerified {
+					return r.clearPendingCommit(ctx, scope, pending)
+				}
 				if pending.BlockedReason != "" {
 					return false, nil // a named block watches the CR but does not replay its bundle
 				}

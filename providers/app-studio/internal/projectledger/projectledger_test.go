@@ -182,7 +182,7 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 		}
 		record.PendingCommit = &workspace.PendingCommit{
 			Name: "commit-1", RepositoryRef: "demo-repo", WorkspaceDigest: "sha256:abc", Paths: []string{"src/a.ts"},
-			SourceRevision: 7, Attributions: []workspace.SourceAttribution{{ThreadID: "thread-source", RunID: "run-source", Paths: []string{"src/a.ts"}}},
+			SourceRevision: 7, ExplicitDeletionsVerified: true, Attributions: []workspace.SourceAttribution{{ThreadID: "thread-source", RunID: "run-source", Paths: []string{"src/a.ts"}}},
 			BlockedReason: "ActionForbidden", BlockedMessage: "Check the repository permission.",
 			BlockedAt: timePtr(time.Date(2026, time.October, 11, 12, 0, 0, 0, time.UTC)), RetryToken: "retry-token-1",
 		}
@@ -220,7 +220,7 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	}
 	if record.PendingCommit == nil || record.PendingCommit.Name != "commit-1" ||
 		record.PendingCommit.RepositoryRef != "demo-repo" || record.PendingCommit.WorkspaceDigest != "sha256:abc" ||
-		record.PendingCommit.SourceRevision != 7 || len(record.PendingCommit.Attributions) != 1 ||
+		record.PendingCommit.SourceRevision != 7 || !record.PendingCommit.ExplicitDeletionsVerified || len(record.PendingCommit.Attributions) != 1 ||
 		record.PendingCommit.Attributions[0].ThreadID != "thread-source" ||
 		record.PendingCommit.BlockedReason != "ActionForbidden" || record.PendingCommit.BlockedMessage != "Check the repository permission." ||
 		record.PendingCommit.BlockedAt == nil || !record.PendingCommit.BlockedAt.Equal(time.Date(2026, time.October, 11, 12, 0, 0, 0, time.UTC)) ||
