@@ -481,11 +481,15 @@ func TestCommitWorkspaceRequiresRecordedDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	dirty, err := env.commit()
-	if !dirty || err == nil || !strings.Contains(err.Error(), "without a source deletion record") {
+	if !dirty || err != nil {
 		t.Fatalf("commit with unexplained missing file = dirty %t, err %v", dirty, err)
 	}
-	if env.commits() != 0 || env.stages() != 0 {
-		t.Fatalf("staged %d bundles and submitted %d commits", env.stages(), env.commits())
+	if env.commits() != 1 || env.stages() != 1 {
+		t.Fatalf("staged %d bundles and submitted %d commits, want the unrelated write to proceed", env.stages(), env.commits())
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || strings.Join(pending.Paths, ",") != "app.txt" {
+		t.Fatalf("pending commit = %+v, %t, %v; want only app.txt", pending, ok, err)
 	}
 }
 

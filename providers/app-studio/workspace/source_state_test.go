@@ -25,6 +25,83 @@ import (
 	"testing"
 )
 
+func TestSourceDeletionsFollowWorkspaceMutations(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remove func(context.Context, *FileStore, Scope, string) error
+	}{
+		{"delete", func(ctx context.Context, store *FileStore, scope Scope, version string) error {
+			_, err := store.DeleteFile(ctx, scope, DeleteOptions{Path: "old.txt", ExpectedVersion: version})
+			return err
+		}},
+		{"move", func(ctx context.Context, store *FileStore, scope Scope, version string) error {
+			_, err := store.MoveFile(ctx, scope, MoveOptions{SourcePath: "old.txt", DestinationPath: "new.txt", ExpectedVersion: version})
+			return err
+		}},
+		{"batch", func(ctx context.Context, store *FileStore, scope Scope, version string) error {
+			_, err := store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{{Path: "old.txt", Operation: ManagedFileDelete, ExpectedVersion: version}})
+			return err
+		}},
+		{"replace tree", func(ctx context.Context, store *FileStore, scope Scope, _ string) error {
+			_, err := store.ReplaceTree(ctx, scope, ReplaceTreeOptions{Files: []File{{Path: "new.txt", Content: "new"}}})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewFileStore(t.TempDir())
+			scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+			file, err := store.PutFile(ctx, scope, PutOptions{Path: "old.txt", Data: []byte("original")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.remove(ctx, store, scope, file.Version); err != nil {
+				t.Fatal(err)
+			}
+			revision, err := store.SourceRevision(ctx, scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := store.SourceDeletions(ctx, scope, revision)
+			if err != nil || !reflect.DeepEqual(got, map[string]bool{"old.txt": true}) {
+				t.Fatalf("recorded deletions = %v, %v", got, err)
+			}
+			if _, err := store.PutFile(ctx, scope, PutOptions{Path: "old.txt", Data: []byte("recreated")}); err != nil {
+				t.Fatal(err)
+			}
+			got, err = store.SourceDeletions(ctx, scope, revision+1)
+			if err != nil || len(got) != 0 {
+				t.Fatalf("deletions after recreating file = %v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestPruneSourceDeletionsWaitsForRequiredConsumers(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		sandbox    bool
+		checkpoint *SourceChange
+		dirty      []string
+		want       int
+	}{
+		{name: "Git settled without sandbox"},
+		{name: "Git settled before first sandbox sync", sandbox: true, want: 1},
+		{name: "sandbox behind", sandbox: true, checkpoint: &SourceChange{SourceRevision: 2}, want: 1},
+		{name: "sandbox applied before Git settlement", sandbox: true, checkpoint: &SourceChange{SourceRevision: 3}, dirty: []string{"old.txt"}, want: 1},
+		{name: "both applied", sandbox: true, checkpoint: &SourceChange{SourceRevision: 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := LedgerRecord{HasDevelopmentSandbox: tc.sandbox, LastPreviewCheckpoint: tc.checkpoint,
+				SourceDeletions: []SourceDeletion{{Path: "old.txt", Revision: 3}}, UncommittedPaths: tc.dirty}
+			pruneSourceDeletions(&record)
+			if len(record.SourceDeletions) != tc.want {
+				t.Fatalf("remaining records = %v, want %d", record.SourceDeletions, tc.want)
+			}
+		})
+	}
+}
+
 func TestFileStoreTurnAttributionPersistsSeparatelyFromPreview(t *testing.T) {
 	ctx := context.Background()
 	files := NewFileStore(t.TempDir())

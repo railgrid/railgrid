@@ -296,7 +296,7 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 	}
 	r.noteSkippedPaths(p.Name, scope, bundle.skipped)
 	if len(bundle.files) == 0 && len(bundle.deletePaths) == 0 {
-		return commitOutcome{dirty: bundle.deferred, retry: bundle.deferred}, nil
+		return commitOutcome{dirty: bundle.deferred || len(bundle.skipped) > 0, retry: bundle.deferred}, nil
 	}
 
 	writtenPaths := make([]string, 0, len(bundle.files))
@@ -423,7 +423,8 @@ func (r *Reconciler) buildCommitBundle(ctx context.Context, scope workspace.Scop
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				if !deletions[path] {
-					return commitBundle{}, fmt.Errorf("workspace file %q is missing without a source deletion record", path)
+					bundle.skipped[path] = "missing without a source deletion record"
+					continue
 				}
 				bundle.deletePaths = append(bundle.deletePaths, path)
 				bundle.committed = append(bundle.committed, path)

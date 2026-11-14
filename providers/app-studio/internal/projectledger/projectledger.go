@@ -122,7 +122,7 @@ func (l *Ledger) Read(ctx context.Context, scope workspace.Scope) (workspace.Led
 	if err != nil {
 		return workspace.LedgerRecord{}, err
 	}
-	return recordFrom(project.Status.Workspace), nil
+	return recordFromProject(project), nil
 }
 
 // Update implements workspace.Ledger: read, apply, compare-and-swap, retry.
@@ -136,7 +136,7 @@ func (l *Ledger) Update(ctx context.Context, scope workspace.Scope, mutate func(
 		if err != nil {
 			return workspace.LedgerRecord{}, err
 		}
-		current := recordFrom(project.Status.Workspace)
+		current := recordFromProject(project)
 		next := current.DeepCopy()
 		changed, err := mutate(&next)
 		if err != nil {
@@ -257,6 +257,17 @@ func (l *Ledger) project(ctx context.Context, scope workspace.Scope) (*aiv1alpha
 }
 
 // recordFrom converts the CR's ledger into the workspace package's.
+func recordFromProject(project *aiv1alpha1.Project) workspace.LedgerRecord {
+	record := recordFrom(project.Status.Workspace)
+	for _, environment := range project.Spec.Environments {
+		if environment.Name == "development" && environment.Mode == aiv1alpha1.ProjectEnvironmentModeLive {
+			record.HasDevelopmentSandbox = true
+			break
+		}
+	}
+	return record
+}
+
 func recordFrom(status *aiv1alpha1.ProjectWorkspaceStatus) workspace.LedgerRecord {
 	if status == nil {
 		return workspace.LedgerRecord{}

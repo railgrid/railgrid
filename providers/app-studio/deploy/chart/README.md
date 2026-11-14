@@ -144,9 +144,10 @@ uses ephemeral storage unless an existing claim is supplied.
 App Studio development sync requires a dev agent that supports explicit
 deletions. Upgrade the Infrastructure provider and let it roll the agents
 before upgrading App Studio. Older agents reject the sync request before
-touching sandbox files. Existing dirty paths without deletion records are
-preserved in the sandbox. To remove one, restore the file to the working copy
-and delete it through App Studio.
+touching sandbox files. When an older project has a dirty path that is missing from disk, sync
+preserves the sandbox copy and automatic commits skip that path while still
+committing other files. To remove the path, restore the file to the working
+copy and delete it through App Studio.
 
 **Before upgrading an installation that uses ephemeral storage:**
 
