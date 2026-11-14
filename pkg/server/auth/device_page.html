@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{if .Confirmation}}Confirm CLI sign-in{{else}}Sign in to Railgrid CLI{{end}}</title>
+  <style>
+    /* Violet Circuit standalone auth palette, as used by Dex and statuspage. */
+    :root {
+      color-scheme: dark;
+      --railgrid-surface: #0a0b12;
+      --railgrid-surface-raised: #111320;
+      --railgrid-surface-overlay: #171927;
+      --railgrid-surface-hover: #1e2033;
+      --railgrid-border-default: rgb(255 255 255 / 11%);
+      --railgrid-accent: #8b6bff;
+      --railgrid-accent-hover: #a18aff;
+      --railgrid-on-accent: #0a0b12;
+      --railgrid-text-primary: #e9e9f2;
+      --railgrid-text-secondary: #8a8ca6;
+      --railgrid-warning: #f0a63a;
+      --railgrid-warning-subtle: rgb(240 166 58 / 12%);
+      --railgrid-danger: #ff5d5d;
+      --railgrid-font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+      --railgrid-font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--railgrid-surface);
+      color: var(--railgrid-text-primary);
+      font: 14px/1.5 var(--railgrid-font-sans);
+    }
+    main {
+      display: grid;
+      place-items: center;
+      min-height: 100svh;
+      padding: 24px 16px;
+    }
+    .device-card {
+      width: min(100%, 28rem);
+      padding: clamp(20px, 5vw, 32px);
+      border: 1px solid var(--railgrid-border-default);
+      border-radius: 6px;
+      background: var(--railgrid-surface-raised);
+    }
+    .device-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font: 600 11px var(--railgrid-font-mono);
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+    .device-brand svg { width: 24px; height: 24px; color: var(--railgrid-accent); }
+    h1 {
+      margin: 20px 0 0;
+      font-size: clamp(22px, 5vw, 28px);
+      font-weight: 600;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      text-wrap: balance;
+    }
+    p { margin: 0; }
+    .device-intro { margin-top: 8px; color: var(--railgrid-text-secondary); }
+    form, dl { margin: 20px 0 0; }
+    label { display: block; margin-bottom: 6px; font-weight: 600; }
+    input:not([type="hidden"]) {
+      width: 100%;
+      min-height: 44px;
+      padding: 8px 12px;
+      border: 1px solid color-mix(in srgb, var(--railgrid-text-primary) 40%, var(--railgrid-surface-overlay));
+      border-radius: 4px;
+      background: var(--railgrid-surface-overlay);
+      color: inherit;
+      font: 600 16px var(--railgrid-font-mono);
+      letter-spacing: 0.06em;
+      caret-color: var(--railgrid-accent);
+      text-transform: uppercase;
+    }
+    input::placeholder { color: var(--railgrid-text-secondary); opacity: 1; }
+    input[aria-invalid="true"] { border-color: var(--railgrid-danger); }
+    input:focus-visible, .device-button:focus-visible {
+      outline: 2px solid var(--railgrid-accent);
+      outline-offset: 2px;
+    }
+    .device-error { margin-top: 8px; color: var(--railgrid-danger); }
+    .device-actions { display: flex; gap: 8px; }
+    .device-entry .device-button { margin-top: 16px; width: 100%; }
+    .device-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 8px 14px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      font: 600 14px/1.4 var(--railgrid-font-sans);
+      text-align: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .device-primary {
+      flex: 1;
+      background: var(--railgrid-accent);
+      color: var(--railgrid-on-accent);
+    }
+    .device-primary:hover {
+      background: var(--railgrid-accent-hover);
+    }
+    .device-cancel {
+      border-color: var(--railgrid-border-default);
+      background: var(--railgrid-surface-overlay);
+      color: var(--railgrid-text-primary);
+    }
+    .device-cancel:hover { background: var(--railgrid-surface-hover); }
+    dl {
+      border: 1px solid var(--railgrid-border-default);
+      border-radius: 4px;
+    }
+    .device-detail {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.65fr);
+      gap: 12px;
+      padding: 9px 12px;
+    }
+    .device-detail + .device-detail { border-top: 1px solid var(--railgrid-border-default); }
+    dt { color: var(--railgrid-text-secondary); }
+    dd {
+      margin: 0;
+      font: 13px/1.6 var(--railgrid-font-mono);
+      font-variant-numeric: tabular-nums;
+      overflow-wrap: anywhere;
+    }
+    .device-warning {
+      margin-top: 16px;
+      padding: 10px 12px;
+      border: 1px solid color-mix(in srgb, var(--railgrid-warning) 40%, transparent);
+      border-radius: 4px;
+      background: var(--railgrid-warning-subtle);
+      color: var(--railgrid-warning);
+    }
+    .device-warning p + p { margin-top: 6px; }
+    ::selection { background: var(--railgrid-accent); color: var(--railgrid-on-accent); }
+    @media (max-width: 380px) {
+      .device-detail { grid-template-columns: 1fr; gap: 2px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="device-card" aria-labelledby="device-heading">
+      <div class="device-brand">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"/>
+        </svg>
+        Railgrid
+      </div>
+      {{if .Confirmation}}
+      <h1 id="device-heading">Confirm CLI sign-in</h1>
+      <dl>
+        <div class="device-detail"><dt>Device code</dt><dd>{{.DisplayCode}}</dd></div>
+        <div class="device-detail"><dt>Requested at</dt><dd>{{.StartedAt}}</dd></div>
+        <div class="device-detail"><dt>CLI network</dt><dd>{{.Network}}</dd></div>
+      </dl>
+      <div class="device-warning" id="device-warning">
+        <p>Approve only if you ran the sign-in command and the code matches your terminal. If someone sent you the code, cancel.</p>
+        <p>Approval gives the requesting CLI access to Railgrid as you.</p>
+      </div>
+      <form class="device-actions" method="post">
+        <input type="hidden" name="user_code" value="{{.Code}}">
+        <input type="hidden" name="confirmation" value="{{.Confirmation}}">
+        <button class="device-button device-primary" type="submit" name="confirm" value="1" aria-describedby="device-warning">Approve sign-in</button>
+        <a class="device-button device-cancel" href="/auth/device">Cancel</a>
+      </form>
+      {{else}}
+      <h1 id="device-heading">Sign in to Railgrid CLI</h1>
+      <p class="device-intro" id="device-hint">Enter the code shown in your terminal.</p>
+      <form class="device-entry" method="post">
+        <label for="user_code">Device code</label>
+        <input id="user_code" name="user_code" type="text" placeholder="ABCD-2345" autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off" maxlength="9" required aria-describedby="device-hint{{if .Error}} device-error{{end}}"{{if .Error}} aria-invalid="true" autofocus{{end}}>
+        {{if .Error}}<p class="device-error" id="device-error" role="alert">{{.Error}}</p>{{end}}
+        <button class="device-button device-primary" type="submit">Continue</button>
+      </form>
+      {{end}}
+    </section>
+  </main>
+</body>
+</html>
