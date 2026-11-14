@@ -27,6 +27,14 @@ selection="$(python3 hack/ci/prow/mode.py)"
 mode="$(jq -r .mode <<<"${selection}")"
 echo "== job=${job} mode=${mode}: $(jq -r .reason <<<"${selection}")"
 
+# touched <path>...: true when this pull request changes anything under one of
+# the paths, and always true outside a presubmit (a local run validates
+# everything). The paths are the old workflows' `paths:` filters.
+touched() {
+  [[ "${JOB_TYPE:-}" == "presubmit" ]] || return 0
+  ! git diff --quiet "$(git merge-base "${PULL_BASE_SHA}" "${PULL_PULL_SHA}")" "${PULL_PULL_SHA}" -- "$@"
+}
+
 # full_only: the job runs only when the whole tree is validated.
 full_only() {
   if [[ "${mode}" != "full" ]]; then
@@ -275,8 +283,7 @@ case "${job}" in
     done < <(jq -r '."image-matrix".include[] | [.name, (.context // "."), (.dockerfile // "./providers/\(.name)/Dockerfile")] | @tsv' <<<"${selection}")
 
     examples=providers/infrastructure/examples/application/apps
-    if [[ "${JOB_TYPE:-}" != "presubmit" ]] || \
-       ! git diff --quiet "$(git merge-base "${PULL_BASE_SHA}" "${PULL_PULL_SHA}")" "${PULL_PULL_SHA}" -- "${examples}"; then
+    if touched "${examples}" .github/workflows/infrastructure-examples.yaml; then
       for app in frontend backend; do
         echo "== image example-${app}: docker build ${examples}/${app}"
         docker build -t "ci.local/infrastructure-example-${app}:presubmit" "${examples}/${app}" || failed+=("example-${app}")
@@ -293,9 +300,48 @@ case "${job}" in
   # be accepted and a sample instance must apply. The cluster is left for the
   # log export; the pod is thrown away.
   e2e-infrastructure-templates)
+    if ! touched providers/infrastructure/install/templates providers/infrastructure/backend/kro \
+                 providers/infrastructure/apis .github/workflows/infrastructure-templates-e2e.yaml \
+                 Makefile hack/ci/prow; then
+      echo "== skipped: the PR does not touch the infrastructure templates, the kro backend, the APIs or the Makefile"
+      exit 0
+    fi
     trap kind_logs_on_failure EXIT
     kind_prereqs
     make e2e-infrastructure
+    ;;
+
+  # The split-*.yaml workflows publish each provider subtree to its mirror on
+  # main. Here: install the same splitsh-lite and compute the split of every
+  # subtree this PR touched, pushing nothing. PREFIX and SPLITSH_VERSION are
+  # read from the workflows, so there is no second list to keep in step.
+  split)
+    failed=()
+    for workflow in .github/workflows/split-*.yaml; do
+      prefix="$(sed -n 's/^  PREFIX: *//p' "${workflow}")"
+      version="$(sed -n 's/^  SPLITSH_VERSION: *//p' "${workflow}")"
+      [[ -n "${prefix}" && -n "${version}" ]] || { echo "== ${workflow}: no PREFIX or SPLITSH_VERSION" >&2; exit 1; }
+      if ! touched "${prefix}" "${workflow}" hack/ci/prow; then
+        echo "== ${prefix}: not touched, skipped"
+        continue
+      fi
+      if [[ ! -x "/tmp/splitsh-${version}/splitsh-lite" ]]; then
+        mkdir -p "/tmp/splitsh-${version}"
+        curl -fsSL "https://github.com/splitsh/lite/releases/download/${version}/lite_linux_amd64.tar.gz" \
+          | tar -xz -C "/tmp/splitsh-${version}" ./splitsh-lite
+      fi
+      echo "== ${prefix}: splitsh-lite ${version}"
+      sha="$("/tmp/splitsh-${version}/splitsh-lite" --prefix="${prefix}" --origin=HEAD | tail -n1)" || sha=""
+      if [[ "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "== ${prefix}: split sha ${sha}"
+      else
+        failed+=("${prefix}")
+      fi
+    done
+    if (( ${#failed[@]} )); then
+      printf '== FAILED split: %s\n' "${failed[@]}"
+      exit 1
+    fi
     ;;
 
   *)
