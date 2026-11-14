@@ -31,6 +31,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -131,6 +132,9 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 
 	request := func(router http.Handler, method, path string, form url.Values, cookie *http.Cookie) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, hubURL+path, strings.NewReader(form.Encode()))
+		if path == apiurl.PathAuthDeviceStart && store.failNextWritePrefix == "user:" {
+			req.RemoteAddr = "192.0.2.2:1234"
+		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		if cookie != nil {
 			req.AddCookie(cookie)
@@ -180,29 +184,28 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 		t.Fatalf("early poll on a different replica: HTTP %d %s", reply.Code, reply.Body)
 	}
 
-	form := url.Values{"user_code": {strings.ToLower(device.UserCode)}}
-	preview := request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, nil)
-	if preview.Code != http.StatusOK || preview.Header().Get("Location") != "" {
-		t.Fatalf("confirmation page: HTTP %d, expected no redirect", preview.Code)
+	enterCode := func(code string) *httptest.ResponseRecorder {
+		return request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, url.Values{"user_code": {strings.ToLower(code)}}, nil)
 	}
-	for _, want := range []string{"Unavailable", "UTC", device.UserCode, "If someone sent you the code, cancel."} {
-		if !strings.Contains(preview.Body.String(), want) {
-			t.Errorf("confirmation page missing %q", want)
-		}
-	}
-	form.Set("confirm", "1")
-	if skipped := request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, nil); skipped.Code != http.StatusBadRequest {
-		t.Fatalf("approval without confirmation page: HTTP %d", skipped.Code)
-	}
-	confirm := func(t *testing.T, preview *httptest.ResponseRecorder, form url.Values) *httptest.ResponseRecorder {
+	decide := func(t *testing.T, page *httptest.ResponseRecorder, decision string, useCookie bool) *httptest.ResponseRecorder {
 		t.Helper()
-		cookies := preview.Result().Cookies()
-		if preview.Code != http.StatusOK || len(cookies) != 1 || !strings.Contains(preview.Body.String(), cookies[0].Value) {
-			t.Fatalf("confirmation form lacked a browser binding: HTTP %d", preview.Code)
+		match := regexp.MustCompile(`name="approval" value="([^"]+)"`).FindStringSubmatch(page.Body.String())
+		if page.Code != http.StatusOK || len(match) != 2 {
+			t.Fatalf("missing approval form: HTTP %d", page.Code)
 		}
-		form.Set("confirm", "1")
-		form.Set("confirmation", cookies[0].Value)
-		return request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, cookies[0])
+		var cookie *http.Cookie
+		if useCookie {
+			for _, c := range page.Result().Cookies() {
+				if c.MaxAge > 0 && c.HttpOnly && c.Secure {
+					cookie = c
+					break
+				}
+			}
+			if cookie == nil || strings.Contains(page.Body.String(), cookie.Value) {
+				t.Fatal("expected a private, secure approval cookie")
+			}
+		}
+		return request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceApprove, url.Values{"approval": {match[1]}, "decision": {decision}}, cookie)
 	}
 	oidcCallback := func(t *testing.T, approval *httptest.ResponseRecorder, query url.Values) (string, *http.Cookie) {
 		t.Helper()
@@ -224,7 +227,7 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 		t.Fatal("missing secure browser-binding cookie")
 		return "", nil
 	}
-	approve := confirm(t, preview, form)
+	approve := enterCode(device.UserCode)
 	callback, cookie := oidcCallback(t, approve, url.Values{"code": {"upstream-code"}})
 	dest := approve.Header().Get("Location")
 	if strings.Contains(dest, device.DeviceCode) || strings.Contains(dest, device.UserCode) {
@@ -233,12 +236,33 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 	if reply := request(startReplica, http.MethodGet, callback, nil, nil); reply.Code != http.StatusBadRequest {
 		t.Fatalf("unbound callback: HTTP %d", reply.Code)
 	}
-	finish := request(startReplica, http.MethodGet, callback, nil, cookie)
-	if finish.Code != http.StatusOK || !strings.Contains(finish.Body.String(), "CLI sign-in approved") {
-		t.Fatalf("callback: HTTP %d %s", finish.Code, finish.Body)
+	approval := request(startReplica, http.MethodGet, callback, nil, cookie)
+	for _, want := range []string{"device@example.test", "Unavailable", "UTC", device.UserCode, "Railgrid workspace permissions", "If someone sent you the code, cancel."} {
+		if !strings.Contains(approval.Body.String(), want) {
+			t.Errorf("approval page missing %q", want)
+		}
 	}
-	if finish.Header().Get("Location") != "" || strings.Contains(finish.Body.String(), "upstream-refresh") {
+	if approval.Header().Get("Location") != "" || strings.Contains(approval.Body.String(), "upstream-refresh") {
 		t.Fatal("callback sent CLI credentials to the browser")
+	}
+	for key, entry := range store.values {
+		if strings.HasPrefix(key, "approval:") && json.Valid(entry.value) {
+			t.Fatal("pending approval was stored in plaintext")
+		}
+	}
+	if reply := decide(t, approval, "approve", false); reply.Code != http.StatusBadRequest {
+		t.Fatalf("unbound approval: HTTP %d", reply.Code)
+	}
+	store.now = store.now.Add(devicePollInterval * time.Second)
+	if reply := poll(device.DeviceCode); reply.Code != http.StatusBadRequest || !strings.Contains(reply.Body.String(), "authorization_pending") {
+		t.Fatalf("credentials available before approval: HTTP %d", reply.Code)
+	}
+	finish := decide(t, approval, "approve", true)
+	if finish.Code != http.StatusOK || !strings.Contains(finish.Body.String(), "CLI sign-in approved") {
+		t.Fatalf("approval: HTTP %d", finish.Code)
+	}
+	if reply := decide(t, approval, "approve", true); reply.Code != http.StatusGone {
+		t.Fatalf("approval replay: HTTP %d", reply.Code)
 	}
 	if reply := request(browserReplica, http.MethodGet, callback, nil, cookie); reply.Code != http.StatusBadRequest {
 		t.Fatalf("callback replay: HTTP %d", reply.Code)
@@ -279,31 +303,91 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name, failWrite, wantError string
-		callbackQuery              url.Values
-		wantStatus                 int
+		name, failWrite, decision, wantError string
+		callbackQuery                        url.Values
+		wantStatus                           int
 	}{
-		{"denied", "", "access_denied", url.Values{"error": {"access_denied"}}, http.StatusOK},
-		{"result write failure", "result:", "server_error", url.Values{"code": {"upstream-code"}}, http.StatusServiceUnavailable},
-		{"OIDC state write failure", "oidc:", "server_error", nil, http.StatusServiceUnavailable},
+		{"cancel after sign-in", "", "decline", "access_denied", url.Values{"code": {"upstream-code"}}, http.StatusOK},
+		{"IdP denied", "", "", "access_denied", url.Values{"error": {"access_denied"}}, http.StatusOK},
+		{"result write failure", "result:", "approve", "server_error", url.Values{"code": {"upstream-code"}}, http.StatusServiceUnavailable},
+		{"approval write failure", "approval:", "", "server_error", url.Values{"code": {"upstream-code"}}, http.StatusServiceUnavailable},
+		{"OIDC state write failure", "oidc:", "", "server_error", nil, http.StatusServiceUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			device := startLogin(t)
-			form := url.Values{"user_code": {device.UserCode}}
-			preview := request(browserReplica, http.MethodPost, apiurl.PathAuthDeviceVerify, form, nil)
 			store.failNextWritePrefix = tc.failWrite
-			reply := confirm(t, preview, form)
+			reply := enterCode(device.UserCode)
 			if tc.callbackQuery != nil {
 				path, cookie := oidcCallback(t, reply, tc.callbackQuery)
 				reply = request(startReplica, http.MethodGet, path, nil, cookie)
 			}
+			if tc.decision != "" {
+				reply = decide(t, reply, tc.decision, true)
+			}
 			if reply.Code != tc.wantStatus {
 				t.Fatalf("browser response: HTTP %d, want %d", reply.Code, tc.wantStatus)
 			}
-			if result := decrypt(t, poll(device.DeviceCode)); result.Error != tc.wantError {
+			if tc.failWrite == "oidc:" {
+				body := reply.Body.String()
+				if !strings.Contains(body, `role="alert"`) || !strings.Contains(body, "Start a new sign-in from the terminal.") {
+					t.Fatal("OIDC state write failure did not render the branded recovery page")
+				}
+			}
+			if result := decrypt(t, poll(device.DeviceCode)); result.Error != tc.wantError || result.IDToken != "" || result.RefreshToken != "" {
 				t.Fatalf("poll error = %q, want %q", result.Error, tc.wantError)
 			}
 		})
+	}
+}
+
+func TestDeviceApprovalExpiry(t *testing.T) {
+	now := time.Now()
+	store := &testDeviceStore{values: map[string]testDeviceEntry{}, now: now}
+	h := NewBrowserSessionHandler(nil, nil)
+	h.deviceStore = store
+	browser := httptest.NewRequest(http.MethodGet, apiurl.PathAuthCallback, nil)
+	assertExpired := func(w *httptest.ResponseRecorder) {
+		t.Helper()
+		if w.Code != http.StatusGone || !strings.Contains(w.Body.String(), "Sign-in took too long") {
+			t.Fatalf("expected branded expiry response, got HTTP %d", w.Code)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	state := deviceBrowserState{deviceRequest: deviceRequest{ExpiresAt: now.Add(-time.Second)}}
+	if !h.showDeviceApproval(w, browser, state, deviceApproval{}) || len(store.values) != 0 {
+		t.Fatal("expired request should finish without storing approval or an error result")
+	}
+	assertExpired(w)
+
+	code := oauth2.GenerateVerifier()
+	state.PollKey = deviceDigest(code)
+	state.ExpiresAt = now.Add(time.Minute)
+	store.values["pending:"+state.PollKey] = testDeviceEntry{expires: state.ExpiresAt}
+	w = httptest.NewRecorder()
+	if !h.showDeviceApproval(w, browser, state, deviceApproval{TokenExpiresAt: now.Add(-time.Second).Unix()}) || w.Code != http.StatusOK {
+		t.Fatalf("rendering approval fixture: HTTP %d", w.Code)
+	}
+	match := regexp.MustCompile(`name="approval" value="([^"]+)"`).FindStringSubmatch(w.Body.String())
+	cookies := w.Result().Cookies()
+	if len(match) != 2 || len(cookies) != 1 {
+		t.Fatal("missing approval form or cookie")
+	}
+	form := url.Values{"approval": {match[1]}, "decision": {"approve"}}
+	request := func(path string, form url.Values) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return r
+	}
+	decision := request(apiurl.PathAuthDeviceApprove, form)
+	decision.AddCookie(cookies[0])
+	w = httptest.NewRecorder()
+	h.decideDeviceLogin(w, decision)
+	assertExpired(w)
+	w = httptest.NewRecorder()
+	h.pollDeviceLogin(w, request(apiurl.PathAuthDevicePoll, url.Values{"device_code": {code}}))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "expired_token") {
+		t.Fatalf("expected the CLI to receive expiry, got HTTP %d: %s", w.Code, w.Body)
 	}
 }
 

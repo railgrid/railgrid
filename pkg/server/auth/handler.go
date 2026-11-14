@@ -286,7 +286,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	stateParam := r.URL.Query().Get("state")
 	var authCode tenancyv1alpha1.AuthCode
-	var device deviceRequest
+	var device deviceBrowserState
 	var deviceFinished bool
 	isDevice := strings.HasPrefix(stateParam, deviceStatePrefix)
 	if isDevice {
@@ -294,14 +294,14 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		device = state.deviceRequest
+		device = state
 		defer func() {
 			if !deviceFinished {
-				h.recordDeviceLoginFailure(ctx, device)
+				h.recordDeviceLoginFailure(ctx, device.deviceRequest)
 			}
 		}()
 		if r.URL.Query().Get("error") == "access_denied" {
-			deviceFinished = h.completeDeviceLogin(w, r, device, deviceResult{Error: "access_denied"})
+			deviceFinished = h.completeDeviceLogin(w, r, device.deviceRequest, deviceResult{Error: "access_denied"})
 			return
 		}
 		authCode.CodeVerifier = state.Verifier
@@ -366,21 +366,24 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create or update User CRD. The legacy CreateTenantWorkspace call
-	// (which materialized root:railgrid:tenants:{userID} and patched
-	// User.spec.DefaultCluster) was removed when the new multi-org
-	// tenancy model took over: the organization bootstrap controller
-	// now creates the personal Org + its default child Workspace and
-	// patches User.spec.DefaultCluster itself once the Workspace is
-	// Ready. The auth handler just needs to write the User CR; the
-	// controller does the rest asynchronously.
-	userID, firstLogin, err := h.seedUser(ctx, oidcIdentity{
+	identity := oidcIdentity{
 		Issuer:        h.oidcConfig.IssuerURL,
 		Subject:       claims.Sub,
 		Email:         claims.Email,
 		EmailVerified: emailVerifiedClaim(claims.EmailVerified),
 		Name:          claims.Name,
-	})
+	}
+	if isDevice {
+		deviceFinished = h.showDeviceApproval(w, r, device, deviceApproval{
+			Identity: identity, IDToken: rawIDToken, RefreshToken: token.RefreshToken,
+			TokenExpiresAt: idToken.Expiry.Unix(),
+		})
+		return
+	}
+
+	// Create or update the User. The organization bootstrap controller creates
+	// the personal workspace and fills in its default cluster asynchronously.
+	userID, firstLogin, err := h.seedUser(ctx, identity)
 	if err != nil {
 		h.logger.Error(err, "failed to seed user")
 		http.Error(w, "failed to create user", http.StatusInternalServerError)
@@ -416,10 +419,6 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		RefreshToken: token.RefreshToken,
 		IssuerURL:    h.oidcConfig.IssuerURL,
 		ClientID:     h.oidcConfig.ClientID,
-	}
-	if isDevice {
-		deviceFinished = h.completeDeviceLogin(w, r, device, deviceResult{LoginResponse: resp})
-		return
 	}
 	respJSON, err := json.Marshal(resp)
 	if err != nil {
@@ -617,7 +616,8 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 		sameOrigin := http.NewCrossOriginProtection()
 		router.Handle(apiurl.PathAuthDeviceStart, sameOrigin.Handler(h.deviceStartLimiter.middleware(h.startDeviceLogin))).Methods("POST")
 		router.HandleFunc(apiurl.PathAuthDeviceVerify, h.showDeviceCodePage).Methods("GET")
-		router.Handle(apiurl.PathAuthDeviceVerify, sameOrigin.Handler(h.deviceLimiter.middleware(h.approveDeviceLogin))).Methods("POST")
+		router.Handle(apiurl.PathAuthDeviceVerify, sameOrigin.Handler(h.deviceLimiter.middleware(h.beginDeviceSignIn))).Methods("POST")
+		router.Handle(apiurl.PathAuthDeviceApprove, sameOrigin.Handler(h.deviceLimiter.middleware(h.decideDeviceLogin))).Methods("POST")
 		router.Handle(apiurl.PathAuthDevicePoll, sameOrigin.Handler(h.deviceLimiter.middleware(h.pollDeviceLogin))).Methods("POST")
 		router.Handle(apiurl.PathAuthDeviceAck, sameOrigin.Handler(h.deviceLimiter.middleware(h.ackDeviceLogin))).Methods("POST")
 	}
