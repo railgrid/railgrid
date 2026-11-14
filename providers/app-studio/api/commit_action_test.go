@@ -280,6 +280,21 @@ func TestCommitToolSendsDeletionsInTheFileList(t *testing.T) {
 	}
 }
 
+func TestCommitToolRejectsMissingPathWithoutDeletionRecord(t *testing.T) {
+	ctx := context.Background()
+	hub := &codeCommitHub{}
+	upstream := hub.serve(t)
+	files := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
+	writeTestWorkspaceFiles(t, ctx, files, scope, []workspace.File{{Path: "keep.ts", Content: "export {}"}})
+	server := newCommitActionServer(t, files, upstream.URL)
+	_, err := server.commitProjectWorkspaceFiles(ctx, testCommitIdentity(), scope, nil, testCommitRepositoryRef,
+		map[string]any{"repositoryRef": testCommitRepositoryRef, "paths": []any{"missing.ts"}})
+	if err == nil || !strings.Contains(err.Error(), "without a source deletion record") || len(hub.actions(codecommit.StageBundleAction)) != 0 {
+		t.Fatalf("commit without deletion intent: %v", err)
+	}
+}
+
 // TestCommitToolReportsTheProviderError keeps the typed actionwire code as the
 // tool's failure, rather than a prose message parsed out of a tool result.
 func TestCommitToolReportsTheProviderError(t *testing.T) {

@@ -27,6 +27,7 @@ type fakeDevelopmentAgent struct {
 	applied       uint64
 	respondWith   uint64 // when set, the sync response reports this revision
 	hideStatus    bool
+	legacy        bool
 	syncRevisions []uint64
 }
 
@@ -45,6 +46,22 @@ func (a *fakeDevelopmentAgent) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if a.legacy {
+			var legacy struct {
+				SourceRevision uint64 `json:"sourceRevision"`
+				SourceDigest   string `json:"sourceDigest"`
+			}
+			// The old wire decoder ignores explicitSourceDigest.
+			wire, err := json.Marshal(req)
+			if err != nil || json.Unmarshal(wire, &legacy) != nil {
+				http.Error(w, "invalid legacy request", http.StatusBadRequest)
+				return
+			}
+			if legacy.SourceRevision != 0 && legacy.SourceDigest == "" {
+				http.Error(w, "sourceRevision and sourceDigest must be supplied together", http.StatusBadRequest)
+				return
+			}
 		}
 		a.syncRevisions = append(a.syncRevisions, req.SourceRevision)
 		if req.SourceRevision < a.applied {
@@ -70,6 +87,17 @@ func TestPostProjectComponentSyncRecoversFromPlainSyncRevisions(t *testing.T) {
 	id := identity{clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "ws-a"}
 	ref := dataPlaneRef{Resource: "instances", Name: "demo-dev", Component: "web"}
 	request := projectSandboxSyncRequest{Files: []projectSandboxSyncFile{{Path: "index.js", Content: "ok"}}, SourceDigest: "sha256:abc"}
+
+	t.Run("older agent rejects sync before applying it", func(t *testing.T) {
+		agent := &fakeDevelopmentAgent{legacy: true}
+		hub := httptest.NewServer(agent)
+		defer hub.Close()
+		server := &Server{hubBase: hub.URL, callers: newTestCallers(nil, hub.URL)}
+		_, err := server.postProjectComponentSync(ctx, id, ref, "web", 6, request)
+		if err == nil || !strings.Contains(err.Error(), "explicit sync deletions") || len(agent.syncRevisions) != 0 {
+			t.Fatalf("older agent: err = %v, sync revisions = %v", err, agent.syncRevisions)
+		}
+	})
 
 	t.Run("plain sync moved the applied revision ahead", func(t *testing.T) {
 		// App Studio last synced revision 5; a plain sync stamped 6 and 7.

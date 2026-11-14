@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +61,31 @@ func TestProjectWorkspaceSyncDistinguishesLostTreeFromDeletedFiles(t *testing.T)
 	}
 	if len(snapshot.Files) != 0 || strings.Join(snapshot.DeletedPaths, ",") != "index.html" {
 		t.Fatalf("sync after deleting the last file = %+v, want the explicit deletion", snapshot)
+	}
+}
+
+func TestProjectWorkspaceSyncOmitsMissingPathWithoutDeletionRecord(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	files := workspace.NewFileStore(root)
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "uid-a"}
+	if _, err := files.PutFile(ctx, scope, workspace.PutOptions{Path: "index.html", Data: []byte("content")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.AddUncommittedPaths(ctx, scope, []string{"index.html"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, "index.html")); err != nil {
+		t.Fatal(err)
+	}
+
+	server := &Server{workspaces: files}
+	snapshot, err := server.projectWorkspaceSyncFiles(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Files) != 0 || len(snapshot.DeletedPaths) != 0 {
+		t.Fatalf("sync with a missing path = %+v, want no writes or deletes", snapshot)
 	}
 }
 

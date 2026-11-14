@@ -606,6 +606,32 @@ spec:
                     required:
                     - workspaceDigest
                     type: object
+                  sourceDeletions:
+                    description: |-
+                      SourceDeletions records explicit file removals at their source revision.
+                      Each record remains until both development sync and Git settlement have
+                      accounted for it, or the path is written again.
+                    items:
+                      description: ProjectSourceDeletion identifies an intentional
+                        removal from the working copy.
+                      properties:
+                        path:
+                          maxLength: 1024
+                          minLength: 1
+                          type: string
+                        sourceRevision:
+                          format: int64
+                          minimum: 1
+                          type: integer
+                      required:
+                      - path
+                      - sourceRevision
+                      type: object
+                    maxItems: 1024
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - path
+                    x-kubernetes-list-type: map
                   sourceMutationID:
                     description: |-
                       SourceMutationID identifies the source write that owns SourceRevision.
@@ -666,8 +692,7 @@ spec:
                   uncommittedPaths:
                     description: |-
                       UncommittedPaths are the working-copy paths that differ from the last
-                      commit, sorted. A path that no longer exists in the tree is a deletion
-                      and is committed as one.
+                      commit, sorted. Deletions also require a SourceDeletions entry.
 
                       The bound is honest rather than arbitrary: a project tree is capped at
                       500 files (workspace.maxWorkspaceTreeFiles), so the largest transition

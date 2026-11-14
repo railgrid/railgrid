@@ -158,6 +158,9 @@ func (l *Ledger) Update(ctx context.Context, scope workspace.Scope, mutate func(
 				workspace.ErrLedgerCapacity,
 				scope.ProjectName, len(next.SourcePathAttributions), MaxUncommittedPaths)
 		}
+		if len(next.SourceDeletions) > MaxUncommittedPaths {
+			return workspace.LedgerRecord{}, fmt.Errorf("%w: project %s has more than %d source deletions", workspace.ErrLedgerCapacity, scope.ProjectName, MaxUncommittedPaths)
+		}
 		status := statusFrom(next, project.Status.Workspace, l.clock())
 		if err := validateWorkspaceStatusCounts(status); err != nil {
 			return workspace.LedgerRecord{}, err
@@ -271,6 +274,11 @@ func recordFrom(status *aiv1alpha1.ProjectWorkspaceStatus) workspace.LedgerRecor
 	if len(status.UncommittedPaths) > 0 {
 		record.UncommittedPaths = append([]string(nil), status.UncommittedPaths...)
 	}
+	for _, deletion := range status.SourceDeletions {
+		if deletion.SourceRevision > 0 {
+			record.SourceDeletions = append(record.SourceDeletions, workspace.SourceDeletion{Path: deletion.Path, Revision: uint64(deletion.SourceRevision)})
+		}
+	}
 	if len(status.SourcePathAttributions) > 0 {
 		record.SourcePathAttributions = make([]workspace.SourcePathAttribution, 0, len(status.SourcePathAttributions))
 		for _, attribution := range status.SourcePathAttributions {
@@ -329,6 +337,11 @@ func statusFrom(record workspace.LedgerRecord, previous *aiv1alpha1.ProjectWorks
 		SourceRevision:         int64(record.SourceRevision), //nolint:gosec // bounded by the revision counter, not by input
 		UncommittedPaths:       record.UncommittedPaths,
 		SourcePathAttributions: make([]aiv1alpha1.ProjectSourcePathAttribution, 0, len(record.SourcePathAttributions)),
+	}
+	for _, deletion := range record.SourceDeletions {
+		status.SourceDeletions = append(status.SourceDeletions, aiv1alpha1.ProjectSourceDeletion{
+			Path: deletion.Path, SourceRevision: int64(deletion.Revision), //nolint:gosec // bounded by the revision counter
+		})
 	}
 	for _, attribution := range record.SourcePathAttributions {
 		status.SourcePathAttributions = append(status.SourcePathAttributions, aiv1alpha1.ProjectSourcePathAttribution{
@@ -391,7 +404,7 @@ func statusFrom(record workspace.LedgerRecord, previous *aiv1alpha1.ProjectWorks
 			RecordedAt:      recordedAt,
 		}
 	}
-	if status.SourceRevision == 0 && status.SourceMutationID == "" && len(status.UncommittedPaths) == 0 && len(status.SourcePathAttributions) == 0 &&
+	if status.SourceRevision == 0 && status.SourceMutationID == "" && len(status.UncommittedPaths) == 0 && len(status.SourcePathAttributions) == 0 && len(status.SourceDeletions) == 0 &&
 		status.LastSourceChange == nil && status.LastPreviewCheckpoint == nil && status.PendingCommit == nil && status.Settlement == nil {
 		return nil
 	}
@@ -413,6 +426,7 @@ func statusPatch(resourceVersion string, status *aiv1alpha1.ProjectWorkspaceStat
 			"lastPreviewCheckpoint":  sourceChangePatch(status.LastPreviewCheckpoint),
 			"uncommittedPaths":       nullIfEmpty(status.UncommittedPaths),
 			"sourcePathAttributions": nullIfEmpty(status.SourcePathAttributions),
+			"sourceDeletions":        nullIfEmpty(status.SourceDeletions),
 			"pendingCommit":          nil,
 			"settlement":             nil,
 		}

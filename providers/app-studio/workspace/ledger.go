@@ -121,6 +121,7 @@ type LedgerRecord struct {
 	SourcePathAttributions []SourcePathAttribution
 	// UncommittedPaths are the paths that differ from the last commit.
 	UncommittedPaths []string
+	SourceDeletions  []SourceDeletion
 	// PendingCommit, when set, is the RepositoryCommit being followed up.
 	PendingCommit *PendingCommit
 	// Settlement, when set, is the receipt a landed commit left behind.
@@ -145,6 +146,7 @@ func (r LedgerRecord) DeepCopy() LedgerRecord {
 	if r.UncommittedPaths != nil {
 		out.UncommittedPaths = append([]string(nil), r.UncommittedPaths...)
 	}
+	out.SourceDeletions = append([]SourceDeletion(nil), r.SourceDeletions...)
 	if r.PendingCommit != nil {
 		pending := *r.PendingCommit
 		pending.Paths = append([]string(nil), r.PendingCommit.Paths...)
@@ -568,6 +570,7 @@ func (s *FileStore) RecordPreviewCheckpoint(ctx context.Context, scope Scope, so
 	_, err = ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
 		copy := source
 		record.LastPreviewCheckpoint = &copy
+		pruneSourceDeletions(record)
 		return true, nil
 	})
 	return err
