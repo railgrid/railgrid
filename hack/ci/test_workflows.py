@@ -126,14 +126,14 @@ class WorkflowTests(unittest.TestCase):
             with self.subTest(workflow=name):
                 events = workflow.get("on", workflow.get(True))  # PyYAML's YAML 1.1 'on' boolean
                 self.assertIn("workflow_dispatch", events)
-                # Prow validates pull requests for ci and e2e (/.prow.yaml);
-                # those two run on Actions only after merge.
+                # Prow validates pull requests (/.prow.yaml). ci and e2e are a
+                # manual fallback; images also runs where it publishes.
+                self.assertNotIn("pull_request", events)
                 if name in ("ci", "e2e"):
-                    self.assertNotIn("pull_request", events)
-                    self.assertIn("push", events)
+                    self.assertEqual(set(events), {"workflow_dispatch"})
                 else:
-                    self.assertNotIn("paths", events["pull_request"])
-                    self.assertNotIn("paths-ignore", events["pull_request"])
+                    self.assertEqual(set(events), {"release", "push", "workflow_dispatch"})
+                    self.assertNotIn("branches", events["push"])
                 changes = workflow["jobs"]["changes"]
                 self.assertEqual(changes["permissions"], {"contents": "read"})
                 self.assertEqual(changes["steps"][0]["with"]["fetch-depth"], 0)
@@ -279,6 +279,32 @@ class WorkflowTests(unittest.TestCase):
                     self.assertEqual(bool(expression(step["if"], "full", event)), event == "push")
                 if "PUSH" in step.get("env", {}):
                     self.assertEqual(bool(expression(step["env"]["PUSH"], "full", event)), event == "push")
+
+    def test_only_macos_and_the_release_dry_run_still_start_on_pull_requests(self):
+        allowed = {"macos.yaml", "goreleaser.yaml"}
+        for path in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
+            workflow = yaml.safe_load(path.read_text())
+            events = workflow.get("on", workflow.get(True))
+            with self.subTest(workflow=path.name):
+                self.assertEqual("pull_request" in events or "pull_request_target" in events,
+                                 path.name in allowed, "pull requests are validated by Prow (/.prow.yaml)")
+
+    def test_every_prow_job_is_required_and_starts_on_every_non_docs_pull_request(self):
+        jobs = {job["name"]: job for job in yaml.safe_load((ROOT / ".prow.yaml").read_text())["presubmits"]}
+        for name, job in jobs.items():
+            with self.subTest(job=name):
+                self.assertNotIn("optional", job)
+                self.assertNotIn("run_if_changed", job, "narrow the work inside job.sh; the job itself always starts")
+                self.assertTrue(job.get("always_run") or job.get("skip_if_only_changed") == r"^docs/|\.md$")
+        # One Prow job for each pull_request trigger that left GitHub Actions.
+        self.assertLessEqual({"pull-railgrid-images", "pull-railgrid-e2e-infrastructure-templates",
+                              "pull-railgrid-split"}, set(jobs))
+        script = (ROOT / "hack/ci/prow/job.sh").read_text()
+        for job in jobs.values():
+            self.assertIn(f"\n  {job['spec']['containers'][0]['args'][1]})\n", script)
+        for path in sorted((ROOT / ".github/workflows").glob("split-*.yaml")):
+            env = yaml.safe_load(path.read_text())["env"]
+            self.assertTrue(env["PREFIX"] and env["SPLITSH_VERSION"], path.name)
 
     def test_macos_runs_only_the_darwin_specific_half_on_relevant_paths(self):
         events = self.macos.get("on", self.macos.get(True))
