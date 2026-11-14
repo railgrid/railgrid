@@ -250,6 +250,69 @@ func TestFeedbackChecksExactCommitAndRechecksPRHead(t *testing.T) {
 		})
 	}
 }
+
+// A person's request for changes carries the reviewer's current repository
+// permission, read once per login; other reviews and bots read nothing.
+func TestFeedbackRecordsChangesRequestedReviewerPermission(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	lookups := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var output any
+		switch r.URL.Path {
+		case "/api/v3/repos/team/demo":
+			output = map[string]any{"id": 42, "full_name": "team/demo"}
+		case "/api/v3/repos/team/demo/pulls/1":
+			output = collaborationPR(commit)
+		case "/api/v3/repos/team/demo/commits/" + commit + "/check-runs":
+			output = map[string]any{"total_count": 0, "check_runs": []any{}}
+		case "/api/v3/repos/team/demo/pulls/1/reviews":
+			review := func(id int, login, kind, state string) map[string]any {
+				return map[string]any{"id": id, "user": map[string]any{"login": login, "type": kind}, "commit_id": commit, "state": state, "body": "please change", "submitted_at": "2026-09-13T11:00:00Z"}
+			}
+			output = []any{review(1, "maintainer", "User", "CHANGES_REQUESTED"), review(2, "maintainer", "User", "CHANGES_REQUESTED"), review(3, "drive-by", "User", "CHANGES_REQUESTED"), review(4, "outsider", "User", "CHANGES_REQUESTED"), review(5, "ci-bot", "Bot", "CHANGES_REQUESTED"), review(6, "commenter", "User", "COMMENTED")}
+		case "/api/v3/repos/team/demo/collaborators/maintainer/permission":
+			lookups["maintainer"]++
+			output = map[string]any{"permission": "write"}
+		case "/api/v3/repos/team/demo/collaborators/drive-by/permission":
+			lookups["drive-by"]++
+			output = map[string]any{"permission": "read"}
+		case "/api/v3/repos/team/demo/collaborators/outsider/permission":
+			lookups["outsider"]++
+			w.WriteHeader(404)
+			return
+		default:
+			if strings.HasSuffix(r.URL.Path, "/comments") {
+				output = []any{}
+				break
+			}
+			t.Errorf("unexpected feedback route %s", r.URL.Path)
+			w.WriteHeader(500)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(output)
+	}))
+	defer server.Close()
+	conn := &api.Connection{Spec: api.ConnectionSpec{Owner: "team", BaseURL: server.URL}}
+	repo := &api.Repository{Spec: api.RepositorySpec{Name: "demo"}, Status: api.RepositoryStatus{RepoID: "42"}}
+	result, err := New().PullRequestFeedback(context.Background(), conn, backend.Credential{Token: "test-token"}, repo, 1, commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int64]string{}
+	for _, review := range result.Reviews {
+		got[review.ID] = review.AuthorPermission
+	}
+	want := map[int64]string{1: "write", 2: "write", 3: "read", 4: "none", 5: "", 6: ""}
+	for id, permission := range want {
+		if got[id] != permission {
+			t.Errorf("review %d permission = %q, want %q", id, got[id], permission)
+		}
+	}
+	if lookups["maintainer"] != 1 || lookups["drive-by"] != 1 || lookups["outsider"] != 1 || len(lookups) != 3 {
+		t.Fatalf("permission lookups = %v", lookups)
+	}
+}
+
 func TestExistingOnlyRegistrationNeverCreatesOrDeletesRemote(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

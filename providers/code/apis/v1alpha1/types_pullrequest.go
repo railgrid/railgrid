@@ -258,6 +258,13 @@ type PullRequestReview struct {
 	Body string `json:"body,omitempty"`
 	// +optional
 	SubmittedAt *metav1.Time `json:"submittedAt,omitempty"`
+	// AuthorPermission is the reviewer's permission on the repository when the
+	// review was observed: admin, write, read or none. It is read only for a
+	// person's CHANGES_REQUESTED review, so a coordinator can act on a request
+	// for changes from someone with write access and ignore anyone else's.
+	// +optional
+	// +kubebuilder:validation:Enum=admin;write;read;none
+	AuthorPermission string `json:"authorPermission,omitempty"`
 }
 
 // PullRequestComment is one conversation comment, as the forge reports it.
