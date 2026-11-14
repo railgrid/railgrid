@@ -9,9 +9,9 @@ name: Split provider-sdk
 # the same source always splits to the same commit sha1s, so pushes normally
 # fast-forward. Runs on every push to main (mirrors the branch) and on
 # SDK release tags. workflow_dispatch is provided for the initial seed /
-# manual re-sync. It also runs on PRs that touch the split surface, but those
-# only validate (install + split) — the deploy-key and push steps are gated to
-# non-PR events, so a PR never writes to the mirror.
+# manual re-sync. It does not run on pull
+# requests (Prow is the pull request gate, /.prow.yaml); the `!= 'pull_request'`
+# conditions below are inert and kept so re-adding the trigger is the whole change.
 #
 # Releases are tagged in the monorepo as `provider-sdk/vX.Y.Z`; the prefix is
 # stripped on the way out, so the mirror receives a plain `vX.Y.Z` tag.
@@ -24,11 +24,6 @@ on:
   push:
     branches: [main]
     tags: ['provider-sdk/v*']
-  pull_request:
-    branches: [main]
-    paths:
-      - 'provider-sdk/**'
-      - '.github/workflows/split-provider-sdk.yaml'
   workflow_dispatch:
 
 permissions:
@@ -92,8 +87,7 @@ jobs:
 
           # Deterministic split of the provider-sdk subtree. The resulting
           # commit objects are written into the local object store, so they can
-          # be pushed directly by sha. Runs on every event (incl. PRs) so it
-          # validates the install + split end-to-end without publishing.
+          # be pushed directly by sha.
           #
           # --origin takes a git REF, not a raw commit hash; HEAD is the
           # checked-out commit (the pushed tip, or the PR merge commit) and

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Body of every Prow job in .prow.yaml: `hack/ci/prow/job.sh <job>`.
 #
-# Each case runs the same commands as the GitHub Actions job it mirrors
-# (.github/workflows/ci.yaml and e2e.yaml). When a workflow step changes,
-# change the matching case here in the same pull request. The differences are
-# the ones Prow forces:
+# This is what gates a pull request. Most cases run the same commands as a job
+# of the manual-fallback workflows (.github/workflows/ci.yaml and e2e.yaml);
+# when a case changes, change the matching workflow step in the same pull
+# request. The differences are the ones Prow forces:
 #
 #   - No job matrix and no artifacts between jobs. The module matrix is a loop
 #     in one job, and every kind suite builds bin/ and the images itself.
@@ -260,6 +260,42 @@ case "${job}" in
     kind_prereqs
     RAILGRID_E2E_ARTIFACT_DIR="${ARTIFACTS}/railgrid-e2e-cli" \
       make e2e-cli E2E_CLI_TIMEOUT=25m
+    ;;
+
+  # Build, never push: the provider images the selection names (the ones whose
+  # build context this PR touched; all of them outside a presubmit), then the
+  # infrastructure example apps when the PR touched them. Publishing stays on
+  # Actions (provider-release.yaml, infrastructure-examples.yaml).
+  images)
+    docker info --format '== docker {{.ServerVersion}}, cgroup v{{.CgroupVersion}}, {{.Driver}}'
+    failed=()
+    while IFS=$'\t' read -r name context dockerfile; do
+      echo "== image ${name}: docker build -f ${dockerfile} ${context}"
+      docker build -f "${dockerfile}" -t "ci.local/${name//\//-}:presubmit" "${context}" || failed+=("${name}")
+    done < <(jq -r '."image-matrix".include[] | [.name, (.context // "."), (.dockerfile // "./providers/\(.name)/Dockerfile")] | @tsv' <<<"${selection}")
+
+    examples=providers/infrastructure/examples/application/apps
+    if [[ "${JOB_TYPE:-}" != "presubmit" ]] || \
+       ! git diff --quiet "$(git merge-base "${PULL_BASE_SHA}" "${PULL_PULL_SHA}")" "${PULL_PULL_SHA}" -- "${examples}"; then
+      for app in frontend backend; do
+        echo "== image example-${app}: docker build ${examples}/${app}"
+        docker build -t "ci.local/infrastructure-example-${app}:presubmit" "${examples}/${app}" || failed+=("example-${app}")
+      done
+    fi
+
+    if (( ${#failed[@]} )); then
+      printf '== FAILED image: %s\n' "${failed[@]}"
+      exit 1
+    fi
+    ;;
+
+  # A throwaway kind cluster with standalone kro: every seeded Template must
+  # be accepted and a sample instance must apply. The cluster is left for the
+  # log export; the pod is thrown away.
+  e2e-infrastructure-templates)
+    trap kind_logs_on_failure EXIT
+    kind_prereqs
+    make e2e-infrastructure
     ;;
 
   *)

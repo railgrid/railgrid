@@ -6,10 +6,12 @@
 # (hack/ci/prow/image/, tag = hack/ci/prow/image/VERSION). job.sh holds the
 # commands and mirrors the GitHub Actions jobs named in each comment.
 #
-# These jobs are the pull request gate: the CI and E2E workflows no longer run
-# on pull_request (they still run on main after merge), and no job here is
-# `optional`, so Tide does not merge past a red one. An approver can waive a
-# job on one PR with `/override <context>`.
+# These jobs are the pull request gate. GitHub Actions keeps only releases,
+# image and chart publishing, the mirror splits, the CI image and macOS; the
+# CI and E2E workflows are a manual fallback (workflow_dispatch). No job here
+# is `optional`, so Tide does not merge past a red one, and Tide tests a PR
+# against the current main before merging it. An approver can waive a job on
+# one PR with `/override <context>`.
 #
 # Docs-only PRs (docs/ and *.md) start only `contracts`; that is the `docs`
 # selection mode of hack/ci/README.md. The provider-ui mode is decided inside
@@ -344,6 +346,65 @@ presubmits:
           args:
             - hack/ci/prow/job.sh
             - e2e-cli
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 10Gi
+
+  # Provider images whose build context the PR changed (hack/ci/matrices.json),
+  # and the infrastructure example apps: built, never pushed (was images.yaml
+  # and infrastructure-examples.yaml on pull_request). run_if_changed is a
+  # superset of every image's inputs; job.sh makes the exact selection, and
+  # hack/ci/test_workflows.py holds the two together.
+  - name: pull-railgrid-images
+    run_if_changed: '^(providers/|provider-sdk/|pkg/|go\.(mod|sum)$|hack/ci/|\.github/workflows/images\.yaml$|\.github/actions/ci-changes/)'
+    branches:
+      - ^main$
+    labels:
+      preset-dind-enabled: "true"
+    decoration_config:
+      timeout: 90m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v3
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - images
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 10Gi
+
+  # kind: every seeded infrastructure Template on a real kro (was
+  # infrastructure-templates-e2e.yaml on pull_request).
+  - name: pull-railgrid-e2e-infrastructure-templates
+    run_if_changed: '^(providers/infrastructure/(install/templates|backend/kro|apis)/|Makefile$)'
+    branches:
+      - ^main$
+    labels:
+      preset-dind-enabled: "true"
+    decoration_config:
+      timeout: 40m
+    spec:
+      containers:
+        - image: ghcr.io/railgrid/railgrid-ci:v3
+          command:
+            - runner.sh
+          args:
+            - hack/ci/prow/job.sh
+            - e2e-infrastructure-templates
           securityContext:
             privileged: true
           resources:

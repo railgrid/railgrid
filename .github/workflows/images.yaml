@@ -6,14 +6,12 @@ on:
   push:
     tags:
       - 'v*'
-  # On PRs only the provider images whose build context changed are built
-  # (push: false, single-arch), so a broken Dockerfile is caught before the
-  # split sync reaches a mirror. The hub and agent Dockerfiles are validated on
-  # every full-mode PR by the E2E workflow's `build` job, which builds both
-  # images for the kind suites; building them a second time here was waste.
-  # Manual runs build everything without publishing.
-  pull_request:
-    branches: [main]
+  # Not on pull_request: Prow is the pull request gate (/.prow.yaml). Its
+  # pull-railgrid-images job builds the provider images whose build context a
+  # PR changed, and the kind suites build the hub and agent images. The
+  # pull_request expressions below are inert and kept so re-adding the
+  # trigger is the whole change. Manual runs build everything without
+  # publishing.
   workflow_dispatch:
 
 permissions:

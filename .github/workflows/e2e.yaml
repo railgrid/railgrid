@@ -2,12 +2,12 @@ name: E2E
 
 # Pull requests are validated by Prow (/.prow.yaml, hack/ci/prow/README.md),
 # which runs the same suites through hack/ci/prow/job.sh. This workflow no
-# longer runs on pull_request: it is the post-merge run on main (Prow has no
-# postsubmits yet). Keep the steps here and the matching case in job.sh in
-# step.
+# longer runs on its own, neither on pull_request nor on pushes to main: Tide
+# tests every pull request against the current main before merging it, so a
+# post-merge run repeated a result Prow already had. It stays as the manual
+# fallback (workflow_dispatch) for when the Prow cluster is unavailable. Keep
+# the steps here and the matching case in job.sh in step.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:

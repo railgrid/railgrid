@@ -8,7 +8,7 @@ job definitions and what they run.
 | File | What |
 | ---- | ---- |
 | `/.prow.yaml` | The jobs: name, trigger, image, resources. Read from the PR's own HEAD |
-| `hack/ci/prow/job.sh` | What each job runs. One `case` per job, mirroring a GitHub Actions job |
+| `hack/ci/prow/job.sh` | What each job runs. One `case` per job |
 | `hack/ci/prow/mode.py` | CI selection (full / provider-ui / docs) from Prow's environment, using `hack/ci/selection.py` |
 | `hack/ci/prow/image/` | The CI image: `Dockerfile`, `runner.sh` (its entry point), `VERSION` (its tag) |
 | `/.github/workflows/ci-image.yaml` | Builds and pushes the CI image |
@@ -16,15 +16,28 @@ job definitions and what they run.
 
 ## Status: the pull request gate
 
-Prow validates pull requests to `main`. The `CI` and `E2E` workflows
-(`ci.yaml`, `e2e.yaml`) no longer run on `pull_request`; they run on pushes to
-`main` as the post-merge check, because Prow has no postsubmits yet. No Prow
-job is `optional`, so Tide does not merge past a red one; an approver can
-waive a job on one PR with `/override pull-railgrid-<job>`.
+Prow validates pull requests to `main`. No Prow job is `optional`, so Tide
+does not merge past a red one; an approver can waive a job on one PR with
+`/override pull-railgrid-<job>`. Tide tests a pull request against the current
+`main` before it merges it, so there is no separate post-merge run.
 
-Still on Actions for pull requests: the image builds (`images.yaml`), the
-infrastructure example and template workflows, and macOS. Releases and image
-publishing stay on Actions as well.
+What is left on GitHub Actions:
+
+| Workflow | Why it stays |
+| -------- | ------------ |
+| `goreleaser.yaml`, `images.yaml`, `helm-images.yaml`, `provider-release.yaml`, `actions-node-release.yaml`, `auth-node-release.yaml` | Releases: binaries, images, charts, packages. `goreleaser.yaml` also dry-runs on a pull request that changes the release configuration |
+| `split-*.yaml`, `infrastructure-examples.yaml` | Publishing on pushes to `main`: the provider mirrors and the example images |
+| `ci-image.yaml` | Builds the image the Prow jobs run in |
+| `macos.yaml` | Needs a macOS runner. The only validation that still starts on pull requests |
+| `ci.yaml`, `e2e.yaml`, `infrastructure-templates-e2e.yaml`, `tilt-e2e.yaml` | Manual dispatch only: the fallback when the Prow cluster is unavailable |
+
+`hack/ci/test_workflows.py` fails if any other workflow starts on
+`pull_request`. Not ported: the split dry-run that pull requests touching a
+provider used to get; a split now runs for the first time on `main`.
+
+`pull-railgrid-images` and `pull-railgrid-e2e-infrastructure-templates` start
+only when a pull request changes their inputs (`run_if_changed`); `/test
+<job>` runs one anyway.
 
 ## Working with it
 
@@ -38,8 +51,8 @@ publishing stay on Actions as well.
 
 Tide merges a PR when it has `approved`, no `do-not-merge/*` label, and every
 status and check on it is green, the GitHub Actions ones included. An
-approver's own PR is approved implicitly, so for a maintainer "green" means
-"merges". Use `/hold` to stop that.
+approver's own PR needs `/approve` too; nothing is approved implicitly. Use
+`/hold` to stop a merge.
 
 **`/ok-to-test` is a security decision.** The kind suites run privileged on
 the same nodes as the dev platform. Before allowing an outside PR, read its
