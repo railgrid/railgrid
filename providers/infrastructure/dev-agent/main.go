@@ -1075,6 +1075,15 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 		autoStatusKnown = true
 	}
 
+	deleted := make([]string, 0, len(req.DeletePaths))
+	if explicitDeletes {
+		var err error
+		deleted, err = prepareExplicitSyncPaths(root, cleanDeletePaths, incomingPaths)
+		if err != nil {
+			http.Error(w, "prepare explicit workspace file transitions: "+err.Error(), http.StatusConflict)
+			return
+		}
+	}
 	changed := make([]string, 0, len(files))
 	written := make([]string, 0, len(files))
 	for _, f := range files {
@@ -1100,10 +1109,11 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 		}
 		changed = append(changed, clean)
 	}
-	deleted := make([]string, 0, len(req.DeletePaths))
 	if authoritative {
 		var err error
-		deleted, err = deleteAuthoritativeWorkspaceCandidates(root, previous, found, cleanDeletePaths, incomingPaths, explicitDeletes)
+		var remaining []string
+		remaining, err = deleteAuthoritativeWorkspaceCandidates(root, previous, found, cleanDeletePaths, incomingPaths, explicitDeletes)
+		deleted = append(deleted, remaining...)
 		if err != nil {
 			http.Error(w, "delete authoritative workspace files: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -1222,6 +1232,12 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			// package-lock.json (or fail after doing so), so restore the exact
 			// authoritative bundle and verify the original manifest before any
 			// restart or response is accepted.
+			if explicitDeletes {
+				if _, err := prepareExplicitSyncPaths(root, cleanDeletePaths, incomingPaths); err != nil {
+					http.Error(w, "restore explicit workspace file transitions: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
 			if err := restoreAuthoritativeWorkspaceFiles(root, files); err != nil {
 				http.Error(w, "restore authoritative workspace after reload: "+err.Error(), http.StatusInternalServerError)
 				return
@@ -1707,6 +1723,60 @@ func restoreAuthoritativeWorkspaceFiles(root *os.Root, files []decodedSyncFile) 
 	return nil
 }
 
+// prepareExplicitSyncPaths handles file/directory transitions before writes.
+func prepareExplicitSyncPaths(root *os.Root, deletions []string, incoming map[string]struct{}) ([]string, error) {
+	var removed []string
+	directories := map[string]bool{}
+	for _, deleted := range deletions {
+		blocking := false
+		for incomingPath := range incoming {
+			switch {
+			case strings.HasPrefix(incomingPath, deleted+"/"):
+				blocking = true
+			case strings.HasPrefix(deleted, incomingPath+"/"):
+				blocking = true
+				for dir := path.Dir(deleted); dir == incomingPath || strings.HasPrefix(dir, incomingPath+"/"); dir = path.Dir(dir) {
+					directories[dir] = true
+				}
+			}
+		}
+		if !blocking {
+			continue
+		}
+		info, err := root.Lstat(deleted)
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || err == nil && info.IsDir() {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if didRemove, err := removeManagedWorkspaceFile(root, deleted); err != nil {
+			return nil, err
+		} else if didRemove {
+			removed = append(removed, deleted)
+		}
+	}
+	dirs := slices.Sorted(maps.Keys(directories))
+	slices.Reverse(dirs) // descendants sort after their parents
+	for _, dir := range dirs {
+		info, err := root.Lstat(dir)
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || err == nil && !info.IsDir() {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := ensureExecPathNoSymlink(root, dir, true); err != nil {
+			return nil, err
+		}
+		if err := root.Remove(dir); err != nil {
+			return nil, err // never remove unlisted contents
+		}
+	}
+	slices.Sort(removed)
+	return removed, nil
+}
+
 // deleteAuthoritativeWorkspaceCandidates removes requested files and, in
 // replacement mode, prunes omitted paths from the previous manifest. The set
 // is replayed after reload hooks so they cannot recreate removed source.
@@ -1733,6 +1803,18 @@ func deleteAuthoritativeWorkspaceCandidates(root *os.Root, previous workspaceMan
 	for _, raw := range paths {
 		if _, keep := incoming[raw]; keep {
 			continue
+		}
+		if explicit {
+			transition := false
+			for target := range incoming {
+				if strings.HasPrefix(target, raw+"/") || strings.HasPrefix(raw, target+"/") {
+					transition = true
+					break
+				}
+			}
+			if transition {
+				continue
+			}
 		}
 		// When a valid prior manifest exists, explicit deletion hints are
 		// advisory and may remove only paths that manifest managed. If the

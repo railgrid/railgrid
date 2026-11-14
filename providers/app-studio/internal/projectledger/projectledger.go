@@ -259,6 +259,7 @@ func (l *Ledger) project(ctx context.Context, scope workspace.Scope) (*aiv1alpha
 // recordFrom converts the CR's ledger into the workspace package's.
 func recordFromProject(project *aiv1alpha1.Project) workspace.LedgerRecord {
 	record := recordFrom(project.Status.Workspace)
+	record.HasRepository = project.Spec.Repository != nil && strings.TrimSpace(project.Spec.Repository.RepositoryRef) != ""
 	for _, environment := range project.Spec.Environments {
 		if environment.Name == "development" && environment.Mode == aiv1alpha1.ProjectEnvironmentModeLive {
 			record.HasDevelopmentSandbox = true
@@ -303,20 +304,21 @@ func recordFrom(status *aiv1alpha1.ProjectWorkspaceStatus) workspace.LedgerRecor
 	}
 	if pending := status.PendingCommit; pending != nil {
 		record.PendingCommit = &workspace.PendingCommit{
-			Name:            pending.Name,
-			RepositoryRef:   pending.RepositoryRef,
-			RequestID:       pending.RequestID,
-			RepositoryUID:   pending.RepositoryUID,
-			BundleRef:       pending.BundleRef,
-			BundleDigest:    pending.BundleDigest,
-			Message:         pending.Message,
-			Branch:          pending.Branch,
-			WorkspaceDigest: pending.WorkspaceDigest,
-			Paths:           append([]string(nil), pending.Paths...),
-			SourceRevision:  uint64(pending.SourceRevision),
-			BlockedReason:   pending.BlockedReason,
-			BlockedMessage:  pending.BlockedMessage,
-			RetryToken:      pending.RetryToken,
+			Name:                      pending.Name,
+			RepositoryRef:             pending.RepositoryRef,
+			RequestID:                 pending.RequestID,
+			RepositoryUID:             pending.RepositoryUID,
+			BundleRef:                 pending.BundleRef,
+			BundleDigest:              pending.BundleDigest,
+			ExplicitDeletionsVerified: pending.ExplicitDeletionsVerified,
+			Message:                   pending.Message,
+			Branch:                    pending.Branch,
+			WorkspaceDigest:           pending.WorkspaceDigest,
+			Paths:                     append([]string(nil), pending.Paths...),
+			SourceRevision:            uint64(pending.SourceRevision),
+			BlockedReason:             pending.BlockedReason,
+			BlockedMessage:            pending.BlockedMessage,
+			RetryToken:                pending.RetryToken,
 		}
 		if pending.BlockedAt != nil {
 			blockedAt := pending.BlockedAt.Time
@@ -376,21 +378,22 @@ func statusFrom(record workspace.LedgerRecord, previous *aiv1alpha1.ProjectWorks
 			requestedAt = previous.PendingCommit.RequestedAt
 		}
 		status.PendingCommit = &aiv1alpha1.ProjectPendingCommit{
-			Name:            pending.Name,
-			RepositoryRef:   pending.RepositoryRef,
-			RequestID:       pending.RequestID,
-			RepositoryUID:   pending.RepositoryUID,
-			BundleRef:       pending.BundleRef,
-			BundleDigest:    pending.BundleDigest,
-			Message:         pending.Message,
-			Branch:          pending.Branch,
-			WorkspaceDigest: pending.WorkspaceDigest,
-			Paths:           pending.Paths,
-			SourceRevision:  int64(pending.SourceRevision), //nolint:gosec // bounded by the revision counter, not by input
-			RequestedAt:     requestedAt,
-			BlockedReason:   pending.BlockedReason,
-			BlockedMessage:  pending.BlockedMessage,
-			RetryToken:      pending.RetryToken,
+			Name:                      pending.Name,
+			RepositoryRef:             pending.RepositoryRef,
+			RequestID:                 pending.RequestID,
+			RepositoryUID:             pending.RepositoryUID,
+			BundleRef:                 pending.BundleRef,
+			BundleDigest:              pending.BundleDigest,
+			ExplicitDeletionsVerified: pending.ExplicitDeletionsVerified,
+			Message:                   pending.Message,
+			Branch:                    pending.Branch,
+			WorkspaceDigest:           pending.WorkspaceDigest,
+			Paths:                     pending.Paths,
+			SourceRevision:            int64(pending.SourceRevision), //nolint:gosec // bounded by the revision counter, not by input
+			RequestedAt:               requestedAt,
+			BlockedReason:             pending.BlockedReason,
+			BlockedMessage:            pending.BlockedMessage,
+			RetryToken:                pending.RetryToken,
 		}
 		if pending.BlockedAt != nil {
 			status.PendingCommit.BlockedAt = &metav1.Time{Time: *pending.BlockedAt}
@@ -443,23 +446,24 @@ func statusPatch(resourceVersion string, status *aiv1alpha1.ProjectWorkspaceStat
 		}
 		if status.PendingCommit != nil {
 			ledger["pendingCommit"] = map[string]any{
-				"name":            nullableString(status.PendingCommit.Name),
-				"repositoryRef":   status.PendingCommit.RepositoryRef,
-				"requestID":       stringIfPresent(status.PendingCommit.RequestID),
-				"repositoryUID":   nullableString(status.PendingCommit.RepositoryUID),
-				"bundleRef":       nullableString(status.PendingCommit.BundleRef),
-				"bundleDigest":    nullableString(status.PendingCommit.BundleDigest),
-				"message":         nullableString(status.PendingCommit.Message),
-				"branch":          nullableString(status.PendingCommit.Branch),
-				"workspaceDigest": status.PendingCommit.WorkspaceDigest,
-				"paths":           nullIfEmpty(status.PendingCommit.Paths),
-				"sourceRevision":  status.PendingCommit.SourceRevision,
-				"attributions":    nullIfEmpty(status.PendingCommit.Attributions),
-				"requestedAt":     status.PendingCommit.RequestedAt,
-				"blockedReason":   nullableString(status.PendingCommit.BlockedReason),
-				"blockedMessage":  nullableString(status.PendingCommit.BlockedMessage),
-				"blockedAt":       status.PendingCommit.BlockedAt,
-				"retryToken":      nullableString(status.PendingCommit.RetryToken),
+				"name":                      nullableString(status.PendingCommit.Name),
+				"repositoryRef":             status.PendingCommit.RepositoryRef,
+				"requestID":                 stringIfPresent(status.PendingCommit.RequestID),
+				"repositoryUID":             nullableString(status.PendingCommit.RepositoryUID),
+				"bundleRef":                 nullableString(status.PendingCommit.BundleRef),
+				"bundleDigest":              nullableString(status.PendingCommit.BundleDigest),
+				"explicitDeletionsVerified": status.PendingCommit.ExplicitDeletionsVerified,
+				"message":                   nullableString(status.PendingCommit.Message),
+				"branch":                    nullableString(status.PendingCommit.Branch),
+				"workspaceDigest":           status.PendingCommit.WorkspaceDigest,
+				"paths":                     nullIfEmpty(status.PendingCommit.Paths),
+				"sourceRevision":            status.PendingCommit.SourceRevision,
+				"attributions":              nullIfEmpty(status.PendingCommit.Attributions),
+				"requestedAt":               status.PendingCommit.RequestedAt,
+				"blockedReason":             nullableString(status.PendingCommit.BlockedReason),
+				"blockedMessage":            nullableString(status.PendingCommit.BlockedMessage),
+				"blockedAt":                 status.PendingCommit.BlockedAt,
+				"retryToken":                nullableString(status.PendingCommit.RetryToken),
 			}
 		}
 		if status.Settlement != nil {

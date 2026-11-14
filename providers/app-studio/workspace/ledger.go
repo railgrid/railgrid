@@ -68,12 +68,13 @@ type PendingCommit struct {
 	// restart without reading mutable workspace files again.
 	RequestID string
 	// RepositoryRef names the Repository the commit targets.
-	RepositoryRef string
-	RepositoryUID string
-	BundleRef     string
-	BundleDigest  string
-	Message       string
-	Branch        string
+	RepositoryRef             string
+	RepositoryUID             string
+	BundleRef                 string
+	BundleDigest              string
+	ExplicitDeletionsVerified bool
+	Message                   string
+	Branch                    string
 	// WorkspaceDigest and Paths are the workspace content the commit carried;
 	// they become the settlement receipt once the commit succeeds.
 	WorkspaceDigest string
@@ -124,6 +125,7 @@ type LedgerRecord struct {
 	SourceDeletions  []SourceDeletion
 	// HasDevelopmentSandbox is derived from the Project spec by its ledger.
 	HasDevelopmentSandbox bool
+	HasRepository         bool
 	// PendingCommit, when set, is the RepositoryCommit being followed up.
 	PendingCommit *PendingCommit
 	// Settlement, when set, is the receipt a landed commit left behind.

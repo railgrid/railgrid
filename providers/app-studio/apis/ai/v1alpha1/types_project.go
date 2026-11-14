@@ -623,6 +623,10 @@ type ProjectPendingCommit struct {
 	// +kubebuilder:validation:MaxLength=96
 	BundleDigest string `json:"bundleDigest,omitempty"`
 
+	// ExplicitDeletionsVerified identifies bundles built using source deletion records.
+	// +optional
+	ExplicitDeletionsVerified bool `json:"explicitDeletionsVerified,omitempty"`
+
 	// Message is captured before submission and preserved on retries.
 	// +optional
 	// +kubebuilder:validation:MaxLength=512

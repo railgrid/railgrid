@@ -475,6 +475,53 @@ func TestCommitWorkspaceDoesNotCommitDeletionsAfterVolumeLoss(t *testing.T) {
 	}
 }
 
+func TestCommitWorkspaceDiscardsUnverifiedReservedBundle(t *testing.T) {
+	env := newCommitTestEnv(t, nil, repositoryCommitObject("commit-1", "Running", ""))
+	revision, err := env.files.SourceRevision(env.ctx, env.scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := workspace.PendingCommit{
+		RequestID: "old-request", RepositoryRef: "demo-repo", RepositoryUID: "repo-uid",
+		BundleRef: "old-bundle", BundleDigest: "sha256:old", WorkspaceDigest: "sha256:old",
+		Paths: []string{"lost.txt"}, SourceRevision: revision,
+	}
+	if err := env.files.ReservePendingCommit(env.ctx, env.scope, intent); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || !outcome.dirty || !outcome.retry || env.commits() != 0 || env.stages() != 0 {
+		t.Fatalf("legacy replay outcome = %+v, %v, calls = %v", outcome, err, env.calls)
+	}
+	if _, ok, err := env.files.PendingCommit(env.ctx, env.scope); err != nil || ok {
+		t.Fatalf("legacy intent still present: %t, %v", ok, err)
+	}
+	if dirty, err := env.commit(); err != nil || !dirty || env.commits() != 1 || env.stages() != 1 {
+		t.Fatalf("rebuilt commit: dirty=%t error=%v calls=%v", dirty, err, env.calls)
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || !pending.ExplicitDeletionsVerified || strings.Join(pending.Paths, ",") != "app.txt" {
+		t.Fatalf("rebuilt intent = %+v, %t, %v", pending, ok, err)
+	}
+}
+
+func TestCommitWorkspaceIncludesRecordedPathTypeTransitions(t *testing.T) {
+	for _, pair := range [][2]string{{"src", "src/main.go"}, {"src/main.go", "src"}} {
+		t.Run(pair[0], func(t *testing.T) {
+			env := newCommitTestEnv(t, nil, repositoryCommitObject("commit-1", "Running", ""))
+			env.write(pair[0], "old source")
+			if _, err := env.files.ReplaceTree(env.ctx, env.scope, workspace.ReplaceTreeOptions{
+				Files: []workspace.File{{Path: pair[1], Content: "new source"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if dirty, err := env.commit(); err != nil || !dirty || env.commits() != 1 {
+				t.Fatalf("path transition: dirty=%t err=%v calls=%v", dirty, err, env.calls)
+			}
+		})
+	}
+}
+
 func TestCommitWorkspaceRequiresRecordedDeletion(t *testing.T) {
 	env := newCommitTestEnv(t, nil, repositoryCommitObject("commit-1", "Running", ""))
 	if _, err := env.files.AddUncommittedPaths(env.ctx, env.scope, []string{"missing.txt"}); err != nil {

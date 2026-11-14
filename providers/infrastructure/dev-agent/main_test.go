@@ -1205,6 +1205,47 @@ func TestSyncRejectsEscapes(t *testing.T) {
 	}
 }
 
+func TestExplicitSyncFileDirectoryTransitions(t *testing.T) {
+	for _, tc := range []struct {
+		name, before, after string
+	}{
+		{"file to directory", "src", "src/main.go"},
+		{"directory to file", "src/nested/main.go", "src"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workdir := t.TempDir()
+			srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+			before := []syncFile{{Path: tc.before, Content: "old"}}
+			digest, err := digestSyncFiles(before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, _ := doSync(t, srv, syncRequest{Files: before, SourceRevision: 1, ExplicitSourceDigest: digest})
+			if first.Code != http.StatusOK {
+				t.Fatalf("seed: %d %s", first.Code, first.Body.String())
+			}
+			after := []syncFile{{Path: tc.after, Content: "new"}}
+			digest, err = digestSyncFiles(after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := syncRequest{Files: after, DeletePaths: []string{tc.before}, SourceRevision: 2, ExplicitSourceDigest: digest}
+			second, result := doSync(t, srv, request)
+			if second.Code != http.StatusOK || !slices.Equal(result.Deleted, request.DeletePaths) {
+				t.Fatalf("transition: %d %s", second.Code, second.Body.String())
+			}
+			retry, _ := doSync(t, srv, request)
+			if retry.Code != http.StatusOK {
+				t.Fatalf("retry: %d %s", retry.Code, retry.Body.String())
+			}
+			got, err := os.ReadFile(filepath.Join(workdir, tc.after))
+			if err != nil || string(got) != "new" {
+				t.Fatalf("new file = %q, %v", got, err)
+			}
+		})
+	}
+}
+
 func TestExplicitSyncKeepsOmittedFilesUntilDeletionIsRequested(t *testing.T) {
 	workdir := t.TempDir()
 	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})

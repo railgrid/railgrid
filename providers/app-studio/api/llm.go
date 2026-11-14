@@ -1016,17 +1016,18 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		return "", fmt.Errorf("stage immutable commit contents: %w", err)
 	}
 	intent := workspace.PendingCommit{
-		RequestID:       requestID,
-		RepositoryRef:   projectRepositoryRef,
-		RepositoryUID:   repositoryUID,
-		BundleRef:       staged.BundleRef,
-		BundleDigest:    staged.BundleDigest,
-		Message:         message,
-		Branch:          branch,
-		WorkspaceDigest: workspaceDigest,
-		Paths:           cleanPaths,
-		SourceRevision:  sourceRevision,
-		Attributions:    attributions,
+		RequestID:                 requestID,
+		RepositoryRef:             projectRepositoryRef,
+		RepositoryUID:             repositoryUID,
+		BundleRef:                 staged.BundleRef,
+		BundleDigest:              staged.BundleDigest,
+		ExplicitDeletionsVerified: true,
+		Message:                   message,
+		Branch:                    branch,
+		WorkspaceDigest:           workspaceDigest,
+		Paths:                     cleanPaths,
+		SourceRevision:            sourceRevision,
+		Attributions:              attributions,
 	}
 	if err := s.workspaces.ReservePendingCommit(ctx, scope, intent); err != nil {
 		if errors.Is(err, workspace.ErrPendingCommitExists) {

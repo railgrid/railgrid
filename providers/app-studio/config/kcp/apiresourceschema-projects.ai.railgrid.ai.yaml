@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261114-861e32aa2.projects.ai.railgrid.ai
+  name: v261114-7da62f359.projects.ai.railgrid.ai
 spec:
   group: ai.railgrid.ai
   names:
@@ -511,6 +511,10 @@ spec:
                         in Code.
                       maxLength: 253
                       type: string
+                    explicitDeletionsVerified:
+                      description: ExplicitDeletionsVerified identifies bundles built
+                        using source deletion records.
+                      type: boolean
                     message:
                       description: Message is captured before submission and preserved
                         on retries.

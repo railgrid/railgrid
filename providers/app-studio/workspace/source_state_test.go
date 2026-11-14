@@ -123,24 +123,54 @@ func TestSourceDeletionSurvivesFailedRecreation(t *testing.T) {
 	}
 }
 
+func TestSourceDeletionSurvivesLostRecreationReservation(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	file, err := store.PutFile(ctx, scope, PutOptions{Path: "old.txt", Data: []byte("original")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteFile(ctx, scope, DeleteOptions{Path: file.Path, ExpectedVersion: file.Version}); err != nil {
+		t.Fatal(err)
+	}
+	store.SetLedger(&lostAckTestLedger{Ledger: store.ledger, loseNextUpdate: true})
+	if _, err := store.PutFile(ctx, scope, PutOptions{Path: file.Path, Data: []byte("new")}); !errors.Is(err, errLostLedgerUpdateAck) {
+		t.Fatalf("recreate error = %v, want lost reservation response", err)
+	}
+	revision, err := store.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletions, err := store.SourceDeletions(ctx, scope, revision)
+	if err != nil || !deletions[file.Path] {
+		t.Fatalf("deletions after lost reservation response = %v, %v", deletions, err)
+	}
+}
+
 func TestPruneSourceDeletionsWaitsForRequiredConsumers(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		sandbox    bool
+		repository bool
 		checkpoint *SourceChange
 		dirty      []string
 		want       int
 	}{
-		{name: "Git settled without sandbox"},
+		{name: "Git settled without sandbox", repository: true},
+		{name: "Git-free sandbox applied", sandbox: true, checkpoint: &SourceChange{SourceRevision: 3}, dirty: []string{"old.txt"}},
 		{name: "Git settled before first sandbox sync", sandbox: true, want: 1},
 		{name: "sandbox behind", sandbox: true, checkpoint: &SourceChange{SourceRevision: 2}, want: 1},
-		{name: "sandbox applied before Git settlement", sandbox: true, checkpoint: &SourceChange{SourceRevision: 3}, dirty: []string{"old.txt"}, want: 1},
-		{name: "both applied", sandbox: true, checkpoint: &SourceChange{SourceRevision: 3}},
+		{name: "sandbox applied before Git settlement", sandbox: true, repository: true, checkpoint: &SourceChange{SourceRevision: 3}, dirty: []string{"old.txt"}, want: 1},
+		{name: "both applied", sandbox: true, repository: true, checkpoint: &SourceChange{SourceRevision: 3}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			record := LedgerRecord{HasDevelopmentSandbox: tc.sandbox, LastPreviewCheckpoint: tc.checkpoint,
+			record := LedgerRecord{HasRepository: tc.repository, HasDevelopmentSandbox: tc.sandbox, LastPreviewCheckpoint: tc.checkpoint,
 				SourceDeletions: []SourceDeletion{{Path: "old.txt", Revision: 3}}, UncommittedPaths: tc.dirty}
 			pruneSourceDeletions(&record)
+			if !tc.repository && tc.want == 0 && len(record.UncommittedPaths) != 0 {
+				t.Fatalf("Git-free settled deletion remains dirty: %v", record.UncommittedPaths)
+			}
 			if len(record.SourceDeletions) != tc.want {
 				t.Fatalf("remaining records = %v, want %d", record.SourceDeletions, tc.want)
 			}
