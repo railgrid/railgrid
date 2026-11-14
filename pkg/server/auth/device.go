@@ -270,12 +270,12 @@ func (h *Handler) authorizeDeviceBrowser(w http.ResponseWriter, r *http.Request,
 	}
 	value, err := json.Marshal(record)
 	if err != nil {
-		h.deviceUnavailable(w, err)
+		h.deviceBrowserUnavailable(w, err)
 		return false
 	}
 	ok, err := h.deviceStore.CreateIfAbsent(r.Context(), "oidc:"+state, value, request.ExpiresAt)
 	if err != nil || !ok {
-		h.deviceUnavailable(w, err)
+		h.deviceBrowserUnavailable(w, err)
 		return false
 	}
 	http.SetCookie(w, deviceBrowserCookie(state, browserSecret, int(time.Until(request.ExpiresAt).Seconds())+1))
@@ -486,4 +486,17 @@ func (h *Handler) deviceUnavailable(w http.ResponseWriter, err error) {
 		h.logger.Error(err, "device sign-in store operation failed")
 	}
 	http.Error(w, "Device sign-in unavailable. Start a new sign-in from the terminal.", http.StatusServiceUnavailable)
+}
+
+func (h *Handler) deviceBrowserUnavailable(w http.ResponseWriter, err error) {
+	if err != nil {
+		h.logger.Error(err, "device sign-in store operation failed")
+	}
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = statuspage.Render(w, statuspage.Page{
+		Title:   "CLI sign-in unavailable",
+		Heading: "CLI sign-in unavailable",
+		Message: "Start a new sign-in from the terminal.",
+		State:   statuspage.Error,
+	})
 }

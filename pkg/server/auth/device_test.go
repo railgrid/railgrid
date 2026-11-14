@@ -300,6 +300,12 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 			if reply.Code != tc.wantStatus {
 				t.Fatalf("browser response: HTTP %d, want %d", reply.Code, tc.wantStatus)
 			}
+			if tc.failWrite == "oidc:" {
+				body := reply.Body.String()
+				if !strings.Contains(body, `role="alert"`) || !strings.Contains(body, "Start a new sign-in from the terminal.") {
+					t.Fatal("OIDC state write failure did not render the branded recovery page")
+				}
+			}
 			if result := decrypt(t, poll(device.DeviceCode)); result.Error != tc.wantError {
 				t.Fatalf("poll error = %q, want %q", result.Error, tc.wantError)
 			}
