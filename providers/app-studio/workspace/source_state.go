@@ -44,6 +44,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -234,6 +235,10 @@ func clearSourceDeletions(record *LedgerRecord, paths []string) {
 	})
 }
 
+func hasNoSourceConsumers(record *LedgerRecord) bool {
+	return record.SourceConsumersKnown && !record.HasRepository && !record.HasDevelopmentSandbox
+}
+
 // pruneSourceDeletions drops removals already applied to the development
 // sandbox and settled in Git. A failed sync or a pending commit keeps its intent.
 func pruneSourceDeletions(record *LedgerRecord) {
@@ -355,14 +360,54 @@ func (s *FileStore) addUncommittedPaths(ctx context.Context, scope Scope, paths 
 		return record.UncommittedPaths, nil
 	}
 	record, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		toAdd := clean
+		if hasNoSourceConsumers(record) {
+			// Successful mutation receipts can name both writes and deletes.
+			// With no consumer, completion already retired the deleted paths.
+			// A replay of bookkeeping may add surviving writes only.
+			existing, err := s.existingSourceFiles(scope, clean)
+			if err != nil {
+				return false, err
+			}
+			toAdd = existing
+		}
 		before := len(record.UncommittedPaths)
-		record.UncommittedPaths = normalizeLedgerPaths(append(append([]string(nil), record.UncommittedPaths...), clean...))
+		record.UncommittedPaths = normalizeLedgerPaths(append(append([]string(nil), record.UncommittedPaths...), toAdd...))
 		return len(record.UncommittedPaths) != before, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("record uncommitted paths: %w", err)
 	}
 	return record.UncommittedPaths, nil
+}
+
+func (s *FileStore) existingSourceFiles(scope Scope, paths []string) ([]string, error) {
+	dir, err := s.scopeDir(scope)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	existing := make([]string, 0, len(paths))
+	for _, name := range paths {
+		info, err := root.Lstat(name)
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode().IsRegular() {
+			existing = append(existing, name)
+		}
+	}
+	return existing, nil
 }
 
 // SourceRevision returns the durable source revision for this project
@@ -569,7 +614,7 @@ func (s *FileStore) completeSourceMutation(ctx context.Context, scope Scope, mut
 		recordSourcePathChanges(record, mutation.paths, origin)
 		recordSourceDeletions(record, mutation.paths, deleted, mutation.revision)
 		record.UncommittedPaths = normalizeLedgerPaths(append(record.UncommittedPaths, deleted...))
-		if record.SourceConsumersKnown && !record.HasRepository && !record.HasDevelopmentSandbox {
+		if hasNoSourceConsumers(record) {
 			pruneSourceDeletions(record)
 		}
 		return true, nil
@@ -960,7 +1005,7 @@ func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected 
 			recordSourcePathChanges(record, clean, origin)
 			record.UncommittedPaths = normalizeLedgerPaths(append(append([]string(nil), record.UncommittedPaths...), clean...))
 		}
-		if record.SourceConsumersKnown && !record.HasRepository && !record.HasDevelopmentSandbox {
+		if hasNoSourceConsumers(record) {
 			pruneSourceDeletions(record)
 		}
 		return true, nil
