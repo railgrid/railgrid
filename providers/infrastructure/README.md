@@ -126,8 +126,8 @@ helm upgrade infrastructure oci://ghcr.io/railgrid/charts/railgrid-infrastructur
 is the sole publisher: an `infrastructure/vX.Y.Z` tag builds + pushes the
 provider image (operator binary **and** the helm CLI baked in) and packages +
 pushes the chart to `oci://ghcr.io/railgrid/charts/railgrid-infrastructure-provider`.
-(`images.yaml` only build-validates the image on PRs; it does not publish.) Until
-a release tag is cut, install from the local chart path
+(On PRs the Prow job `pull-railgrid-images` only build-validates the image;
+nothing publishes it.) Until a release tag is cut, install from the local chart path
 (`providers/infrastructure/deploy/chart`) with a provider image that contains the
 helm CLI.
 
