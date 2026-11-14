@@ -67,7 +67,9 @@ whose credentials refresh automatically (OIDC) or carry the static token.
   export RAILGRID_HUB_URL=https://hub.example.com          # instead of --hub-url
 
 On a self-signed hub add --insecure-skip-tls-verify. After login, 'railgrid use'
-switches organization and workspace and 'railgrid whoami' shows the session.`,
+switches organization and workspace and 'railgrid whoami' shows the session.
+After upgrading the CLI and hub, sign in again and re-download any workspace
+kubeconfigs from the hub so they can use the new account-specific credentials.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			insecureSkipTLSVerify := globalInsecureTLS

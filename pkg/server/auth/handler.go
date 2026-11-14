@@ -22,7 +22,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -45,7 +44,6 @@ import (
 	"github.com/railgrid/railgrid/pkg/browsersession"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
-	"github.com/railgrid/railgrid/pkg/hub/sharedstore"
 	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
@@ -299,11 +297,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		device = state.deviceRequest
 		defer func() {
 			if !deviceFinished {
-				fallbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-				defer cancel()
-				if err := h.storeDeviceResult(fallbackCtx, device, deviceResult{Error: "server_error"}); err != nil && !errors.Is(err, sharedstore.ErrNotFound) {
-					h.logger.Error(err, "failed to record CLI sign-in failure")
-				}
+				h.recordDeviceLoginFailure(ctx, device)
 			}
 		}()
 		if r.URL.Query().Get("error") == "access_denied" {

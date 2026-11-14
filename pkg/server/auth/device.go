@@ -33,6 +33,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -101,12 +102,20 @@ func (h *Handler) registerDeviceLoginLimits() {
 	h.deviceStartLimiter.trustedProxies = h.rateLimiter.trustedProxies
 }
 
-func deviceRequesterNetwork(clientIP string) string {
+func deviceRequesterNetwork(r *http.Request, trusted []netip.Prefix) string {
+	if len(trusted) == 0 {
+		return "Unavailable"
+	}
+	clientIP := proxy.ClientIP(r, trusted)
 	addr, err := netip.ParseAddr(clientIP)
 	if err != nil {
 		return "Unavailable"
 	}
 	addr = addr.Unmap()
+	// ClientIP falls back to the peer if no forwarded client can be resolved.
+	if slices.ContainsFunc(trusted, func(prefix netip.Prefix) bool { return prefix.Contains(addr) }) {
+		return "Unavailable"
+	}
 	bits := 48
 	if addr.Is4() {
 		bits = 24
@@ -140,7 +149,7 @@ func (h *Handler) startDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	request := deviceRequest{
 		PollKey: deviceDigest(deviceCode), StartedAt: now, ExpiresAt: now.Add(deviceLoginTTL), RecipientKey: key,
-		Network: deviceRequesterNetwork(proxy.ClientIP(r, h.deviceStartLimiter.trustedProxies)),
+		Network: deviceRequesterNetwork(r, h.deviceStartLimiter.trustedProxies),
 	}
 	payload, err := json.Marshal(request)
 	if err != nil {
@@ -281,7 +290,9 @@ func (h *Handler) approveDeviceLogin(w http.ResponseWriter, r *http.Request) {
 			}
 			if confirm {
 				http.SetCookie(w, deviceBrowserCookie("confirm:"+code, "", -1))
-				h.authorizeDeviceBrowser(w, r, request)
+				if !h.authorizeDeviceBrowser(w, r, request) {
+					h.recordDeviceLoginFailure(r.Context(), request)
+				}
 			} else {
 				confirmation := oauth2.GenerateVerifier()
 				http.SetCookie(w, deviceBrowserCookie("confirm:"+code, confirmation, int(time.Until(request.ExpiresAt).Seconds())+1))
@@ -302,7 +313,7 @@ func (h *Handler) approveDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	_ = deviceCodePage.Execute(w, "That code is invalid, expired, or already used. Check your terminal or start a new sign-in.")
 }
 
-func (h *Handler) authorizeDeviceBrowser(w http.ResponseWriter, r *http.Request, request deviceRequest) {
+func (h *Handler) authorizeDeviceBrowser(w http.ResponseWriter, r *http.Request, request deviceRequest) bool {
 	state := deviceStatePrefix + oauth2.GenerateVerifier()
 	browserSecret := oauth2.GenerateVerifier()
 	record := deviceBrowserState{
@@ -313,15 +324,16 @@ func (h *Handler) authorizeDeviceBrowser(w http.ResponseWriter, r *http.Request,
 	value, err := json.Marshal(record)
 	if err != nil {
 		h.deviceUnavailable(w, err)
-		return
+		return false
 	}
 	ok, err := h.deviceStore.CreateIfAbsent(r.Context(), "oidc:"+state, value, request.ExpiresAt)
 	if err != nil || !ok {
 		h.deviceUnavailable(w, err)
-		return
+		return false
 	}
 	http.SetCookie(w, deviceBrowserCookie(state, browserSecret, int(time.Until(request.ExpiresAt).Seconds())+1))
 	http.Redirect(w, r, h.oauth2Config.AuthCodeURL(state, oauth2.S256ChallengeOption(record.Verifier)), http.StatusSeeOther)
+	return true
 }
 
 func deviceBrowserCookie(state, value string, maxAge int) *http.Cookie {
@@ -394,6 +406,14 @@ func (h *Handler) completeDeviceLogin(w http.ResponseWriter, r *http.Request, re
 	}
 	_ = statuspage.Render(w, page)
 	return true
+}
+
+func (h *Handler) recordDeviceLoginFailure(ctx context.Context, request deviceRequest) {
+	fallbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := h.storeDeviceResult(fallbackCtx, request, deviceResult{Error: "server_error"}); err != nil && !errors.Is(err, sharedstore.ErrNotFound) {
+		h.logger.Error(err, "failed to record CLI sign-in failure")
+	}
 }
 
 func (h *Handler) storeDeviceResult(ctx context.Context, request deviceRequest, result deviceResult) error {

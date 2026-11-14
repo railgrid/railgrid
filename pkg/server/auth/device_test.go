@@ -29,6 +29,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -166,7 +167,7 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 	if preview.Code != http.StatusOK || preview.Header().Get("Location") != "" {
 		t.Fatalf("confirmation page: HTTP %d, expected no redirect", preview.Code)
 	}
-	for _, want := range []string{"Confirm Railgrid CLI sign-in", "192.0.2.0/24", "UTC", device.UserCode, "If someone sent you the code, cancel."} {
+	for _, want := range []string{"Confirm Railgrid CLI sign-in", "Unavailable", "UTC", device.UserCode, "If someone sent you the code, cancel."} {
 		if !strings.Contains(preview.Body.String(), want) {
 			t.Errorf("confirmation page missing %q", want)
 		}
@@ -308,7 +309,7 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 	}
 	pkceChallenge = dest.Query().Get("code_challenge")
 	challenge.Store(&pkceChallenge)
-	store.failNextResultWrite = true
+	store.failNextWritePrefix = "result:"
 	callback = apiurl.PathAuthCallback + "?" + url.Values{"state": {dest.Query().Get("state")}, "code": {"upstream-code"}}.Encode()
 	if reply := request(startReplica, http.MethodGet, callback, nil, cookies[0]); reply.Code != http.StatusServiceUnavailable {
 		t.Fatalf("callback during store failure: HTTP %d", reply.Code)
@@ -317,6 +318,69 @@ func TestDeviceLoginAcrossHubReplicas(t *testing.T) {
 	plaintext, err = hpke.Open(recipient, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(apiurl.DeviceLoginHPKEInfo), reply.Body.Bytes())
 	if reply.Code != http.StatusOK || err != nil || !strings.Contains(string(plaintext), "server_error") {
 		t.Fatalf("fallback poll: HTTP %d, decryption error %v", reply.Code, err)
+	}
+
+	start = request(startReplica, http.MethodPost, apiurl.PathAuthDeviceStart, startForm, nil)
+	if err := json.Unmarshal(start.Body.Bytes(), &device); start.Code != http.StatusOK || err != nil {
+		t.Fatalf("start before OIDC state failure: HTTP %d, decode error %v", start.Code, err)
+	}
+	store.failNextWritePrefix = "oidc:"
+	if reply := approveCode(device.UserCode); reply.Code != http.StatusServiceUnavailable {
+		t.Fatalf("approval during OIDC state failure: HTTP %d", reply.Code)
+	}
+	reply = poll(device.DeviceCode)
+	plaintext, err = hpke.Open(recipient, hpke.HKDFSHA256(), hpke.AES256GCM(), []byte(apiurl.DeviceLoginHPKEInfo), reply.Body.Bytes())
+	if reply.Code != http.StatusOK || err != nil || !strings.Contains(string(plaintext), "server_error") {
+		t.Fatalf("poll after OIDC state failure: HTTP %d, decryption error %v", reply.Code, err)
+	}
+}
+
+func TestDeviceStartRemovesPendingEntryOnUserCodeWriteFailure(t *testing.T) {
+	store := &testDeviceStore{values: map[string]testDeviceEntry{}, failNextWritePrefix: "user:"}
+	h := NewBrowserSessionHandler(nil, nil)
+	h.hubExternalURL = "https://hub.example.test"
+	h.deviceStore = store
+	router := mux.NewRouter()
+	h.RegisterRoutes(router)
+
+	key, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"recipient_key": {base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes())}}
+	req := httptest.NewRequest(http.MethodPost, apiurl.PathAuthDeviceStart, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable || store.failNextWritePrefix != "" || len(store.values) != 0 {
+		t.Fatalf("failed start: HTTP %d, injection still armed %t, stored entries %d", w.Code, store.failNextWritePrefix != "", len(store.values))
+	}
+}
+
+func TestDeviceRequesterNetwork(t *testing.T) {
+	trusted := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")}
+	for _, test := range []struct {
+		name, peer, forwarded, want string
+		trusted                     []netip.Prefix
+	}{
+		{"unconfigured", "10.0.0.1:80", "192.0.2.5", "Unavailable", nil},
+		{"missing forwarding header", "10.0.0.1:80", "", "Unavailable", trusted},
+		{"invalid forwarding header", "10.0.0.1:80", "invalid", "Unavailable", trusted},
+		{"unparseable peer", "invalid", "", "Unavailable", trusted},
+		{"ipv4", "10.0.0.1:80", "192.0.2.5", "192.0.2.0/24", trusted},
+		{"mapped ipv4", "10.0.0.1:80", "::ffff:192.0.2.5", "192.0.2.0/24", trusted},
+		{"ipv6", "10.0.0.1:80", "2001:db8:1234:5678::1", "2001:db8:1234::/48", trusted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, apiurl.PathAuthDeviceStart, nil)
+			req.RemoteAddr = test.peer
+			if test.forwarded != "" {
+				req.Header.Set("X-Forwarded-For", test.forwarded)
+			}
+			if got := deviceRequesterNetwork(req, test.trusted); got != test.want {
+				t.Fatalf("network = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
@@ -368,15 +432,15 @@ type testDeviceStore struct {
 	mu                  sync.Mutex
 	values              map[string]testDeviceEntry
 	now                 time.Time
-	failNextResultWrite bool
+	failNextWritePrefix string
 }
 
 func (s *testDeviceStore) CreateIfAbsent(_ context.Context, key string, value []byte, expires time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.failNextResultWrite && strings.HasPrefix(key, "result:") {
-		s.failNextResultWrite = false
-		return false, errors.New("injected result write failure")
+	if s.failNextWritePrefix != "" && strings.HasPrefix(key, s.failNextWritePrefix) {
+		s.failNextWritePrefix = ""
+		return false, errors.New("injected store write failure")
 	}
 	if _, exists := s.values[key]; exists {
 		return false, nil

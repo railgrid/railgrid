@@ -15,6 +15,8 @@ whose credentials refresh automatically (OIDC) or carry the static token.
 
 On a self-signed hub add --insecure-skip-tls-verify. After login, 'railgrid use'
 switches organization and workspace and 'railgrid whoami' shows the session.
+After upgrading the CLI and hub, sign in again and re-download any workspace
+kubeconfigs from the hub so they can use the new account-specific credentials.
 
 ```
 railgrid login [flags]
