@@ -227,6 +227,13 @@ another export, or one without the seed annotation.
 - **Manifests are literal.** The same object goes into every workspace; there
   is no templating. Give each consumer what it needs through fields of the
   object, not through per-workspace values.
+- **A seeded model can be the default.** An Agents `ModelCredential` with
+  `spec.default: true` is what an agent created without a model gets, and what
+  the create form starts on. An App Studio `ModelProviderConnection` with
+  `spec.models` declares its model bindings: App Studio adds each to the
+  workspace's model registry once, and one marked `default: true` becomes the
+  workspace default while there is none. Neither replaces a choice the
+  workspace already made, and a binding the workspace removes is not put back.
 - **`resource` is not checked against `kind`.** The hub runs no discovery per
   workspace; a wrong plural is a 404 in the hub's log for every workspace.
 - **Status is per seed, not per workspace.** `Accepted` says the hub applies

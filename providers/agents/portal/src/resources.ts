@@ -1967,6 +1967,7 @@ export class Resources {
 interface KubeModelCredential {
   metadata?: { name?: string; uid?: string; generation?: number; annotations?: Record<string, string> }
   spec?: {
+    default?: boolean
     connectionRef?: string
     provider?: string
     baseURL?: string
@@ -2011,6 +2012,7 @@ function credentialView(object: KubeModelCredential, isConnection = false): Cred
     baseURL: object.spec?.baseURL ?? '',
     ...(object.spec?.anthropicWorkspaceID ? { anthropicWorkspaceID: object.spec.anthropicWorkspaceID } : {}),
     model: object.spec?.model ?? '',
+    ...(object.spec?.default === true ? { default: true } : {}),
     secretRef: object.spec?.secretRef?.name ?? '',
     secretKey: object.spec?.secretKey ?? '',
     ready: ready ? ready.status === 'True' : undefined,

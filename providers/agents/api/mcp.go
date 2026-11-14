@@ -209,6 +209,9 @@ type credentialSummary struct {
 	// resolved and its endpoint answered. It replaces the old hasAPIKey,
 	// which only said a key had been typed, never that it worked.
 	Ready bool `json:"ready"`
+	// Default mirrors spec.default: the credential an agent created without
+	// one is given.
+	Default bool `json:"default,omitempty"`
 	// Models are the ids the endpoint served on the last successful probe.
 	Models []string `json:"models,omitempty"`
 }
