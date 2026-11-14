@@ -690,6 +690,31 @@ func TestSourceDeletionRetirementUsesProjectConsumers(t *testing.T) {
 	}
 }
 
+func TestMutationBookkeepingPreservesOnlySurvivingWritesWithoutConsumers(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	store := workspace.NewFileStore(t.TempDir())
+	store.SetLedger(New(projects))
+	file, err := store.PutFile(ctx, scope, workspace.PutOptions{Path: "old.txt", Data: []byte("original")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddUncommittedPaths(ctx, scope, []string{"old.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := store.MoveFile(ctx, scope, workspace.MoveOptions{
+		SourcePath: "old.txt", DestinationPath: "new.txt", ExpectedVersion: file.Version,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := store.AddUncommittedPaths(ctx, scope, moved.Paths)
+	if err != nil || !reflect.DeepEqual(paths, []string{"new.txt"}) {
+		t.Fatalf("dirty paths after replayed move = %v, %v", paths, err)
+	}
+}
+
 func TestDeletionCapacityFailureRestoresSource(t *testing.T) {
 	ctx := context.Background()
 	projects := newFakeProjects()

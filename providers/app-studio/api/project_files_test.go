@@ -48,7 +48,11 @@ type projectFilesFixture struct {
 
 func newProjectFilesFixture(t *testing.T) *projectFilesFixture {
 	t.Helper()
-	project := projectForPromoteWithRepository("shop", "repo-a")
+	return newProjectFilesFixtureFor(t, projectForPromoteWithRepository("shop", "repo-a"))
+}
+
+func newProjectFilesFixtureFor(t *testing.T, project *aiv1alpha1.Project) *projectFilesFixture {
+	t.Helper()
 	project.UID = types.UID("project-uid")
 	client := newProjectBuildProvenanceClient(project, nil, nil)
 	root := t.TempDir()
@@ -213,6 +217,30 @@ func TestProjectFilePutReadRawAndDelete(t *testing.T) {
 	}
 	if missing := f.request(http.MethodGet, target, nil, nil); missing.Code != http.StatusNotFound {
 		t.Fatalf("read missing = %d, want 404", missing.Code)
+	}
+}
+
+func TestProjectFileDeleteDoesNotRequeueRetiredPath(t *testing.T) {
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop"},
+		Spec:       defaultProjectSpec("shop", "Shop", "", nil),
+	}
+	f := newProjectFilesFixtureFor(t, project)
+	target := "/api/projects/shop/files/content?path=old.txt"
+	put := f.request(http.MethodPut, target, strings.NewReader("source"), map[string]string{"If-None-Match": "*"})
+	var result projectFileWriteResult
+	if put.Code != http.StatusCreated || json.Unmarshal(put.Body.Bytes(), &result) != nil {
+		t.Fatalf("put = %d %s", put.Code, put.Body.String())
+	}
+	f.waitForSyncs(t, 1)
+	del := f.request(http.MethodDelete, target, nil, map[string]string{"If-Match": result.Version})
+	if del.Code != http.StatusNoContent {
+		t.Fatalf("delete = %d %s", del.Code, del.Body.String())
+	}
+	f.waitForSyncs(t, 2)
+	paths, err := f.workspaces.UncommittedPaths(context.Background(), f.scope)
+	if err != nil || len(paths) != 0 {
+		t.Fatalf("dirty paths after delete = %v, %v", paths, err)
 	}
 }
 
