@@ -50,6 +50,7 @@ const (
 	PathAuthCallback      = "/auth/callback"
 	PathAuthDeviceStart   = "/auth/device/start"
 	PathAuthDeviceVerify  = "/auth/device"
+	PathAuthDeviceApprove = "/auth/device/approve"
 	PathAuthDevicePoll    = "/auth/device/poll"
 	PathAuthDeviceAck     = "/auth/device/ack"
 	DeviceLoginHPKEInfo   = "railgrid-device-login-v1"
