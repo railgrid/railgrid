@@ -821,6 +821,19 @@ test("authenticated annotation mode captures bounded targets without activating 
   windowListeners.get("keydown")(repeat);
   assert.equal(port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.selected").length, selectionCount);
 
+  // visibility is inherited but can be overridden: a visible child of a
+  // visibility:hidden parent is on screen and reachable; the parent is not.
+  const invisibleParent = new FakeElement("div", "Invisible parent");
+  invisibleParent.style.visibility = "hidden";
+  const visibleChild = new FakeElement("p", "Visible child");
+  visibleChild.style.visibility = "visible";
+  invisibleParent.append(visibleChild);
+  document.body.append(invisibleParent);
+  const visibleDown = keyEvent("ArrowDown");
+  windowListeners.get("keydown")(visibleDown);
+  assert.match(keyboardHelp.children[1].textContent, /Visible child/);
+  invisibleParent.remove();
+
   const editor = new FakeElement("div", "typed secret that must not cross the bridge");
   editor.setAttribute("contenteditable", "true");
   editor.setAttribute("role", "textbox");

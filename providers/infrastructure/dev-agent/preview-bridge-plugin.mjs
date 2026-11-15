@@ -680,6 +680,24 @@ const previewBridgeClient = String.raw`(() => {
   // Navigate page elements without changing the page's focus or tabindex. This
   // also makes static text and containers available to keyboard users.
   const keyboardCandidates = () => {
+    // Ancestors are shared by many candidates: read each node's style and
+    // clip box once per scan, not once per descendant, so a key press stays
+    // linear in the size of the page.
+    const styles = new Map(), clips = new Map();
+    const styleOf = (node) => {
+      if (!styles.has(node)) styles.set(node, window.getComputedStyle?.(node) || null);
+      return styles.get(node);
+    };
+    const clipOf = (node) => {
+      if (!clips.has(node)) {
+        const bounds = node.getBoundingClientRect();
+        clips.set(node, {
+          left: bounds.left + (node.clientLeft || 0), top: bounds.top + (node.clientTop || 0),
+          width: node.clientWidth ?? bounds.width, height: node.clientHeight ?? bounds.height,
+        });
+      }
+      return clips.get(node);
+    };
     try {
       return Array.from(document.querySelectorAll("*")).filter((element) => {
         if (element === document.documentElement || element === document.body || annotationChromeElement(element)) return false;
@@ -690,15 +708,16 @@ const previewBridgeClient = String.raw`(() => {
         let scrollableX = false, scrollableY = false;
         for (let node = element; node; node = node.parentElement) {
           if (node.hidden || node.getAttribute?.("aria-hidden") === "true" || node.getAttribute?.("inert") !== null) return false;
-          const style = window.getComputedStyle?.(node);
+          const style = styleOf(node);
           if (!style) continue;
-          if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0 && style.opacity !== "") return false;
+          // Computed visibility is inherited, and a descendant may set it back
+          // to visible, so only the element's own value decides.
+          if (node === element && ["hidden", "collapse"].includes(style.visibility)) return false;
+          if (style.display === "none" || Number(style.opacity) === 0 && style.opacity !== "") return false;
           // A scrollable ancestor can reveal its descendants, so do not reject
           // them merely because their current rect is outside a higher clip.
           if (node !== element && node !== document.body && node !== document.documentElement) {
-            const bounds = node.getBoundingClientRect();
-            const left = bounds.left + (node.clientLeft || 0), top = bounds.top + (node.clientTop || 0);
-            const width = node.clientWidth ?? bounds.width, height = node.clientHeight ?? bounds.height;
+            const { left, top, width, height } = clipOf(node);
             if (!scrollableX && ["hidden", "clip"].includes(style.overflowX) && (rect.left + rect.width <= left || rect.left >= left + width)) return false;
             if (!scrollableY && ["hidden", "clip"].includes(style.overflowY) && (rect.top + rect.height <= top || rect.top >= top + height)) return false;
           }
