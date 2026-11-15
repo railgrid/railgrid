@@ -2,7 +2,9 @@
 // Framework-neutral counterpart to portalkit-vue/ResourceTableFilter.vue for
 // resource tables rendered by vanilla/Lit portals.
 
+import { nextDocumentID } from './document-id'
 import { ic } from './icons'
+import { mountModalPopup } from './modal-popup'
 import { ensureRailgridUIStyles } from './styles'
 
 export interface ResourceTableFilterOption {
@@ -10,10 +12,8 @@ export interface ResourceTableFilterOption {
   label: string
 }
 
-let nextTableFilterID = 0
-
 export class ResourceTableFilterElement extends HTMLElement {
-  private readonly instanceID = `k-table-filter-${++nextTableFilterID}`
+  private readonly instanceID = `k-table-filter-${nextDocumentID()}`
   private root: HTMLDivElement | null = null
   private trigger: HTMLButtonElement | null = null
   private valueNode: HTMLSpanElement | null = null
@@ -89,7 +89,6 @@ export class ResourceTableFilterElement extends HTMLElement {
     const label = document.createElement('span')
     label.id = this.labelID
     label.className = 'k-table__filter-label'
-    root.append(label)
 
     const trigger = document.createElement('button')
     trigger.className = 'k-table__filter-trigger'
@@ -103,7 +102,7 @@ export class ResourceTableFilterElement extends HTMLElement {
     const value = document.createElement('span')
     value.id = this.valueID
     value.className = 'k-table__filter-value'
-    trigger.append(value)
+    trigger.append(label, value)
     const chevron = document.createElement('span')
     chevron.innerHTML = ic('chevron-down')
     trigger.append(chevron.firstElementChild || chevron)
@@ -175,13 +174,15 @@ export class ResourceTableFilterElement extends HTMLElement {
   }
 
   private onKeydown = (event: KeyboardEvent): void => {
+    if (event.isComposing || event.keyCode === 229) return
+    if (event.ctrlKey || event.altKey || event.metaKey || (event.shiftKey && event.key !== 'Tab')) return
     if (event.key === 'Tab') {
       if (this.isOpen) this.closeFilter()
       return
     }
     if (event.key === 'Escape') {
       if (!this.isOpen) return
-      event.preventDefault(); this.closeFilter(true); return
+      event.preventDefault(); event.stopPropagation(); this.closeFilter(true); return
     }
     if (!this.isOpen) {
       if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
@@ -231,7 +232,7 @@ export class ResourceTableFilterElement extends HTMLElement {
       list.append(item)
     })
     panel.append(list)
-    document.body.append(panel)
+    mountModalPopup(this.trigger, panel)
     this.panel = panel
     this.syncPanel()
     this.updatePanelPosition()

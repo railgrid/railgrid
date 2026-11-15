@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 59;
+  --railgrid-ui-core-version: 60;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1948,15 +1948,19 @@ html.light [data-k-tip]::after {
   overflow: hidden;
   width: 100%;
 }
+.k-table--resource .k-table__head-row,
+.k-table--resource .k-table__row {
+  border-color: color-mix(in srgb, var(--color-border-subtle, rgba(255, 255, 255, 0.07)) 75%, transparent);
+}
 .k-table__controls,
 .k-table__loading-controls {
   align-items: center;
-  background: var(--color-surface, #0a0b12);
+  background: var(--color-surface-raised, #111320);
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 10px;
+  padding: 14px 16px;
 }
 .k-table__toolbar-stack { display: grid; min-width: 0; }
 .k-table__toolbar-panel { grid-area: 1 / 1; min-width: 0; }
@@ -2038,12 +2042,11 @@ html.light [data-k-tip]::after {
 .k-table__search-clear svg { height: 13px; width: 13px; }
 .k-table__filter {
   align-items: center;
-  background: var(--color-surface-overlay, #171927);
+  background: var(--color-surface-raised, #111320);
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
   border-radius: 4px;
-  display: grid;
+  display: flex;
   flex: 0 1 auto;
-  grid-template-columns: auto minmax(68px, auto);
   height: 32px;
   min-width: 0;
   overflow: hidden;
@@ -2052,8 +2055,7 @@ html.light [data-k-tip]::after {
 }
 railgrid-resource-table-filter { display: contents; }
 .k-table__filter--combobox {
-  grid-template-columns: auto minmax(116px, 1fr);
-  min-width: 210px;
+  min-width: 180px;
 }
 .k-table__filter:hover {
   border-color: var(--k-table-control-border, var(--color-text-secondary, #8a8ca6));
@@ -2067,17 +2069,10 @@ railgrid-resource-table-filter { display: contents; }
 }
 .k-table__filter-label {
   align-items: center;
-  align-self: stretch;
-  background: color-mix(in srgb, var(--color-surface-raised, #111320) 78%, var(--color-surface-overlay, #171927));
-  border-inline-end: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
   display: flex;
-  font-family: var(--font-mono, "IBM Plex Mono", monospace);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
-  letter-spacing: 0.06em;
-  padding-inline: 9px 8px;
-  text-transform: uppercase;
   transition: color 120ms ease;
   white-space: nowrap;
 }
@@ -2096,15 +2091,15 @@ railgrid-resource-table-filter { display: contents; }
   outline: 0;
 }
 .k-table__filter:not(.is-active) .k-table__filter-trigger {
-  color: var(--color-text-muted, #8587a1);
+  color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
 }
 .k-table__filter-trigger {
   align-items: center;
   cursor: pointer;
   display: flex;
   gap: 7px;
-  justify-content: space-between;
-  padding: 0 8px 0 7px;
+  justify-content: flex-start;
+  padding: 0 10px;
   text-align: start;
   width: 100%;
 }
@@ -2114,8 +2109,10 @@ railgrid-resource-table-filter { display: contents; }
   height: 13px;
   transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
   width: 13px;
+  margin-inline-start: auto;
 }
 .k-table__filter-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) { .k-table__filter-trigger svg { transition: none; } }
 .k-table__filter-value {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2338,7 +2335,7 @@ railgrid-resource-table-filter { display: contents; }
   gap: 6px;
   margin: 0;
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  padding: 6px 12px;
+  padding: 5px 16px;
   color: var(--color-text-muted, #8587a1);
   font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
   font-size: 10px;
@@ -2359,6 +2356,7 @@ railgrid-resource-table-filter { display: contents; }
   width: 100%;
 }
 .k-table__head-row { border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
+.k-table--resource .k-table__heading { padding: 12px 16px; }
 .k-table__heading {
   padding: 12px 20px;
   text-align: left;
@@ -2415,6 +2413,7 @@ railgrid-resource-table-filter { display: contents; }
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
 }
 .k-table__row:last-child { border-bottom: 0; }
+.k-table--resource .k-table__cell { padding: 14px 16px; }
 .k-table__cell {
   padding: 12px 20px;
   white-space: nowrap;
@@ -2493,11 +2492,20 @@ railgrid-resource-table-filter { display: contents; }
   pointer-events: auto;
   transition: opacity 0.12s ease;
 }
+.k-table__primary-actions:has(.k-action-menu),
 .k-table__row:hover .k-table__primary-actions,
 .k-table__row:focus-within .k-table__primary-actions,
 .k-table__primary-actions:has(.k-table-action--busy) {
   opacity: 1;
   pointer-events: auto;
+}
+.k-table__primary-actions .k-action-menu__trigger {
+  background: transparent;
+  border-color: transparent;
+}
+.k-table__primary-actions .k-action-menu__trigger:hover,
+.k-table__primary-actions .k-action-menu__trigger[aria-expanded="true"] {
+  background: var(--color-surface-hover, #1e2033);
 }
 /* Keep the full identifier in the DOM for copy and assistive technology. JS
  * measures real overflow before teleporting this visual disclosure to the
@@ -2643,9 +2651,9 @@ railgrid-resource-table-filter { display: contents; }
   background: var(--color-surface, #0a0b12);
   border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   display: flex;
-  gap: 12px;
-  min-height: 52px;
-  padding: 9px 12px 9px 16px;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 12px 8px 16px;
 }
 .k-table__range,
 .k-table__page-indicator {
@@ -2664,20 +2672,13 @@ railgrid-resource-table-filter { display: contents; }
   margin-inline-start: auto;
   white-space: nowrap;
 }
-.k-table__page-size-select { height: 30px; padding: 0 24px 0 8px; }
-.k-table__page-actions { align-items: center; display: flex; gap: 6px; justify-content: flex-end; }
-.k-table__page-indicator {
-  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
-  border-radius: 4px;
-  color: var(--color-accent-hover, #a18aff);
-  min-width: 52px;
-  padding: 6px 8px;
-  text-align: center;
-}
+.k-table__page-size-select { height: 30px; padding: 0 24px 0 8px; border-color: var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
+.k-table__page-actions { align-items: center; display: flex; gap: 2px; justify-content: flex-end; }
+.k-table__page-indicator { min-width: 42px; text-align: center; }
 .k-table__page-button {
   align-items: center;
   background: transparent;
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border: 1px solid transparent;
   border-radius: 4px;
   color: var(--color-text-secondary, #8a8ca6);
   cursor: pointer;
@@ -2687,12 +2688,12 @@ railgrid-resource-table-filter { display: contents; }
   padding: 0;
   width: 30px;
 }
-.k-table__page-button:hover:not(:disabled) {
+.k-table__page-button:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-surface-hover, #1e2033);
   border-color: var(--color-border-default, rgba(255, 255, 255, 0.11));
   color: var(--color-text-primary, #e9e9f2);
 }
-.k-table__page-button:disabled { cursor: not-allowed; opacity: 0.4; }
+.k-table__page-button:disabled, .k-table__page-button[aria-disabled="true"] { cursor: not-allowed; opacity: 0.4; }
 .k-table__page-button svg { height: 14px; width: 14px; }
 .k-table-action {
   align-items: center;
@@ -2781,12 +2782,13 @@ railgrid-resource-table-filter { display: contents; }
     max-width: none;
   }
   .k-table__filter,
-  .k-table__loading-control--filter { flex: 1 1 100%; min-width: 0; width: 100%; }
-  .k-table__filter { grid-template-columns: 84px minmax(0, 1fr); }
+  .k-table__loading-control--filter { flex: 1 1 140px; min-width: 0; }
+  .k-table__cell--primary { min-width: 10rem; }
+  .k-table--resource .k-table__heading,
+  .k-table--resource .k-table__cell { padding-inline: 12px; }
   .k-table__clear-filters { align-self: flex-start; }
-  .k-table__pagination { flex-wrap: wrap; padding-inline: 12px; }
-  .k-table__range { flex-basis: 100%; }
-  .k-table__page-size { margin-inline-start: 0; }
+  .k-table__pagination { flex-wrap: wrap; gap: 4px 8px; padding-inline: 12px; }
+  .k-table__page-size { margin-inline-start: auto; }
   .k-table__page-actions { margin-inline-start: auto; }
 }
 

@@ -242,6 +242,7 @@ test('searchable table facets leave their teleported search field in source Tab 
   const code = ts.transpileModule(handler.getText(parsed), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   const events = []
   const keydown = runInNewContext(`${code}\nonSearchKeydown`, {
+    composing: { value: false },
     closeFilter: () => events.push('close'), trigger: { value: { focus: () => events.push('focus source trigger') } },
   })
   keydown({ key: 'Tab', preventDefault: () => events.push('blocked native navigation') })

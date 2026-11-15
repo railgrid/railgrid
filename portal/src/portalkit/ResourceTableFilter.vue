@@ -1,5 +1,6 @@
 <!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies under providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`. -->
 <script setup lang="ts">
+import { usePopupHosting } from './useAnchoredPopover'
 import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref, useId, watch } from 'vue'
 import { Check, ChevronDown, Search } from 'lucide-vue-next'
 
@@ -21,10 +22,12 @@ const valueID = `k-table-filter-value-${instanceID}`
 const listboxID = `k-table-filter-listbox-${instanceID}`
 const root = ref<HTMLElement | null>(null)
 const trigger = ref<HTMLButtonElement | null>(null)
+const { host: popupHost, modalPopover, reset: resetPopupHost, promote: promotePopup } = usePopupHosting(trigger)
 const panel = ref<HTMLElement | null>(null)
 const searchInput = ref<HTMLInputElement | null>(null)
 const open = ref(false)
 const query = ref('')
+const composing = ref(false)
 const activeIndex = ref(0)
 const panelStyle = ref<Record<string, string>>({})
 
@@ -112,8 +115,12 @@ async function openFilter() {
   query.value = ''
   const selectedIndex = optionList.value.findIndex(option => option.value === props.modelValue)
   activeIndex.value = selectedIndex >= 0 ? selectedIndex : 0
+  resetPopupHost()
   open.value = true
   await nextTick()
+  if (!open.value) return
+  if (!promotePopup(panel.value)) await nextTick()
+  if (!open.value) return
   updatePanelPosition()
   if (isSearchable.value) searchInput.value?.focus()
   scrollActiveOption()
@@ -122,6 +129,7 @@ async function openFilter() {
 function closeFilter(focusTrigger = false) {
   if (!open.value) return
   open.value = false
+  composing.value = false
   query.value = ''
   if (focusTrigger) nextTick(() => trigger.value?.focus())
 }
@@ -151,6 +159,8 @@ function scrollActiveOption() {
 }
 
 function onSearchKeydown(event: KeyboardEvent) {
+  // IMEs use navigation, Enter, and Escape to operate their candidate window.
+  if (composing.value || event.isComposing || event.keyCode === 229) return
   if (event.key === 'Tab') {
     // The search field is teleported after the page. Restore the source
     // anchor synchronously so native Tab follows the surrounding controls.
@@ -158,6 +168,8 @@ function onSearchKeydown(event: KeyboardEvent) {
     trigger.value?.focus()
     return
   }
+  // Modified navigation keys belong to the browser's text editor.
+  if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return
   if (event.key === 'ArrowDown') {
     event.preventDefault()
     moveActive(1)
@@ -168,18 +180,6 @@ function onSearchKeydown(event: KeyboardEvent) {
     moveActive(-1)
     return
   }
-  if (event.key === 'Home') {
-    event.preventDefault()
-    activeIndex.value = 0
-    scrollActiveOption()
-    return
-  }
-  if (event.key === 'End') {
-    event.preventDefault()
-    activeIndex.value = Math.max(optionList.value.length - 1, 0)
-    scrollActiveOption()
-    return
-  }
   if (event.key === 'Enter') {
     event.preventDefault()
     const option = optionList.value[activeIndex.value]
@@ -188,11 +188,16 @@ function onSearchKeydown(event: KeyboardEvent) {
   }
   if (event.key === 'Escape') {
     event.preventDefault()
+    event.stopPropagation()
     closeFilter(true)
   }
 }
 
 function onTriggerKeydown(event: KeyboardEvent) {
+  // Composition and modified shortcuts belong to the input method or browser,
+  // except Shift+Tab, which must still leave an open teleported panel.
+  if (composing.value || event.isComposing || event.keyCode === 229) return
+  if (event.ctrlKey || event.altKey || event.metaKey || (event.shiftKey && event.key !== 'Tab')) return
   if (!open.value) {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
     event.preventDefault()
@@ -203,6 +208,12 @@ function onTriggerKeydown(event: KeyboardEvent) {
     event.preventDefault()
     const option = optionList.value[activeIndex.value]
     if (option) selectOption(option)
+    return
+  }
+  if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault()
+    activeIndex.value = event.key === 'Home' ? 0 : Math.max(optionList.value.length - 1, 0)
+    scrollActiveOption()
     return
   }
   onSearchKeydown(event)
@@ -257,7 +268,6 @@ onBeforeUnmount(() => {
     class="k-table__filter"
     :class="{ 'k-table__filter--combobox': isSearchable, 'is-active': !!modelValue }"
   >
-    <span :id="labelID" class="k-table__filter-label">{{ definition.label }}</span>
     <button
       ref="trigger"
       class="k-table__filter-trigger"
@@ -272,16 +282,18 @@ onBeforeUnmount(() => {
       @click="toggleFilter"
       @keydown="onTriggerKeydown"
     >
+      <span :id="labelID" class="k-table__filter-label">{{ definition.label }}</span>
       <span :id="valueID" class="k-table__filter-value">{{ selectedLabel }}</span>
       <ChevronDown :stroke-width="1.75" aria-hidden="true" />
     </button>
 
-    <Teleport v-if="open" to="body">
+    <Teleport v-if="open" :to="popupHost">
       <div
         ref="panel"
         class="k-menu k-table__filter-panel"
         :class="{ 'k-table__filter-panel--searchable': isSearchable }"
-        :style="panelStyle"
+        :style="[modalPopover ? { inset: 'auto', margin: '0' } : {}, panelStyle]"
+        :popover="modalPopover ? 'manual' : undefined"
       >
         <label v-if="isSearchable" class="k-table__filter-search">
           <span class="sr-only">Search {{ definition.label }}</span>
@@ -298,6 +310,8 @@ onBeforeUnmount(() => {
             aria-expanded="true"
             :aria-label="`Search ${definition.label}`"
             :placeholder="searchPlaceholder"
+            @compositionstart="composing = true"
+            @compositionend="composing = false"
             @keydown="onSearchKeydown"
           >
         </label>
@@ -321,7 +335,7 @@ onBeforeUnmount(() => {
             <span>{{ option.label }}</span>
           </li>
         </ul>
-        <p v-if="isSearchable && matchingOptions.length === 0" class="k-table__filter-empty">No matching {{ definition.label.toLocaleLowerCase() }}.</p>
+        <p v-if="isSearchable && query.trim() && matchingOptions.length === 0" class="k-table__filter-empty">No matching {{ definition.label.toLocaleLowerCase() }}.</p>
       </div>
     </Teleport>
   </div>
