@@ -94,6 +94,9 @@ jobs:
     name: Provider suites (embedded kcp subprocesses)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # Match the provider job in Prow when downloading Go modules.
+      GODEBUG: http2client=0
     steps:
       - uses: actions/checkout@v4
 
