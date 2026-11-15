@@ -1566,6 +1566,56 @@ func TestDeleteWorkspace_ForceMarksForcedAndStampsTimestamp(t *testing.T) {
 	if view.DeletionRequestedAt == nil || !view.DeletionForced {
 		t.Errorf("view: got deletionRequestedAt=%v deletionForced=%v, want both set", view.DeletionRequestedAt, view.DeletionForced)
 	}
+	if view.RecoveryDeadline != nil {
+		t.Error("forced deletion must not have a recovery deadline")
+	}
+}
+
+func TestWorkspaceRecoveryDeadlineUsesConfiguredGrace(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}}
+	mgr, ops, _ := newTestManager(t, org)
+	mgr.WithSoftDeleteGracePeriod(48 * time.Hour)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	requested := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	ops.wsDeletionAnnos[wsKey{"org-a", "ws-1"}] = requested
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/orgs/org-a/workspaces/ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var view WorkspaceView
+	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
+		t.Fatal(err)
+	}
+	want := requested.Add(48 * time.Hour)
+	if view.RecoveryDeadline == nil || !view.RecoveryDeadline.Equal(want) {
+		t.Fatalf("recovery deadline = %v, want %v", view.RecoveryDeadline, want)
+	}
+}
+
+func TestWorkspaceRecoveryDeadlineOmittedWhenOrganizationDeleting(t *testing.T) {
+	requested := metav1.NewTime(time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC))
+	org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}}
+	org.Status.DeletionRequestedAt = &requested
+	mgr, ops, _ := newTestManager(t, org)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	ops.wsDeletionAnnos[wsKey{"org-a", "ws-1"}] = requested.Time
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/orgs/org-a/workspaces/ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var view WorkspaceView
+	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
+		t.Fatal(err)
+	}
+	if view.RecoveryDeadline != nil {
+		t.Fatalf("deadline must be omitted while parent deletion can cascade: %v", view.RecoveryDeadline)
+	}
 }
 
 func TestDeleteWorkspace_ForceKeepsEarlierTimestampAndIsIdempotent(t *testing.T) {
