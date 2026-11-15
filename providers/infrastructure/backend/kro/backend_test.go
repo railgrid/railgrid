@@ -381,19 +381,25 @@ func TestAppPublicPortSuffix(t *testing.T) {
 
 func TestResolvePreviewBridgePortalOrigins(t *testing.T) {
 	for _, tc := range []struct {
-		name, enabled, override, hubPublicURL, want string
+		name, enabled, override, publicEnv, hubPublicURL, want, source string
 	}{
-		{name: "defaults to the hub public origin", hubPublicURL: "https://console.example.test/some/path", want: "https://console.example.test"},
-		{name: "keeps an explicit port", hubPublicURL: "https://console.127.0.0.1.sslip.io:9443", want: "https://console.127.0.0.1.sslip.io:9443"},
-		{name: "explicit list wins", override: " https://a.example.test,https://b.example.test ", hubPublicURL: "https://console.example.test", want: "https://a.example.test,https://b.example.test"},
-		{name: "kill switch", enabled: "false", override: "https://a.example.test", hubPublicURL: "https://console.example.test", want: ""},
-		{name: "no usable hub URL", hubPublicURL: "", want: ""},
+		{name: "defaults to the hub public origin", publicEnv: "https://console.example.test/some/path", hubPublicURL: "https://console.example.test/some/path", want: "https://console.example.test", source: "RAILGRID_ACCESS_HUB_PUBLIC_URL"},
+		{name: "keeps an explicit port", publicEnv: "https://console.127.0.0.1.sslip.io:9443", hubPublicURL: "https://console.127.0.0.1.sslip.io:9443", want: "https://console.127.0.0.1.sslip.io:9443", source: "RAILGRID_ACCESS_HUB_PUBLIC_URL"},
+		{name: "reports the hub URL fallback", hubPublicURL: "https://hub.railgrid.svc:9443", want: "https://hub.railgrid.svc:9443", source: "hub URL fallback"},
+		{name: "explicit list wins", override: " https://a.example.test,https://b.example.test ", hubPublicURL: "https://console.example.test", want: "https://a.example.test,https://b.example.test", source: "RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS"},
+		{name: "kill switch", enabled: "false", override: "https://a.example.test", hubPublicURL: "https://console.example.test", want: "", source: "disabled"},
+		{name: "no usable hub URL", hubPublicURL: "", want: "", source: "none"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("RAILGRID_PREVIEW_BRIDGE_ENABLED", tc.enabled)
 			t.Setenv("RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS", tc.override)
-			if got := resolvePreviewBridgePortalOrigins(tc.hubPublicURL); got != tc.want {
+			t.Setenv("RAILGRID_ACCESS_HUB_PUBLIC_URL", tc.publicEnv)
+			got, source := resolvePreviewBridgePortalOrigins(tc.hubPublicURL)
+			if got != tc.want {
 				t.Errorf("resolvePreviewBridgePortalOrigins(%q) = %q, want %q", tc.hubPublicURL, got, tc.want)
+			}
+			if !strings.HasPrefix(source, tc.source) {
+				t.Errorf("source = %q, want prefix %q", source, tc.source)
 			}
 		})
 	}
