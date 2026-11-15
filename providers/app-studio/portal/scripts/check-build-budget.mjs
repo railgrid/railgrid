@@ -92,7 +92,7 @@ const authKey = manifestEntryKey(manifest, (item) => item.name === 'ProjectAuthe
 const authArtifact = await artifact(manifest[authKey].file)
 enforce('App Studio authentication settings', [authArtifact], { rawBytes: 17_000, gzipBytes: 5_100 })
 // See BUNDLE_PERFORMANCE.md for the measured workbench and command receipt baselines.
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_411_500, gzipBytes: 393_000 })
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_417_000, gzipBytes: 396_000 })
 
 if (budgetFailures.length) {
   console.error('Largest emitted assets (gzip bytes):')

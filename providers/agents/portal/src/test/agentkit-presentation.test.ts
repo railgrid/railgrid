@@ -47,7 +47,7 @@ describe('AgentKit timestamp and chat presentation', () => {
       const view = await mountVue(AIMessage, { role: 'assistant', copyText: 'Response' })
       view.element.querySelector<HTMLButtonElement>('[aria-label="Copy response"]')!.click()
       await settleVue()
-      expect(text(view.element.querySelector('[role="status"]'))).toBe('Could not copy. Try again.')
+      expect(text(view.element.querySelector('[role="status"]'))).toBe('Could not copy. Select the text to copy it.')
       const empty = await mountVue(AIMessage, { role: 'user', copyText: '  ' })
       expect(empty.element.querySelector('.k-ai-message-copy')).toBeNull()
     } finally { write.mockRestore() }
