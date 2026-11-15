@@ -252,7 +252,7 @@ function retrySkillDetail() {
   if (skill && !detailLoading.value) void loadDetail(skill)
 }
 
-async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { preserveDetail?: boolean } = {}): Promise<boolean> {
+async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { preserveDetail?: boolean; keepError?: boolean } = {}): Promise<boolean> {
   const projectName = props.projectName
   const requestContext = props.ctx
   if (!projectName || catalogLoading.value) return false
@@ -265,11 +265,12 @@ async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { 
   // Refreshing the catalog may be part of a successful lifecycle action. It
   // should clear a stale error, but must not erase the action result before
   // the user can read it.
-  clearManagementError()
+  if (!options.keepError) clearManagementError()
   try {
     const response = await api.listAssistantSkills(requestContext, projectName)
     if (!assistantSkillsRequestIsCurrent(requestScope, catalogRequestSerial, props.projectName, props.ctx)) return false
     localSkills.value = response.skills
+    clearManagementError()
     emit('catalogUpdated', response)
     if (selectSkillID) {
       const next = response.skills.find((skill) => skill.id === selectSkillID)
@@ -291,6 +292,19 @@ async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { 
   }
 }
 
+async function retryDetailCatalog() {
+  if (actionBusy.value) return
+  actionBusy.value = true
+  let recovered = false
+  try {
+    recovered = await refreshCatalog(selectedSkillID.value, { preserveDetail: true, keepError: true })
+  } finally { actionBusy.value = false }
+  if (recovered && selectedSkill.value) {
+    await nextTick()
+    detailCloseRef.value?.focus({ preventScroll: true })
+  }
+}
+
 async function toggleSelectedSkill() {
   const skill = selectedSkill.value
   const projectName = props.projectName
@@ -301,10 +315,15 @@ async function toggleSelectedSkill() {
   activationSkillID.value = skill.id
   clearFeedback()
   try {
-    await api.setAssistantSkillActivation(props.ctx, props.projectName, skill.id, skill.enabled === false)
+    const updated = await api.setAssistantSkillActivation(props.ctx, props.projectName, skill.id, skill.enabled === false)
     if (serial !== activationRequestSerial || props.projectName !== projectName || props.ctx !== requestContext) return
     const successMessage = skill.enabled === false ? 'Skill enabled for future turns.' : 'Skill disabled for future turns.'
-    if (await refreshCatalog(skill.id, { preserveDetail: true })) statusMessage.value = successMessage
+    if (updated.id === skill.id && typeof updated.enabled === 'boolean') {
+      localSkills.value = localSkills.value.map(item => item.id === skill.id ? { ...item, enabled: updated.enabled } : item)
+      focusedSkill.value = { ...skill, enabled: updated.enabled }
+    }
+    statusMessage.value = successMessage
+    await refreshCatalog(skill.id, { preserveDetail: true })
   } catch (error) {
     if (serial === activationRequestSerial && props.projectName === projectName && props.ctx === requestContext) {
       managementError.value = friendlyError(error, 'Could not update skill activation.')
@@ -342,7 +361,7 @@ function friendlyError(error: unknown, fallback: string): string {
       Open an existing project to manage its skills. Bundled skills become available when a project is selected.
     </div>
 
-    <div v-if="managementError || props.error" class="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] leading-5 text-danger" role="alert">
+    <div v-if="(managementError && !selectedSkill) || props.error" class="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] leading-5 text-danger" role="alert">
       <TriangleAlert class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
       <span>{{ managementError || props.error }}</span>
       <button v-if="props.error" type="button" class="app-studio-touch-target ml-auto shrink-0 font-medium underline underline-offset-2" @click="refreshCatalog()">Retry</button>
@@ -353,7 +372,7 @@ function friendlyError(error: unknown, fallback: string): string {
         <div v-for="warning in props.warnings" :key="warning">{{ warning }}</div>
       </div>
     </div>
-    <div v-if="statusMessage" class="flex items-center gap-2 rounded-xl border border-success/30 bg-success-subtle p-3 text-[12px] text-success" role="status">
+    <div v-if="statusMessage && !selectedSkill" class="flex items-center gap-2 rounded-xl border border-success/30 bg-success-subtle p-3 text-[12px] text-success" role="status">
       <Check class="h-4 w-4 shrink-0" :stroke-width="1.75" />
       {{ statusMessage }}
     </div>
@@ -363,7 +382,7 @@ function friendlyError(error: unknown, fallback: string): string {
       title="Installed skills"
       :skills="localSkills"
       :query="query"
-      :selected-id="selectedSkillID"
+      :selected-i-d="selectedSkillID"
       :loading="props.loading || catalogLoading"
       :busy="actionBusy"
       detail-presentation="dialog"
@@ -396,8 +415,10 @@ function friendlyError(error: unknown, fallback: string): string {
                 role="switch"
                 :aria-checked="selectedSkill.enabled !== false"
                 aria-label="Enable skill"
-                class="app-studio-touch-target flex h-11 shrink-0 items-center justify-center gap-2.5 rounded-md bg-transparent px-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="actionBusy"
+                class="app-studio-touch-target flex h-11 shrink-0 items-center justify-center gap-2.5 rounded-md bg-transparent px-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                :aria-disabled="actionBusy ? 'true' : undefined"
+                :aria-busy="activationSkillID === selectedSkill.id ? 'true' : undefined"
+                :class="{ 'opacity-60': actionBusy }"
                 @click="toggleSelectedSkill"
               >
                 <span>{{ selectedSkill.enabled === false ? 'Skill disabled' : 'Skill enabled' }}</span>
@@ -414,6 +435,8 @@ function friendlyError(error: unknown, fallback: string): string {
           </header>
 
           <div class="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle px-6 py-5">
+            <div v-if="managementError" class="mb-4 rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">{{ managementError }} <button v-if="statusMessage" type="button" class="k-agentkit-touch-target font-medium underline underline-offset-2" :aria-disabled="actionBusy ? 'true' : undefined" @click="retryDetailCatalog">{{ catalogLoading ? 'Retrying…' : 'Retry' }}</button></div>
+            <div v-if="statusMessage" class="mb-4 rounded-xl border border-success/30 bg-success-subtle p-3 text-[12px] text-success" role="status">{{ statusMessage }}</div>
             <div v-if="detailLoading" class="flex min-h-48 items-center justify-center gap-2 text-[12px] text-text-muted" role="status"><Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" /> Loading skill…</div>
             <div v-else class="grid gap-4">
               <div v-if="detailError" class="flex items-center justify-between gap-3 rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert"><span>{{ detailError }}</span><button type="button" class="k-agentkit-touch-target shrink-0 font-medium underline underline-offset-2" :disabled="detailLoading" @click="retrySkillDetail">{{ detailLoading ? 'Retrying…' : 'Retry' }}</button></div>
