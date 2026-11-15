@@ -40,6 +40,7 @@ import { useTenantStore } from '@/stores/tenant'
 import AppLayout from '@/components/AppLayout.vue'
 import { confirmDialog } from '@/portalkit/confirm'
 import ResourceTable from '@/portalkit/ResourceTable.vue'
+import ResourceTimestamp from '@/portalkit/ResourceTimestamp.vue'
 import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
 import ResourcePage from '@/portalkit/ResourcePage.vue'
 import ResourceSectionCard from '@/portalkit/ResourceSectionCard.vue'
@@ -131,7 +132,7 @@ const rows = computed(() =>
     displayName: s.displayName || '—',
     phase: pendingDeletion.value === s.name ? 'Deleting' : s.phase || 'Provisioning',
     tools: toolCount(s),
-    updated: rel(s.toolsRefreshedTime),
+    updated: s.toolsRefreshedTime || null,
     readOnly: s.readOnly,
     _server: s,
   })),
@@ -141,16 +142,62 @@ function toolCount(s: MCPServer): number {
   return (s.federatedProviders ?? []).reduce((n, p) => n + (p.tools?.length ?? 0), 0)
 }
 
-// Per-provider tool expand state within the detail view (keyed by provider name).
 const openProviders = ref<Set<string>>(new Set())
+const closedSearchProviders = ref<Set<string>>(new Set())
+const toolQuery = ref('')
+const toolSearchInput = ref<HTMLInputElement | null>(null)
+const toolSearchTerms = computed(() => toolQuery.value.toLowerCase().trim().split(/\s+/).filter(Boolean))
+const searchingTools = computed(() => toolSearchTerms.value.length > 0)
+const federatedProviders = computed(() => selectedServer.value?.federatedProviders ?? [])
+const visibleProviders = computed(() => federatedProviders.value.flatMap(provider => {
+  const providerText = `${provider.name} ${provider.displayName ?? ''}`.toLowerCase()
+  const matchesProvider = toolSearchTerms.value.every(term => providerText.includes(term))
+  const tools = (provider.tools ?? []).filter(tool => {
+    if (matchesProvider) return true
+    const text = `${providerText} ${tool.name} ${tool.title ?? ''} ${tool.description ?? ''}`.toLowerCase()
+    return toolSearchTerms.value.every(term => text.includes(term))
+  })
+  return matchesProvider || tools.length ? [{ provider, tools }] : []
+}))
+const toolSearchSummary = computed(() => {
+  const groups = visibleProviders.value
+  const providers = groups.length
+  if (!providers) return 'No providers or tools match your search.'
+  if (groups.every(group => !group.provider.reachable)) {
+    return `${providers} matching ${providers === 1 ? 'provider' : 'providers'}. Tool discovery unavailable.`
+  }
+  const count = groups.reduce((total, group) => total + group.tools.length, 0)
+  return `${count} matching ${count === 1 ? 'tool' : 'tools'} across ${providers} ${providers === 1 ? 'provider' : 'providers'}.`
+})
+
+const emptyDiscoveryMessage = computed(() => {
+  if (selectedServer.value?.phase === 'Error') return 'Tool discovery is unavailable. Refresh to check the server again.'
+  if (selectedServer.value?.toolsRefreshedTime) return 'No providers discovered for this endpoint.'
+  return 'Waiting for tool discovery.'
+})
+
+watch(toolQuery, () => { closedSearchProviders.value = new Set() })
+
+function resetToolInventory() {
+  toolQuery.value = ''
+  openProviders.value = new Set()
+}
+
+async function clearToolSearch() {
+  toolQuery.value = ''
+  await nextTick()
+  toolSearchInput.value?.focus()
+}
+
 function isProviderOpen(name: string): boolean {
-  return openProviders.value.has(name)
+  return searchingTools.value ? !closedSearchProviders.value.has(name) : openProviders.value.has(name)
 }
 function toggleProvider(name: string) {
-  const next = new Set(openProviders.value)
+  const groups = searchingTools.value ? closedSearchProviders : openProviders
+  const next = new Set(groups.value)
   if (next.has(name)) next.delete(name)
   else next.add(name)
-  openProviders.value = next
+  groups.value = next
 }
 
 const connect = ref<Record<string, Connect>>({})
@@ -290,8 +337,9 @@ async function copy(text: string, field: string) {
     copiedField.value = field
     setTimeout(() => (copiedField.value = null), 2000)
   } catch {
-    const label = field === 'snippet' ? 'setup snippet' : 'endpoint'
-    copyError.value = `Could not copy the ${label}. Select the text and copy it manually.`
+    copyError.value = field === 'snippet'
+      ? 'Could not copy the setup snippet. Allow clipboard access and try again.'
+      : 'Could not copy the endpoint. Allow clipboard access and try again.'
   }
 }
 
@@ -356,7 +404,7 @@ watch([orgUUID, workspaceUUID], () => {
   error.value = null
   pendingDeletion.value = null
   mutationError.value = null
-  openProviders.value = new Set()
+  resetToolInventory()
   void load()
 })
 
@@ -526,7 +574,7 @@ watch(selected, (name, previousName) => {
   copyError.value = null
   pendingDeletion.value = null
   mutationError.value = null
-  openProviders.value = new Set()
+  resetToolInventory()
   selectedClient.value = 'claude-code'
   if (name && loaded.value) void loadConnect(name)
 }, { immediate: true })
@@ -560,9 +608,8 @@ async function copySnippet() {
   await copy(snippet(c, selectedClient.value, c.token), 'snippet')
 }
 
-function providerPanelID(name: string, index: number): string {
-  const slug = name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-')
-  return `mcp-provider-${index}-${slug || 'provider'}`
+function providerPanelID(name: string): string {
+  return `mcp-provider-${encodeURIComponent(name)}`
 }
 
 function clientPanelID(_client: Client): string {
@@ -576,16 +623,6 @@ function clientTabID(client: Client): string {
   return `mcp-client-${client}-tab`
 }
 
-function rel(ts?: string): string {
-  if (!ts) return '—'
-  const d = new Date(ts).getTime()
-  if (Number.isNaN(d)) return '—'
-  const secs = Math.max(0, Math.floor((Date.now() - d) / 1000))
-  if (secs < 60) return `${secs}s ago`
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`
-  return `${Math.floor(secs / 86400)}d ago`
-}
 </script>
 
 <template>
@@ -612,18 +649,18 @@ function rel(ts?: string): string {
             <div class="k-create-body">
             <label class="grid gap-1">
               <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Name</span>
-              <input v-model="draft.name" autofocus placeholder="ops" class="k-input font-mono text-[12px]" />
+              <input v-model="draft.name" autofocus placeholder="ops" class="k-input font-mono text-[12px]" :readonly="busy" />
             </label>
             <label class="grid gap-1">
               <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Display name</span>
-              <input v-model="draft.displayName" placeholder="Ops endpoint" class="k-input text-[12px]" />
+              <input v-model="draft.displayName" placeholder="Ops endpoint" class="k-input text-[12px]" :readonly="busy" />
             </label>
             <label class="grid gap-1">
               <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Instructions (optional)</span>
-              <textarea v-model="draft.instructions" rows="2" placeholder="This is production — ask before destructive operations." class="k-input text-[12px]" />
+              <textarea v-model="draft.instructions" rows="2" placeholder="This is production — ask before destructive operations." class="k-input text-[12px]" :readonly="busy" />
             </label>
             <label class="k-checkbox-hit flex items-center gap-2 text-[12px] text-text-secondary">
-              <input v-model="draft.readOnly" type="checkbox" class="k-checkbox" /> Read-only
+              <input v-model="draft.readOnly" type="checkbox" class="k-checkbox" :aria-disabled="busy || undefined" @click="busy && $event.preventDefault()" /> Read-only
             </label>
 
             <div v-if="mutationError" class="flex items-center gap-3 rounded-md border border-danger/30 bg-danger/5 p-3 text-[12px] text-danger" role="alert" aria-live="assertive">
@@ -634,7 +671,7 @@ function rel(ts?: string): string {
 
             <div class="k-create-actions">
               <button type="button" class="k-btn k-btn--ghost px-3 py-2 text-[12px]" :disabled="busy" @click="cancelCreate">Cancel</button>
-              <button type="submit" class="k-btn k-btn--primary px-3 py-2 text-[12px]" :disabled="busy || !draft.name.trim()">
+              <button type="submit" class="k-btn k-btn--primary px-3 py-2 text-[12px]" :disabled="!draft.name.trim()" :aria-disabled="busy || undefined" :aria-busy="busy || undefined">
                 <Loader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
                 <Plus v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                 {{ busy ? 'Creating…' : 'Create server' }}
@@ -698,7 +735,7 @@ function rel(ts?: string): string {
             >{{ (row as any).name }}</button>
           </template>
           <template #displayName="{ value }">
-            <span class="text-text-muted">{{ value }}</span>
+            <span>{{ value }}</span>
           </template>
           <template #phase="{ value, row }">
             <StatusBadge :status="String(value)" />
@@ -710,7 +747,7 @@ function rel(ts?: string): string {
             </span>
           </template>
           <template #updated="{ value }">
-            <span class="text-text-muted">{{ value }}</span>
+            <ResourceTimestamp :value="value ? String(value) : null" label="Tools updated" />
           </template>
           <template #actions="{ row }">
             <div class="flex justify-end">
@@ -874,43 +911,63 @@ function rel(ts?: string): string {
                   <p class="whitespace-pre-wrap text-[12px] leading-relaxed text-text-secondary">{{ selectedServer.instructions }}</p>
                 </ResourceSectionCard>
 
-                <ResourceSectionCard id="mcp-providers" eyebrow="Discovery" title="Providers &amp; tools" description="Tools federated into this endpoint, discovered with its own identity.">
+                <ResourceSectionCard id="mcp-providers" title="Providers &amp; tools" description="Tools discovered using this endpoint’s identity.">
                   <template #actions>
-                    <span v-if="selectedServer.toolsRefreshedTime" class="text-[11px] text-text-muted">updated {{ rel(selectedServer.toolsRefreshedTime) }}</span>
+                    <span v-if="selectedServer.toolsRefreshedTime" class="text-[11px] text-text-muted">updated <ResourceTimestamp :value="selectedServer.toolsRefreshedTime" label="Tools updated" /></span>
                   </template>
-                  <div v-if="!selectedServer.federatedProviders?.length" class="rounded-md border border-border-subtle bg-surface-overlay p-5 text-center text-[13px] text-text-muted">
-                    No providers are federating tools into this endpoint yet. Enable a provider (infrastructure, code, edges…) or wait for the next refresh.
-                  </div>
-                  <div v-else class="grid gap-2">
-                    <div v-for="(p, providerIndex) in selectedServer.federatedProviders" :key="p.name" class="overflow-hidden rounded-md border border-border-subtle bg-surface-overlay">
+                  <p v-if="!federatedProviders.length" role="status" class="text-sm text-text-secondary">
+                    {{ emptyDiscoveryMessage }}
+                  </p>
+                  <div v-else class="grid min-w-0 gap-3">
+                    <div role="search" aria-label="MCP tool inventory">
+                      <label for="mcp-tool-search" class="sr-only">Search providers and tools</label>
+                      <input
+                        id="mcp-tool-search"
+                        ref="toolSearchInput"
+                        v-model="toolQuery"
+                        type="search"
+                        autocomplete="off"
+                        class="k-input max-w-sm text-sm"
+                        placeholder="Search providers and tools…"
+                      />
+                    </div>
+                    <p role="status" :class="searchingTools ? 'text-xs text-text-secondary' : 'sr-only'">
+                      {{ searchingTools ? toolSearchSummary : '' }}
+                    </p>
+                    <div v-if="!visibleProviders.length">
+                      <button type="button" class="k-btn k-btn--ghost" @click="clearToolSearch">Clear search</button>
+                    </div>
+                    <div v-for="{ provider: p, tools } in visibleProviders" :key="p.name" class="min-w-0 overflow-hidden rounded-md border border-border-subtle bg-surface-overlay">
                       <button
                         type="button"
-                        class="k-btn k-btn--ghost flex w-full items-center justify-between rounded-none border-0 bg-transparent p-3.5 text-left hover:bg-surface-hover"
+                        class="k-btn k-btn--ghost flex w-full flex-wrap items-center justify-between rounded-none border-0 bg-transparent p-3 text-left hover:bg-surface-hover"
                         :aria-expanded="isProviderOpen(p.name)"
-                        :aria-controls="providerPanelID(p.name, providerIndex)"
+                        :aria-controls="providerPanelID(p.name)"
                         @click="toggleProvider(p.name)"
                       >
-                        <span class="flex min-w-0 items-center gap-2">
+                        <span class="flex min-w-0 flex-wrap items-center gap-2">
                           <component :is="isProviderOpen(p.name) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="2" aria-hidden="true" />
-                          <span class="truncate font-mono text-[13px] font-semibold text-text-primary">{{ p.displayName || p.name }}</span>
+                          <span class="min-w-0 break-words text-[13px] font-semibold text-text-primary">{{ p.displayName || p.name }}</span>
                           <StatusBadge :status="p.reachable ? 'Reachable' : 'Unreachable'" :tone="p.reachable ? 'success' : 'danger'" />
                         </span>
-                        <span class="flex shrink-0 items-center gap-1.5 text-[11px] text-text-muted">
-                          <Wrench class="h-3 w-3" :stroke-width="2" aria-hidden="true" /> {{ p.tools?.length ?? 0 }} {{ (p.tools?.length ?? 0) === 1 ? 'tool' : 'tools' }}
+                        <span v-if="p.reachable" class="flex shrink-0 items-center gap-1.5 text-[11px] text-text-muted tabular-nums">
+                          <Wrench class="h-3 w-3" :stroke-width="2" aria-hidden="true" />
+                          <template v-if="tools.length < (p.tools?.length ?? 0)">{{ tools.length }} of {{ p.tools?.length }} tools</template>
+                          <template v-else>{{ tools.length }} {{ tools.length === 1 ? 'tool' : 'tools' }}</template>
                         </span>
                       </button>
-                      <div v-if="isProviderOpen(p.name)" :id="providerPanelID(p.name, providerIndex)" class="border-t border-border-subtle p-3.5" role="region" :aria-label="`${p.displayName || p.name} tools`">
-                        <div v-if="p.message" class="mb-2 rounded-md border border-danger/30 bg-danger/5 p-2.5 text-[12px] text-danger">{{ p.message }}</div>
-                        <div v-if="!p.tools?.length && !p.message" class="text-[12px] text-text-muted">This provider advertises no tools right now.</div>
-                        <ul v-else class="grid gap-1.5">
-                          <li v-for="t in p.tools" :key="t.name" class="rounded-md bg-surface p-3">
-                            <div class="flex items-baseline gap-2">
-                              <code class="font-mono text-[12px] font-semibold text-text-primary">{{ t.name }}</code>
-                              <span v-if="t.title && t.title !== t.name" class="text-[11px] text-text-muted">{{ t.title }}</span>
-                            </div>
-                            <p v-if="t.description" class="mt-0.5 text-[11px] leading-relaxed text-text-secondary">{{ t.description }}</p>
-                          </li>
-                        </ul>
+                      <div :id="providerPanelID(p.name)" :hidden="!isProviderOpen(p.name)" class="border-t border-border-subtle p-3.5" role="region" :aria-label="`${p.displayName || p.name} tools`">
+                        <template v-if="isProviderOpen(p.name)">
+                          <p v-if="!p.reachable || p.message" class="rounded-md border border-danger/30 bg-danger/5 p-2.5 text-[12px] text-danger [overflow-wrap:anywhere]">{{ p.message || 'This provider did not report its tools.' }}</p>
+                          <p v-else-if="!tools.length" class="text-[12px] text-text-muted">This provider advertises no tools right now.</p>
+                          <ul v-if="tools.length" class="grid min-w-0 gap-1.5" :class="{ 'mt-2': !p.reachable || p.message }">
+                            <li v-for="t in tools" :key="t.name" class="min-w-0 rounded-md bg-surface p-3 [overflow-wrap:anywhere]">
+                              <p v-if="t.title && t.title !== t.name" class="text-[13px] font-medium text-text-primary">{{ t.title }}</p>
+                              <code class="block font-mono text-[12px] text-text-secondary">{{ t.name }}</code>
+                              <p v-if="t.description" class="mt-1 text-[12px] leading-relaxed text-text-secondary">{{ t.description }}</p>
+                            </li>
+                          </ul>
+                        </template>
                       </div>
                     </div>
                   </div>

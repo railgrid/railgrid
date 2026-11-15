@@ -1,0 +1,3 @@
+@import "../../portal/src/assets/main.css";
+/* Vite's fixture root differs from the portal root used by the production build. */
+@source "../../portal/src/**/*.{vue,ts}";

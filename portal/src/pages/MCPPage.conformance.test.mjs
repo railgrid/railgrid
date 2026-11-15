@@ -97,9 +97,13 @@ test('MCP connect snippets stay masked and selectors expose state', () => {
   assert.doesNotMatch(template, /selectedConnect\.token(?!Ready)/)
   assert.match(page, /role="tablist" aria-label="AI client setup"/)
   assert.match(page, /:aria-selected="selectedClient === c\.id"/)
-  assert.match(page, /:aria-expanded="isProviderOpen\(p\.name\)"/)
-  assert.match(page, /:aria-controls="providerPanelID\(p\.name, providerIndex\)"/)
   assert.doesNotMatch(page, /v-html=/)
+})
+
+test('MCP tool disclosures retain a stable panel target when closed', () => {
+  assert.match(page, /:aria-expanded="isProviderOpen\(p\.name\)"/)
+  assert.match(page, /:aria-controls="providerPanelID\(p\.name\)"/)
+  assert.match(page, /<div :id="providerPanelID\(p\.name\)" :hidden="!isProviderOpen\(p\.name\)"/)
 })
 
 test('MCP connect snippets contain long commands without widening the resource page', () => {
