@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
 import DynamicForm from '../components/DynamicForm.vue'
 import { api, isContextChangedError } from '../api'
@@ -28,12 +28,14 @@ const template = ref<Template | null>(null)
 const values = ref<Record<string, unknown>>({})
 const instanceName = ref('')
 const provisionForm = ref<HTMLFormElement | null>(null)
+const heading = ref<HTMLHeadingElement | null>(null)
+const retryButton = ref<HTMLButtonElement | null>(null)
 const dynamicForm = ref<DynamicFormHandle | null>(null)
 const loading = ref(true)
 const loaded = ref(false)
-const initialReadPending = computed(() => loading.value && !loaded.value)
-const showInitialLoading = useDelayedLoading(initialReadPending)
 const readError = ref<string | null>(null)
+const initialReadPending = computed(() => loading.value && !loaded.value && !readError.value)
+const showInitialLoading = useDelayedLoading(initialReadPending)
 const mutationError = ref<string | null>(null)
 const instanceNameFieldError = ref<string | null>(null)
 const submitting = ref(false)
@@ -59,7 +61,6 @@ const inputSchema = computed(() => {
 async function load() {
   const serial = ++loadSerial
   loading.value = true
-  readError.value = null
   mutationError.value = null
   instanceNameFieldError.value = null
   const firstLoad = template.value === null || template.value.name !== props.templateName
@@ -82,6 +83,12 @@ async function load() {
       }
     }
     loaded.value = true
+    const restoreFocus = document.activeElement === retryButton.value
+    readError.value = null
+    if (restoreFocus) {
+      await nextTick()
+      if (serial === loadSerial && active && document.activeElement === document.body) heading.value?.focus()
+    }
   } catch (e: unknown) {
     if (serial !== loadSerial || !active || isContextChangedError(e)) return
     readError.value = (e as { message?: string }).message ?? 'failed to load template'
@@ -89,7 +96,13 @@ async function load() {
     if (serial === loadSerial && active) loading.value = false
   }
 }
-watch(() => props.templateName, load, { immediate: true })
+function retry() {
+  if (!loading.value) void load()
+}
+watch(() => props.templateName, () => {
+  readError.value = null
+  void load()
+}, { immediate: true })
 onUnmounted(() => {
   active = false
   loadSerial += 1
@@ -180,18 +193,20 @@ async function submit() {
     </div>
     <div v-else-if="!template && readError" class="read-error" role="alert" aria-live="assertive">
       <span>{{ readError }}</span>
-      <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
+      <span v-if="loading" class="sr-only" role="status" aria-live="polite">Retrying template…</span>
+      <button ref="retryButton" type="button" class="k-btn k-btn--ghost" :aria-disabled="loading ? 'true' : undefined" @click="retry">Retry</button>
     </div>
     <template v-else-if="template">
       <header class="k-create-header">
-        <h2 class="k-create-title">Provision {{ template.displayName }}</h2>
+        <h2 ref="heading" class="k-create-title" tabindex="-1">Provision {{ template.displayName }}</h2>
         <p class="k-create-description">{{ template.description }}</p>
       </header>
       <div v-if="readError" class="stale-banner" role="alert" aria-live="assertive">
         <span>Showing the last successful template. {{ readError }}</span>
-        <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
+        <span v-if="loading" class="sr-only" role="status" aria-live="polite">Retrying template…</span>
+        <button ref="retryButton" type="button" class="k-btn k-btn--ghost" :aria-disabled="loading ? 'true' : undefined" @click="retry">Retry</button>
       </div>
-      <span v-if="loading" class="sr-only" role="status" aria-live="polite">Rechecking template…</span>
+      <span v-if="loading && !readError" class="sr-only" role="status" aria-live="polite">Rechecking template…</span>
       <form ref="provisionForm" class="k-create-surface k-create-surface--wide" :aria-busy="submitting || loading" novalidate @submit.prevent="submit">
         <div class="k-create-body">
           <div class="provision-identity">

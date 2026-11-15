@@ -51,6 +51,7 @@ const rootElement = ref<HTMLElement | null>(null)
 const arrayDrafts = ref<Record<string, string>>({})
 const mapDrafts = ref<Record<string, MapRow[]>>({})
 const fieldErrors = ref<Record<string, string>>({})
+const mapErrorTargets = ref<Record<string, string>>({})
 const nestedForms = new Map<string, DynamicFormHandle>()
 let mapRowSerial = 0
 
@@ -102,6 +103,17 @@ function effectiveValue(field: Field): unknown {
 function scalarInputValue(field: Field): string {
   const value = effectiveValue(field)
   return value === undefined || value === null ? '' : String(value)
+}
+
+function enumSelection(field: Field): string {
+  const value = effectiveValue(field)
+  if (value === undefined || value === null) return ''
+  const index = field.enum?.findIndex(option => JSON.stringify(option) === JSON.stringify(value)) ?? -1
+  return index < 0 ? '' : String(index)
+}
+
+function updateEnum(field: Field, selection: string): void {
+  updateField(field, selection === '' ? undefined : field.enum?.[Number(selection)])
 }
 
 function booleanInputValue(field: Field): boolean {
@@ -261,7 +273,7 @@ function fieldControls(field: Field): FormControl[] {
 }
 
 function setFieldError(field: Field, error: string, target?: FormControl) {
-  const controls = target ? [target] : fieldControls(field)
+  const controls = target ? [target] : isMapField(field) ? [] : fieldControls(field)
   controls.forEach(control => control.setCustomValidity(error))
   const next = { ...fieldErrors.value }
   if (error) next[field.name] = error
@@ -271,6 +283,7 @@ function setFieldError(field: Field, error: string, target?: FormControl) {
 
 function clearFieldErrors(): void {
   fieldErrors.value = {}
+  mapErrorTargets.value = {}
   rootElement.value?.querySelectorAll<FormControl>('input, textarea, select').forEach(control => control.setCustomValidity(''))
 }
 
@@ -345,11 +358,18 @@ watch(fields, current => {
 
 function mapRows(field: Field): MapRow[] { return mapDrafts.value[field.name] ?? [] }
 
-function syncMapValidity(field: Field, error: string) {
-  void nextTick(() => fieldControls(field).forEach(control => control.setCustomValidity(error)))
+function setMapError(field: Field, error: string, targetID?: string) {
+  const targets = { ...mapErrorTargets.value }
+  if (error && targetID) targets[field.name] = targetID
+  else delete targets[field.name]
+  mapErrorTargets.value = targets
+  setFieldError(field, error)
+  void nextTick(() => fieldControls(field).forEach(control => {
+    control.setCustomValidity(control.id === mapErrorTargets.value[field.name] ? (fieldErrors.value[field.name] || '') : '')
+  }))
 }
 
-function parseMap(field: Field): { value?: Record<string, unknown>, error?: string } {
+function parseMap(field: Field): { value?: Record<string, unknown>, error?: string, errorControlID?: string } {
   const current = props.values[field.name]
   if (current !== undefined && (!current || typeof current !== 'object' || Array.isArray(current)) && mapRows(field).length === 0) {
     return { error: `${field.name} must be an object.` }
@@ -357,11 +377,10 @@ function parseMap(field: Field): { value?: Record<string, unknown>, error?: stri
   const output: Record<string, unknown> = {}
   const seen = new Set<string>()
   const schema = mapValueSchema(field)
-  let error = ''
   for (const row of mapRows(field)) {
     const key = row.key.trim()
-    if (!key) { error = `Enter a key for every ${field.name} entry.`; break }
-    if (seen.has(key)) { error = `${field.name} contains the duplicate key “${key}”.`; break }
+    if (!key) return { error: `Enter a key for every ${field.name} entry.`, errorControlID: mapKeyID(field, row) }
+    if (seen.has(key)) return { error: `${field.name} contains the duplicate key “${key}”.`, errorControlID: mapKeyID(field, row) }
     seen.add(key)
     let parsed: { value?: unknown, error?: string }
     if (schema && !isScalarSchema(schema)) {
@@ -371,17 +390,16 @@ function parseMap(field: Field): { value?: Record<string, unknown>, error?: stri
         parsed = nestedError ? { error: nestedError } : { value }
       } catch { parsed = { error: `${field.name}.${key} must contain valid JSON.` } }
     } else parsed = parseScalar(schema, row.rawValue, `${field.name}.${key}`)
-    if (parsed.error) { error = parsed.error; break }
+    if (parsed.error) return { error: parsed.error, errorControlID: mapValueID(field, row) }
     output[key] = parsed.value
   }
-  return error ? { error } : { value: output }
+  return { value: output }
 }
 
 function commitMap(field: Field) {
   const parsed = parseMap(field)
   const error = parsed.error ?? ''
-  setFieldError(field, error)
-  syncMapValidity(field, error)
+  setMapError(field, error, parsed.errorControlID)
   if (!error) update(field.name, parsed.value)
 }
 
@@ -501,7 +519,14 @@ async function validate(): Promise<ValidationResult> {
 
     if (isMapField(field)) {
       const parsed = parseMap(field)
-      if (parsed.error) return invalidField(field, parsed.error)
+      if (parsed.error) {
+        setMapError(field, parsed.error, parsed.errorControlID)
+        await nextTick()
+        const target = parsed.errorControlID && rootElement.value?.querySelector<FormControl>(`[id="${parsed.errorControlID}"]`)
+        if (target) target.focus()
+        else focusField(field)
+        return { valid: false, values: {}, error: parsed.error }
+      }
       if (current !== undefined || field.schemaDefault !== undefined || field.required) result[name] = parsed.value ?? {}
       continue
     }
@@ -553,16 +578,18 @@ defineExpose({ validate })
           <div v-if="mapRows(field).length" class="dynform-map-head" aria-hidden="true"><span>Key</span><span>Value</span><span /></div>
           <div v-for="row in mapRows(field)" :key="row.id" class="dynform-map-row">
             <label class="dynform-sr-only" :for="mapKeyID(field, row)">Key for {{ field.name }}</label>
-            <input :id="mapKeyID(field, row)" :data-map-field="fieldID(field.name)" class="k-input" :value="row.key" placeholder="Key" required :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" @input="updateMapRow(field, row, 'key', ($event.target as HTMLInputElement).value)" />
+            <input :id="mapKeyID(field, row)" :data-map-field="fieldID(field.name)" class="k-input" :value="row.key" placeholder="Key" required :aria-invalid="mapErrorTargets[field.name] === mapKeyID(field, row) ? 'true' : undefined" :aria-describedby="mapErrorTargets[field.name] === mapKeyID(field, row) ? errorID(field.name) : undefined" @input="updateMapRow(field, row, 'key', ($event.target as HTMLInputElement).value)" />
             <label class="dynform-sr-only" :for="mapValueID(field, row)">Value for {{ field.name }} key {{ row.key || 'new entry' }}</label>
-            <select v-if="mapValueSchema(field)?.enum" :id="mapValueID(field, row)" :data-map-field="fieldID(field.name)" class="k-input" :value="row.rawValue" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" @change="updateMapRow(field, row, 'value', ($event.target as HTMLSelectElement).value)">
+            <select v-if="mapValueSchema(field)?.enum" :id="mapValueID(field, row)" :data-map-field="fieldID(field.name)" class="k-input" :value="row.rawValue" :aria-invalid="mapErrorTargets[field.name] === mapValueID(field, row) ? 'true' : undefined" :aria-describedby="mapErrorTargets[field.name] === mapValueID(field, row) ? errorID(field.name) : undefined" @change="updateMapRow(field, row, 'value', ($event.target as HTMLSelectElement).value)">
+              <option v-if="!mapValueSchema(field)?.enum?.some(option => String(option) === '')" value="" disabled>Select an option</option>
               <option v-for="option in mapValueSchema(field)?.enum" :key="String(option)" :value="String(option)">{{ option }}</option>
             </select>
-            <select v-else-if="mapValueSchema(field)?.type === 'boolean'" :id="mapValueID(field, row)" :data-map-field="fieldID(field.name)" class="k-input" :value="row.rawValue" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" @change="updateMapRow(field, row, 'value', ($event.target as HTMLSelectElement).value)">
+            <select v-else-if="mapValueSchema(field)?.type === 'boolean'" :id="mapValueID(field, row)" :data-map-field="fieldID(field.name)" class="k-input" :value="row.rawValue" :aria-invalid="mapErrorTargets[field.name] === mapValueID(field, row) ? 'true' : undefined" :aria-describedby="mapErrorTargets[field.name] === mapValueID(field, row) ? errorID(field.name) : undefined" @change="updateMapRow(field, row, 'value', ($event.target as HTMLSelectElement).value)">
+              <option value="" disabled>Select an option</option>
               <option value="true">true</option><option value="false">false</option>
             </select>
-            <textarea v-else-if="mapValueSchema(field) && !isScalarSchema(mapValueSchema(field))" :id="mapValueID(field, row)" :data-map-field="fieldID(field.name)" class="k-input dynform-map-json" :value="row.rawValue" rows="2" spellcheck="false" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" @input="updateMapRow(field, row, 'value', ($event.target as HTMLTextAreaElement).value)" />
-            <input v-else :id="mapValueID(field, row)" :data-map-field="fieldID(field.name)" class="k-input" :type="inputType(mapValueSchema(field)?.type)" :value="row.rawValue" placeholder="Value" :min="mapValueSchema(field)?.minimum" :max="mapValueSchema(field)?.maximum" :minlength="mapValueSchema(field)?.minLength" :maxlength="mapValueSchema(field)?.maxLength" :pattern="mapValueSchema(field)?.pattern" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" @input="updateMapRow(field, row, 'value', ($event.target as HTMLInputElement).value)" />
+            <textarea v-else-if="mapValueSchema(field) && !isScalarSchema(mapValueSchema(field))" :id="mapValueID(field, row)" :data-map-field="fieldID(field.name)" class="k-input dynform-map-json" :value="row.rawValue" rows="2" spellcheck="false" :aria-invalid="mapErrorTargets[field.name] === mapValueID(field, row) ? 'true' : undefined" :aria-describedby="mapErrorTargets[field.name] === mapValueID(field, row) ? errorID(field.name) : undefined" @input="updateMapRow(field, row, 'value', ($event.target as HTMLTextAreaElement).value)" />
+            <input v-else :id="mapValueID(field, row)" :data-map-field="fieldID(field.name)" class="k-input" :type="inputType(mapValueSchema(field)?.type)" :value="row.rawValue" placeholder="Value" :min="mapValueSchema(field)?.minimum" :max="mapValueSchema(field)?.maximum" :minlength="mapValueSchema(field)?.minLength" :maxlength="mapValueSchema(field)?.maxLength" :pattern="mapValueSchema(field)?.pattern" :aria-invalid="mapErrorTargets[field.name] === mapValueID(field, row) ? 'true' : undefined" :aria-describedby="mapErrorTargets[field.name] === mapValueID(field, row) ? errorID(field.name) : undefined" @input="updateMapRow(field, row, 'value', ($event.target as HTMLInputElement).value)" />
             <button class="k-icon-action dynform-map-remove" type="button" :aria-label="`Remove ${field.name} key ${row.key || 'new entry'}`" :data-k-tip="`Remove ${field.name} key ${row.key || 'new entry'}`" @click="removeMapRow(field, row)"><X :size="14" :stroke-width="1.75" aria-hidden="true" /></button>
           </div>
 		  <button class="k-btn k-btn--ghost dynform-map-add" type="button" :data-map-add="fieldID(field.name)" @click="addMapRow(field)"><Plus :size="14" :stroke-width="1.75" aria-hidden="true" /> Add entry</button>
@@ -577,8 +604,9 @@ defineExpose({ validate })
         </label>
         <textarea v-if="isScalarArray(field)" :id="fieldID(field.name)" class="k-input dynform-lines" :aria-describedby="describedBy(field, true)" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" :required="field.required" :value="arrayText(field)" rows="4" spellcheck="false" @input="updateScalarArray(field, $event.target as HTMLTextAreaElement)" />
         <textarea v-else-if="isComplexArray(field)" :id="fieldID(field.name)" class="k-input dynform-json" :aria-describedby="describedBy(field)" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" :required="field.required" :value="complexArrayJSON(field)" rows="5" spellcheck="false" @input="updateComplexArray(field, $event.target as HTMLTextAreaElement)" />
-        <select v-else-if="field.enum" :id="fieldID(field.name)" class="k-input" :aria-describedby="describedBy(field)" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" :required="field.required" :value="scalarInputValue(field)" @change="updateField(field, ($event.target as HTMLSelectElement).value)">
-          <option v-for="option in field.enum" :key="String(option)" :value="option">{{ option }}</option>
+        <select v-else-if="field.enum" :id="fieldID(field.name)" class="k-input" :aria-describedby="describedBy(field)" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" :required="field.required" :value="enumSelection(field)" @change="updateEnum(field, ($event.target as HTMLSelectElement).value)">
+          <option value="" :disabled="field.schemaDefault !== undefined">Select an option</option>
+          <option v-for="(option, index) in field.enum" :key="index" :value="String(index)">{{ option }}</option>
         </select>
         <input v-else-if="field.type === 'boolean'" :id="fieldID(field.name)" class="k-checkbox" :aria-describedby="describedBy(field)" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" type="checkbox" :checked="booleanInputValue(field)" @change="updateField(field, ($event.target as HTMLInputElement).checked)" />
         <input v-else :id="fieldID(field.name)" class="k-input" :aria-describedby="describedBy(field)" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" :type="inputType(field.type)" :required="field.required" :value="scalarInputValue(field)" :min="field.minimum" :max="field.maximum" :minlength="field.minLength" :maxlength="field.maxLength" :pattern="field.pattern" @input="updateField(field, coerce(field.type, ($event.target as HTMLInputElement).value))" />

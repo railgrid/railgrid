@@ -10,6 +10,7 @@ import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
 import { fmtTime, type Trigger, type TriggerFilterVerdict, type WebhookDelivery } from '../types'
 import FormSelect from '../portalkit/FormSelect.vue'
+import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../ui/toast'
 import type { Route } from '../router'
@@ -165,6 +166,7 @@ onBeforeUnmount(() => {
       <p v-else-if="!deliveriesLoaded" class="muted" role="status">Loading deliveries…</p>
       <p v-else-if="options.length === 0" class="muted" role="status">Nothing has reached this webhook URL yet. Once a delivery arrives it can be picked here; until then, test with a pasted sample.</p>
       <label v-else><span id="agents-tester-delivery-label">Delivery</span><FormSelect v-model="selected" :options="options" :labelledby="'agents-tester-delivery-label'" name="testDelivery" /></label>
+      <p v-if="selectedDelivery" class="agents-hint">Received&nbsp;<ResourceTimestamp :value="selectedDelivery.receivedAt" label="Delivery received" /></p>
       <p v-if="selectedDelivery && selectedRoute" class="agents-hint">
         This trigger recorded it as <strong>{{ deliveryOutcomeLabel(selectedRoute.outcome).toLowerCase() }}</strong><template v-if="selectedRoute.reason"> ({{ selectedRoute.reason }})</template> with the filter in force at the time.
       </p>

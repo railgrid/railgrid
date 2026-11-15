@@ -1,3 +1,5 @@
+import { formatFullTimestamp, isValidTimestamp as isValidResourceTimestamp } from '../portalkit-vue/timestamp'
+
 // CANONICAL SOURCE — provider-sdk/agentkit-vue. Do not edit vendored copies
 // under providers/*/portal/src/agentkit/; edit here and run
 // `make sync-portalkit`.
@@ -17,10 +19,9 @@ const RELATIVE_UNITS: readonly [Intl.RelativeTimeFormatUnit, number][] = [
   ['second', 1],
 ]
 
-/** Parse only non-empty, finite date values accepted by the semantic <time>. */
+/** Accept the same absolute, valid instants as the shared exact-time formatter. */
 export function isValidTimestamp(value?: string | null): boolean {
-  if (!value?.trim()) return false
-  return Number.isFinite(new Date(value).getTime())
+  return isValidResourceTimestamp(value)
 }
 
 /**
@@ -45,14 +46,7 @@ export function formatRelativeTime(
   return ''
 }
 
-/** Format the full hover/click value with the same locale options as Studio. */
+/** Format the exact instant with the shared local timezone and seconds. */
 export function formatFullTime(value?: string | null): string {
-  if (!isValidTimestamp(value)) return ''
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(new Date(value!))
+  return formatFullTimestamp(value)
 }

@@ -227,3 +227,5 @@ railgrid-provider-agents .agents-inbox-empty { margin: 0; padding-block: 10px; c
     padding-block-end: 6px; border-block-end: 1px solid var(--color-border-subtle);
   }
 }
+
+railgrid-provider-agents .agents-step-timestamp { min-width: 0; font-size: 11px; }
