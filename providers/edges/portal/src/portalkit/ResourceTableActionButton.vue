@@ -40,6 +40,11 @@ const accessibleLabel = computed(() => props.busy
 const emit = defineEmits<{
   click: [event: MouseEvent]
 }>()
+
+function onClick(event: MouseEvent): void {
+  if (props.busy || props.disabled) return
+  emit('click', event)
+}
 </script>
 
 <template>
@@ -50,8 +55,9 @@ const emit = defineEmits<{
     type="button"
     :aria-label="accessibleLabel"
     :aria-busy="busy || undefined"
-    :disabled="disabled || busy"
-    @click.stop="emit('click', $event)"
+    :aria-disabled="busy ? 'true' : undefined"
+    :disabled="disabled && !busy"
+    @click.stop="onClick"
   >
     <Loader2 v-if="busy" class="k-table-action__icon k-table-action__icon--spinning" :stroke-width="1.75" aria-hidden="true" />
     <component
