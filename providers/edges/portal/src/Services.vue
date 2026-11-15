@@ -478,7 +478,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
         ? 'Declare an app reachable from an edge, then add credentials when its service type requires them.'
         : 'A Service must run beside an edge before Railgrid can expose its endpoint and tools.'"
       :primary-label="hasEdges ? 'Create service' : 'Connect edge'"
-      :steps="serviceJourney"
+      :steps="hasEdges ? [] : serviceJourney"
       :current-step="hasEdges ? 1 : 0"
       journey-label="Service setup path"
       @primary="handleFirstRunPrimary"

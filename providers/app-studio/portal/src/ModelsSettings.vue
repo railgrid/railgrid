@@ -679,6 +679,10 @@ const createActions = computed(() => [
 const showFirstRun = computed(() => !props.loading && !props.loadError && !props.connectionsLoading
   && !props.connectionsError && !modelRows.value.length && !connectionRows.value.length)
 
+const showFirstModel = computed(() => !!props.settings && !props.loading && !props.loadError
+  && !props.connectionsLoading && !props.connectionsError
+  && !modelRows.value.length && modelConnectionOptions.value.length > 0)
+
 function selectCreateAction(id: string) {
   if (id === 'provider') openConnectionEditor()
   else emit('openEditor')
@@ -819,6 +823,7 @@ watch(
         { label: 'Add a model', description: 'Choose a model on the saved connection.' },
         { label: 'Use it in projects', description: 'Select a model when creating or chatting.' },
       ]" @primary="openConnectionEditor()"><template #icon><Cpu :stroke-width="1.75" /></template></FirstRunGuide>
+      <FirstRunGuide v-else-if="showFirstModel" title="Add a model" description="Choose a model from a connected provider to create projects and chat in App Studio." primary-label="Add model" :primary-disabled="saving || modelLimitReached" :steps="[]" @primary="emit('openEditor')"><template #icon><Cpu :stroke-width="1.75" /></template></FirstRunGuide>
       <div v-else-if="loading && !settings && !loadError" class="grid min-h-48 content-start gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-live="polite" aria-busy="true">
         <div class="shimmer h-4 w-36 rounded bg-surface-overlay" /><div class="shimmer h-24 w-full rounded bg-surface-overlay" /><div class="text-[12px] text-text-muted">Loading models…</div>
       </div>
