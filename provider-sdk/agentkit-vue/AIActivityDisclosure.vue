@@ -53,11 +53,14 @@ function countLabel(): string {
       :aria-controls="panelId"
       @click="emit('toggle')"
     >
-      <Loader2 v-if="busy" class="k-ai-activity__status k-ai-activity__status--busy" :stroke-width="1.75" aria-hidden="true" />
-      <CircleAlert v-else-if="error" class="k-ai-activity__status k-ai-activity__status--error" :stroke-width="1.75" aria-hidden="true" />
+      <CircleAlert v-if="error" class="k-ai-activity__status k-ai-activity__status--error" :stroke-width="1.75" aria-hidden="true" />
       <CircleAlert v-else-if="attention" class="k-ai-activity__status k-ai-activity__status--attention" :stroke-width="1.75" aria-hidden="true" />
+      <Loader2 v-else-if="busy" class="k-ai-activity__status k-ai-activity__status--busy" :stroke-width="1.75" aria-hidden="true" />
       <Check v-else class="k-ai-activity__status" :stroke-width="1.75" aria-hidden="true" />
       <span class="k-ai-activity__label">
+        <span v-if="error" class="k-ai-activity__summary">Error · </span>
+        <span v-if="attention" class="k-ai-activity__summary">Needs attention · </span>
+        <span v-if="busy" class="k-ai-activity__summary">In progress · </span>
         <span class="k-ai-activity__count">{{ countLabel() }}</span>
         <span v-if="summary" class="k-ai-activity__summary"> · {{ summary }}</span>
       </span>

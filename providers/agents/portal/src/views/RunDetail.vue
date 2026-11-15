@@ -705,7 +705,13 @@ onBeforeUnmount(() => {
                     <template v-else-if="entry">
                       <div v-if="entry.step.error" class="agents-kv"><span>Error</span><pre class="err">{{ sanitizeTechnicalDiagnostic(entry.step.error) }}</pre></div>
                       <details v-if="entry.step.args || entry.step.result" class="k-resource-technical">
-                        <summary class="k-resource-technical__summary"><span class="k-resource-technical__summary-label">Arguments and result</span><ChevronDown class="k-resource-technical__chevron" :size="14" :stroke-width="1.75" aria-hidden="true" /></summary>
+                        <summary class="k-resource-technical__summary">
+                          <span class="k-resource-technical__summary-copy">
+                            <span class="k-resource-technical__summary-label">{{ entry.step.args && entry.step.result ? 'Arguments and result' : entry.step.args ? 'Arguments' : 'Result' }}</span>
+                            <span class="k-resource-technical__summary-context">{{ entry.step.args && entry.step.result ? 'Tool inputs and response' : entry.step.args ? 'Tool inputs' : 'Tool response' }}</span>
+                          </span>
+                          <ChevronDown class="k-resource-technical__chevron" :size="16" :stroke-width="1.75" aria-hidden="true" />
+                        </summary>
                         <div class="k-resource-technical__body">
                           <div v-if="entry.step.args" class="agents-kv"><span>Arguments</span><pre>{{ prettyJSON(entry.step.args) }}</pre></div>
                           <div v-if="entry.step.result" class="agents-kv"><span>Result</span><pre>{{ prettyJSON(entry.step.result) }}</pre></div>
