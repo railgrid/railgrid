@@ -1,0 +1,250 @@
+f459a77e1 Advance Violet Circuit design book and portal consistency
+a14234a1a Preserve focus and serialize agent run refreshes
+2c6e58ec9 Document and illustrate text color roles
+445a77adc Show dialog scrim in materials review
+166b534d5 Preserve focus during Code detail refresh
+1082e5e16 Preserve focus during service detail refresh
+db33094f3 Clarify accessible accent surface pairings
+510918d34 Keep App Studio refresh context and focus
+ec931ff8e Preserve focus during integrations retry
+305bdff72 Restore focus after discovery recovery
+b9fbc4feb Align inline notification busy styling
+c32c34268 Make notification review demonstrate recovery focus
+e80c70996 Correct upload review validation
+4c27ec251 Clarify keyboard focus for native choices
+dc8271a87 Use shared choice focus in Agents forms
+89af99821 Use shared radio focus in service settings
+9a3f49ae9 Align native select states with shared controls
+3a0251bd4 Explain fixed service scheme in forms
+97ec7f199 Clarify and enforce service target restrictions
+e03a5bdcb Stop App Studio spinners under reduced motion
+8ce8c9b7e Use shared spinner for Code detail refresh
+574f667a8 Document row action reduced motion review
+941d88a72 Use shared loading indicators in Agents forms
+9907f8e80 Preserve focus during Agents form saves
+e24f845d3 Preserve skill catalog context on read failure
+ba52f34c9 Preserve focus during agent skill changes
+c60c2615d Preserve focus during approval decisions
+76b99c78a Preserve focus during agent question responses
+451e5e8bb Restore focus after run approval changes
+5a3759c42 Restore chat focus after resolved interruptions
+59db979e4 Restore focus after inline chat approvals
+42defc443 Define selection control anatomy and guidance
+897d46a13 Define text field anatomy and guidance
+d510dd353 Define progress and pagination anatomy
+39b599036 Define information control anatomy
+15d038188 Define file upload anatomy and recovery
+3a49fe432 Clarify grouped controls and feedback anatomy
+b69d43cec Clarify action and feedback component anatomy
+77dacd50c Clarify navigation and select component anatomy
+54f9c2fb8 Clarify resource card composition and reflow
+36193da9e Define confirmation and first-use anatomy
+f8bc4deaa Clarify AI activity and execution anatomy
+9a11fce01 Clear impact results when workspace scope changes
+6610c1c9f Reset topology when workspace scope changes
+b4f1d43a0 Keep tooltips visible when hovered
+246abd37f Explain unavailable preview annotation
+b489e847c Show connection states without hover
+850e602e7 Show connection recovery guidance in rows
+9b8a995ea Preserve native labels for shared selects
+4cac20c69 Exclude disabled select values from form data
+949cc2b44 Keep select Escape scoped to the open list
+b54e0eea4 Respect focus changes during toast handoff
+c303d8e37 Restore focus after clearing notifications
+ceb815095 Keep new notifications visible in overflow
+40a95f35d Keep inventory retry focus during recovery
+27682fd65 Keep inventory results tied to their query
+66e497a69 Clarify inventory read failures
+77536ff04 Clarify Kuery graph failure feedback
+5f33c85c0 Clarify query playground recovery states
+0853375d1 Keep workspace setup recovery focused
+d453416fa Preserve action menu focus across updates
+46fdb4e79 Keep filter Escape within the open menu
+cc3b1b4a5 Dismiss focused tooltips before enclosing dialogs
+5636929a8 Associate harness guidance with autonomy choices
+dd332ae16 Explain background tool permission prerequisites
+faa2b3a06 Validate pasted service URLs against fixed schemes
+4d71741c0 Apply consistent service URL validation when editing
+043ea440b Keep service endpoint preview aligned with pasted URLs
+bb7601520 Explain unsupported parts of service URLs
+6b5a6f483 Preserve reviewer focus during simulated retry
+fc78c3a15 Make instance refresh failure reviewable
+f2bada9b4 Expose pending instance retry in review fixture
+cfa0f5a22 Keep review controls focused when armed
+0eb2f5242 Keep replica field name stable during validation
+5c30b2754 Keep automation field names separate from help
+142a81433 Explain invalid provider endpoints in App Studio
+730ef2575 Explain invalid provider endpoints in Agents
+21eb27d7d Associate provider errors with the affected field
+12ea5d669 Use shared base URL validation for provider connections
+a5fbb2c59 Guide Agents users toward provider base URLs
+5044049c8 Keep busy buttons visually quiet on hover
+7abaca4a6 Guide webhook validation to the affected field
+8575305b9 Validate webhook name boundaries before creation
+dcd4eb5f6 Simplify Agents creation guidance
+13d3ba2de Focus workload guidance on placement decisions
+8bbc86f61 Focus Edge setup guidance on prerequisites
+e49db923b Validate Edge labels before creation
+726b2f1c4 Make Edge label errors actionable
+9b9492d57 Align Edge label and workload selector validation
+a2c5a0dee Validate Edge names in the connection wizard
+a6c6cb81f Connect design foundations to product fixtures
+dc0efe5a1 Correct component review fixture links
+b85b41b2c Keep unavailable toolset assignments visible
+21af0b6b4 Preserve toolset focus during connection refresh
+2899ba3d2 Add toolset refresh review fixture
+e3b4743a3 Align conversation timestamp validation
+6dae3165b Add complete relationship palette review
+4992fecb1 Avoid implying impact for unknown relations
+9e269120a Wrap long impact relationship labels
+a98e848e3 Align relationship variants with legend styles
+97897f505 Retain Code connection guidance on refresh failure
+f6f538249 Retain repository guidance on refresh failures
+ca195a821 Record Code mobile recovery review
+057aaf706 Retain Edge guidance during refresh failure
+b5d8cf2b2 Retain webhook guidance during refresh failure
+c04800758 Retain Models guidance during refresh failures
+8e3be3e88 Verify Models refresh recovery
+0514320f1 Record App Studio bundle budget investigation
+cc8784436 Avoid claiming models are empty before first read
+08e4f0bc1 Preserve focus during empty infrastructure retry
+5d28fb48d Preserve Agents collection retry focus
+79edadd01 Preserve focus for Agents list recovery
+9b097bf86 Record unused style scan investigation
+117cd0329 Preserve focus on Agents model retry
+bdf522e6b Preserve focus during model catalog retry
+c22714d73 Preserve focus during usage recovery
+564569dc5 Add Agents usage recovery review fixture
+f239b1252 Document notification touch targets
+cb32ad9d9 Record App Studio CSS minifier measurement
+2b2967857 Record PortalKit scan and catalog size results
+43e19f480 Link notification examples across providers
+a67613b65 Add product context for shared contracts
+c6954176b Show exact delivery time in filter tester
+52e6cb8f6 Show exact billing period deadline
+79396e584 Keep mobile workspace canvas usable with expanded rail
+dd59e03ef Improve admin navigation touch targets
+7eecb6072 Focus admin section after navigation
+8db35239a Record full portal validation for navigation
+f5eb33b9b Record runtime variance in bundle budget
+08537e69f Clarify relationship graph list alternative
+f2e18d4ed Adjust App Studio total asset budget
+e09567ab0 Record timestamp component authority and evidence
+b51976020 Make code copying accessible on touch devices
+086c85720 Keep code copy action fixed while scrolling
+8e638b5bc Keep message actions visible for hybrid pointers
+b80454ca4 Keep execution controls accessible on hybrid devices
+7c9f6db05 Size conversation controls for hybrid input
+0cea416e6 Record Agents model picker fixture review
+f28e6091e Record narrow dark picker review
+a1a655b4b Add App Studio model picker review fixture
+0adf28a96 Clarify assisted search alternatives on touch
+3dc3e1676 Focus invalid assisted search fields
+988e65461 Use inline validation for agent creation
+f8b48f26f Clear agent field errors when values change
+a75941071 Show validation on template list fields
+c1626f2d6 Explain digest weekday constraints
+cf9f1eec8 Document tokenized list input in design book
+729941dad Clarify disabled tokenized input state
+2369561ef Align tokenized list focus with inputs
+332b05932 Keep model setup retry focusable while busy
+f9fd16a9f Scope model retry busy state to workspace
+047bfb353 Keep model readiness check focused while busy
+0cfa2d4d6 Add model readiness feedback review
+c5c6fed92 Preserve readiness error in retry specimen
+7014f0652 Preserve Quickstart retry focus and state
+754610b01 Keep Quickstart greeting actions focused
+cfa89d06c Preserve Quickstart focus during row updates
+fc511022d Document and review the terminal dock
+a1e6804b0 Document digest scheduling and preserve editor focus
+c3b78612e Keep the last scheduled weekday keyboard accessible
+5d154026a Document links and preserve service navigation affordances
+1b3cf6523 Preserve repository link navigation affordances
+26f139b6d Preserve Code collection link behavior
+bf33359e0 Preserve edge detail link navigation
+8fdf5fdad Preserve instance detail link navigation
+f34c29a62 Preserve webhook link navigation affordances
+5854a0f94 Preserve trigger webhook link behavior
+e974f2272 Make agent list links keyboard accessible
+feba0d137 Preserve project link navigation affordances
+b7594c1f3 Preserve template catalog link navigation
+85ebf5e2e Preserve Infrastructure collection navigation links
+ae65c1038 Preserve first-use catalog navigation
+2ff661860 Preserve first-use service navigation
+31cbdee3f Preserve first-use workload navigation
+1dd3fe1be Preserve edge connection link navigation
+56a446da6 Preserve edge creation header navigation
+78e2161ae Preserve Code connection setup navigation
+6f324fc99 Preserve first-use repository navigation
+3f4fb6b18 Preserve connection navigation semantics
+7a2cf0c3d Preserve text editing in table filters
+52302a3d4 Preserve composition in shared controls
+6472c573c Improve floating surfaces and selection review
+42fd60ee3 Clarify activity and authority states
+0fbf40cf0 Improve activity and recovery review
+9417c6257 Keep shared IDs and read states distinct
+cd1b973f0 Clarify recovery and command states
+c5f72fc8d Preserve workbench and provisioning recovery
+765e9dde7 Improve tooltip and approval recovery
+c8e7002d7 Improve conversation and fixture interaction states
+bbab723f4 Improve workspace creation recovery and keyboard navigation
+125e7299d Keep dialog and analysis state scoped to requests
+137467f6c Improve usage recovery and tooltip dismissal
+0d7f35bdf Improve usage review and scope edge detail state
+a05eca704 Document modal boundaries and improve chooser recovery
+7a9ba1840 Improve connection recovery and select guidance
+cb3bf5c66 Preserve modified shortcuts in action menus
+590b1d7f5 Clarify filter and dashboard arrangement states
+93f3352b6 Improve filter review and workspace navigation recovery
+a0af534c4 Clarify model requirements and edge setup recovery
+36b6d8b7b Clarify empty cursor pages and workspace errors
+720ad2715 Clarify condition severity and fence service deletion
+f2c2bd213 Explain condition severity and provider readiness
+db722e605 Improve organization navigation recovery
+6c103ac11 Improve action and service retry recovery
+a171a734b Clarify design references and improve assisted search recovery
+6e68ccd2b Align impact graph legend with its theme
+c122b6b33 Keep design review and select behavior consistent
+7ddfeda52 Clarify design review fixture outcomes and setup
+2794c5c0b Document billing and access journeys
+9a7bb440b Correct MCP access details and clarify journey reviews
+da0344f22 Add MCP access review fixture and improve select shortcuts
+b3f2f879d Repair MCP review fixture and document member access
+05b1a3aa2 Improve Edge Services review and provider access guidance
+c8f1c7ae7 Verify Edge refresh fixture and document service accounts
+ebf09b2db Repair run and infrastructure review fixtures
+5eae70dc7 Document sharing and verify run fixture decisions
+d73ac544a Fix flat card surface and strengthen design review
+8aaea3543 Add shared AI presentation review specimen
+ae45f45db Record product fixture browser review
+3d5d9c152 Improve sharing focus and product review fixtures
+cfcc4dc1a Preserve focus and drafts during portal actions
+f52101c5a Clarify toast links and record palette review
+344d6f06f Record MCP create keyboard verification
+3f4acb0fe Clarify query results and expand design review
+87d6f0652 Keep playground results scoped to their authority
+4e5e2927b Keep Code review deletions in the fixture
+ad39fc62f Improve fixture discovery and guard agent selection
+633f73f8e Keep automation submit focused during save
+196f9d686 Improve design review source discovery
+0f61884fd Improve resource recovery and document infrastructure flow
+651791cdc Add shared retry recovery review fixture
+12c1f10af Improve topology review and document shared boundaries
+002afba35 Keep sharing fixture state consistent
+15dc4bd2d Preserve organization retry focus and expand spinner review
+e67fc7037 Document chooser review and modal focus gap
+f7279b587 Add confirmation focus review fixture
+38560ae01 Contain confirmation focus with native dialogs
+a235e79c5 Keep shared popups within modal boundaries
+36a90d73c Clarify infrastructure style ownership
+e749def57 Align provider forms and refresh feedback
+243d23261 Enable keyboard preview annotation selection
+28ca321da Exclude hidden preview annotation targets
+cea004be1 Summarize design branch for review
+264916360 Simplify design book foundations
+192cf4b44 Focus spacing and shape review fixture
+f7c221fa6 Keep implementation guidance contextual
+366f2b530 Add illustrated design change review
+8ee911bac Add menu typeahead and begin Geist component audit
+2d36d74c3 Improve component navigation and feedback accessibility
+d087a4c24 Keep activity disclosure targets stable
