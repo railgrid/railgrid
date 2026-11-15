@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch }
 import {
   ChevronDown,
   Circle,
+  Check,
   Copy,
   LoaderCircle,
   RefreshCw,
@@ -487,12 +488,26 @@ function navigateForFailure(target: FailureRecoveryTarget): void {
   if (agentName) emit('navigate', { kind: 'agent', name: agentName, tab: 'config' })
 }
 
+const copyState = ref<'idle' | 'copied' | 'error'>('idle')
+let copyTimer: ReturnType<typeof setTimeout> | undefined
+let copyGeneration = 0
+
+function resetCopyState(): void {
+  copyGeneration += 1
+  clearTimeout(copyTimer)
+  copyState.value = 'idle'
+}
+
 async function copyRunID(): Promise<void> {
+  resetCopyState()
+  const generation = copyGeneration
   try {
     await navigator.clipboard.writeText(props.runId)
-    toast('ok', 'Run ID copied.')
+    if (generation !== copyGeneration) return
+    copyState.value = 'copied'
+    copyTimer = setTimeout(() => { copyState.value = 'idle' }, 2000)
   } catch {
-    toast('error', 'Could not copy the run ID. Select and copy it from Run details.')
+    if (generation === copyGeneration) copyState.value = 'error'
   }
 }
 
@@ -524,7 +539,9 @@ watch(() => [props.store, props.api, props.runId, props.embeddedAgent] as const,
   void load()
 }, { flush: 'post' })
 onUpdated(() => { void nextTick(() => attachCodeCopy(root.value)) })
+watch(() => props.runId, resetCopyState)
 onBeforeUnmount(() => {
+  resetCopyState()
   boundStore?.removeEventListener('server', onServerEvent as EventListener)
   boundStore = null
   requestGeneration += 1
@@ -724,7 +741,11 @@ onBeforeUnmount(() => {
               <section class="agents-run-inspector-section" aria-labelledby="agents-run-details-heading">
                 <h2 id="agents-run-details-heading" class="sr-only">Run details</h2>
                 <div class="agents-runmeta">
-                  <div class="agents-runmeta-cell"><span class="agents-runmeta-k">run ID</span><span class="agents-runmeta-v agents-run-id"><span>{{ run.id }}</span><button class="k-icon-action" type="button" aria-label="Copy run ID" @click="copyRunID"><Copy :size="14" :stroke-width="1.75" aria-hidden="true" /></button></span></div>
+                  <div class="agents-runmeta-cell">
+                    <span class="agents-runmeta-k">run ID</span>
+                    <span class="agents-runmeta-v agents-run-id"><span>{{ run.id }}</span><button class="k-icon-action" type="button" :aria-label="copyState === 'copied' ? 'Run ID copied' : 'Copy run ID'" :data-k-tip="copyState === 'copied' ? 'Copied' : 'Copy run ID'" @click="copyRunID"><Check v-if="copyState === 'copied'" :size="14" :stroke-width="1.75" aria-hidden="true" /><Copy v-else :size="14" :stroke-width="1.75" aria-hidden="true" /></button></span>
+                    <span class="agents-copy-feedback" :class="{ 'agents-copy-feedback--error': copyState === 'error' }" role="status" aria-live="polite">{{ copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Could not copy. Select the run ID to copy it.' : '' }}</span>
+                  </div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">agent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'agent', name: run.agent, tab: 'chat' })">{{ run.agent }}</button></span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">trigger</span><span class="agents-runmeta-v"><span class="mono">{{ run.trigger }}</span> <span class="muted">({{ run.class }})</span></span></div>
                   <div v-if="run.sessionID" class="agents-runmeta-cell"><span class="agents-runmeta-k">session</span><span class="agents-runmeta-v mono">{{ run.sessionID }}</span></div>
