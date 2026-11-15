@@ -127,7 +127,7 @@ describe('command receipts', () => {
     expect(text(view.element)).not.toContain('Success')
     view.element.querySelector<HTMLButtonElement>('[aria-label="Copy command and output"]')!.click()
     await settleVue()
-    expect(text(view.element.querySelector('[role="status"]'))).toBe('Could not copy')
+    expect(text(view.element.querySelector('[role="status"]'))).toBe('Could not copy. Select the text to copy it.')
     await view.setProps({ execution: { command: 'false', status: 'succeeded', exitCode: 1, output: ['failed'] } })
     expect(text(view.element)).toContain('Failed · exit 1')
     expect(text(view.element)).not.toContain('Success')

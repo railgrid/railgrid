@@ -88,6 +88,20 @@ function buttonWithText(root: ParentNode, value: string): HTMLButtonElement {
   return button
 }
 
+async function openAutomationMenu(root: HTMLElement, name: string): Promise<HTMLElement> {
+  const trigger = root.querySelector<HTMLButtonElement>(`button[aria-label="More actions for ${name}"]`)!
+  trigger.click()
+  await settleVue()
+  const menu = document.getElementById(trigger.getAttribute('aria-controls')!)
+  expect(menu).not.toBeNull()
+  return menu!
+}
+
+async function selectAutomationAction(root: HTMLElement, name: string, action: string): Promise<void> {
+  buttonWithText(await openAutomationMenu(root, name), action).click()
+  await settleVue()
+}
+
 async function chooseRunFilter(view: MountedVue, index: number, label: string): Promise<HTMLButtonElement> {
   const triggers = view.element.querySelectorAll<HTMLButtonElement>('.k-table__filter-trigger')
   const trigger = triggers[index]
@@ -1717,7 +1731,7 @@ describe('Automation.vue', () => {
     expect(createSchedule).toHaveBeenCalledWith(expect.objectContaining({
       name: 'daily', agentRef: 'scout', type: 'cron', schedule: '0 9 * * *', task: 'Summarise open PRs', suspend: false,
     }))
-    expect(buttonWithText(view.element, 'Creating…').disabled).toBe(true)
+    expect(buttonWithText(view.element, 'Creating…').getAttribute('aria-disabled')).toBe('true')
     expect(form.getAttribute('aria-busy')).toBe('true')
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settleVue()
@@ -1759,16 +1773,17 @@ describe('Automation.vue', () => {
     const dialog = view.element.querySelector<HTMLDialogElement>('dialog')!
     const form = dialog.querySelector('form')!
     const name = form.querySelector<HTMLInputElement>('input[name="name"]')!
-    const cancel = buttonWithText(dialog, 'Cancel')
     expect(dialog.open).toBe(true)
 
     setValue(name, 'daily')
+    setValue(form.querySelector<HTMLInputElement>('input[name="schedule"]')!, '0 9 * * *')
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settleVue()
+    expect(createSchedule).toHaveBeenCalledOnce()
     const escape = new Event('cancel', { cancelable: true })
     dialog.dispatchEvent(escape)
     expect(escape.defaultPrevented).toBe(true)
-    expect(cancel.disabled).toBe(true)
+    expect(buttonWithText(dialog, 'Cancel').disabled).toBe(true)
     expect(view.navigations).toEqual([])
 
     pendingCreate.reject(new Error('A schedule with that name already exists.'))
@@ -1776,6 +1791,7 @@ describe('Automation.vue', () => {
     expect(text(dialog.querySelector('[role="alert"]'))).toContain('A schedule with that name already exists.')
     expect(name.value).toBe('daily')
     expect(dialog.open).toBe(true)
+    const cancel = buttonWithText(dialog, 'Cancel')
     expect(cancel.disabled).toBe(false)
     expect(view.navigations).toEqual([])
 
@@ -2040,9 +2056,9 @@ describe('Automation.vue', () => {
     const triggers = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout' })
 
     buttonWithText(schedules.element, 'New schedule').click()
-    schedules.element.querySelector<HTMLButtonElement>('button[aria-label="Edit daily/digest"]')!.click()
+    await selectAutomationAction(schedules.element, 'daily/digest', 'Edit')
     buttonWithText(triggers.element, 'New trigger').click()
-    triggers.element.querySelector<HTMLButtonElement>('button[aria-label="Edit on/issue"]')!.click()
+    await selectAutomationAction(triggers.element, 'on/issue', 'Edit')
 
     expect(schedules.navigations).toEqual([
       { kind: 'automation', resource: 'schedule', agent: 'scout', action: 'create' },
@@ -2103,13 +2119,16 @@ describe('Automation.vue', () => {
 
   it('does not navigate from a late save after its routed form unmounts', async () => {
     const pending = deferred<Schedule>()
-    const api = stubApi({ createSchedule: vi.fn().mockImplementation(() => pending.promise) })
+    const createSchedule = vi.fn().mockImplementation(() => pending.promise)
+    const api = stubApi({ createSchedule })
     const store = storeWithAgent(api)
     const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout', createRoute: true })
     setValue(view.element.querySelector<HTMLInputElement>('input[name="name"]')!, 'daily')
+    setValue(view.element.querySelector<HTMLInputElement>('input[name="schedule"]')!, '0 9 * * *')
 
     view.element.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settleVue()
+    expect(createSchedule).toHaveBeenCalledOnce()
     view.unmount()
     mounted.splice(mounted.indexOf(view), 1)
     pending.resolve({ metadata: { name: 'daily' }, spec: { agentRef: 'scout', type: 'cron' } })
@@ -2129,7 +2148,7 @@ describe('Automation.vue', () => {
     store.schedules.hasSnapshot = true
     const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout' })
 
-    view.element.querySelector<HTMLButtonElement>('button[aria-label="Pause daily"]')!.click()
+    await selectAutomationAction(view.element, 'daily', 'Pause')
     await settleVue()
     expect(schedule.spec.suspend).toBe(true)
     expect(text(view.element)).toContain('paused')
@@ -2138,7 +2157,7 @@ describe('Automation.vue', () => {
     expect(schedule.spec.suspend).toBe(false)
     expect(text(view.element)).toContain('armed')
 
-    view.element.querySelector<HTMLButtonElement>('button[aria-label="Delete daily"]')!.click()
+    await selectAutomationAction(view.element, 'daily', 'Delete')
     await settleVue()
     expect(deleteSchedule).not.toHaveBeenCalled()
     resolveConfirm(true)
@@ -2157,22 +2176,21 @@ describe('Automation.vue', () => {
     store.schedules.hasSnapshot = true
     const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout' })
 
-    view.element.querySelector<HTMLButtonElement>('button[aria-label="Delete daily"]')!.click()
+    await selectAutomationAction(view.element, 'daily', 'Delete')
     await settleVue(2)
-    const actionButtons = [...view.element.querySelectorAll<HTMLButtonElement>('td:last-child button')]
-    expect(actionButtons.every(button => button.disabled)).toBe(true)
-
-    view.element.querySelector<HTMLButtonElement>('button[aria-label="Run daily now"]')!.click()
-    view.element.querySelector<HTMLButtonElement>('button[aria-label="Pause daily"]')!.click()
-    view.element.querySelector<HTMLButtonElement>('button[aria-label="Delete daily"]')!.click()
-    await settleVue(2)
+    const busy = view.element.querySelector<HTMLButtonElement>('button[aria-busy="true"][aria-haspopup="menu"]')!
+    expect(busy.getAttribute('aria-disabled')).toBe('true')
+    busy.click()
+    await settleVue()
+    expect(busy.getAttribute('aria-expanded')).toBe('false')
     expect(runSchedule).not.toHaveBeenCalled()
     expect(patchSchedule).not.toHaveBeenCalled()
     expect(deleteSchedule).not.toHaveBeenCalled()
 
     resolveConfirm(false)
-    await settleVue(2)
-    expect([...view.element.querySelectorAll<HTMLButtonElement>('td:last-child button')].every(button => !button.disabled)).toBe(true)
+    await settleVue()
+    const menu = await openAutomationMenu(view.element, 'daily')
+    expect([...menu.querySelectorAll('[role="menuitem"]')].map(text)).toEqual(['Edit', 'Pause', 'Run now', 'Delete'])
   })
 
   it('offers Enable only on a disabled automation and clears the disabling through the enable verb', async () => {
@@ -2191,14 +2209,18 @@ describe('Automation.vue', () => {
     const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout' })
 
     expect(text(view.element)).toContain('2MiB protocol limit')
-    expect(view.element.querySelector('button[aria-label="Enable on-push"]')).toBeNull()
-    view.element.querySelector<HTMLButtonElement>('button[aria-label="Enable on-pr"]')!.click()
+    const healthyMenu = await openAutomationMenu(view.element, 'on-push')
+    expect([...healthyMenu.querySelectorAll('[role="menuitem"]')].map(text)).not.toContain('Enable')
+    view.element.querySelector<HTMLButtonElement>('button[aria-label="More actions for on-push"]')!.click()
+    await settleVue()
+    await selectAutomationAction(view.element, 'on-pr', 'Enable')
     await settleVue(2)
     expect(enableTrigger).toHaveBeenCalledWith('on-pr')
     expect(disabled.status.disabledReason).toBeUndefined()
     expect(text(view.element)).toContain('on-pr')
     expect(text(view.element)).not.toContain('2MiB protocol limit')
-    expect(view.element.querySelector('button[aria-label="Enable on-pr"]')).toBeNull()
+    const recoveredMenu = await openAutomationMenu(view.element, 'on-pr')
+    expect([...recoveredMenu.querySelectorAll('[role="menuitem"]')].map(text)).not.toContain('Enable')
   })
 
   it('puts the disabling back when enable fails', async () => {
@@ -2214,12 +2236,13 @@ describe('Automation.vue', () => {
     store.schedules.hasSnapshot = true
     const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout' })
 
-    view.element.querySelector<HTMLButtonElement>('button[aria-label="Enable daily"]')!.click()
+    await selectAutomationAction(view.element, 'daily', 'Enable')
     await settleVue(2)
     expect(enableSchedule).toHaveBeenCalledWith('daily')
     expect(schedule.status?.disabledReason).toContain('agent gone')
     expect(text(view.element)).toContain('agent gone')
-    expect(view.element.querySelector('button[aria-label="Enable daily"]')).not.toBeNull()
+    const menu = await openAutomationMenu(view.element, 'daily')
+    expect([...menu.querySelectorAll('[role="menuitem"]')].map(text)).toContain('Enable')
   })
 
   it('queues run-now work and exposes the returned run as opt-in navigation', async () => {
@@ -2230,7 +2253,7 @@ describe('Automation.vue', () => {
     store.schedules.hasSnapshot = true
     const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout' })
 
-    view.element.querySelector<HTMLButtonElement>('button[aria-label="Run daily now"]')!.click()
+    await selectAutomationAction(view.element, 'daily', 'Run now')
     await settleVue()
     expect(runSchedule).toHaveBeenCalledWith('daily')
     buttonWithText(document, 'View run').click()

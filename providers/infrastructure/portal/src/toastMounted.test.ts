@@ -350,7 +350,7 @@ describe('mounted Vue ToastHost behavior', () => {
     expect(action).not.toBeNull()
     action!.click()
     await flush()
-    expect(action!.disabled).toBe(true)
+    expect(action!.getAttribute('aria-disabled')).toBe('true')
 
     const interruption = enqueue(scope, { kind: 'error', message: 'temporary interruption' })
     await flush()
@@ -358,7 +358,7 @@ describe('mounted Vue ToastHost behavior', () => {
     dismissToast(interruption, scope)
     await flush()
     expect(visibleToast()?.dataset.toastId).toBe(String(actionID))
-    expect(visibleToast()?.querySelector<HTMLButtonElement>('.k-toast__action')?.disabled).toBe(true)
+    expect(visibleToast()?.querySelector<HTMLButtonElement>('.k-toast__action')?.getAttribute('aria-disabled')).toBe('true')
 
     resolve()
     await flush()
@@ -423,12 +423,12 @@ describe('mounted Vue ToastHost behavior', () => {
     await flush()
     toastRoot('primary')?.querySelector<HTMLButtonElement>('.k-toast__action')?.click()
     await flush()
-    expect(toastRoot('primary')?.querySelector<HTMLButtonElement>('.k-toast__action')?.disabled).toBe(true)
+    expect(toastRoot('primary')?.querySelector<HTMLButtonElement>('.k-toast__action')?.getAttribute('aria-disabled')).toBe('true')
 
     unmountComponent(primary)
     await flush()
     const fallbackAction = toastRoot('fallback')?.querySelector<HTMLButtonElement>('.k-toast__action')
-    expect(fallbackAction?.disabled).toBe(true)
+    expect(fallbackAction?.getAttribute('aria-disabled')).toBe('true')
     fallbackAction?.click()
     expect(run).toHaveBeenCalledTimes(1)
 
@@ -436,7 +436,7 @@ describe('mounted Vue ToastHost behavior', () => {
     await flush()
     expect(visibleToast('fallback')?.textContent).toContain('Action failed. Try again.')
     expect(visibleToast('fallback')?.textContent).not.toContain('secret action details')
-    expect(fallbackAction?.disabled).toBe(false)
+    expect(fallbackAction?.getAttribute('aria-disabled')).toBeNull()
     expect(fallbackAction?.getAttribute('aria-busy')).toBeNull()
     expect(fallback).toBeDefined()
   })
