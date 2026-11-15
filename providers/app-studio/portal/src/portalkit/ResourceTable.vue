@@ -589,6 +589,13 @@ function setPageSize(value: number) {
   emitChange('page-size', 1, null)
 }
 
+const searchInput = ref<HTMLInputElement | null>(null)
+
+function clearQuery() {
+  setQuery('')
+  searchInput.value?.focus()
+}
+
 function setQuery(value: string) {
   if (value !== currentQuery.value) clearSelection()
   if (props.query === undefined) query.value = value
@@ -1158,12 +1165,12 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
           :aria-hidden="selectionToolbarActive ? 'true' : undefined"
           :inert="selectionToolbarActive"
         >
-          <label v-if="searchable" class="k-table__search">
+          <div v-if="searchable" class="k-table__search">
             <span class="sr-only" style="position:absolute;block-size:1px;inline-size:1px;overflow:hidden;clip:rect(0 0 0 0)">Search {{ tableAriaLabel }}</span>
             <Search class="k-table__search-icon" :stroke-width="1.75" aria-hidden="true" />
-            <input :value="currentQuery" class="k-table__search-input" type="search" :aria-label="`Search ${tableAriaLabel}`" :placeholder="searchPlaceholder" autocomplete="off" @input="setQuery(($event.target as HTMLInputElement).value)">
-            <button v-if="currentQuery" class="k-table__search-clear" type="button" aria-label="Clear search" @click="setQuery('')"><X :stroke-width="1.75" aria-hidden="true" /></button>
-          </label>
+            <input ref="searchInput" :value="currentQuery" class="k-table__search-input" type="search" :aria-label="`Search ${tableAriaLabel}`" :placeholder="searchPlaceholder" autocomplete="off" @input="setQuery(($event.target as HTMLInputElement).value)">
+            <button v-if="currentQuery" class="k-table__search-clear" type="button" aria-label="Clear search" @click="clearQuery"><X :stroke-width="1.75" aria-hidden="true" /></button>
+          </div>
           <ResourceTableFilter
             v-for="filter in filters"
             :key="filter.key"
