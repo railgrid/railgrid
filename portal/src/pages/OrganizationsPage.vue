@@ -15,7 +15,7 @@ limitations under the License.
 -->
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   AlertCircle,
@@ -34,10 +34,12 @@ const tenant = useTenantStore()
 const route = useRoute()
 const router = useRouter()
 
+const heading = ref<HTMLElement | null>(null)
 const loading = ref(false)
 const loaded = ref(false)
 const switchingOrg = ref<string | null>(null)
 const failedSwitchOrg = ref<string | null>(null)
+const failedContinue = ref<{ org: OrgRow; destination: string } | null>(null)
 const localError = ref<string | null>(null)
 let organizationsLoadGeneration = 0
 
@@ -72,14 +74,15 @@ const backPath = computed(() => validatedInternalPath(route.query.from))
 const pageError = computed(() => localError.value)
 
 async function loadOrganizations() {
+  if (loading.value) return
   const requestGeneration = ++organizationsLoadGeneration
   loading.value = true
   failedSwitchOrg.value = null
-  localError.value = null
+  failedContinue.value = null
   try {
     await tenant.fetchOrgs()
     if (requestGeneration !== organizationsLoadGeneration) return
-    if (tenant.error) localError.value = tenant.error
+    localError.value = tenant.error || null
   } catch (error: unknown) {
     if (requestGeneration === organizationsLoadGeneration) {
       localError.value = error instanceof Error ? error.message : 'Failed to load organizations.'
@@ -107,30 +110,40 @@ function createdLabel(org: OrgRow): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(date)
 }
 
-async function chooseOrganization(org: OrgRow) {
+async function chooseOrganization(org: OrgRow, destination?: string, preservingError = false) {
   if (switchingOrg.value) return
   // The chooser can be reached even when the requested organization is
   // already active (for example from a stale account-menu link). Continuing
   // must still leave the chooser; otherwise the current organization row is
   // a dead end for keyboard and pointer users.
   if (org.uuid === tenant.orgUUID) {
-    localError.value = null
+    if (!preservingError) localError.value = null
     failedSwitchOrg.value = null
+    failedContinue.value = null
+    switchingOrg.value = org.uuid
+    const target = destination ?? (backPath.value === '/' ? `/${org.uuid}/workspaces` : backPath.value)
     try {
       // Without an explicit return destination, enter the chosen org directly
       // instead of resolving landing preferences again.
-      await router.replace(backPath.value === '/' ? `/${org.uuid}/workspaces` : backPath.value)
+      const failure = await router.replace(target)
+      if (failure) throw new Error('Failed to continue. Try again.')
+      localError.value = null
     } catch (error: unknown) {
+      failedContinue.value = { org, destination: target }
       localError.value = error instanceof Error ? error.message : 'Failed to continue.'
+    } finally {
+      switchingOrg.value = null
     }
     return
   }
 
   switchingOrg.value = org.uuid
-  localError.value = null
+  if (!preservingError) localError.value = null
+  failedContinue.value = null
   try {
     failedSwitchOrg.value = null
-    await router.push(`/${org.uuid}/workspaces`)
+    const failure = await router.push(`/${org.uuid}/workspaces`)
+    if (failure) throw new Error('Failed to switch organization. Try again.')
   } catch (error: unknown) {
     failedSwitchOrg.value = org.uuid
     localError.value = error instanceof Error ? error.message : 'Failed to switch organization.'
@@ -143,7 +156,6 @@ async function retryFailedSwitch() {
   const orgUUID = failedSwitchOrg.value
   if (!orgUUID || switchingOrg.value) return
   switchingOrg.value = orgUUID
-  localError.value = null
   try {
     tenant.clearError()
     await tenant.fetchWorkspaces(orgUUID, { selectDefault: false })
@@ -151,8 +163,10 @@ async function retryFailedSwitch() {
       localError.value = tenant.error
       return
     }
+    const failure = await router.push(`/${orgUUID}/workspaces`)
+    if (failure) throw new Error('Failed to switch organization. Try again.')
     failedSwitchOrg.value = null
-    await router.push(`/${orgUUID}/workspaces`)
+    localError.value = null
   } catch (error: unknown) {
     localError.value = error instanceof Error ? error.message : 'Failed to load workspaces.'
   } finally {
@@ -160,10 +174,20 @@ async function retryFailedSwitch() {
   }
 }
 
-function retry() {
-  if (failedSwitchOrg.value) void retryFailedSwitch()
-  else void loadOrganizations()
+async function retry() {
+  if (loading.value || switchingOrg.value) return
+  if (failedContinue.value) await chooseOrganization(failedContinue.value.org, failedContinue.value.destination, true)
+  else if (failedSwitchOrg.value) await retryFailedSwitch()
+  else await loadOrganizations()
 }
+
+watch(pageError, async (error, previous) => {
+  const focusedRetry = document.activeElement instanceof HTMLElement && document.activeElement.dataset.organizationsRetry === 'true'
+    ? document.activeElement : null
+  if (error || !previous || !focusedRetry) return
+  await nextTick()
+  if (document.activeElement === focusedRetry || document.activeElement === document.body) heading.value?.focus()
+}, { flush: 'sync' })
 
 onMounted(() => { void loadOrganizations() })
 </script>
@@ -189,7 +213,7 @@ onMounted(() => { void loadOrganizations() })
       <section class="w-full max-w-2xl" aria-labelledby="organization-chooser-title">
         <div class="mb-5">
           <div class="min-w-0">
-            <h1 id="organization-chooser-title" class="font-sans mt-2 text-[24px] font-semibold tracking-tight text-text-primary">
+            <h1 id="organization-chooser-title" ref="heading" tabindex="-1" class="font-sans mt-2 text-[24px] font-semibold tracking-tight text-text-primary">
               Choose an organization to continue
             </h1>
           </div>
@@ -204,9 +228,9 @@ onMounted(() => { void loadOrganizations() })
             <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
             <span>{{ pageError }}</span>
           </span>
-          <button type="button" class="k-btn k-btn--text shrink-0 text-[10px]" @click="retry">
+          <button type="button" class="k-btn k-btn--text shrink-0 text-[10px]" data-organizations-retry="true" :aria-disabled="loading || switchingOrg !== null" :aria-busy="loading || switchingOrg !== null" @click="retry">
             <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
-            Retry
+            {{ loading || switchingOrg ? 'Retrying…' : 'Retry' }}
           </button>
         </div>
 
@@ -223,7 +247,7 @@ onMounted(() => { void loadOrganizations() })
               </div>
             </div>
 
-            <div v-if="(!loaded || loading) && tenant.orgs.length === 0" class="flex min-h-52 flex-col items-center justify-center gap-2 px-4 py-8 text-center text-[11px] text-text-muted" role="status">
+            <div v-if="(!loaded || (loading && !pageError)) && tenant.orgs.length === 0" class="flex min-h-52 flex-col items-center justify-center gap-2 px-4 py-8 text-center text-[11px] text-text-muted" role="status">
               <Loader2 class="h-5 w-5 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
               <span>Loading organizations…</span>
             </div>
@@ -231,9 +255,9 @@ onMounted(() => { void loadOrganizations() })
             <div v-else-if="pageError && tenant.orgs.length === 0" class="flex min-h-52 flex-col items-center justify-center gap-3 px-4 py-8 text-center" role="alert">
               <AlertCircle class="h-5 w-5 text-danger" :stroke-width="1.75" aria-hidden="true" />
               <p class="max-w-sm text-[11px] text-danger">{{ pageError }}</p>
-              <button type="button" class="k-btn k-btn--ghost text-[11px]" @click="retry">
+              <button type="button" class="k-btn k-btn--ghost text-[11px]" data-organizations-retry="true" :aria-disabled="loading || switchingOrg !== null" :aria-busy="loading || switchingOrg !== null" @click="retry">
                 <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
-                Retry
+                {{ loading ? 'Retrying…' : 'Retry' }}
               </button>
             </div>
 
