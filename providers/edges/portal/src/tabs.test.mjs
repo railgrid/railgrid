@@ -58,8 +58,9 @@ describe('Edges portal conformance', () => {
     }
 
     expect(edgeCollection).toMatch(/ResourceTableDeleteButton/)
-    expect(services).toMatch(/ResourceTableEditButton/)
-    expect(services).toMatch(/ResourceTableDeleteButton/)
+    expect(services).toMatch(/<ActionMenu[^>]+More actions for service/)
+    expect(services).toMatch(/id: 'edit', label: 'Edit service'/)
+    expect(services).toMatch(/id: 'delete', label: 'Delete service'/)
     expect(workloads).toMatch(/ResourceTableDeleteButton/)
     expect(workloads).toMatch(/<button[\s\S]*class="k-table-action"[\s\S]*:aria-expanded="expanded === row\.name"[\s\S]*@click\.stop="toggle\(String\(row\.name\)\)"/)
   })

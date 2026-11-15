@@ -34,7 +34,7 @@ describe('Edges collection route-state regression', () => {
     expect(app).not.toMatch(/edges\.value\.length === 0[\s\S]*navigate\('connect\/edge'/)
     expect(collection).toMatch(/import FirstRunGuide from '\.\/portalkit\/FirstRunGuide\.vue'/)
     expect(collection).toMatch(/const hasActiveTableFilters = computed\(/)
-    expect(collection).toMatch(/const showFirstRun = computed\(\(\) => props\.loaded && !props\.error && props\.edges\.length === 0 && !hasActiveTableFilters\.value\)/)
+    expect(collection).toMatch(/const showFirstRun = computed\(\(\) => props\.loaded && props\.edges\.length === 0 && !hasActiveTableFilters\.value\)/)
     expect(collection).toMatch(/v-model:query="tableQuery"/)
     expect(collection).toMatch(/v-model:filter-values="tableFilters"/)
     expect(collection).toMatch(/<FirstRunGuide[\s\S]*title="Connect your first edge"[\s\S]*primary-label="Connect edge"/)

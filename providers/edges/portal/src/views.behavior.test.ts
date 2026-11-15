@@ -314,12 +314,12 @@ describe('edge dashboard read state', () => {
       await flush()
       expect(state.loaded).toBe(true)
       expect(state.edges).toEqual(snapshot)
-      expect(state.error).toContain('Hub is unavailable')
+      expect(state.error).toBe('Try again.')
       expect(state.loading).toBe(false)
     } finally { mounted.unmount() }
   })
 
-  it('keeps rows through token renewal and fences a different caller', async () => {
+  it('fences token renewal without a host transport and subsequent caller changes', async () => {
     const mounted = await mount(DashboardTile, { context: { tenant: 'tenant-a', token: 'old-token', user: { userId: 'user-a' } } })
     try {
       await flush()
@@ -328,8 +328,8 @@ describe('edge dashboard read state', () => {
       api.listEdges.mockReturnValueOnce(renewed.promise)
       mounted.instance.props.context = { tenant: 'tenant-a', token: 'new-token', user: { userId: 'user-a' } }
       await flush()
-      expect(state.loaded).toBe(true)
-      expect(state.edges).toEqual([edge])
+      expect(state.loaded).toBe(false)
+      expect(state.edges).toEqual([])
 
       api.listEdges.mockResolvedValueOnce([{ ...edge, name: 'caller-b-edge' }])
       mounted.instance.props.context = { tenant: 'tenant-a', token: 'caller-b-token', user: { userId: 'user-b' } }
@@ -1233,6 +1233,7 @@ describe('edge list views', () => {
   it('labels blank-host services as agent loopback and treats no-auth credentials as not required', async () => {
     const detail = {
       ...service,
+      edgeKind: 'LinuxServer',
       host: '',
       targetNamespace: '',
       targetName: '',
@@ -1765,9 +1766,10 @@ describe('edge detail actions', () => {
       await flush()
       expect(state.deletingServiceName).toBe('svc-a')
       expect(confirm.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({
-        title: 'Delete service "svc-a"?',
+        title: 'Delete service',
+        message: expect.stringContaining('"svc-a"'),
         danger: true,
-        confirmLabel: 'Delete',
+        confirmLabel: 'Delete service',
       }))
 
       pendingDelete.reject({ reason: 'HTTPError', message: 'service delete failed' })
