@@ -1404,7 +1404,7 @@ railgrid-provider-agents .agents-connection-review > div { padding-bottom: 12px;
 railgrid-provider-agents .agents-connection-review code { font-family: var(--font-mono); font-size: 12px; }
 @container k-create-surface (max-width: 899px) {
   railgrid-provider-agents .agents-connection-workbench { grid-template-columns: minmax(0, 1fr); }
-  railgrid-provider-agents .agents-connection-guidance { padding: 0 18px 18px; }
+  railgrid-provider-agents .agents-connection-guidance { padding: 18px; }
 }
 @container k-create-surface (min-width: 1800px) {
   railgrid-provider-agents .agents-connection-primary { display: grid; grid-template-columns: 12rem minmax(0, 1fr); grid-template-rows: 1fr auto; }

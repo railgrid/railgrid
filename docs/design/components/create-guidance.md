@@ -8,9 +8,15 @@
 
 When a route-owned form benefits from domain help, place `CreateGuidance.vue`
 beside a `k-create-fields` region inside `k-create-surface--guided`. The rail
-contains only timely prerequisites, a live and non-secret summary of what Railgrid
-will create, and controller-owned next steps. Provider copy and value derivation
-remain local.
+contains only information that helps the user decide or prepare before submitting,
+such as an essential prerequisite or a consequential outcome. Provider copy and
+value derivation remain local.
+
+When a displayed value previews a transformation of the draft, calculate it
+from the value that will actually be submitted. For example, the [Edge service
+creation fixture](http://127.0.0.1:5199/product.html?view=create) previews a
+pasted URL's scheme and port before the host field loses focus; invalid URLs
+show a correction prompt instead of a misleading endpoint.
 
 ## Use when
 
@@ -20,8 +26,9 @@ it beside the `k-create-fields` region inside `k-create-surface--guided`.
 ## Avoid when
 
 Do not turn the rail into a general documentation surface or move provider copy
-and value derivation into the shared component. Its content is limited to timely
-prerequisites, a live non-secret summary, and controller-owned next steps.
+and value derivation into the shared component. Do not repeat form values or list
+routine post-creation steps merely to fill the rail. Put field-specific format,
+reachability, and validation help beside the relevant control.
 
 ## Anatomy and variants
 
@@ -31,15 +38,15 @@ the shared component supplies the guidance-rail structure.
 
 ## Behavior
 
-The rail presents a live, non-secret summary of what Railgrid will create and
-controller-owned next steps. It contains timely prerequisites rather than stale
-or unrelated help.
+Optional prerequisites, non-secret values, and next steps appear only when they
+help a decision in the current flow. Recovery flows may use next steps when those
+steps are the action available now.
 
 ## Content
 
-Include only timely prerequisites, a live and non-secret summary of what Railgrid
-will create, and controller-owned next steps. Provider copy and value derivation
-remain local.
+Explain a prerequisite or consequence once, using concise provider-owned copy.
+Never echo secrets. Keep field-specific help with its field and associate it
+with the control for assistive technology.
 
 ## Layout and responsive behavior
 
@@ -59,6 +66,22 @@ accessible structure and preserve the form's control labels.
 The canonical component is [`CreateGuidance.vue`](../../../provider-sdk/portalkit-vue/CreateGuidance.vue),
 with shared styling in [`railgrid-ui.css`](../../../provider-sdk/portalkit/railgrid-ui.css).
 Distribution is checked by `make verify-portalkit`.
+
+The Agents [toolset](http://127.0.0.1:5198/?provider=agents&route=%23%2Fcreate%2Ftoolset)
+and [webhook](http://127.0.0.1:5198/?provider=agents&route=%23%2Fcreate%2Fwebhook)
+fixtures keep the rail to the access or setup consequence. Field-specific help
+stays with the controls, without repeating the entered values. Both use
+simulated data.
+
+The [Edge connection fixture](http://127.0.0.1:5199/wizard.html) keeps the
+installation prerequisite in the rail and places name and label guidance
+beside the fields. The later installation step retains its command and masked
+token flow. The fixture uses simulated data.
+
+The [Edge workload fixture](http://127.0.0.1:5199/product.html?view=workload-create)
+keeps the derived placement estimate while leaving field values and validation
+beside their controls. Singleton distinguishes one possible placement from the
+number of matching edges; the preview is based on the currently loaded edges.
 
 ## Related guidance
 
