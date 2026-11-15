@@ -274,7 +274,7 @@ test('choosing a remembered org after sign-in exits the chooser; explicit return
     await router.push('/organizations')
     const choose = runInNewContext(`${code}\nchooseOrganization`, {
       router, tenant, backPath: { value: back }, switchingOrg: { value: null },
-      failedSwitchOrg: { value: null }, localError: { value: null },
+      failedSwitchOrg: { value: null }, failedContinue: { value: null }, localError: { value: null },
     })
     await choose({ uuid: O })
     assert.equal(router.currentRoute.value.fullPath, back === '/' ? `/${O}/workspaces` : resource)
