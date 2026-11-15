@@ -102,7 +102,11 @@ railgrid-provider-infrastructure .template-card:hover {
 railgrid-provider-infrastructure .view-value-code { text-transform: none; max-width: 100%; white-space: normal; }
 railgrid-provider-infrastructure .view-value-text { min-width: 0; overflow-wrap: anywhere; }
 railgrid-provider-infrastructure .view-value-link { max-width: 100%; }
-railgrid-provider-infrastructure .view-value-copy { flex-shrink: 0; }
+railgrid-provider-infrastructure .view-value-code-wrap { display: inline-grid; max-width: 100%; gap: 4px; }
+railgrid-provider-infrastructure .view-value-copy { flex-shrink: 0; background: transparent; border-color: transparent; }
+railgrid-provider-infrastructure .view-value-copy:hover { background: var(--color-surface-hover); }
+railgrid-provider-infrastructure .view-value-copy-feedback { color: var(--color-text-secondary); font-size: 11px; }
+railgrid-provider-infrastructure .view-value-copy-feedback--error { color: var(--color-danger); }
 @media (pointer: coarse), (any-pointer: coarse) {
   railgrid-provider-infrastructure .view-value-link { min-height: 44px; min-width: 44px; }
 }

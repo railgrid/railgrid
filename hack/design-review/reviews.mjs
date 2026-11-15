@@ -33,6 +33,7 @@ export const reviews = {
   'components.radio': review('radio', 'Radio states', 'Try arrow keys, disabled examples and required validation.', [[css]]),
   'components.checkbox': review('checkbox', 'Checkbox states', 'Compare checked, mixed, disabled and keyboard focus states.', [[css]]),
   'components.toggle': review('toggle', 'Toggle states', 'Use Space or click to change the setting. Compare the disabled setting and its help.', [[css]]),
+  'components.copy-control': review('copy-control', 'Copy a resource value', 'Try local clipboard feedback in the synthetic value, diagnostic and handoff examples.', [[css]]),
   'components.file-upload': review('file-upload', 'File upload states', 'Try a text file and compare composer attachments with simulated upload outcomes.', [[css]]),
   'components.field-group': review('field-group', 'Grouped choices', 'Compare a single group explanation with descriptions beside each choice.', [[css]]),
   'components.search-input': review('search-input', 'Collection search', 'Review search states in an Edge Services table.', [[css]]),
