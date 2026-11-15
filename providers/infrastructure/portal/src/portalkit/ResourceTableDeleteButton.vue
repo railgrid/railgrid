@@ -1,55 +1,18 @@
-<!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies
-     under providers/*/portal/src/portalkit/; edit here and run
-     `make sync-portalkit`.
-
-     Compact, accessible delete trigger for ResourceTable action cells. The
-     destructive confirmation remains the caller's responsibility via
-     confirmDialog({ danger: true }). -->
+<!-- CANONICAL SOURCE — edit here, then run make sync-portalkit. -->
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { Loader2, Trash2 } from 'lucide-vue-next'
-import ResourceTableActionTooltip from './ResourceTableActionTooltip.vue'
-import { ensureRailgridUIStyles } from '../portalkit/styles'
+import { Trash2 } from 'lucide-vue-next'
+import ResourceTableActionButton from './ResourceTableActionButton.vue'
 
-// Standalone provider portals load the exact canonical recipe through the
-// shared helper; the host portal already imports the same railgrid-ui.css file.
-ensureRailgridUIStyles()
-const button = ref<HTMLButtonElement | null>(null)
-
-const props = withDefaults(defineProps<{
-  /** Accessible resource-specific action, for example "Delete connection". */
+withDefaults(defineProps<{
   label: string
-  /** Accessible in-flight action. Falls back to the resource-specific label. */
   busyLabel?: string
   busy?: boolean
   disabled?: boolean
-}>(), {
-  busy: false,
-  disabled: false,
-})
+}>(), { busy: false, disabled: false })
 
-const accessibleLabel = computed(() => props.busy
-  ? props.busyLabel || `${props.label}…`
-  : props.label)
-
-const emit = defineEmits<{
-  click: [event: MouseEvent]
-}>()
+const emit = defineEmits<{ click: [event: MouseEvent] }>()
 </script>
 
 <template>
-  <button
-    ref="button"
-    class="k-table-action k-table-action--delete"
-    :class="{ 'k-table-action--busy': busy }"
-    type="button"
-    :aria-label="accessibleLabel"
-    :aria-busy="busy || undefined"
-    :disabled="disabled || busy"
-    @click.stop="emit('click', $event)"
-  >
-    <Loader2 v-if="busy" class="k-table-action__icon k-table-action__icon--spinning" :stroke-width="1.75" aria-hidden="true" />
-    <Trash2 v-else class="k-table-action__icon" :stroke-width="1.75" aria-hidden="true" />
-    <ResourceTableActionTooltip :anchor="button" :label="accessibleLabel" />
-  </button>
+  <ResourceTableActionButton class="k-table-action--delete" :icon="Trash2" tone="danger" :label="label" :busy-label="busyLabel" :busy="busy" :disabled="disabled" @click="emit('click', $event)" />
 </template>

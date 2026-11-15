@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 65;
+  --railgrid-ui-core-version: 66;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -942,7 +942,7 @@ html.light .k-menu {
   cursor: not-allowed;
   opacity: 0.45;
 }
-.k-icon-action.k-table-action--busy:disabled { opacity: 1; }
+.k-icon-action.k-table-action--busy[aria-disabled="true"] { opacity: 1; }
 .k-icon-action > svg {
   flex: 0 0 auto;
   height: 16px;
@@ -1930,6 +1930,24 @@ dialog.k-modal-overlay::backdrop { background: transparent; }
 .k-inline-notification__title { font-size: 12px; line-height: 1.3; }
 .k-inline-notification__message { min-inline-size: 0; overflow-wrap: anywhere; }
 .k-inline-notification__action,
+.k-inline-notification__dismiss {
+  flex: none;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-accent, #8b6bff);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  min-height: 24px;
+  padding: 3px 7px;
+}
+.k-inline-notification__action {
+  border: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 35%, transparent);
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent-hover, #a18aff);
+}
 .k-inline-notification__dismiss {
   flex: none;
   border: 0;
