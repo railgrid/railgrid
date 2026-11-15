@@ -344,7 +344,7 @@ func (s *Server) deleteProjectFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	scope := projectWorkspaceScope(id, project)
-	result, err := s.workspaces.DeleteFile(r.Context(), scope, workspace.DeleteOptions{Path: filePath, ExpectedVersion: expected})
+	_, err := s.workspaces.DeleteFile(r.Context(), scope, workspace.DeleteOptions{Path: filePath, ExpectedVersion: expected})
 	if err != nil {
 		var mutationErr *workspace.MutationError
 		if errors.As(err, &mutationErr) && mutationErr.Code == workspace.MutationErrorTargetNotFound {
@@ -354,7 +354,9 @@ func (s *Server) deleteProjectFile(w http.ResponseWriter, r *http.Request) {
 		writeProjectFileWriteError(w, err, true)
 		return
 	}
-	s.recordProjectFileWrites(r.Context(), id, project, []string{result.Path})
+	// DeleteFile records the removal in the source ledger itself.
+	s.scheduleDevelopmentSyncAfterMutation(id, project, projectActionWorkspaceFileWrite)
+	s.signalProject(id.workspaceUUID, project.Name)
 	w.WriteHeader(http.StatusNoContent)
 }
 

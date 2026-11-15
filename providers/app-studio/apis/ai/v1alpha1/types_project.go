@@ -505,8 +505,7 @@ type ProjectWorkspaceStatus struct {
 	SourcePathAttributions []ProjectSourcePathAttribution `json:"sourcePathAttributions,omitempty"`
 
 	// UncommittedPaths are the working-copy paths that differ from the last
-	// commit, sorted. A path that no longer exists in the tree is a deletion
-	// and is committed as one.
+	// commit, sorted. Deletions also require a SourceDeletions entry.
 	//
 	// The bound is honest rather than arbitrary: a project tree is capped at
 	// 500 files (workspace.maxWorkspaceTreeFiles), so the largest transition
@@ -520,6 +519,15 @@ type ProjectWorkspaceStatus struct {
 	// +kubebuilder:validation:MaxItems=1024
 	// +kubebuilder:validation:items:MaxLength=1024
 	UncommittedPaths []string `json:"uncommittedPaths,omitempty"`
+
+	// SourceDeletions records explicit file removals at their source revision.
+	// Each record remains until both development sync and Git settlement have
+	// accounted for it, or the path is written again.
+	// +optional
+	// +listType=map
+	// +listMapKey=path
+	// +kubebuilder:validation:MaxItems=1024
+	SourceDeletions []ProjectSourceDeletion `json:"sourceDeletions,omitempty"`
 
 	// PendingCommit is a RepositoryCommit the Code provider accepted but has
 	// not finished. It is followed up by name over the RepositoryCommit watch
@@ -543,6 +551,15 @@ type ProjectSourceChange struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	RunID string `json:"runID,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	SourceRevision int64 `json:"sourceRevision"`
+}
+
+// ProjectSourceDeletion identifies an intentional removal from the working copy.
+type ProjectSourceDeletion struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=1024
+	Path string `json:"path"`
 	// +kubebuilder:validation:Minimum=1
 	SourceRevision int64 `json:"sourceRevision"`
 }
@@ -605,6 +622,10 @@ type ProjectPendingCommit struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=96
 	BundleDigest string `json:"bundleDigest,omitempty"`
+
+	// ExplicitDeletionsVerified identifies bundles built using source deletion records.
+	// +optional
+	ExplicitDeletionsVerified bool `json:"explicitDeletionsVerified,omitempty"`
 
 	// Message is captured before submission and preserved on retries.
 	// +optional

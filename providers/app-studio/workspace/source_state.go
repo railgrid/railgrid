@@ -41,8 +41,10 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -186,6 +188,81 @@ func (s *FileStore) UncommittedPaths(ctx context.Context, scope Scope) ([]string
 	return s.uncommittedPaths(ctx, scope)
 }
 
+// SourceDeletion records an intentional working-copy removal at its source revision.
+type SourceDeletion struct {
+	Path     string
+	Revision uint64
+}
+
+// SourceDeletions returns the deletion records for an exact workspace revision.
+func (s *FileStore) SourceDeletions(ctx context.Context, scope Scope, revision uint64) (map[string]bool, error) {
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	record, err := ledger.Read(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	if current := max(record.SourceRevision, 1); current != revision {
+		return nil, fmt.Errorf("%w: expected %d, current %d", ErrSourceRevisionConflict, revision, current)
+	}
+	paths := make(map[string]bool, len(record.SourceDeletions))
+	for _, deletion := range record.SourceDeletions {
+		if deletion.Revision > 0 && deletion.Revision <= revision {
+			paths[deletion.Path] = true
+		}
+	}
+	return paths, nil
+}
+
+// recordSourceDeletions replaces deletion intent for the paths touched by a
+// successful mutation. Recreating a path invalidates any earlier deletion.
+func recordSourceDeletions(record *LedgerRecord, changed, deleted []string, revision uint64) {
+	clearSourceDeletions(record, changed)
+	for _, path := range deleted {
+		record.SourceDeletions = append(record.SourceDeletions, SourceDeletion{Path: path, Revision: revision})
+	}
+}
+
+func clearSourceDeletions(record *LedgerRecord, paths []string) {
+	drop := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		drop[path] = true
+	}
+	record.SourceDeletions = slices.DeleteFunc(record.SourceDeletions, func(deletion SourceDeletion) bool {
+		return drop[deletion.Path]
+	})
+}
+
+func hasNoSourceConsumers(record *LedgerRecord) bool {
+	return record.SourceConsumersKnown && !record.HasRepository && !record.HasDevelopmentSandbox
+}
+
+// pruneSourceDeletions drops removals already applied to the development
+// sandbox and settled in Git. A failed sync or a pending commit keeps its intent.
+func pruneSourceDeletions(record *LedgerRecord) {
+	dirty := make(map[string]bool, len(record.UncommittedPaths))
+	for _, path := range record.UncommittedPaths {
+		dirty[path] = true
+	}
+	var retired []string
+	record.SourceDeletions = slices.DeleteFunc(record.SourceDeletions, func(deletion SourceDeletion) bool {
+		sandboxSettled := !record.HasDevelopmentSandbox || record.LastPreviewCheckpoint != nil && deletion.Revision <= record.LastPreviewCheckpoint.SourceRevision
+		if !sandboxSettled || record.HasRepository && dirty[deletion.Path] {
+			return false
+		}
+		if !record.HasRepository {
+			retired = append(retired, deletion.Path)
+		}
+		return true
+	})
+	if len(retired) > 0 {
+		record.UncommittedPaths = removeLedgerPaths(record.UncommittedPaths, retired)
+		record.SourcePathAttributions = removeSourcePathAttributions(record.SourcePathAttributions, retired)
+	}
+}
+
 // AddUncommittedPaths durably unions changed source paths into the current
 // project incarnation's pending repository commit set.
 func (s *FileStore) AddUncommittedPaths(ctx context.Context, scope Scope, paths []string) ([]string, error) {
@@ -283,14 +360,54 @@ func (s *FileStore) addUncommittedPaths(ctx context.Context, scope Scope, paths 
 		return record.UncommittedPaths, nil
 	}
 	record, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		toAdd := clean
+		if hasNoSourceConsumers(record) {
+			// Successful mutation receipts can name both writes and deletes.
+			// With no consumer, completion already retired the deleted paths.
+			// A replay of bookkeeping may add surviving writes only.
+			existing, err := s.existingSourceFiles(scope, clean)
+			if err != nil {
+				return false, err
+			}
+			toAdd = existing
+		}
 		before := len(record.UncommittedPaths)
-		record.UncommittedPaths = normalizeLedgerPaths(append(append([]string(nil), record.UncommittedPaths...), clean...))
+		record.UncommittedPaths = normalizeLedgerPaths(append(append([]string(nil), record.UncommittedPaths...), toAdd...))
 		return len(record.UncommittedPaths) != before, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("record uncommitted paths: %w", err)
 	}
 	return record.UncommittedPaths, nil
+}
+
+func (s *FileStore) existingSourceFiles(scope Scope, paths []string) ([]string, error) {
+	dir, err := s.scopeDir(scope)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	existing := make([]string, 0, len(paths))
+	for _, name := range paths {
+		info, err := root.Lstat(name)
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode().IsRegular() {
+			existing = append(existing, name)
+		}
+	}
+	return existing, nil
 }
 
 // SourceRevision returns the durable source revision for this project
@@ -345,6 +462,7 @@ type sourceMutation struct {
 	revision             uint64
 	paths                []string
 	previousAttributions []SourcePathAttribution
+	previousDeletions    []SourceDeletion
 	localTreeWasCurrent  bool
 }
 
@@ -409,6 +527,7 @@ func (s *FileStore) beginSourceMutation(ctx context.Context, scope Scope, paths 
 		mutation.revision = 0
 		mutation.localTreeWasCurrent = false
 		mutation.previousAttributions = nil
+		mutation.previousDeletions = nil
 		callbackRejected = false
 		currentRevision := record.SourceRevision
 		pristine := currentRevision == 0 && localRevision == 0
@@ -423,6 +542,11 @@ func (s *FileStore) beginSourceMutation(ctx context.Context, scope Scope, paths 
 		mutation.revision = currentRevision + 1
 		mutation.localTreeWasCurrent = treeExists && localRevision == currentRevision || pristine
 		mutation.previousAttributions = sourcePathAttributionsFor(record.SourcePathAttributions, cleanPaths)
+		for _, deletion := range record.SourceDeletions {
+			if slices.Contains(cleanPaths, deletion.Path) {
+				mutation.previousDeletions = append(mutation.previousDeletions, deletion)
+			}
+		}
 		record.SourceRevision = mutation.revision
 		record.SourceMutationID = mutation.id
 		// Reserve the revision without claiming that bytes or their provenance
@@ -467,7 +591,7 @@ func (s *FileStore) beginSourceMutation(ctx context.Context, scope Scope, paths 
 // after every byte operation succeeded. Revision mismatch means another source
 // mutation won while this one was being applied, so this snapshot cannot claim
 // either ownership or freshness.
-func (s *FileStore) completeSourceMutation(ctx context.Context, scope Scope, mutation *sourceMutation) error {
+func (s *FileStore) completeSourceMutation(ctx context.Context, scope Scope, mutation *sourceMutation, deleted ...string) error {
 	if mutation == nil {
 		return errors.New("source mutation reservation is required")
 	}
@@ -488,6 +612,11 @@ func (s *FileStore) completeSourceMutation(ctx context.Context, scope Scope, mut
 		origin.SourceRevision = mutation.revision
 		record.LastSourceChange = &origin
 		recordSourcePathChanges(record, mutation.paths, origin)
+		recordSourceDeletions(record, mutation.paths, deleted, mutation.revision)
+		record.UncommittedPaths = normalizeLedgerPaths(append(record.UncommittedPaths, deleted...))
+		if hasNoSourceConsumers(record) {
+			pruneSourceDeletions(record)
+		}
 		return true, nil
 	})
 	if err != nil {
@@ -527,6 +656,10 @@ func (s *FileStore) failSourceMutation(ctx context.Context, scope Scope, mutatio
 		}
 		record.LastSourceChange = &SourceChange{SourceRevision: mutation.revision}
 		setUnknownSourcePathAttributions(record, mutation.paths, mutation.revision)
+		clearSourceDeletions(record, mutation.paths)
+		if treeRestored {
+			record.SourceDeletions = append(record.SourceDeletions, mutation.previousDeletions...)
+		}
 		return true, nil
 	})
 	if err != nil {
@@ -627,6 +760,11 @@ func sourceMutationFailureRecorded(record LedgerRecord, mutation *sourceMutation
 	for _, path := range mutation.paths {
 		attribution, ok := byPath[path]
 		if !ok || attribution.SourceRevision != mutation.revision || attribution.ThreadID != "" || attribution.RunID != "" {
+			return false
+		}
+	}
+	for _, deletion := range record.SourceDeletions {
+		if deletion.Revision == mutation.revision && slices.Contains(mutation.paths, deletion.Path) {
 			return false
 		}
 	}
@@ -822,7 +960,7 @@ func (s *FileStore) tagLocalTree(scope Scope, revision uint64) {
 // against the ledger inside that update: it is the compare of the whole-tree
 // replacement's compare-and-swap, and the only place it can be enforced
 // against a writer on another replica.
-func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected *uint64, paths []string, committed bool) (sourceTreeMutation, error) {
+func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected *uint64, paths, deleted []string, committed bool) (sourceTreeMutation, error) {
 	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
 		return sourceTreeMutation{}, err
@@ -856,6 +994,7 @@ func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected 
 		origin, _ := ctx.Value(mutationOriginContextKey{}).(SourceChange)
 		origin.SourceRevision = record.SourceRevision
 		record.LastSourceChange = &origin
+		recordSourceDeletions(record, clean, deleted, mutation.revision)
 		if committed {
 			// The incoming bytes ARE the repository's, so these paths are
 			// clean — including any that were dirty before, whose local edits
@@ -865,6 +1004,9 @@ func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected 
 		} else {
 			recordSourcePathChanges(record, clean, origin)
 			record.UncommittedPaths = normalizeLedgerPaths(append(append([]string(nil), record.UncommittedPaths...), clean...))
+		}
+		if hasNoSourceConsumers(record) {
+			pruneSourceDeletions(record)
 		}
 		return true, nil
 	})
@@ -912,6 +1054,7 @@ func (s *FileStore) reconcileTreeRollback(ctx context.Context, scope Scope, muta
 		record.LastSourceChange = &SourceChange{SourceRevision: mutation.revision}
 		setUnknownSourcePathAttributions(record, mutation.paths, mutation.revision)
 		record.UncommittedPaths = normalizeLedgerPaths(append(append([]string(nil), record.UncommittedPaths...), mutation.paths...))
+		clearSourceDeletions(record, mutation.paths)
 		return true, nil
 	})
 	if updateErr == nil && matched && sourceTreeRollbackRecorded(record, failed) {
@@ -1008,6 +1151,7 @@ func (s *FileStore) ClearUncommittedPaths(ctx context.Context, scope Scope) erro
 			return false, nil
 		}
 		record.UncommittedPaths = nil
+		pruneSourceDeletions(record)
 		record.SourcePathAttributions = nil
 		return true, nil
 	}); err != nil {
@@ -1060,6 +1204,7 @@ func (s *FileStore) removeUncommittedPaths(ctx context.Context, scope Scope, pat
 			return false, nil
 		}
 		record.UncommittedPaths = remaining
+		pruneSourceDeletions(record)
 		record.SourcePathAttributions = attributions
 		return true, nil
 	}); err != nil {
@@ -1234,6 +1379,7 @@ func (s *FileStore) ReconcileCommitSettlement(ctx context.Context, scope Scope) 
 			}
 		}
 		record.UncommittedPaths = remaining
+		pruneSourceDeletions(record)
 		record.SourcePathAttributions = removeSourcePathAttributions(record.SourcePathAttributions, record.Settlement.Paths)
 		record.Settlement = nil
 		applied = true

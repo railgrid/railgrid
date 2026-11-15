@@ -172,6 +172,11 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 	if err != nil {
 		return commitOutcome{dirty: true}, fmt.Errorf("read pending commit: %w", err)
 	}
+	// An older bundle may contain inferred deletions. Rebuild from the
+	// current ledger and leave any already-created RepositoryCommit to settle.
+	if hasPending && pending.RequestID != "" && pending.Name == "" && !pending.ExplicitDeletionsVerified {
+		return r.recoverUnverifiedCommit(ctx, c, p, scope, pending)
+	}
 	if hasPending && pending.BlockedReason == repositoryCommitFailedReason {
 		return r.failedPendingCommitCooldown(ctx, c, p, repo, scope, pending)
 	}
@@ -279,20 +284,24 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 		return commitOutcome{dirty: true, retry: true}, nil
 	}
 
-	// Build the payload: missing files are deletions, binaries travel base64
+	// Build the payload from current bytes and recorded deletions. Binaries travel base64
 	// (the action's schema declares the encoding, so there is nothing to
 	// probe for). A file that cannot be committed — over the per-file bound —
 	// is skipped and stays dirty without forcing a requeue, so it neither
 	// blocks text commits nor spins the reconciler. Files past the bundle
 	// bound are committed on an immediate requeue.
 	sort.Strings(paths)
-	bundle, err := r.buildCommitBundle(ctx, scope, paths)
+	deletions, err := r.Workspace.SourceDeletions(ctx, scope, sourceRevision)
+	if err != nil {
+		return commitOutcome{dirty: true, retry: errors.Is(err, workspace.ErrSourceRevisionConflict)}, err
+	}
+	bundle, err := r.buildCommitBundle(ctx, scope, paths, deletions)
 	if err != nil {
 		return commitOutcome{dirty: true}, err
 	}
 	r.noteSkippedPaths(p.Name, scope, bundle.skipped)
 	if len(bundle.files) == 0 && len(bundle.deletePaths) == 0 {
-		return commitOutcome{dirty: bundle.deferred, retry: bundle.deferred}, nil
+		return commitOutcome{dirty: bundle.deferred || len(bundle.skipped) > 0, retry: bundle.deferred}, nil
 	}
 
 	writtenPaths := make([]string, 0, len(bundle.files))
@@ -324,16 +333,17 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 		return commitOutcome{dirty: true, retry: true}, fmt.Errorf("stage workspace commit: %w", err)
 	}
 	intent := workspace.PendingCommit{
-		RequestID:       requestID,
-		RepositoryRef:   b.RepositoryRef,
-		RepositoryUID:   string(repo.GetUID()),
-		BundleRef:       staged.BundleRef,
-		BundleDigest:    staged.BundleDigest,
-		Message:         message,
-		WorkspaceDigest: digest,
-		Paths:           bundle.committed,
-		SourceRevision:  sourceRevision,
-		Attributions:    attributions,
+		RequestID:                 requestID,
+		RepositoryRef:             b.RepositoryRef,
+		RepositoryUID:             string(repo.GetUID()),
+		BundleRef:                 staged.BundleRef,
+		BundleDigest:              staged.BundleDigest,
+		ExplicitDeletionsVerified: true,
+		Message:                   message,
+		WorkspaceDigest:           digest,
+		Paths:                     bundle.committed,
+		SourceRevision:            sourceRevision,
+		Attributions:              attributions,
 	}
 	if err := r.Workspace.ReservePendingCommit(ctx, scope, intent); err != nil {
 		if errors.Is(err, workspace.ErrPendingCommitExists) || errors.Is(err, workspace.ErrSourceRevisionConflict) {
@@ -407,7 +417,7 @@ func (b commitBundle) wireFiles() []codecommit.File {
 // buildCommitBundle reads dirty paths into one payload bounded by the Code
 // provider's limits (decoded bytes): 2 MiB per text file, 25 MiB per binary,
 // 48 MiB and 500 files per commit.
-func (r *Reconciler) buildCommitBundle(ctx context.Context, scope workspace.Scope, paths []string) (commitBundle, error) {
+func (r *Reconciler) buildCommitBundle(ctx context.Context, scope workspace.Scope, paths []string, deletions map[string]bool) (commitBundle, error) {
 	bundle := commitBundle{skipped: map[string]string{}}
 	var total int64
 	for _, path := range paths {
@@ -418,6 +428,10 @@ func (r *Reconciler) buildCommitBundle(ctx context.Context, scope workspace.Scop
 		data, err := r.Workspace.ReadFileBytes(ctx, scope, path, hubmcp.BinaryFileMaxBytes)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				if !deletions[path] {
+					bundle.skipped[path] = "missing without a source deletion record"
+					continue
+				}
 				bundle.deletePaths = append(bundle.deletePaths, path)
 				bundle.committed = append(bundle.committed, path)
 				continue
@@ -513,6 +527,49 @@ func shortSHA(sha string) string {
 
 // repositoryCommitGVK is the Code provider's RepositoryCommit resource.
 var repositoryCommitGVK = schema.GroupVersionKind{Group: "code.railgrid.ai", Version: "v1alpha1", Kind: "RepositoryCommit"}
+
+// recoverUnverifiedCommit looks up the keyed object without submitting an old
+// bundle, which may contain inferred deletions. Code may have accepted it
+// before App Studio lost the response. Only a confirmed absence permits a
+// replacement request.
+func (r *Reconciler) recoverUnverifiedCommit(ctx context.Context, c client.Client, p *aiv1alpha1.Project, scope workspace.Scope, pending workspace.PendingCommit) (commitOutcome, error) {
+	outcome := commitOutcome{dirty: true, retry: true}
+	cluster := clusterOf(p)
+	if c == nil || cluster == "" || pending.RepositoryUID == "" {
+		return outcome, fmt.Errorf("cannot look up reserved RepositoryCommit")
+	}
+	name := codecommit.KeyedCommitName(cluster, pending.RepositoryUID, pending.RequestID)
+	obj, err := readRepositoryCommit(ctx, c, name)
+	if apierrors.IsNotFound(err) {
+		outcome.retry, err = r.Workspace.DiscardUnverifiedReservation(ctx, scope, pending.RequestID)
+		return outcome, err
+	}
+	if err != nil {
+		return outcome, fmt.Errorf("look up reserved RepositoryCommit %q: %w", name, err)
+	}
+	if obj.GetAnnotations()["kcp.io/cluster"] != cluster {
+		return outcome, fmt.Errorf("reserved RepositoryCommit %q does not belong to logical cluster %q", name, cluster)
+	}
+	for _, field := range []struct {
+		path []string
+		want string
+	}{
+		{[]string{"spec", "repositoryRef"}, pending.RepositoryRef},
+		{[]string{"spec", "message"}, pending.Message},
+		{[]string{"spec", "branch"}, pending.Branch},
+		{[]string{"spec", "source", "bundleRef", "name"}, pending.BundleRef},
+		{[]string{"spec", "source", "bundleRef", "digest"}, pending.BundleDigest},
+	} {
+		value, _, err := unstructured.NestedString(obj.Object, field.path...)
+		if err != nil || value != field.want {
+			return outcome, fmt.Errorf("reserved RepositoryCommit %q does not match the recorded intent", name)
+		}
+	}
+	if err := r.Workspace.BindPendingCommitName(ctx, scope, pending.RequestID, name); err != nil && !errors.Is(err, workspace.ErrPendingCommitChanged) {
+		return outcome, fmt.Errorf("bind recovered RepositoryCommit %q: %w", name, err)
+	}
+	return outcome, nil
+}
 
 // readRepositoryCommit reads one RepositoryCommit by name through the
 // manager's client for the request's cluster.
@@ -838,6 +895,9 @@ func (r *Reconciler) resolvePendingCommit(ctx context.Context, c client.Client, 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			if pending.RequestID != "" {
+				if !pending.ExplicitDeletionsVerified {
+					return r.clearPendingCommit(ctx, scope, pending)
+				}
 				if pending.BlockedReason != "" {
 					return false, nil // a named block watches the CR but does not replay its bundle
 				}
