@@ -73,6 +73,9 @@ const previewBridgeClient = String.raw`(() => {
   let annotationPointerMove = null;
   let annotationClick = null;
   let annotationKeydown = null;
+  let annotationKeyboardTarget = null;
+  let annotationKeyboardStatus = null;
+  let annotationPreviousFocus = null;
 
   const truncate = (value, limit = 1000) => {
     const text = String(value);
@@ -592,7 +595,8 @@ const previewBridgeClient = String.raw`(() => {
           current.getAttribute?.("data-railgrid-annotation-pin") === "true" ||
           current.getAttribute?.("data-railgrid-annotation-pins") === "true" ||
           current.getAttribute?.("data-railgrid-annotation-overlay") === "true" ||
-          current.getAttribute?.("data-railgrid-annotation-cursor") === "true"
+          current.getAttribute?.("data-railgrid-annotation-cursor") === "true" ||
+          current.getAttribute?.("data-railgrid-annotation-keyboard") === "true"
         ) return current;
       } catch {
         return null;
@@ -673,6 +677,61 @@ const previewBridgeClient = String.raw`(() => {
     });
   };
 
+  // Navigate page elements without changing the page's focus or tabindex. This
+  // also makes static text and containers available to keyboard users.
+  const keyboardCandidates = () => {
+    try {
+      return Array.from(document.querySelectorAll("*")).filter((element) => {
+        if (element === document.documentElement || element === document.body || annotationChromeElement(element)) return false;
+        const tag = String(element.tagName || "").toLowerCase();
+        if (["head", "script", "style", "noscript", "template", "meta", "link"].includes(tag)) return false;
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        let scrollableX = false, scrollableY = false;
+        for (let node = element; node; node = node.parentElement) {
+          if (node.hidden || node.getAttribute?.("aria-hidden") === "true" || node.getAttribute?.("inert") !== null) return false;
+          const style = window.getComputedStyle?.(node);
+          if (!style) continue;
+          if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0 && style.opacity !== "") return false;
+          // A scrollable ancestor can reveal its descendants, so do not reject
+          // them merely because their current rect is outside a higher clip.
+          if (node !== element && node !== document.body && node !== document.documentElement) {
+            const bounds = node.getBoundingClientRect();
+            const left = bounds.left + (node.clientLeft || 0), top = bounds.top + (node.clientTop || 0);
+            const width = node.clientWidth ?? bounds.width, height = node.clientHeight ?? bounds.height;
+            if (!scrollableX && ["hidden", "clip"].includes(style.overflowX) && (rect.left + rect.width <= left || rect.left >= left + width)) return false;
+            if (!scrollableY && ["hidden", "clip"].includes(style.overflowY) && (rect.top + rect.height <= top || rect.top >= top + height)) return false;
+          }
+          if (["auto", "scroll"].includes(style.overflowX) && node.scrollWidth > node.clientWidth) scrollableX = true;
+          if (["auto", "scroll"].includes(style.overflowY) && node.scrollHeight > node.clientHeight) scrollableY = true;
+        }
+        return true;
+      });
+    } catch { return []; }
+  };
+
+  const setKeyboardTarget = (element, scroll = true) => {
+    annotationKeyboardTarget = element || null;
+    if (!element) {
+      hideAnnotationOverlay();
+      if (annotationKeyboardStatus) annotationKeyboardStatus.textContent = "No visible page elements available.";
+      return;
+    }
+    if (scroll) {
+      try { element.scrollIntoView?.({ block: "nearest", inline: "nearest" }); } catch {}
+    }
+    updateAnnotationOverlay(element);
+    const target = annotationTarget(element);
+    if (annotationKeyboardStatus && target) {
+      annotationKeyboardStatus.textContent = [target.role || target.tag, target.name || target.text].filter(Boolean).join(": ") || "Page element";
+    }
+  };
+
+  const interceptAnnotationKeydown = (event) => {
+    if (!annotationMode || !annotationKeydown) return;
+    annotationKeydown(event);
+  };
+
   const stopAnnotationMode = (reason = "stopped", announce = true) => {
     if (annotationPointerMove) document.removeEventListener("pointermove", annotationPointerMove, true);
     if (annotationClick) document.removeEventListener("click", annotationClick, true);
@@ -681,6 +740,11 @@ const previewBridgeClient = String.raw`(() => {
     annotationClick = null;
     annotationKeydown = null;
     annotationMode = false;
+    annotationKeyboardTarget = null;
+    annotationKeyboardStatus?.parentElement?.remove();
+    annotationKeyboardStatus = null;
+    try { annotationPreviousFocus?.focus?.(); } catch {}
+    annotationPreviousFocus = null;
     removeAnnotationOverlay();
     removeAnnotationCursor();
     if (announce) postAnnotation(ANNOTATION_MODE, { active: false, reason });
@@ -689,6 +753,7 @@ const previewBridgeClient = String.raw`(() => {
   const startAnnotationMode = () => {
     if (!connected || !port || typeof document === "undefined") return false;
     stopAnnotationMode("restarted", false);
+    annotationPreviousFocus = document.activeElement;
     annotationOverlay = document.createElement("div");
     annotationOverlay.setAttribute("data-railgrid-annotation-overlay", "true");
     annotationOverlay.setAttribute("aria-hidden", "true");
@@ -706,6 +771,19 @@ const previewBridgeClient = String.raw`(() => {
     annotationOverlay.hidden = true;
     document.documentElement?.append(annotationOverlay);
     installAnnotationCursor();
+    const keyboardHelp = document.createElement("div");
+    keyboardHelp.setAttribute("data-railgrid-annotation-keyboard", "true");
+    keyboardHelp.setAttribute("tabindex", "-1");
+    keyboardHelp.setAttribute("role", "region");
+    keyboardHelp.setAttribute("aria-label", "Annotation picker. Use up and down arrows to move through page elements, left and right arrows for parent and child. Press Enter or Space to select, or Escape to cancel.");
+    Object.assign(keyboardHelp.style, { position: "fixed", left: "12px", bottom: "12px", zIndex: "2147483647", padding: "8px 12px", background: "#241c3c", color: "white", borderRadius: "4px", font: "14px sans-serif" });
+    const instructions = document.createElement("div");
+    instructions.textContent = "Arrow keys: choose an element · Enter or Space: select · Esc: cancel";
+    annotationKeyboardStatus = document.createElement("div");
+    annotationKeyboardStatus.setAttribute("role", "status");
+    annotationKeyboardStatus.setAttribute("aria-live", "polite");
+    keyboardHelp.append(instructions, annotationKeyboardStatus);
+    document.documentElement?.append(keyboardHelp);
     annotationPointerMove = (event) => {
       if (!annotationMode) return;
       const { element, pinRecord, chrome } = annotationEventContext(event);
@@ -716,20 +794,52 @@ const previewBridgeClient = String.raw`(() => {
       }
       if (chrome) { hideAnnotationOverlay(); return; }
       if (!element) { hideAnnotationOverlay(); return; }
-      updateAnnotationOverlay(element.closest?.("*") || element);
+      setKeyboardTarget(element, false);
     };
     annotationClick = interceptAnnotationClick;
     annotationKeydown = (event) => {
-      if (!annotationMode || event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      stopAnnotationMode("escape");
-      postAnnotation(ANNOTATION_CANCELLED, { reason: "escape" });
+      if (!annotationMode || !["Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", " "].includes(event.key)) return;
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      event.stopImmediatePropagation?.();
+      if (event.key === "Escape") {
+        stopAnnotationMode("escape");
+        postAnnotation(ANNOTATION_CANCELLED, { reason: "escape" });
+        return;
+      }
+      if ((event.key === "Enter" || event.key === " ") && event.repeat) return;
+      if ((event.key === "Enter" || event.key === " ") && annotationEventContext(event).pinRecord) {
+        interceptAnnotationClick(event);
+        return;
+      }
+      const candidates = keyboardCandidates();
+      let index = candidates.indexOf(annotationKeyboardTarget);
+      if (event.key === "Enter" || event.key === " ") {
+        const element = index >= 0 ? candidates[index] : null;
+        const target = element && annotationTarget(element);
+        if (target) postAnnotation(ANNOTATION_SELECTED, {
+          target, anchor: { x: 0.5, y: 0.5 },
+          viewport: { width: Math.max(1, Math.round(window.innerWidth || 1)), height: Math.max(1, Math.round(window.innerHeight || 1)) },
+        });
+        return;
+      }
+      if (event.key === "ArrowDown") index = Math.min(index + 1, candidates.length - 1);
+      else if (event.key === "ArrowUp") index = index < 0 ? candidates.length - 1 : Math.max(0, index - 1);
+      else if (event.key === "ArrowRight") {
+        const child = candidates.find((candidate) => candidate.parentElement === annotationKeyboardTarget);
+        if (child) index = candidates.indexOf(child);
+      } else {
+        const parent = annotationKeyboardTarget?.parentElement;
+        if (candidates.includes(parent)) index = candidates.indexOf(parent);
+      }
+      setKeyboardTarget(candidates[index] || null);
     };
     document.addEventListener("pointermove", annotationPointerMove, true);
     document.addEventListener("click", annotationClick, true);
     document.addEventListener("keydown", annotationKeydown, true);
     annotationMode = true;
+    setKeyboardTarget(keyboardCandidates()[0] || null);
+    try { keyboardHelp.focus?.(); } catch {}
     postAnnotation(ANNOTATION_MODE, { active: true });
     return true;
   };
@@ -1027,6 +1137,7 @@ const previewBridgeClient = String.raw`(() => {
   // Register before application scripts so an app-level window capture
   // listener cannot run before annotation interception is enabled later.
   window.addEventListener("click", interceptAnnotationClick, true);
+  window.addEventListener("keydown", interceptAnnotationKeydown, true);
   // START is intentionally handled only on the endpoint sent outbound in
   // READY. No capability or transferred port is exposed to same-document
   // application message listeners.

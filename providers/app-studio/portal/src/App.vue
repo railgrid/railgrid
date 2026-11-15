@@ -12005,7 +12005,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 					v-model="developmentPreviewAnnotationDraft.comment"
 					maxlength="2048"
 					rows="3"
-						class="app-studio-touch-target min-h-20 w-full resize-none border-0 bg-transparent px-1 py-1 text-[14px] leading-5 text-text-primary outline-none placeholder:text-text-muted"
+						class="app-studio-touch-target min-h-20 w-full resize-none rounded-md border-0 bg-transparent px-1 py-1 text-[14px] leading-5 text-text-primary outline-none placeholder:text-text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
 					placeholder="What should change?"
 					@keydown.meta.enter.prevent="commitDevelopmentPreviewAnnotation"
 					@keydown.ctrl.enter.prevent="commitDevelopmentPreviewAnnotation"
