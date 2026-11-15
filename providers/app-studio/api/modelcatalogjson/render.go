@@ -27,11 +27,30 @@ import (
 	"github.com/railgrid/provider-sdk/modelcatalog"
 )
 
-// Render returns the catalog as deterministic, newline-terminated JSON.
-// Sorted by id so the committed file changes only when the catalog does, not
-// when Go's map iteration order shifts.
+// portalModel contains the fields consumed by the portal's pricing and
+// capability presentation. The full catalog, including pricing provenance and
+// display metadata, remains authoritative in provider-sdk/modelcatalog.
+type portalModel struct {
+	ID            string  `json:"id"`
+	ContextWindow int     `json:"contextWindow,omitempty"`
+	InputPer1M    float64 `json:"inputPer1M"`
+	OutputPer1M   float64 `json:"outputPer1M"`
+	Vision        bool    `json:"vision,omitempty"`
+	ToolCall      bool    `json:"toolCall,omitempty"`
+	Reasoning     bool    `json:"reasoning,omitempty"`
+}
+
+// Render returns the portal projection as deterministic, newline-terminated JSON.
+// Sort by ID so changes reflect catalog data rather than iteration order.
 func Render() ([]byte, error) {
-	entries := append([]modelcatalog.ModelInfo(nil), modelcatalog.Catalog()...)
+	entries := make([]portalModel, 0, len(modelcatalog.Catalog()))
+	for _, item := range modelcatalog.Catalog() {
+		entries = append(entries, portalModel{
+			ID: item.ID, ContextWindow: item.ContextWindow,
+			InputPer1M: item.InputPer1M, OutputPer1M: item.OutputPer1M,
+			Vision: item.Vision, ToolCall: item.ToolCall, Reasoning: item.Reasoning,
+		})
+	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
 
 	var buf bytes.Buffer

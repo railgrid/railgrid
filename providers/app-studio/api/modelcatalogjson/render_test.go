@@ -97,6 +97,30 @@ func TestRenderedCatalogIsUsableByThePortal(t *testing.T) {
 	}
 }
 
+func TestRenderedCatalogPreservesPortalFields(t *testing.T) {
+	data, err := Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []portalModel
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]portalModel, len(got))
+	for _, entry := range got {
+		byID[entry.ID] = entry
+	}
+	if len(byID) != len(modelcatalog.Catalog()) {
+		t.Fatalf("portal catalog has %d distinct entries, want %d", len(byID), len(modelcatalog.Catalog()))
+	}
+	for _, source := range modelcatalog.Catalog() {
+		want := portalModel{ID: source.ID, ContextWindow: source.ContextWindow, InputPer1M: source.InputPer1M, OutputPer1M: source.OutputPer1M, Vision: source.Vision, ToolCall: source.ToolCall, Reasoning: source.Reasoning}
+		if byID[source.ID] != want {
+			t.Errorf("portal fields for %q = %+v, want %+v", source.ID, byID[source.ID], want)
+		}
+	}
+}
+
 // Sorted output keeps the committed file's diff about the catalog rather than
 // about map iteration order.
 func TestRenderIsDeterministic(t *testing.T) {
