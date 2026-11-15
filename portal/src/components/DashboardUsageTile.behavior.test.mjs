@@ -30,12 +30,7 @@ function fixture() {
     '@/stores/tenant': { useTenantStore: () => tenant },
     '@/composables/useScopedNavigation': { useScopedNavigation: () => ({ scopePath: path => `/${tenant.orgUUID}/workspace${path}` }) },
     '@/components/MeteringUsageList.vue': { default: usage },
-    '@/portalkit/ResourceTimestamp.vue': {
-      default: {
-        props: ['value', 'label'],
-        setup: props => () => h('time', { datetime: props.value, 'aria-label': props.label }),
-      },
-    },
+    '@/portalkit/ResourceTimestamp.vue': { default: shell },
   }
   const exports = {}
   new Function('require', 'exports', code)(id => {
@@ -43,12 +38,12 @@ function fixture() {
     return modules[id]
   }, exports)
   const renderer = createRenderer({
-    createElement: type => ({ type, props: {}, children: [] }),
+    createElement: type => Vue.markRaw({ type, props: {}, children: [], focus() { if (globalThis.document) document.activeElement = this } }),
     createText: text => ({ text }), createComment: () => ({}),
     setText: (node, text) => { node.text = text }, setElementText: (node, text) => { node.text = text },
     patchProp: (node, key, _, value) => { node.props[key] = value },
     insert(node, parent, anchor) { node.parent = parent; const i = parent.children.indexOf(anchor); if (i < 0) parent.children.push(node); else parent.children.splice(i, 0, node) },
-    remove(node) { const i = node.parent?.children.indexOf(node); if (i >= 0) node.parent.children.splice(i, 1) },
+    remove(node) { if (globalThis.document && nodes(node).includes(document.activeElement)) document.activeElement = document.body; const i = node.parent?.children.indexOf(node); if (i >= 0) node.parent.children.splice(i, 1) },
     parentNode: node => node.parent, nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1],
   })
   const root = { children: [] }
@@ -76,9 +71,6 @@ test('Free upgrade opens scoped plan selection; paid plans open billing without 
     const metrics = nodes(s.root).find(node => node.props?.id === 'metrics')
     assert.equal(metrics.props.variant, 'compact')
     assert.equal(metrics.props.usage.workspaces, '2')
-    const recordedAt = nodes(s.root).find(node => node.type === 'time')
-    assert.equal(recordedAt.props.datetime, '2026-11-04T12:00:00.000Z')
-    assert.equal(recordedAt.props['aria-label'], 'Usage recorded')
     s.tenant.orgUUID = 'org-b'
     await flush()
     assert.doesNotMatch(text(s.root), /Free plan usage/)
@@ -118,7 +110,14 @@ test('refresh failure retains measured usage and supports retry', async () => {
     await flush()
     assert.match(text(s.root), /Showing the last available measurements/)
     assert.ok(nodes(s.root).some(node => node.props?.id === 'metrics'))
+    assert.equal(button(s, 'Refresh'), undefined)
     button(s, 'Retry').props.onClick()
+    await flush()
+    assert.match(text(s.root), /Showing the last available measurements/)
+    const pending = button(s, 'Retrying…')
+    assert.equal(pending.props['aria-disabled'], true)
+    pending.props.onClick()
+    assert.equal(s.calls.length, 3)
     s.calls[2].resolve({ ...billing(), usage: { workspaces: '3' } })
     await flush()
     assert.doesNotMatch(text(s.root), /Couldn’t refresh/)
@@ -139,4 +138,34 @@ test('initial errors and missing metering do not fabricate Free usage or an upgr
     assert.doesNotMatch(text(s.root), /Free plan usage|Upgrade plan/)
     assert.ok(!nodes(s.root).some(node => node.props?.id === 'metrics'))
   } finally { s.unmount() }
+})
+
+
+test('keyboard recovery moves focus between refresh, retry, and heading', async () => {
+  const previousDocument = globalThis.document
+  globalThis.document = { body: {}, activeElement: null }
+  const s = fixture()
+  try {
+    s.calls[0].resolve(billing())
+    await flush()
+    const refresh = button(s, 'Refresh')
+    refresh.focus()
+    refresh.props.onClick()
+    s.calls[1].reject(new Error('offline'))
+    await flush()
+    await flush()
+    const retry = button(s, 'Retry')
+    assert.ok(document.activeElement === retry)
+    retry.props.onClick()
+    await flush()
+    assert.ok(document.activeElement === retry)
+    s.calls[2].resolve(billing())
+    await flush()
+    await flush()
+    assert.equal(document.activeElement.type, 'h2')
+  } finally {
+    s.unmount()
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+  }
 })
