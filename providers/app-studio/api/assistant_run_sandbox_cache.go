@@ -460,6 +460,10 @@ func (s *Server) projectAssistantRunSandboxClaimOwnerReclaimable(ctx context.Con
 	return false, err
 }
 func (s *Server) ensureProjectAssistantRunSandboxInstance(ctx context.Context, c *asclient.Client, project *aiv1alpha1.Project, name, template string) (bool, error) {
+	return s.ensureProjectAssistantRunSandboxInstanceAttempt(ctx, c, project, name, template, true)
+}
+
+func (s *Server) ensureProjectAssistantRunSandboxInstanceAttempt(ctx context.Context, c *asclient.Client, project *aiv1alpha1.Project, name, template string, retryCreateConflict bool) (bool, error) {
 	if c == nil {
 		return false, errors.New("project client is not configured")
 	}
@@ -499,7 +503,7 @@ func (s *Server) ensureProjectAssistantRunSandboxInstance(ctx context.Context, c
 		return false, fmt.Errorf("get run sandbox instance %q: %w", name, err)
 	}
 	now := time.Now().UTC()
-	labels := map[string]string{projectAssistantRunSandboxLabel: "true"}
+	labels := map[string]any{projectAssistantRunSandboxLabel: "true"}
 	if project != nil {
 		labels["railgrid.ai/project"] = dnsSafeSandboxName(project.Name)
 	}
@@ -531,6 +535,9 @@ func (s *Server) ensureProjectAssistantRunSandboxInstance(ctx context.Context, c
 		return false, err
 	}
 	if _, err := c.Resource(runSandboxInstancesResource, "").Create(ctx, obj, metav1.CreateOptions{}); err != nil {
+		if apierrors.IsAlreadyExists(err) && retryCreateConflict {
+			return s.ensureProjectAssistantRunSandboxInstanceAttempt(ctx, c, project, name, template, false)
+		}
 		return false, fmt.Errorf("create run sandbox instance %q: %w", name, err)
 	}
 	return true, nil

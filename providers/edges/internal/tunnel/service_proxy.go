@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"slices"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -115,6 +116,11 @@ func (v *serviceView) isKube() bool {
 	return v.Spec.EdgeRef.Kind == kubernetesClusterKind
 }
 
+func (v *serviceView) missingKubeTarget() bool {
+	return v.isKube() && v.Spec.Host == "" &&
+		(v.Spec.TargetRef == nil || v.Spec.TargetRef.Name == "" || v.Spec.TargetRef.Namespace == "")
+}
+
 // connResource is the tunnel ConnManager resource segment for the referenced
 // edge kind.
 func (v *serviceView) connResource() string {
@@ -148,7 +154,12 @@ func (v *serviceView) targetHost() string {
 
 // target is the full X-Railgrid-Svc-Target value.
 func (v *serviceView) target() string {
-	return fmt.Sprintf("%s://%s:%d", v.scheme(), v.targetHost(), v.Spec.Port)
+	host := v.targetHost()
+	// A host pasted as a URL may already carry IPv6 brackets.
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	return v.scheme() + "://" + net.JoinHostPort(host, strconv.Itoa(int(v.Spec.Port)))
 }
 
 // setSvcHeaders stamps the agent control headers for this Service on h: the
@@ -452,11 +463,10 @@ func decodeServiceView(name string, obj *unstructured.Unstructured) (*serviceVie
 	if view.Spec.Port == 0 {
 		return nil, fmt.Errorf("service %s has no spec.port", name)
 	}
-	// Defence in depth behind the CRD's CEL rule: without a targetRef there is
-	// no cluster-DNS name to dial, and defaulting to loopback would silently
-	// proxy to the agent pod itself.
-	if view.isKube() && (view.Spec.TargetRef == nil || view.Spec.TargetRef.Name == "" || view.Spec.TargetRef.Namespace == "") {
-		return nil, fmt.Errorf("service %s targets a KubernetesCluster edge but has no spec.targetRef", name)
+	// Do not silently fall back to the agent pod's loopback when neither a
+	// direct host nor a complete cluster-DNS target was supplied.
+	if view.missingKubeTarget() {
+		return nil, fmt.Errorf("service %s targets a KubernetesCluster edge but has no spec.host or complete spec.targetRef", name)
 	}
 	return view, nil
 }

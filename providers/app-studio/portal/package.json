@@ -8,7 +8,7 @@
     "build": "vite build && cat index.html > dist/index.html && cat icon.svg > dist/icon.svg && touch dist/.gitkeep && node scripts/check-build-budget.mjs",
     "test:bundle-budget": "node scripts/check-build-budget.mjs",
     "dev": "vite",
-    "test": "node run-tests.mjs",
+    "test": "node run-tests.mjs && vitest run tests/codeExplorer.behavior.test.ts tests/modelsCollection.behavior.test.ts tests/projectWizardGit.behavior.test.ts tests/projectGitReview.behavior.test.ts tests/projectCreateUncertainty.behavior.test.ts tests/projectCreateMounted.behavior.test.ts tests/projectDeletionPoll.behavior.test.ts",
     "test:workbench": "node --test src/workbench.test.mjs",
     "test:workbench-persistence": "node src/workbenchPersistence.test.mjs",
     "test:preview-state": "node --test src/previewState.test.mjs",
@@ -40,10 +40,12 @@
     "@tailwindcss/vite": "^4.3.1",
     "@types/markdown-it": "^14.1.2",
     "@vitejs/plugin-vue": "^5.2.3",
+    "happy-dom": "^20.14.6",
     "tailwindcss": "^4.3.1",
     "terser": "^5.51.2",
     "typescript": "~5.7.0",
     "vite": "^6.3.0",
+    "vitest": "^3.2.7",
     "vue-tsc": "^2.2.0"
   }
 }

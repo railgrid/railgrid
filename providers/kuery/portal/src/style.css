@@ -29,6 +29,10 @@ railgrid-provider-kuery .kuery-collection-surfaces {
   min-width: 0;
 }
 
+railgrid-provider-kuery .kuery-view {
+  min-width: 0;
+}
+
 railgrid-provider-kuery .kuery-topbar {
   display: flex;
   align-items: center;

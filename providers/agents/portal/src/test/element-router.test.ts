@@ -38,6 +38,78 @@ async function mountShell(hash = '#/agents', context: RailgridContext = ctx()): 
   return element
 }
 
+it.each(['response', 'network failure'])('stops a template schedule sequence after unmount before %s', async outcome => {
+  let release!: (response: Response) => void
+  let fail!: (error: Error) => void
+  const transport = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    if (String(input).includes('/schedules')) return new Promise<Response>((resolve, reject) => { release = resolve; fail = reject })
+    return new Response(JSON.stringify({ metadata: { name: 'scout' }, spec: {} }), { status: 201 })
+  })
+  const element = await mountShell('#/agents', ctx({ fetch: transport }))
+  const result = element.api!.createAgentFromTemplate(
+    { metadata: { name: 'scout' }, spec: {} } as never,
+    [{ metadata: { name: 'first' }, spec: {} }, { metadata: { name: 'second' }, spec: {} }] as never,
+  ).then(() => null, error => error)
+  await vi.waitFor(() => expect(release).toBeDefined())
+  element.remove()
+  if (outcome === 'response') release(new Response(JSON.stringify({ metadata: { name: 'first' }, spec: {} }), { status: 201 }))
+  else fail(new TypeError('network lost'))
+  expect((await result).reason).toBe('AgentCreateUnknown')
+  const posts = transport.mock.calls.filter(([, init]) => init?.method === 'POST').map(([input]) => String(input))
+  expect(posts).toHaveLength(2)
+  expect(posts[0]).toContain('/agents')
+  expect(posts[1]).toContain('/schedules')
+})
+
+it('keeps partial template creation visible and opens schedule recovery without recreating the agent', async () => {
+  const element = await mountShell('#/create/agent')
+  const store = element.store!
+  store.agents.loaded = store.agents.hasSnapshot = true
+  store.credentials.loaded = store.credentials.hasSnapshot = true
+  store.dispatchEvent(new Event('change'))
+  await settleVue()
+  const form = element.querySelector('form[aria-label="Create agent"]') as (HTMLFormElement & { __vueParentComponent: { emit: (event: string, detail: unknown) => void } })
+  expect(form).toBeTruthy()
+  const created = agentFixture('scout')
+  form.__vueParentComponent.emit('create-success', {
+    resource: 'agent', name: 'scout', item: created, store,
+    authorityEpoch: element.authorityEpoch, createSession: element.createSession,
+    warnings: [{ schedule: 'scout-digest', outcome: 'unknown' }],
+  })
+  await settleVue(8)
+  expect(element.route).toMatchObject({ kind: 'agent', name: 'scout', tab: 'chat' })
+  expect(text(element.querySelector('[data-agent-creation-warning]'))).toContain('Could not confirm whether schedule “scout-digest” was created')
+  buttonWithText(element, 'View schedules').click()
+  await settleVue()
+  expect(element.route).toMatchObject({ kind: 'agent', name: 'scout', tab: 'automation' })
+  expect(element.querySelector('[data-agent-creation-warning]')).toBeTruthy()
+  element.api!.createSchedule = vi.fn().mockResolvedValue({ metadata: { name: 'scout-digest' }, spec: { agentRef: 'scout' } })
+  element.api!.listSchedules = vi.fn().mockResolvedValue([])
+  buttonWithText(element, 'New schedule').click()
+  await settleVue()
+  const dialog = element.querySelector<HTMLDialogElement>('dialog[open]')!
+  const name = dialog.querySelector<HTMLInputElement>('input[name="name"]')!
+  name.value = 'scout-digest'
+  name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+  const task = dialog.querySelector<HTMLTextAreaElement>('textarea[name="task"]')!
+  task.value = 'Post the digest'
+  task.dispatchEvent(new InputEvent('input', { bubbles: true }))
+  buttonWithText(dialog, 'Create schedule').click()
+  await settleVue(8)
+  expect(element.api!.createSchedule).toHaveBeenCalledOnce()
+  expect(element.querySelector('[data-agent-creation-warning]')).toBeNull()
+  element.railgridContext = ctx({ workspaceUUID: 'other', tenant: 'other' })
+  await settleVue()
+  expect(element.querySelector('[data-agent-creation-warning]')).toBeNull()
+  form.__vueParentComponent.emit('create-success', {
+    resource: 'agent', name: 'scout', item: created, store,
+    authorityEpoch: 1, createSession: 1, warnings: [{ schedule: 'stale', outcome: 'unknown' }],
+  })
+  await settleVue()
+  expect(element.querySelector('[data-agent-creation-warning]')).toBeNull()
+  element.remove()
+})
+
 function buttonWithText(root: ParentNode, value: string): HTMLButtonElement {
   const button = [...root.querySelectorAll<HTMLButtonElement>('button')].find(candidate => text(candidate).includes(value))
   if (!button) throw new Error(`button containing ${value} not found`)
@@ -107,6 +179,67 @@ async function chooseModel(root: ParentNode, model: string): Promise<void> {
 }
 
 describe('public Agents shell routing', () => {
+  it.each(['ready', 'delayed', 'user focus', 'pre-mount focus', 'pre-mount ready'] as const)(
+    'coordinates route and agent form focus when %s', async scenario => {
+      const element = await mountShell()
+      const frames: FrameRequestCallback[] = []
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { frames.push(callback); return frames.length })
+      const store = element.store!
+      if (scenario === 'ready' || scenario === 'pre-mount ready') {
+        store.agents.loaded = store.agents.hasSnapshot = true
+        store.credentials.loaded = store.credentials.hasSnapshot = true
+        store.dispatchEvent(new Event('change'))
+      }
+      history.pushState(null, '', '#/create/agent')
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+      const outside = document.createElement('button')
+      document.body.appendChild(outside)
+      if (scenario === 'pre-mount focus' || scenario === 'pre-mount ready') outside.focus()
+      await settleVue()
+      const title = element.querySelector<HTMLElement>('.k-create-title')!
+      if (scenario === 'user focus') outside.focus()
+      for (const frame of frames.splice(0)) frame(0)
+      if (scenario === 'pre-mount ready') {
+        expect(document.activeElement).toBe(outside)
+      } else if (scenario === 'ready') {
+        expect(document.activeElement).toBe(element.querySelector('#agent-create-name'))
+      } else {
+        expect(document.activeElement).toBe(scenario === 'user focus' || scenario === 'pre-mount focus' ? outside : title)
+        store.agents.loaded = store.agents.hasSnapshot = true
+        store.credentials.loaded = store.credentials.hasSnapshot = true
+        store.dispatchEvent(new Event('change'))
+        await settleVue()
+        expect(document.activeElement).toBe(scenario === 'user focus' || scenario === 'pre-mount focus' ? outside : element.querySelector('#agent-create-name'))
+      }
+      element.remove()
+      outside.remove()
+    },
+  )
+
+  it.each(['replacement navigation', 'unmount'] as const)(
+    'retires pending agent route focus on %s', async action => {
+      const element = await mountShell()
+      const add = vi.spyOn(document, 'addEventListener')
+      const remove = vi.spyOn(document, 'removeEventListener')
+      const cancel = vi.spyOn(window, 'cancelAnimationFrame')
+      vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(123)
+      history.pushState(null, '', '#/create/agent')
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+      await settleVue()
+      const listener = add.mock.calls.find(call => call[0] === 'focusin')?.[1]
+      expect(listener).toBeTruthy()
+      if (action === 'unmount') element.remove()
+      else {
+        history.pushState(null, '', '#/connections')
+        window.dispatchEvent(new HashChangeEvent('hashchange'))
+        await settleVue()
+      }
+      expect(remove).toHaveBeenCalledWith('focusin', listener)
+      expect(cancel).toHaveBeenCalledWith(123)
+      element.remove()
+    },
+  )
+
   it('groups setup routes under one tab while retaining the Activity badge and direct links', async () => {
     const element = await mountShell()
     element.store!.inbox.data = [{ id: 'request', agentName: 'scout', kind: 'approval', state: 'pending', prompt: 'Review tool access', createdAt: '2026-01-01T00:00:00Z' }]
@@ -594,6 +727,59 @@ describe('public Agents shell routing', () => {
     expect(location.hash).toBe('#/webhooks/github-org/edit')
     expect(text(element.querySelector('.k-resource-page__kind'))).toBe('Webhook')
     expect(text(element.querySelector('[data-testid="webhook-url"]'))).toContain('/webhooks/c/github-org/t')
+  })
+
+  it.each(['collection', 'create', 'edit'] as const)('returns webhook prerequisite %s to its originating agent after cancel or success', async origin => {
+    const context = `agent=scout&origin=${origin}${origin === 'edit' ? '&trigger=existing' : ''}`
+    const element = await mountShell(`#/create/webhook?${context}`)
+    const back = element.querySelector<HTMLAnchorElement>('.k-back-action')!
+    const destination = origin === 'create' ? '#/agents/scout/triggers/create' : origin === 'edit' ? '#/agents/scout/triggers/existing/edit' : '#/agents/scout/automation'
+    expect(back.getAttribute('href')).toBe(destination)
+    buttonWithText(element, 'Cancel').click()
+    await settleVue()
+    expect(location.hash).toBe(destination)
+
+    history.replaceState(null, '', `#/create/webhook?${context}`)
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await settleVue()
+    const created: Webhook = { metadata: { name: 'hook' }, spec: { source: 'webhook' }, status: { webhookPath: '/webhook/token' } }
+    element.api!.createWebhook = vi.fn().mockResolvedValue(created)
+    element.api!.listWebhooks = vi.fn().mockResolvedValue([created])
+    element.api!.listWebhookDeliveries = vi.fn().mockResolvedValue({ items: [], retention: 200 }) as ApiClient['listWebhookDeliveries']
+    const name = element.querySelector<HTMLInputElement>('input[name="name"]')!
+    name.value = 'hook'
+    name.dispatchEvent(new Event('input', { bubbles: true }))
+    element.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue(7, 120)
+    expect(location.hash).toBe(`#/webhooks/hook/edit?${context}`)
+    expect(text(element.querySelector('[data-testid="webhook-url"]'))).toContain('/webhook/token')
+    buttonWithText(element, origin === 'create' ? 'Continue to new trigger' : origin === 'edit' ? 'Return to trigger' : 'Continue to agent automation').click()
+    await settleVue()
+    expect(location.hash).toBe(destination)
+  })
+
+  it('discards webhook prerequisite context on workspace change', async () => {
+    const element = await mountShell('#/create/webhook?agent=scout&origin=create')
+    element.railgridContext = ctx({ workspaceUUID: 'other', tenant: 'other' })
+    await settleVue()
+    expect(location.hash).toBe('#/agents')
+  })
+
+  it.each([
+    ['?agent=scout&origin=edit&trigger=existing', '#/agents/scout/triggers/existing/edit'],
+    ['', '#/webhooks'],
+  ])('uses the webhook detail back link even when the webhook is unavailable (%s)', async (query, destination) => {
+    const element = await mountShell(`#/webhooks/missing/edit${query}`)
+    const store = element.store!
+    store.webhooks.loaded = store.webhooks.hasSnapshot = true
+    store.webhooks.data = []
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    const back = element.querySelector<HTMLAnchorElement>('.k-back-action')!
+    expect(back.getAttribute('href')).toBe(destination)
+    back.click()
+    await settleVue()
+    expect(location.hash).toBe(destination)
   })
 
   it.each(['schedule', 'trigger'] as const)('opens New %s over the retained workbench and chat', async kind => {

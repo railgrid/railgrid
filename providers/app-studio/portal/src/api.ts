@@ -216,11 +216,12 @@ function projectFromCR(object: ProjectCR): Project {
 // been seen in a workspace the check is not repeated for that tenant.
 const studioEnsured = new Map<string, Promise<void>>()
 
-async function ensureStudio(ctx: RailgridContext | null): Promise<void> {
+function ensureStudio(ctx: RailgridContext | null): Promise<void> {
   const key = ctx ? `${ctx.orgUUID}/${ctx.workspaceUUID}` : ''
   const pending = studioEnsured.get(key)
   if (pending) return pending
-  const attempt = (async () => {
+  let attempt!: Promise<void>
+  attempt = (async () => {
     const client = projectKubeClient(ctx)
     try {
       await client.get(studioResource, STUDIO_NAME)
@@ -238,7 +239,7 @@ async function ensureStudio(ctx: RailgridContext | null): Promise<void> {
     } catch {
       // A concurrent create, or a workspace where the binding has not caught up
       // yet: the verb below reports the real reason, and the next call retries.
-      studioEnsured.delete(key)
+      if (studioEnsured.get(key) === attempt) studioEnsured.delete(key)
     }
   })()
   studioEnsured.set(key, attempt)
@@ -247,8 +248,9 @@ async function ensureStudio(ctx: RailgridContext | null): Promise<void> {
 
 // studioRequest is request() for a Studio verb: it makes sure the singleton
 // exists first, because gate 1 is a real GET of it.
-async function studioRequest<T>(ctx: RailgridContext | null, method: string, verb: string, body?: unknown): Promise<T> {
+async function studioRequest<T>(ctx: RailgridContext | null, method: string, verb: string, body?: unknown, isCurrent?: () => boolean): Promise<T> {
   await ensureStudio(ctx)
+  if (isCurrent && !isCurrent()) throw new Error('Project creation context changed')
   return request<T>(ctx, method, studioURL(ctx, verb), body)
 }
 
@@ -269,6 +271,7 @@ interface ProjectAPIRequestOptions {
   timeoutMS?: number
   timeoutMessage?: string
   headers?: Record<string, string>
+  signal?: AbortSignal
 }
 
 const ASSISTANT_THREAD_PAGE_SIZE = 500
@@ -293,7 +296,7 @@ export async function request<T>(ctx: RailgridContext | null, method: string, pa
         credentials: 'same-origin',
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
-        signal,
+        signal: options.signal ?? signal,
       })
       return { response, text: await response.text() }
     })
@@ -712,8 +715,9 @@ export const api = {
       repositoryMode?: 'auto' | 'none' | 'create'
       existingRepositoryRef?: string
     },
+    isCurrent?: () => boolean,
   ): Promise<Project> {
-    return studioRequest<Project>(ctx, 'POST', 'create-project', body)
+    return studioRequest<Project>(ctx, 'POST', 'create-project', body, isCurrent)
   },
 
   // createProjectStream creates a project over SSE, surfacing each creation
@@ -734,59 +738,132 @@ export const api = {
     },
     onStatus: (message: string) => void,
     signal?: AbortSignal,
+    isCurrent?: () => boolean,
   ): Promise<Project> {
-    const headers = tenantHeaders({})
-    headers.Accept = 'text/event-stream'
-    headers['Content-Type'] = 'application/json'
-    await ensureStudio(ctx)
-    const res = await providerFetch(ctx)(`${studioURL(ctx, 'create-project-stream')}`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers,
-      body: JSON.stringify(body),
-      signal,
-    })
-    if (!res.ok || !res.body) throw new Error(`project create stream failed: ${res.status} ${res.statusText}`)
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let created: Project | null = null
-    let failure: string | null = null
-    const handle = (raw: string) => {
-      let event = 'message'
-      let data = ''
-      for (const line of raw.split('\n')) {
-        if (line.startsWith('event:')) event = line.slice(6).trim()
-        else if (line.startsWith('data:')) data = data ? `${data}\n${line.slice(5).trimStart()}` : line.slice(5).trimStart()
-      }
-      if (!data) return
-      if (event === 'status') {
-        const parsed = JSON.parse(data) as { message?: string }
-        if (parsed.message) onStatus(parsed.message)
-      } else if (event === 'created') {
-        created = JSON.parse(data) as Project
-      } else if (event === 'error') {
-        failure = (JSON.parse(data) as { message?: string }).message ?? 'project creation failed'
-      }
+    const controller = new AbortController()
+    let rejectCancellation: (reason: Error) => void = () => {}
+    const cancelled = new Promise<never>((_, reject) => { rejectCancellation = reject })
+    const abort = () => {
+      controller.abort()
+      rejectCancellation(new DOMException('Stopped waiting for project creation', 'AbortError'))
     }
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) abort()
     try {
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        for (;;) {
-          const sep = buffer.indexOf('\n\n')
-          if (sep < 0) break
-          handle(buffer.slice(0, sep))
-          buffer = buffer.slice(sep + 2)
+      if (signal?.aborted) await cancelled
+      const headers = tenantHeaders({})
+      headers.Accept = 'text/event-stream'
+      headers['Content-Type'] = 'application/json'
+      const setup = ensureStudio(ctx)
+      const setupKey = ctx ? `${ctx.orgUUID}/${ctx.workspaceUUID}` : ''
+      try {
+        await Promise.race([setup, cancelled])
+      } catch (error) {
+        if (signal?.aborted && studioEnsured.get(setupKey) === setup) studioEnsured.delete(setupKey)
+        throw error
+      }
+      if (signal?.aborted || (isCurrent && !isCurrent())) throw new Error('Project creation context changed')
+      const res = await Promise.race([providerFetch(ctx)(`${studioURL(ctx, 'create-project-stream')}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      }), cancelled])
+      if (!res.ok) {
+        // Gateways and the provider can return a Kubernetes Status before the
+        // SSE stream starts. Read only a bounded amount, and keep cancellation
+        // effective even if an intermediary never finishes its error body.
+        let detail = ''
+        let reason = ''
+        if (res.body) {
+          const errorReader = res.body.getReader()
+          const decoder = new TextDecoder()
+          let text = ''
+          let remaining = 16 * 1024
+          let deadline: ReturnType<typeof setTimeout> | undefined
+          const timedOut = new Promise<never>((_, reject) => {
+            deadline = setTimeout(() => reject(new Error('error response timed out')), 2000)
+          })
+          try {
+            while (remaining > 0) {
+              const { done, value } = await Promise.race([errorReader.read(), cancelled, timedOut])
+              if (done) break
+              const chunk = value.subarray(0, remaining)
+              remaining -= chunk.byteLength
+              text += decoder.decode(chunk, { stream: true })
+              if (chunk.byteLength < value.byteLength) break
+            }
+            text += decoder.decode()
+            try {
+              const parsed = JSON.parse(text) as { message?: unknown; reason?: unknown }
+              if (typeof parsed.message === 'string') detail = parsed.message
+              if (typeof parsed.reason === 'string') reason = parsed.reason.slice(0, 128)
+            } catch {
+              if (res.headers.get('content-type')?.includes('text/plain')) detail = text
+            }
+          } catch (error) {
+            // A broken or stalled body does not hide the HTTP status. An
+            // explicit stop still wins and follows the normal abort path.
+            if (signal?.aborted) throw error
+          } finally {
+            clearTimeout(deadline)
+            void errorReader.cancel().catch(() => {})
+            errorReader.releaseLock()
+          }
+        }
+        detail = detail.trim().slice(0, 1000)
+        throw new ProjectAPIRequestError(detail || `project create stream failed: ${res.status} ${res.statusText}`.trim(), res.status, reason)
+      }
+      if (!res.body) throw new Error('project create stream returned no response body')
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let created: Project | null = null
+      let failure: string | null = null
+      const handle = (raw: string) => {
+        let event = 'message'
+        let data = ''
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim()
+          else if (line.startsWith('data:')) data = data ? `${data}\n${line.slice(5).trimStart()}` : line.slice(5).trimStart()
+        }
+        if (!data) return
+        if (event === 'status') {
+          const parsed = JSON.parse(data) as { message?: string }
+          if (parsed.message) onStatus(parsed.message)
+        } else if (event === 'created') {
+          const candidate = JSON.parse(data) as Project
+          if (!candidate || typeof candidate.name !== 'string' || !candidate.name.trim() || typeof candidate.uid !== 'string' || !candidate.uid.trim()) throw new Error('project creation returned an invalid project')
+          created = candidate
+        } else if (event === 'error') {
+          failure = (JSON.parse(data) as { message?: string }).message ?? 'project creation failed'
         }
       }
+      try {
+        for (;;) {
+          const { done, value } = await Promise.race([reader.read(), cancelled])
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          for (;;) {
+            const sep = buffer.indexOf('\n\n')
+            if (sep < 0) break
+            handle(buffer.slice(0, sep))
+            buffer = buffer.slice(sep + 2)
+            if (created) return created
+            if (failure) throw new Error(failure)
+          }
+        }
+      } finally {
+        reader.releaseLock()
+      }
+      if (failure) throw new Error(failure)
+      if (!created) throw new Error('project creation stream ended without a project')
+      return created
     } finally {
-      reader.releaseLock()
+      signal?.removeEventListener('abort', abort)
+      controller.abort()
     }
-    if (failure) throw new Error(failure)
-    if (!created) throw new Error('project creation stream ended without a project')
-    return created
   },
 
   // planProject returns a creation blueprint (proposed name, recommended
@@ -816,11 +893,13 @@ export const api = {
 
   // readProjectFile returns one workspace file's bounded content plus its full
   // size and version. Binary files return empty content with binary=true.
-  async readProjectFile(ctx: RailgridContext | null, name: string, path: string): Promise<ProjectFileContent> {
+  async readProjectFile(ctx: RailgridContext | null, name: string, path: string, signal?: AbortSignal): Promise<ProjectFileContent> {
     const body = await request<ProjectFileContent>(
       ctx,
       'GET',
       `${projectURL(ctx, name, 'files-content')}?path=${encodeURIComponent(path)}`,
+      undefined,
+      { signal },
     )
     return { ...body, size: typeof body?.size === 'number' ? body.size : new TextEncoder().encode(body?.content ?? '').byteLength }
   },

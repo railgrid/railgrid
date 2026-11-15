@@ -6,6 +6,7 @@ import ts from 'typescript'
 
 const source = await readFile(new URL('./createReadiness.ts', import.meta.url), 'utf8')
 const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+const gitReviewSource = await readFile(new URL('./ProjectGitReview.vue', import.meta.url), 'utf8')
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: {
     module: ts.ModuleKind.ES2022,
@@ -17,7 +18,42 @@ const {
   canSubmitCreatePrompt,
   createSetupItems,
   createPromptBlockedMessage,
+  reconcileGitReview,
+  waitForCurrentReadiness,
 } = await import(moduleURL)
+
+test('submission waits for a newer readiness request when its own request is superseded', async () => {
+  let resolveFirst, resolveSecond
+  const first = new Promise(resolve => { resolveFirst = resolve })
+  const second = new Promise(resolve => { resolveSecond = resolve })
+  let current = first
+  let completed = false
+  const waiting = (async () => {
+    await first
+    await waitForCurrentReadiness(() => current)
+    completed = true
+  })()
+  current = second
+  resolveFirst()
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(completed, false)
+  current = null
+  resolveSecond()
+  await waiting
+  assert.equal(completed, true)
+  assert.match(appSource, /await loadCreateReadiness\(\)\s+await waitForCurrentReadiness\(\(\) => currentCreateReadinessLoad\)/)
+  assert.match(appSource, /await waitForCurrentReadiness\(\(\) => currentCreateReadinessLoad\)\s+if \(!isCurrent\(\)\) return false[\s\S]*?createGitError\.value =/)
+})
+
+test('rechecking an unchecked Git choice clears a stale error only after a ready connection', () => {
+  const ready = { gitConnection: { ready: true, connectionRef: 'replacement' } }
+  assert.deepEqual(reconcileGitReview(false, 'old', 'unavailable', ready), { reviewed: 'replacement', error: '' })
+  assert.deepEqual(reconcileGitReview(false, 'old', 'unavailable', null), { reviewed: '', error: 'unavailable' })
+  assert.deepEqual(reconcileGitReview(true, 'old', 'unavailable', ready), { reviewed: 'old', error: 'unavailable' })
+  assert.deepEqual(reconcileGitReview(true, 'replacement', 'unavailable', ready), { reviewed: 'replacement', error: '' })
+  assert.match(appSource, /const review = reconcileGitReview\(createWithGit\.value, reviewedGitConnection\.value, createGitError\.value, createReadiness\.value\)/)
+})
 
 test('Git health never blocks a nonempty project prompt or model-only readiness', () => {
   for (const status of ['ready', 'provider-missing', 'connection-missing', 'validating', 'failed']) {
@@ -41,11 +77,11 @@ test('new-project route has one setup surface and a stable wizard entry label', 
   assert.match(appSource, /function openSettings\(\)[\s\S]*openModelsSection\(\)/)
   assert.equal(appSource.includes('error.value = gitConnectionCreateReady.value ? null : createReadinessError.value || createPromptBlockedMessage(createReadiness.value)'), false)
   assert.match(appSource, /if \(llmConfigured\.value\) return true\s+error\.value = null\s+return false/)
-  assert.match(appSource, />\s*Continue without Git\s*</)
+  assert.match(gitReviewSource, />\s*Continue without Git\s*</)
 })
 
 test('new-project stream uses the reviewed template decision', () => {
-  const stream = appSource.match(/api\.createProjectStream\(props\.ctx,\s*\{[\s\S]*?\}, \(message\) =>/)?.[0] ?? ''
+  const stream = appSource.match(/api\.createProjectStream\(creationContext,\s*\{[\s\S]*?\}, \(message\) =>/)?.[0] ?? ''
   assert.match(stream, /templateName: createOverrides\?\.templateName/)
   assert.doesNotMatch(stream, /inferDevelopmentTemplate/)
 })

@@ -3,6 +3,13 @@ export interface InfrastructureRoute {
   id?: string
 }
 
+const scopedProviderBase = /^\/ui\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/providers\/infrastructure\/?$/i
+
+export function instanceReviewHref(base: string | undefined, name: string): string | null {
+  if (!base || !scopedProviderBase.test(base)) return null
+  return `${base.replace(/\/$/, '')}/instances/${encodeURIComponent(name)}`
+}
+
 function decodeSegment(value: string): string {
   try {
     return decodeURIComponent(value)

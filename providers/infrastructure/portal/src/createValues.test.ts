@@ -3,6 +3,21 @@ import { createWritableValues } from './createValues'
 import type { JSONSchema } from './types'
 
 describe('createWritableValues', () => {
+  it('omits forbidden unknown fields recursively and preserves allowed additional fields', () => {
+    const schema: JSONSchema = {
+      type: 'object', additionalProperties: false,
+      properties: {
+        nested: { type: 'object', additionalProperties: false, properties: { keep: { type: 'string' } } },
+        rows: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { keep: { type: 'string' } } } },
+        labels: { type: 'object', additionalProperties: { type: 'string' } },
+      },
+    }
+    expect(createWritableValues(schema, {
+      removed: 'drop', nested: { keep: 'yes', removed: 'drop' },
+      rows: [{ keep: 'yes', removed: 'drop' }], labels: { custom: 'yes' },
+    })).toEqual({ nested: { keep: 'yes' }, rows: [{ keep: 'yes' }], labels: { custom: 'yes' } })
+  })
+
   it('recursively omits read-only and platform-computed values', () => {
     const schema: JSONSchema = {
       type: 'object',

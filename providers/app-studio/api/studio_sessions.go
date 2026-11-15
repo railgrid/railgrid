@@ -141,7 +141,15 @@ func (s *Server) ensureStudio(ctx context.Context, c *asclient.Client, id identi
 		}
 		setStudioResourceRef(st, svc.name, ref)
 	}
-	if _, err := c.Resource(studioResource, "").Create(ctx, st, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+	if _, err := c.Resource(studioResource, "").Create(ctx, st, metav1.CreateOptions{}); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			// Another creator won. Inspect its Studio, not our unwritten candidate.
+			existing, getErr := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
+			if getErr == nil && s.retrofitStudioServices(ctx, c, existing) {
+				studioEnsured.Store(id.clusterID, struct{}{})
+			}
+			return
+		}
 		log.Printf("creating the studio for workspace %s: %v", id.clusterID, err)
 		return
 	}

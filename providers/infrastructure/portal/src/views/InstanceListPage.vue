@@ -412,7 +412,7 @@ async function deleteInstance(instance: Instance) {
 
   deletingInstanceKey.value = instanceKey(currentInstance)
   try {
-    await api.deleteInstance(currentInstance.name)
+    await api.deleteInstance(currentInstance)
     if (active) {
       tombstones.add(instanceKey(currentInstance), currentInstance.uid)
       toast('info', `Instance deletion requested for ${currentInstance.name}.`)

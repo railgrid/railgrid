@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useProjectCreationWait } from './useProjectCreationWait'
 import { portalHref } from './portalkit/navigation'
 import MarkdownIt from 'markdown-it'
 import { computed, defineAsyncComponent, h, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Component } from 'vue'
@@ -74,6 +75,8 @@ import {
   canSubmitCreatePrompt,
   createSetupItems,
   gitConnectionReady,
+  reconcileGitReview,
+  waitForCurrentReadiness,
   type ProjectCreateReadiness,
 } from './createReadiness'
 import { parseAssistantActionFeed } from './assistantActionFeed'
@@ -144,6 +147,7 @@ import {
   type AssistantComposerDraft,
   type AssistantComposerDraftScope,
 } from './assistantComposerDraft'
+import { clearProjectCreateUncertainty, createProjectOperationFence, markProjectCreateUncertain, readProjectCreateUncertainty } from './projectCreateUncertainty'
 import {
   assistantComposerDraftMatches,
   shouldHydrateAssistantComposerDraftForThread,
@@ -208,6 +212,7 @@ import {
 } from './projectThumbnailViews'
 import { withRequestTimeout } from './requestTimeout'
 import NewProjectWizard from './NewProjectWizard.vue'
+import ProjectGitReview from './ProjectGitReview.vue'
 // Repository settings are optional; keep their form out of the initial page bundle.
 const GitConnectionSettings = defineAsyncComponent({
   loader: () => import('./GitConnectionSettings.vue'),
@@ -238,17 +243,17 @@ import {
   assistantRunRequiresLiveControls,
   assistantRunTerminal,
   firstProjectStartPlan,
+  firstProjectRetryConflict,
   firstProjectSubmissionAccepted,
   firstProjectSubmissionCanRetryFromCreateRoute,
   firstProjectSubmissionIsCurrent,
   firstProjectSubmissionMatches,
-  firstProjectSubmissionWithClientRequestID,
   firstProjectSubmissionWithProject,
+  firstProjectSubmissionWithStartAttempt,
   firstProjectSubmissionWithThread,
   mergeConversationSnapshot,
   newFirstProjectSubmission,
   normalizeAssistantRunStatus,
-  shouldRotateFirstProjectRequestID,
   normalizeSnapshotMessage,
   orderConversationMessages,
   projectCreationPrompt,
@@ -509,6 +514,29 @@ watch(() => JSON.stringify(assistantComposerDraftIdentity(props.ctx)), (current,
   if (previous && previous !== 'null') purgeAssistantComposerDraftsForIdentity(JSON.parse(previous) as AssistantComposerDraftIdentity)
   setAssistantComposerDraftActiveIdentity(JSON.parse(current) as AssistantComposerDraftIdentity | null)
 }, { immediate: true, flush: 'sync' })
+
+const projectCreateUncertain = ref(false)
+const projectCreateWait = useProjectCreationWait()
+const projectCreateWaiting = projectCreateWait.waiting
+const projectCreateStopButton = projectCreateWait.stopButton
+const projectCreateWarning = projectCreateWait.warning
+const stopWaitingForProjectCreation = projectCreateWait.stop
+const invalidateProjectCreateWait = projectCreateWait.invalidate
+const projectCreateWarningStorageUnavailable = ref(false)
+const importOperation = createProjectOperationFence()
+watch(() => JSON.stringify(assistantComposerDraftIdentity(props.ctx)), () => {
+  const state = readProjectCreateUncertainty(assistantComposerDraftIdentity(props.ctx))
+  projectCreateUncertain.value = state === 'uncertain'
+  projectCreateWarningStorageUnavailable.value = state === 'unavailable'
+}, { immediate: true, flush: 'sync' })
+
+function acknowledgeProjectCreateUncertainty() {
+  if (busy.value || importBusy.value) return
+  const cleared = clearProjectCreateUncertainty(assistantComposerDraftIdentity(props.ctx))
+  projectCreateWarningStorageUnavailable.value = !cleared
+  projectCreateUncertain.value = false
+}
+
 
 function assistantMessageQueueScope(
   projectName = selected.value?.name ?? '',
@@ -774,6 +802,10 @@ const pendingReviewProps = computed(() => {
 const pendingReviewCount = computed(() => Number(Boolean(pendingReviewProps.value)))
 const pendingReviewLabel = computed(() => `${pendingReviewCount.value} pending ${pendingReviewCount.value === 1 ? 'request' : 'requests'}`)
 const loading = ref(true)
+const projectRefreshing = ref(false)
+let projectRefreshGeneration = 0
+let projectPollPromise: Promise<void> | null = null
+let projectGalleryPromise: Promise<void> | null = null
 const projectsLoaded = ref(false)
 const projectOpenLoading = ref(false)
 const threadHistoryLoading = ref(false)
@@ -814,6 +846,7 @@ const deletingProjectName = ref('')
 const deletingProjectUID = ref('')
 const projectDeletionError = ref<string | null>(null)
 const projectDeletionRetry = ref<(() => void) | null>(null)
+const projectDeletionRetryTarget = ref<ProjectDeletionIdentity | null>(null)
 const prompt = ref('')
 // Files cannot be uploaded until the project has a server identity. Keep the
 // browser-owned candidates outside the rich-composer parts so landing/wizard
@@ -845,7 +878,7 @@ const assistantComposerSubmitting = ref(false)
 const assistantComposerRef = ref<{
   focus: () => void
   openPalette: () => void
-  closePalette: (restoreFocus?: boolean) => void
+  closePalette?: (options?: { restoreFocus?: boolean }) => void
   recoverUnavailableAttachments?: (receiptIDs: readonly string[]) => Promise<AssistantAttachmentRecoveryCounts>
   commitAttachments?: (receiptIDs: readonly string[], ownerScopeKey: string, ownerProjectName: string) => void
   adoptAttachmentDraftScope?: (fromScopeKey: string, toScopeKey: string, projectName: string, receiptIDs: readonly string[]) => void
@@ -1116,6 +1149,7 @@ let developmentPreviewRecoveryTimer: number | undefined
 let developmentPreviewComponentMounted = true
 let assistantThreadRequestSerial = 0
 let createReadinessLoadSerial = 0
+let currentCreateReadinessLoad: Promise<void> | null = null
 let llmModelMutationGeneration = 0
 let splitResizePointerID: number | null = null
 let splitResizeTarget: HTMLElement | null = null
@@ -1611,10 +1645,15 @@ function llmModelMutationIsCurrent(guard: LLMModelMutationGuard): boolean {
 }
 
 function invalidateProjectContextState() {
+  invalidateProjectCreateWait()
   invalidateAssistantReasoningPreferenceState(true)
   projectCreationSubmit.invalidate()
   const hasToken = Boolean(props.ctx?.token)
   projectLoadSerial += 1
+  projectRefreshGeneration += 1
+  projectRefreshing.value = false
+  projectPollPromise = null
+  projectGalleryPromise = null
   assistantSkillsLoadSerial += 1
   promotionLoadSerial += 1
   publishingLoadSerial += 1
@@ -1703,6 +1742,7 @@ function invalidateProjectContextState() {
   deletingProjectUID.value = ''
   projectDeletionError.value = null
   projectDeletionRetry.value = null
+  projectDeletionRetryTarget.value = null
   showSettings.value = false
   shareDialogOpen.value = false
   projectSettingsSaving.value = false
@@ -2202,6 +2242,10 @@ const routeSegment = computed(() => {
 const routePath = computed(() => (props.ctx?.subPath ?? '').split('/').filter(Boolean).join('/'))
 const isProjectIndexRoute = computed(() => routeSegment.value === '')
 const isCreateRoute = computed(() => routeSegment.value === CREATE_PROJECT_ROUTE)
+watch(() => [routeSegment.value, appContextFingerprint(props.ctx)] as const, () => {
+  importOperation.invalidate()
+  importBusy.value = false
+}, { flush: 'sync' })
 const isProviderConnectionsRoute = computed(() => routePath.value === MODEL_PROVIDER_CONNECTIONS_ROUTE)
 const isModelUsageRoute = computed(() => routePath.value === MODEL_USAGE_ROUTE)
 const isModelsRoute = computed(() => routeSegment.value === MODELS_ROUTE)
@@ -2712,7 +2756,9 @@ function scheduleProjectThumbnailRefresh(guard: ProjectThumbnailRequestGuard) {
       projectThumbnailRefreshDelayMs * 2,
       PROJECT_THUMBNAIL_REFRESH_MAX_DELAY_MS,
     )
-    void refreshProjectGalleryThumbnails()
+    const pending = refreshProjectGalleryThumbnails()
+    projectGalleryPromise = pending
+    void pending.finally(() => { if (projectGalleryPromise === pending) projectGalleryPromise = null })
   }, delay)
 }
 
@@ -2732,15 +2778,45 @@ function clearProjectDeletionPollTimer() {
 
 function scheduleProjectDeletionPoll() {
   clearProjectDeletionPollTimer()
-  if (!appComponentMounted || !props.ctx?.token || !isProjectIndexRoute.value) return
+  if (!appComponentMounted || !hasProjectRequestTransport(props.ctx) || !isProjectIndexRoute.value) return
   const contextFingerprint = appContextFingerprint(props.ctx)
   if (!projectDeletion.hasPending(contextFingerprint) &&
       !projects.value.some((project) => projectDeletion.isDeleting(contextFingerprint, project))) return
   projectDeletionPollTimer = window.setTimeout(() => {
     projectDeletionPollTimer = undefined
-    if (!appComponentMounted || !props.ctx?.token || !isProjectIndexRoute.value) return
-    void load()
+    if (!appComponentMounted || !hasProjectRequestTransport(props.ctx) || !isProjectIndexRoute.value) return
+    const pending = pollProjectDeletions()
+    projectPollPromise = pending
+    void pending.finally(() => { if (projectPollPromise === pending) projectPollPromise = null })
   }, PROJECT_DELETION_POLL_MS)
+}
+
+let projectDeletionPollGuard: ProjectRequestGuard | null = null
+
+// Deletion reconciliation must not disturb the usable collection while the
+// server completes cleanup. A foreground route load owns its result first.
+async function pollProjectDeletions() {
+  if (loading.value || projectRefreshing.value) {
+    scheduleProjectDeletionPoll()
+    return
+  }
+  const guard = beginProjectRequest()
+  projectDeletionPollGuard = guard
+  const ctx = props.ctx
+  try {
+    const projectList = await api.listProjects(ctx)
+    if (!projectRequestIsCurrent(guard) || !isProjectIndexRoute.value) return
+    const visibleProjectList = applyProjectList(projectList)
+    error.value = null
+    void hydrateProjectThumbnails(visibleProjectList)
+    if (visibleProjectList.length === 0) props.navigate(CREATE_PROJECT_ROUTE, { replace: true })
+  } catch (e) {
+    if (!projectRequestIsCurrent(guard) || !isProjectIndexRoute.value) return
+    error.value = e instanceof Error ? e.message : String(e)
+    scheduleProjectDeletionPoll()
+  } finally {
+    if (projectDeletionPollGuard === guard) projectDeletionPollGuard = null
+  }
 }
 
 function clearProjectThumbnailURLs() {
@@ -2773,8 +2849,16 @@ function invalidateProjectListRequests() {
   clearProjectDeletionPollTimer()
 }
 
+let projectListRevision = 0
+
 function applyProjectList(projectList: Project[]): Project[] {
+  projectListRevision += 1
   const visibleProjectList = projectDeletion.reconcile(appContextFingerprint(props.ctx), projectList)
+  if (projectDeletionRetryTarget.value && !projectList.some((item) => sameProjectIdentity(projectDeletionRetryTarget.value!, item))) {
+    projectDeletionError.value = null
+    projectDeletionRetry.value = null
+    projectDeletionRetryTarget.value = null
+  }
   projects.value = visibleProjectList
   scheduleProjectDeletionPoll()
   return visibleProjectList
@@ -2901,14 +2985,58 @@ async function refreshProjectGalleryThumbnails() {
   projectThumbnailRefreshTimer = undefined
   if (!hasProjectRequestTransport(props.ctx) || !isProjectIndexRoute.value) return
   const guard = beginProjectThumbnailRequest()
+  // Let foreground loads and deletion reconciliation commit first. Their
+  // thumbnail hydration will normally schedule another retry if needed.
+  if (loading.value || projectRefreshing.value || (projectDeletionPollGuard && projectRequestIsCurrent(projectDeletionPollGuard))) {
+    scheduleProjectThumbnailRefresh(guard)
+    return
+  }
+  const listSerial = projectLoadSerial
+  const listRevision = projectListRevision
   try {
     const projectList = await api.listProjects(guard.ctx)
-    if (!projectThumbnailRequestIsCurrent(guard)) return
+    // A thumbnail retry cannot overwrite a list read started or applied since
+    // this request began, including a completed deletion reconciliation.
+    if (!projectThumbnailRequestIsCurrent(guard) || listSerial !== projectLoadSerial || listRevision !== projectListRevision) return
     const visibleProjectList = applyProjectList(projectList)
-    await hydrateProjectThumbnails(visibleProjectList, guard, true)
+    if (visibleProjectList.length === 0) {
+      props.navigate(CREATE_PROJECT_ROUTE, { replace: true })
+      return
+    }
+    // Thumbnail requests do not own the collection read and must not delay a
+    // user refresh. A newer hydration fences these results through the guard.
+    void hydrateProjectThumbnails(visibleProjectList, guard, true)
   } catch {
     // Normal page refresh/error handling remains authoritative. Thumbnail
     // reconciliation is deliberately silent and retries on the next load.
+  }
+}
+
+// User-initiated collection reads wait for already-running background reads.
+// While queued, prevent timers from starting another read ahead of the user.
+async function refreshProjects() {
+  if (projectRefreshing.value || loading.value || !hasProjectRequestTransport(props.ctx)) return
+  const generation = ++projectRefreshGeneration
+  const fingerprint = projectContextFingerprint(props.ctx)
+  projectRefreshing.value = true
+  try {
+    await Promise.all([projectPollPromise, projectGalleryPromise].filter((pending): pending is Promise<void> => pending !== null))
+    if (!appComponentMounted || generation !== projectRefreshGeneration || fingerprint !== projectContextFingerprint(props.ctx) || !isProjectIndexRoute.value) return
+    const guard = beginProjectRequest()
+    try {
+      const projectList = await api.listProjects(props.ctx)
+      if (!projectRequestIsCurrent(guard) || !isProjectIndexRoute.value) return
+      const visibleProjectList = applyProjectList(projectList)
+      error.value = null
+      void hydrateProjectThumbnails(visibleProjectList)
+      if (visibleProjectList.length === 0) props.navigate(CREATE_PROJECT_ROUTE, { replace: true })
+    } catch (e) {
+      if (projectRequestIsCurrent(guard) && isProjectIndexRoute.value) {
+        error.value = `Could not refresh projects. Showing the last loaded projects. ${e instanceof Error ? e.message : String(e)}`
+      }
+    }
+  } finally {
+    if (generation === projectRefreshGeneration) projectRefreshing.value = false
   }
 }
 
@@ -3319,6 +3447,7 @@ onMounted(() => {
 watch(
   () => props.ctx?.subPath ?? '',
   () => {
+    invalidateProjectCreateWait(isCreateRoute.value)
     projectCreationSubmit.invalidate()
     resetProjectThumbnailRefreshWindow()
     // A route transition changes the visible workspace. Let an in-flight
@@ -3333,6 +3462,7 @@ watch(
     }
     projectDeletionError.value = null
     projectDeletionRetry.value = null
+    projectDeletionRetryTarget.value = null
     closeLandingImportPopover()
     invalidateLLMModelMutationState()
     // A route change can leave the previous project's stream mounted until
@@ -3367,8 +3497,19 @@ watch(
 )
 
 watch(
-  () => appContextFingerprint(props.ctx),
-  () => {
+  [() => appContextFingerprint(props.ctx), () => hasProjectRequestTransport(props.ctx)],
+  ([fingerprint], [previousFingerprint]) => {
+    if (fingerprint === previousFingerprint) {
+      // Transport may arrive or disappear without changing the workspace or
+      // user. Fence and reload catalogs without clearing the creation draft.
+      void loadImportRepositories()
+      void loadDevelopmentTemplates()
+      void loadCreateReadiness()
+      void loadLLMSettings()
+      void loadModelProviderConnections()
+      scheduleProjectDeletionPoll()
+      return
+    }
     // A tenant/user transition must invalidate the old layout before any
     // asynchronous project/catalog response can arrive. Otherwise a pending
     // default or old project's tabs could be written under the new scope.
@@ -3623,7 +3764,9 @@ useEscapeKey(() => {
 
 onBeforeUnmount(() => {
   appComponentMounted = false
+  importOperation.invalidate()
   invalidateLLMSettingsLoad()
+  invalidateProjectCreateWait()
   clearLLMDiscovery()
   projectCreationSubmit.invalidate()
   developmentPreviewComponentMounted = false
@@ -3886,7 +4029,16 @@ async function loadProviders() {
   }
 }
 
-async function loadCreateReadiness() {
+function loadCreateReadiness(): Promise<void> {
+  const request = performCreateReadinessLoad()
+  currentCreateReadinessLoad = request
+  void request.finally(() => {
+    if (currentCreateReadinessLoad === request) currentCreateReadinessLoad = null
+  })
+  return request
+}
+
+async function performCreateReadinessLoad() {
   const serial = ++createReadinessLoadSerial
   if (!hasProjectRequestTransport(props.ctx)) {
     createReadinessLoading.value = false
@@ -4082,10 +4234,10 @@ async function retryLLMSettings(waitForConfiguredModel = false) {
 
 async function loadImportRepositories() {
   const serial = ++importRepositoriesLoadSerial
-  if (!props.ctx?.token) {
+  if (!hasProjectRequestTransport(props.ctx)) {
     importRepositoriesLoading.value = false
     importRepositories.value = []
-    importRepositoriesError.value = null
+    importRepositoriesError.value = 'Waiting for workspace access to load repositories.'
     return
   }
   importRepositoriesLoading.value = true
@@ -4104,10 +4256,10 @@ async function loadImportRepositories() {
 
 async function loadDevelopmentTemplates() {
   const serial = ++developmentTemplatesLoadSerial
-  if (!props.ctx?.token) {
+  if (!hasProjectRequestTransport(props.ctx)) {
     developmentTemplatesLoading.value = false
     developmentTemplates.value = []
-    developmentTemplatesError.value = null
+    developmentTemplatesError.value = 'Waiting for workspace access to load templates.'
     return
   }
   developmentTemplatesLoading.value = true
@@ -4130,6 +4282,14 @@ function closeLandingImportPopover(restoreFocus = false) {
   if (restoreFocus) {
     void nextTick(() => landingImportTriggerRef.value?.focus())
   }
+}
+
+function acknowledgeImportUncertainty() {
+  acknowledgeProjectCreateUncertainty()
+  void nextTick(() => {
+    const dialog = landingImportDialogRef.value
+    ;(dialog?.querySelector<HTMLElement>('#landing-import-repository:not(:disabled)') || dialog)?.focus()
+  })
 }
 
 function handleLandingImportOutside(event: PointerEvent) {
@@ -4168,13 +4328,26 @@ function toggleLandingImport() {
 // from its default branch.
 async function importRepositoryProject() {
   const repositoryRef = importSelectedRepository.value
-  if (!repositoryRef || importBusy.value) return
+  if (!repositoryRef || importBusy.value || projectCreateUncertain.value) return
+  const creationContext = props.ctx
+  const creationFingerprint = appContextFingerprint(creationContext)
+  const creationIdentity = assistantComposerDraftIdentity(creationContext)
+  const owner = importOperation.begin()
+  const current = () => importOperation.owns(owner) && appContextFingerprint(props.ctx) === creationFingerprint && isCreateRoute.value
+  const attempt = crypto.randomUUID()
+  projectCreateWarningStorageUnavailable.value = !markProjectCreateUncertain(creationIdentity, attempt)
+  projectCreateUncertain.value = true
   importBusy.value = true
   importError.value = null
   try {
-    const project = await api.createProject(props.ctx, { existingRepositoryRef: repositoryRef })
+    const project = await api.createProject(creationContext, { existingRepositoryRef: repositoryRef }, current)
+    if (!current()) return
     importSelectedRepository.value = ''
     selected.value = project
+    const cleared = clearProjectCreateUncertainty(creationIdentity, attempt)
+    const markerState = cleared ? 'clear' : readProjectCreateUncertainty(creationIdentity)
+    projectCreateUncertain.value = markerState !== 'clear'
+    projectCreateWarningStorageUnavailable.value = markerState === 'unavailable'
     resetWorkbench()
     initializeWorkbenchForNewProject(project.name)
     props.navigate(encodeURIComponent(project.name))
@@ -4182,9 +4355,9 @@ async function importRepositoryProject() {
     void load()
     void loadImportRepositories()
   } catch (e) {
-    importError.value = e instanceof Error ? e.message : String(e)
+    if (current()) importError.value = e instanceof Error ? e.message : String(e)
   } finally {
-    importBusy.value = false
+    if (importOperation.owns(owner)) importBusy.value = false
   }
 }
 
@@ -5327,17 +5500,24 @@ function handleModelConnectionsChanged(connection?: ProjectModelProviderConnecti
 
 async function deleteModelProviderConnection(connection: ProjectModelProviderConnection) {
   if (!connection || llmSaving.value) return
+  const confirmationGuard: LLMModelMutationGuard = {
+    generation: llmModelMutationGeneration,
+    contextFingerprint: appContextFingerprint(props.ctx),
+    routePath: routePath.value,
+  }
+  const mutationContext = props.ctx
   if (!(await confirmDialog({
     title: `Delete ${connection.displayName || connection.name}?`,
     message: 'This removes the saved provider connection and its generated key versions after retained model revisions no longer need them.',
     danger: true,
     confirmLabel: 'Delete connection',
   }))) return
+  if (!llmModelMutationIsCurrent(confirmationGuard)) return
   const guard = beginLLMModelMutation()
   llmSaving.value = true
   llmActionError.value = null
   try {
-    await api.deleteModelProviderConnection(props.ctx, connection.name)
+    await api.deleteModelProviderConnection(mutationContext, connection.name)
     if (!llmModelMutationIsCurrent(guard)) return
     llmConnections.value = llmConnections.value.filter(item => item.name !== connection.name)
     toast('ok', 'Provider connection deleted.')
@@ -5840,7 +6020,7 @@ watch(
 
 function createProjectFromPrompt() {
   const content = createPromptContent.value
-  if (!content || !canStartProjectFromPrompt.value || !llmConfigured.value || createModelSetup.value || busy.value) return
+  if (!content || projectCreateUncertain.value || !canStartProjectFromPrompt.value || !llmConfigured.value || createModelSetup.value || busy.value) return
   // Keep the derived planning input visible in the wizard. It is deliberately
   // neutral: the only claim made is that attachments were supplied as context.
   if (!prompt.value.trim()) prompt.value = content
@@ -5848,7 +6028,7 @@ function createProjectFromPrompt() {
   // surface. The actual create still runs from onWizardCreate, which re-checks
   // setup before using the durable project/thread path below.
   createWithGit.value = gitConnectionCreateReady.value
-  reviewedGitConnection.value = createReadiness.value?.gitConnection.connectionRef || ''
+  reviewedGitConnection.value = gitConnectionCreateReady.value ? createReadiness.value?.gitConnection.connectionRef || '' : ''
   createGitError.value = ''
   wizardOpen.value = true
 }
@@ -5874,6 +6054,7 @@ async function onWizardCancel() {
 }
 
 async function onWizardCreate(payload: { prompt: string; templateName?: string; displayName?: string }) {
+  if (projectCreateUncertain.value) return
   const authMode = authCompatibleCreation.value
   const authGeneration = authCompatibleCreationGeneration
   const contextFingerprint = appContextFingerprint(props.ctx)
@@ -5885,9 +6066,9 @@ async function onWizardCreate(payload: { prompt: string; templateName?: string; 
   )
 
   authCompatibleCreationError.value = ''
-  await projectCreationSubmit.run(async () => {
+  await projectCreationSubmit.run(async (isCurrent) => {
     if (!authModeIsCurrent()) return false
-    return ensureCreateSetupReady()
+    return ensureCreateSetupReady(() => isCurrent() && authModeIsCurrent())
   }, async () => {
     if (!authModeIsCurrent()) return
     if (authMode) {
@@ -5896,7 +6077,7 @@ async function onWizardCreate(payload: { prompt: string; templateName?: string; 
         const templates = await api.listDevelopmentTemplates(props.ctx)
         if (!authModeIsCurrent()) return
         const selectedTemplate = templates.find((template) => template.name === payload.templateName)
-        if (!payload.templateName || selectedTemplate?.railgridAuthSupported !== true || selectedTemplate.railgridAuthReason !== 'supported') {
+        if (!payload.templateName || selectedTemplate?.browserPreview !== true || selectedTemplate.railgridAuthSupported !== true || selectedTemplate.railgridAuthReason !== 'supported') {
           authCompatibleCreationError.value = 'This template is no longer available for Railgrid Auth. Choose a compatible template and review the project again.'
           return
         }
@@ -5997,13 +6178,27 @@ function onWizardSetupAction(action: 'setup-llm') {
 
 async function onWizardSetupRetry() {
   await Promise.all([loadCreateReadiness(), loadLLMSettings()])
-  if (!createWithGit.value) reviewedGitConnection.value = createReadiness.value?.gitConnection.connectionRef || ''
+  if (createReadinessChecking.value) return
+  const review = reconcileGitReview(createWithGit.value, reviewedGitConnection.value, createGitError.value, createReadiness.value)
+  reviewedGitConnection.value = review.reviewed
+  createGitError.value = review.error
 }
 
-async function ensureCreateSetupReady(): Promise<boolean> {
+function useUpdatedGitConnection() {
+  const connection = createReadiness.value?.gitConnection.connectionRef
+  if (createReadinessChecking.value || !gitConnectionCreateReady.value || !connection) return
+  reviewedGitConnection.value = connection
+  createWithGit.value = true
+  createGitError.value = ''
+}
+
+async function ensureCreateSetupReady(isCurrent: () => boolean): Promise<boolean> {
   await loadLLMSettings()
+  if (!isCurrent()) return false
   if (createWithGit.value) {
     await loadCreateReadiness()
+    await waitForCurrentReadiness(() => currentCreateReadinessLoad)
+    if (!isCurrent()) return false
     if (!gitConnectionCreateReady.value || createReadiness.value?.gitConnection.connectionRef !== reviewedGitConnection.value) {
       createGitError.value = createReadinessError.value || 'The selected Git connection is no longer ready. Retry, or continue without Git.'
       return false
@@ -6059,6 +6254,7 @@ async function createProjectAndStartConversation(
   createOverrides?: { templateName?: string; displayName?: string },
   options: { forceNewProject?: boolean } = {},
 ) {
+  if (projectCreateUncertain.value) return
   if (landingReasoningEffortError.value) {
     error.value = landingReasoningEffortError.value
     return
@@ -6069,6 +6265,10 @@ async function createProjectAndStartConversation(
   const pendingProjectName = pendingForContent?.projectName ?? ''
   const requestedModelID = selectedLLMModel.value?.id ?? selectedLLMModelID.value
   const requestedReasoningEffort = landingReasoningEffort.value
+  if (pendingForContent?.startAttempted && (pendingForContent.modelID !== requestedModelID || pendingForContent.reasoningEffort !== requestedReasoningEffort)) {
+    error.value = 'This prompt may already have started. Restore the original model and reasoning settings to check or retry it.'
+    return
+  }
   const retry = Boolean(pendingForContent && pendingForContent.modelID === requestedModelID && pendingForContent.reasoningEffort === requestedReasoningEffort)
   const provisionalReasoningEfforts = reasoningEffortsForDraftScope(
     landingReasoningEfforts.value,
@@ -6090,12 +6290,11 @@ async function createProjectAndStartConversation(
       )
   pendingFirstProjectSubmission = submission
   const generation = ++projectCreateGeneration
+  const submissionFingerprint = appContextFingerprint(props.ctx)
   const now = new Date().toISOString()
   const draftName = `draft-${Date.now()}`
   const description = landingStarterPrompts.find((starter) => starter.prompt === content.trim())?.description ?? ''
   let acceptedRun = false
-	let startPostAttempted = false
-	let startPostAccepted = false
 	let projectName = submission.projectName
   const busyOwner = beginBusyOperation()
   messageStreaming.value = true
@@ -6108,7 +6307,7 @@ async function createProjectAndStartConversation(
     messages.value = [{ id: `temp-${Date.now()}-user`, projectID: draftName, role: 'user', actorID: optimisticAIMessageActor(props.ctx?.user), content, createdAt: now }]
   }
 
-  const current = () => appComponentMounted && pendingFirstProjectSubmission === submission && (
+  const current = () => appComponentMounted && appContextFingerprint(props.ctx) === submissionFingerprint && pendingFirstProjectSubmission === submission && (
     firstProjectSubmissionIsCurrent(
       submission,
       generation,
@@ -6132,6 +6331,7 @@ async function createProjectAndStartConversation(
 
   try {
     await nextTick()
+    if (!current()) return
     // Project creation remains request-bound through readiness, repository and
     // naming setup. Once the Project exists, the first turn uses the same
     // server-owned start/subscribe contract as every later message.
@@ -6139,20 +6339,37 @@ async function createProjectAndStartConversation(
       // Stream creation so each step is visible — including "Attaching
       // scaffold to <template>", the moment the project opens on its starter
       // code. A wizard-confirmed template pins the choice; otherwise infer.
-      const created = await api.createProjectStream(props.ctx, {
-        description: description || undefined,
-        prompt: content,
-        repositoryMode: createWithGit.value ? 'create' : 'none',
-        connectionRef: createWithGit.value ? reviewedGitConnection.value : undefined,
-        templateName: createOverrides?.templateName,
-        displayName: createOverrides?.displayName,
-      }, (message) => {
-        if (current()) conversationStatus.value = message
-      })
+      const creationContext = props.ctx
+      const creationFingerprint = appContextFingerprint(creationContext)
+      const creationIdentity = assistantComposerDraftIdentity(creationContext)
+      const attempt = crypto.randomUUID()
+      const markerSaved = markProjectCreateUncertain(creationIdentity, attempt)
+      projectCreateWarningStorageUnavailable.value = !markerSaved
+      projectCreateUncertain.value = true
+      const creationAbort = projectCreateWait.begin()
+      let created: Project
+      try {
+        created = await api.createProjectStream(creationContext, {
+          description: description || undefined,
+          prompt: content,
+          repositoryMode: createWithGit.value ? 'create' : 'none',
+          connectionRef: createWithGit.value ? reviewedGitConnection.value : undefined,
+          templateName: createOverrides?.templateName,
+          displayName: createOverrides?.displayName,
+        }, (message) => {
+          if (current()) conversationStatus.value = message
+        }, creationAbort.signal, () => current() && appContextFingerprint(props.ctx) === creationFingerprint)
+      } finally {
+        projectCreateWait.finish(creationAbort)
+      }
       if (!current()) return
       projectName = created.name
       submission = firstProjectSubmissionWithProject(submission, projectName)
       pendingFirstProjectSubmission = submission
+      const markerCleared = clearProjectCreateUncertainty(creationIdentity, attempt)
+      const markerState = markerCleared ? 'clear' : readProjectCreateUncertainty(creationIdentity)
+      projectCreateUncertain.value = markerState !== 'clear'
+      projectCreateWarningStorageUnavailable.value = markerState === 'unavailable'
       preProjectAttachmentProjectName = projectName
       selected.value = created
       activeProjectContextFingerprint = appContextFingerprint(props.ctx)
@@ -6170,7 +6387,7 @@ async function createProjectAndStartConversation(
 
     if (!(await ensurePreProjectAttachmentsUploaded(projectName, current))) {
       if (!current()) return
-      prompt.value = content
+      if (!prompt.value) prompt.value = content
       // Keep the failed candidates visible on the shared pre-project surface;
       // the pending submission still names this project, so retry skips create.
       props.navigate(CREATE_PROJECT_ROUTE)
@@ -6212,12 +6429,12 @@ async function createProjectAndStartConversation(
     assistantThreads.value = [thread, ...assistantThreads.value.filter((candidate) => candidate.id !== thread?.id)]
     activeAssistantThreadID.value = thread.id
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
-    startPostAttempted = true
+    submission = firstProjectSubmissionWithStartAttempt(submission)
+    pendingFirstProjectSubmission = submission
     const canonical = await startPreProjectAssistantTurn(projectName, submission, thread.id, current)
     // A resolved start response is the durable acceptance boundary. Any
     // projection/history failure after this point must replay this same
     // client request rather than manufacture a new turn.
-    startPostAccepted = true
     if (!current()) return
     // The POST response is the durable acceptance boundary. A later history
     // projection failure must not make these receipts look sendable again.
@@ -6270,13 +6487,10 @@ async function createProjectAndStartConversation(
     }
   } catch (e) {
     if (!current()) return
-    if (e instanceof ProjectAPIRequestError && startPostAttempted && shouldRotateFirstProjectRequestID(e, startPostAccepted)) {
-      submission = firstProjectSubmissionWithClientRequestID(submission, crypto.randomUUID())
-      pendingFirstProjectSubmission = submission
-    }
+    if (!projectName && !prompt.value) prompt.value = content
     if (isAbortError(e)) {
       if (!acceptedRun && preProjectAttachments.value.length) {
-        prompt.value = content
+        if (!prompt.value) prompt.value = content
         props.navigate(CREATE_PROJECT_ROUTE)
         return
       }
@@ -6293,18 +6507,18 @@ async function createProjectAndStartConversation(
     }
     if (handleProjectAPIInitializing(e)) {
       if (preProjectAttachments.value.length) {
-        prompt.value = content
+        if (!prompt.value) prompt.value = content
         props.navigate(CREATE_PROJECT_ROUTE)
         return
       }
       selected.value = null
       messages.value = []
-      prompt.value = content
+      if (!prompt.value) prompt.value = content
       props.navigate(CREATE_PROJECT_ROUTE)
       return
     }
     error.value = e instanceof Error ? e.message : String(e)
-    prompt.value = content
+    if (!prompt.value) prompt.value = content
     if (!acceptedRun && preProjectAttachments.value.length) {
       props.navigate(CREATE_PROJECT_ROUTE)
     } else if (!projectName) {
@@ -6902,7 +7116,7 @@ function selectAssistantResponseMode(mode: AssistantResponseMode) {
 }
 
 function closeAssistantCommandPalette(options: { restoreFocus?: boolean } = {}) {
-  assistantComposerRef.value?.closePalette(options.restoreFocus !== false)
+  assistantComposerRef.value?.closePalette?.(options)
 }
 
 function updateAssistantComposerParts(parts: ProjectAssistantContentPart[]) {
@@ -8763,9 +8977,9 @@ async function requestDeleteProject(project: Project) {
   const busyOwner = beginBusyOperation()
   deletingProjectName.value = name
   deletingProjectUID.value = target.uid ?? ''
-  error.value = null
   projectDeletionError.value = null
   projectDeletionRetry.value = null
+  projectDeletionRetryTarget.value = null
   invalidateProjectListRequests()
   try {
     await api.deleteProject(props.ctx, name, target.uid ?? '')
@@ -8845,9 +9059,9 @@ async function requestDeleteProject(project: Project) {
         if (!current || !sameProjectIdentity(target, current)) return
         void requestDeleteProject(current)
       }
-      error.value = null
       projectDeletionError.value = failureMessage
       projectDeletionRetry.value = retryDeletion
+      projectDeletionRetryTarget.value = target
     }
   } finally {
     if (lifecycleIsCurrent()) {
@@ -8953,6 +9167,15 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
   const sendContext = props.ctx
   const sendContextFingerprint = projectContextFingerprint(sendContext)
   const submissionThreadID = activeAssistantThreadID.value
+  // A first-turn retry must return to the thread where its POST may have
+  // succeeded: the server's idempotency key is scoped to that thread.
+  const firstRetryConflict = firstProjectRetryConflict(pendingFirstProjectSubmission, projectName, content, submissionThreadID, requestedModelID, requestedReasoningEffort)
+  if (firstRetryConflict) {
+    error.value = firstRetryConflict === 'thread'
+      ? 'This prompt may already have started in another conversation. Return to that conversation to check or retry it. If it is unavailable, check Projects before starting again.'
+      : 'This prompt may already have started. Restore the original model and reasoning settings to check or retry it.'
+    return false
+  }
   const firstProjectPending = firstProjectSubmissionMatches(
     pendingFirstProjectSubmission,
     projectName,
@@ -10749,9 +10972,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         @select="selectAppStudioSection"
       />
 
-      <header v-if="isProjectIndexRoute" class="mb-4 flex items-center justify-between gap-3">
+      <header v-if="isProjectIndexRoute" class="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 class="truncate text-[14px] font-medium text-text-primary">Projects</h2>
         <div class="flex shrink-0 items-center gap-2">
+          <button type="button" class="k-btn k-btn--secondary" :aria-disabled="loading || projectRefreshing" @click="refreshProjects">
+            <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': projectRefreshing }" :stroke-width="1.75" aria-hidden="true" />
+            {{ projectRefreshing ? 'Refreshing…' : 'Refresh' }}
+          </button>
+          <span class="sr-only" role="status" aria-live="polite">{{ projectRefreshing ? 'Refreshing projects…' : '' }}</span>
           <button
             v-if="!projectsLoaded || loading || error || projects.length > 0"
             type="button"
@@ -10805,7 +11033,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           action-label="Retry deletion"
           @action="projectDeletionRetry?.()"
         />
-        <div v-if="error && !projectDeletionError" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
+        <div v-if="error" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
           <template v-if="isMissingCodeConnectionError(error)">
             You need to
             <a :href="CODE_CONNECTIONS_URL" class="app-studio-touch-target font-medium underline underline-offset-2 hover:text-danger/80">
@@ -10814,7 +11042,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             before you can continue.
           </template>
           <template v-else>{{ error }}</template>
-          <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" :disabled="loading" @click="load">Retry</button>
+          <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" :disabled="loading" @click="projectsLoaded ? refreshProjects() : load()">Retry</button>
         </div>
 
         <template v-if="projectLayout === 'grid'">
@@ -10905,7 +11133,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <div v-else-if="!projectsLoaded || loading" class="flex min-h-[260px] max-w-[520px] items-center justify-center rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center text-[13px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
             Loading projects…
           </div>
-          <div v-else-if="error" class="flex min-h-[260px] max-w-[520px] items-center justify-center rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center text-[13px] text-text-muted" role="status">
+          <div v-else-if="error && !projects.length" class="flex min-h-[260px] max-w-[520px] items-center justify-center rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center text-[13px] text-text-muted" role="status">
             Projects are unavailable. Use Retry above to load them again.
           </div>
           <div v-else class="flex min-h-[260px] max-w-[520px] items-center justify-center rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center text-[13px] text-text-muted">
@@ -10921,11 +11149,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           row-key="rowKey"
           :loaded="projectsLoaded"
           :loading="loading"
-          :interactive="!projectTableRows.some((row) => row.deleting)"
+          :row-interactive="(row) => !row.deleting"
           :row-aria-label="(row) => row.deleting
             ? `Deleting project ${String(row.displayName || row.name)}`
             : `Open project ${String(row.displayName || row.name)}`"
-          :empty-text="!projectsLoaded || loading ? 'Loading projects…' : error ? 'Projects are unavailable.' : 'No projects match this search.'"
+          :empty-text="!projectsLoaded || loading ? 'Loading projects…' : error && !projects.length ? 'Projects are unavailable.' : 'No projects match this search.'"
           @row-click="enterProjectTableRow"
         >
           <template #name="{ row }">
@@ -10961,6 +11189,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <button v-if="projects.length || error" type="button" class="k-btn k-btn--ghost k-back-action mb-4" :disabled="llmSaving || busy" @click="backToProjectList">
               <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> Projects
             </button>
+            <section v-if="projectCreateUncertain" ref="projectCreateWarning" tabindex="-1" class="k-inline-notification mb-4 grid gap-3" role="alert">
+              <p>Project creation may have completed. Check Projects before creating another. The project list cannot confirm whether creation finished. Your idea is kept only in this tab until you reload.</p>
+              <p v-if="projectCreateWarningStorageUnavailable">This warning cannot be saved in this browser and may disappear after a reload.</p>
+              <div class="flex flex-wrap gap-2">
+                <button type="button" class="k-btn k-btn--secondary" :disabled="busy || importBusy" @click="backToProjectList">Check Projects</button>
+                <button type="button" class="k-btn k-btn--ghost" :disabled="busy || importBusy" @click="acknowledgeProjectCreateUncertainty">I understand, continue</button>
+              </div>
+            </section>
             <div v-if="createModelSetup" id="app-studio-create-model-host" />
             <div v-if="wizardOpen" v-show="!createModelSetup && !awaitingCreatedModel">
               <NewProjectWizard
@@ -10970,8 +11206,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 :auth-compatible-only="authCompatibleCreation"
                 :creation-error="authCompatibleCreationError"
                 :creation-checking="authCompatibleCreationChecking"
-                :disabled="projectCreationPending || busy || !canStartProjectFromPrompt || !llmConfigured"
+                :disabled="projectCreateUncertain || projectCreationPending || busy || createSetupLoading || !!landingReasoningEffortError || (!authCompatibleCreation && !canStartProjectFromPrompt) || !llmConfigured"
                 :disabled-reason="projectCreationPending ? 'Checking project setup…' : createPromptSubmitTitle"
+                :create-label="createWithGit ? 'Create project' : 'Create project without Git'"
                 :setup-items="createSetupItemsForPrompt"
                 :setup-error="llmSettingsError || ''"
                 :setup-loading="createSetupLoading"
@@ -10989,19 +11226,20 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <template v-if="showProjectSetupJourney" #review-progress>
                   <FirstRunGuide embedded :steps="projectSetupSteps" :current-step="3" journey-label="New project steps" />
                 </template>
-                <template v-if="reviewedGitConnection || createGitError" #repository-options>
-                  <div class="grid min-w-0 gap-2 text-[12px]">
-                    <label class="k-checkbox-hit flex items-center gap-2 text-text-primary">
-                      <input v-model="createWithGit" type="checkbox" class="k-checkbox" :disabled="projectCreationPending || !reviewedGitConnection" />
-                      Create a private Git repository (recommended)
-                    </label>
-                    <p class="text-text-secondary">{{ createWithGit ? 'Project source will be saved to a new private repository.' : 'Start without Git. Connect a repository later in project settings.' }}</p>
-                    <p v-if="createGitError" role="alert" class="text-danger">{{ createGitError }}</p>
-                    <div v-if="createGitError || !reviewedGitConnection" class="flex flex-wrap gap-2">
-                      <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="projectCreationPending" @click="onWizardSetupRetry">Check again</button>
-                      <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="projectCreationPending" @click="createWithGit = false; createGitError = ''">Continue without Git</button>
-                    </div>
-                  </div>
+                <template #repository-options>
+                  <ProjectGitReview
+                    v-model:with-git="createWithGit"
+                    :reviewed-connection="reviewedGitConnection"
+                    :current-connection="!createReadinessChecking && gitConnectionCreateReady ? createReadiness?.gitConnection.connectionRef || '' : ''"
+                    :checking="createReadinessChecking"
+                    :readiness-error="createReadinessError"
+                    :error="createGitError"
+                    :pending="projectCreationPending"
+                    :connections-url="CODE_CONNECTIONS_URL"
+                    @retry="onWizardSetupRetry"
+                    @skip="createWithGit = false; reviewedGitConnection = ''; createGitError = ''"
+                    @use-current="useUpdatedGitConnection"
+                  />
                 </template>
               </NewProjectWizard>
             </div>
@@ -11069,6 +11307,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       </div>
                       <div v-else-if="importRepositories.length === 0" class="grid gap-2 text-[12px] text-text-secondary" role="status">
                         <span>No unclaimed repositories available.</span>
+                        <span>Import an existing GitHub repository into Code, then return here and refresh.</span>
+                        <a :href="portalHref('/ui/providers/code/import/repository', props.ctx)" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target w-fit font-medium text-accent underline underline-offset-2">Import repository in Code (opens in a new tab)</a>
                         <button type="button" class="app-studio-touch-target w-fit font-medium text-accent underline underline-offset-2" @click="loadImportRepositories">Refresh</button>
                       </div>
                       <div v-else class="grid gap-2">
@@ -11095,7 +11335,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         <button
                           type="button"
                           class="app-studio-touch-target inline-flex h-8 w-fit items-center gap-1.5 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] disabled:cursor-not-allowed disabled:opacity-60"
-                          :disabled="!importSelectedRepository || importBusy || importRepositoriesLoading"
+                          :disabled="!importSelectedRepository || importBusy || importRepositoriesLoading || projectCreateUncertain"
                           @click="importRepositoryProject"
                         >
                           <Loader2 v-if="importBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" />
@@ -11104,6 +11344,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       </div>
                       <div v-if="importError" class="rounded-lg border border-danger/30 bg-danger-subtle p-2 text-[12px] text-danger" role="alert">
                         {{ importError }}
+                      </div>
+                      <div v-if="projectCreateUncertain && !importBusy" class="grid gap-2 text-[12px] text-text-secondary" role="status">
+                        <p>Project creation may have completed. Check Projects before creating another. The project list cannot confirm whether creation finished.</p>
+                        <p v-if="projectCreateWarningStorageUnavailable">This warning cannot be saved in this browser and may disappear after a reload.</p>
+                        <div class="flex flex-wrap gap-2">
+                          <button type="button" class="k-btn k-btn--secondary" @click="closeLandingImportPopover(); backToProjectList()">Check Projects</button>
+                          <button type="button" class="k-btn k-btn--ghost" @click="acknowledgeImportUncertainty">I understand, continue</button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -11145,7 +11393,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     <button
                       type="submit"
                       class="app-studio-touch-target k-btn k-btn--primary shrink-0 whitespace-nowrap"
-                      :disabled="busy || !canStartProjectFromPrompt"
+                      :disabled="busy || projectCreateUncertain || !canStartProjectFromPrompt"
                       :title="createPromptSubmitTitle"
                     >
                       Review project <ArrowRight class="h-4 w-4" :stroke-width="1.75" />
@@ -11658,6 +11906,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </template>
             </AIConversationTurn>
             <AIConversationStatus :label="conversationWorkingLabel" />
+            <button v-if="projectCreateWaiting" ref="projectCreateStopButton" type="button" class="k-btn k-btn--secondary self-start" @click="stopWaitingForProjectCreation">Stop waiting for project creation</button>
           </AITranscript>
           </div>
 

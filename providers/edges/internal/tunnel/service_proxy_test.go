@@ -20,6 +20,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -42,6 +43,63 @@ func newServiceView(kind, edge, ns, svcName string, port int32) *serviceView {
 		}{Namespace: ns, Name: svcName}
 	}
 	return v
+}
+
+func TestServiceViewTargetHostAddresses(t *testing.T) {
+	for _, tc := range []struct {
+		name, host, wantTarget, wantHost string
+	}{
+		{"hostname", "home.example", "http://home.example:8123", "home.example"},
+		{"ipv4", "192.168.1.2", "http://192.168.1.2:8123", "192.168.1.2"},
+		{"ipv6", "::1", "http://[::1]:8123", "::1"},
+		{"bracketed ipv6", "[::1]", "http://[::1]:8123", "::1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := newServiceView("LinuxServer", "edge", "", "", 8123)
+			v.Spec.Host = tc.host
+			headers := http.Header{}
+			v.setSvcHeaders(headers)
+			got := headers.Get(svcTargetHeader)
+			if got != tc.wantTarget {
+				t.Fatalf("target header = %q, want %q", got, tc.wantTarget)
+			}
+			parsed, err := url.Parse(got)
+			if err != nil || parsed.Hostname() != tc.wantHost || parsed.Port() != "8123" {
+				t.Fatalf("agent target parse = %v, %v; want host %q and port 8123", parsed, err, tc.wantHost)
+			}
+		})
+	}
+}
+
+func TestDecodeKubernetesServiceTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		host    string
+		ref     map[string]any
+		wantErr bool
+	}{
+		{"host only", "::1", nil, false},
+		{"complete ref", "", map[string]any{"name": "svc", "namespace": "ns"}, false},
+		{"missing both", "", nil, true},
+		{"incomplete ref", "", map[string]any{"name": "svc"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := map[string]any{"edgeRef": map[string]any{"kind": "KubernetesCluster", "name": "edge"}, "port": int64(8123)}
+			if tc.host != "" {
+				spec["host"] = tc.host
+			}
+			if tc.ref != nil {
+				spec["targetRef"] = tc.ref
+			}
+			view, err := decodeServiceView("test", &unstructured.Unstructured{Object: map[string]any{"spec": spec}})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("decode error = %v, want error %t", err, tc.wantErr)
+			}
+			if tc.host != "" && view.target() != "http://[::1]:8123" {
+				t.Errorf("target = %q", view.target())
+			}
+		})
+	}
 }
 
 // TestServiceViewTarget pins how each edge kind is addressed: a LinuxServer

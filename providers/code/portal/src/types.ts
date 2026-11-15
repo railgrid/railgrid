@@ -85,6 +85,8 @@ export interface ConnectionDetail extends Connection {
 
 export interface Repository {
   name: string
+  existingOnly?: boolean
+  resourceVersion?: string
   uid?: string
   deletionTimestamp?: string
   generation?: number

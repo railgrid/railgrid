@@ -25,9 +25,13 @@ vi.mock('./portalkit/ConfirmDialog.vue', () => ({
 }))
 vi.mock('./views/ConnectionCreateView.vue', () => ({
   default: defineComponent({
-    emits: ['created'],
+    emits: ['created', 'cancel', 'use-token'],
     setup(_props, { emit }) {
-      return () => h('button', { id: 'complete-connection', onClick: () => emit('created', 'github-created') })
+      return () => h('div', [
+        h('button', { id: 'complete-connection', onClick: () => emit('created', 'github-created') }),
+        h('button', { id: 'cancel-connection', onClick: () => emit('cancel') }),
+        h('button', { id: 'use-token', onClick: () => emit('use-token') }),
+      ])
     },
   }),
 }))
@@ -40,14 +44,30 @@ vi.mock('./views/RepositoriesView.vue', () => ({
     },
   }),
 }))
-vi.mock('./views/RepositoryCreateView.vue', () => ({ default: { setup: () => () => null } }))
+vi.mock('./views/RepositoryCreateView.vue', () => ({
+  default: defineComponent({
+    props: ['initialDraft'],
+    emits: ['create-connection'],
+    setup(props, { emit }) {
+      return () => h('div', [
+        h('span', { id: 'restored-draft', value: props.initialDraft?.name || '', connection: props.initialDraft?.connectionRef || '' }),
+        h('button', { id: 'draft-connection', onClick: () => emit('create-connection', { name: 'draft-name', repo: 'owner/repo', connectionRef: 'old', visibility: 'private', description: 'draft', autoInit: true }) }),
+      ])
+    },
+  }),
+}))
 vi.mock('./views/RepoDetailView.vue', () => ({ default: { setup: () => () => null } }))
 vi.mock('./views/PackagesView.vue', () => ({ default: { setup: () => () => null } }))
 vi.mock('./views/ConnectionsView.vue', () => ({
   default: defineComponent({
-    setup() {
+    emits: ['create', 'cancel-prerequisite'],
+    setup(_props, { emit }) {
       captured.generation = inject(contextGenerationKey)
-      return () => h('div')
+      return () => h('div', [
+        h('button', { id: 'choose-token', onClick: () => emit('create', 'token') }),
+        h('button', { id: 'choose-github', onClick: () => emit('create', 'github') }),
+        h('button', { id: 'return-repository', onClick: () => emit('cancel-prerequisite') }),
+      ])
     },
   }),
 }))
@@ -154,6 +174,124 @@ function click(root: TreeNode, id: string): void {
 }
 
 describe('Code App context authority generation', () => {
+  it.each(['standalone', 'prerequisite'])('switches to token setup and preserves %s journey', async (journey) => {
+    const path = journey === 'prerequisite' ? 'import/repository' : 'create/connection/github'
+    const context = reactive<RailgridContext>({ basePath: '/ui/providers/code', tenant: 'tenant-a', user: { sub: 'user-a' }, subPath: path })
+    const root = node('root')
+    const app = renderer.createApp(App, { ctx: context })
+    app.provide(ssrContextKey, { modules: new Set<string>() })
+    app.mount(root)
+    if (journey === 'prerequisite') {
+      click(root, 'draft-connection')
+      context.subPath = 'connections'
+      await nextTick()
+      click(root, 'choose-github')
+      context.subPath = 'create/connection/github'
+      await nextTick()
+    }
+    click(root, 'use-token')
+    expect(navigationEvents.at(-1)?.detail).toEqual({ path: 'create/connection/token' })
+    context.subPath = 'create/connection/token'
+    await nextTick()
+    click(root, 'complete-connection')
+    expect(navigationEvents.at(-1)?.detail).toEqual({ path: journey === 'prerequisite' ? path : 'connections/github-created', replace: true })
+    if (journey === 'prerequisite') {
+      context.subPath = path
+      await nextTick()
+      expect(allNodes(root).find(item => item.props.id === 'restored-draft')?.props.value).toBe('draft-name')
+      expect(allNodes(root).find(item => item.props.id === 'restored-draft')?.props.connection).toBe('github-created')
+    }
+    app.unmount()
+  })
+  it.each([['import/repository', 'token'], ['create/repository', 'token'], ['import/repository', 'github'], ['create/repository', 'github']])('restores an in-memory %s draft after %s connection succeeds', async (path, method) => {
+    const context = reactive<RailgridContext>({ basePath: '/ui/providers/code', tenant: 'tenant-a', user: { sub: 'user-a' }, subPath: path })
+    const root = node('root')
+    const app = renderer.createApp(App, { ctx: context })
+    app.provide(ssrContextKey, { modules: new Set<string>() })
+    app.mount(root)
+    click(root, 'draft-connection')
+    context.subPath = 'connections'
+    await nextTick()
+    click(root, `choose-${method}`)
+    expect(navigationEvents.at(-1)?.detail).toEqual({ path: `create/connection/${method}` })
+    context.subPath = `create/connection/${method}`
+    await nextTick()
+    click(root, 'complete-connection')
+    context.subPath = path
+    await nextTick()
+    expect(allNodes(root).find(item => item.props.id === 'restored-draft')?.props.value).toBe('draft-name')
+    expect(allNodes(root).find(item => item.props.id === 'restored-draft')?.props.connection).toBe('github-created')
+    context.user = { sub: 'user-b' }
+    await nextTick()
+    expect(allNodes(root).find(item => item.props.id === 'restored-draft')?.props.value).toBe('')
+    app.unmount()
+  })
+  it.each(['cancel', 'deviation'])('discards a repository draft after %s', async (outcome) => {
+    const context = reactive<RailgridContext>({ basePath: '/ui/providers/code', tenant: 'tenant-a', user: { sub: 'user-a' }, subPath: 'create/repository' })
+    const root = node('root')
+    const app = renderer.createApp(App, { ctx: context })
+    app.provide(ssrContextKey, { modules: new Set<string>() })
+    app.mount(root)
+    click(root, 'draft-connection')
+    context.subPath = 'connections'
+    await nextTick()
+    click(root, 'choose-token')
+    context.subPath = 'create/connection/token'
+    await nextTick()
+    if (outcome === 'cancel') click(root, 'cancel-connection')
+    context.subPath = 'repositories'
+    await nextTick()
+    context.subPath = 'create/repository'
+    await nextTick()
+    expect(allNodes(root).find(item => item.props.id === 'restored-draft')?.props.value).toBe('')
+    app.unmount()
+  })
+  it('returns to the draft from the connection choice when a connection appears', async () => {
+    const context = reactive<RailgridContext>({ basePath: '/ui/providers/code', tenant: 'tenant-a', user: { sub: 'user-a' }, subPath: 'import/repository' })
+    const root = node('root')
+    const app = renderer.createApp(App, { ctx: context })
+    app.provide(ssrContextKey, { modules: new Set<string>() })
+    app.mount(root)
+    click(root, 'draft-connection')
+    context.subPath = 'connections'
+    await nextTick()
+    click(root, 'return-repository')
+    expect(navigationEvents.at(-1)?.detail).toEqual({ path: 'import/repository', replace: true })
+    context.subPath = 'import/repository'
+    await nextTick()
+    expect(allNodes(root).find(item => item.props.id === 'restored-draft')?.props.value).toBe('draft-name')
+    app.unmount()
+  })
+
+  it.each(['connections', 'create/connection/github'])('retains only the return route across reload on %s', async (path) => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+    const values = new Map<string, string>()
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: { sessionStorage: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+      removeItem: (key: string) => { values.delete(key) },
+    } } })
+    try {
+      const context = reactive<RailgridContext>({ basePath: '/ui/providers/code', tenant: 'tenant-a', user: { sub: 'user-a' }, subPath: 'import/repository' })
+      const mountApp = () => { const root = node('root'); const app = renderer.createApp(App, { ctx: context }); app.provide(ssrContextKey, { modules: new Set<string>() }); app.mount(root); return { root, app } }
+      let mounted = mountApp()
+      click(mounted.root, 'draft-connection')
+      context.subPath = 'connections'
+      await nextTick()
+      if (path !== 'connections') { click(mounted.root, 'choose-github'); context.subPath = path; await nextTick() }
+      expect([...values.values()].join()).not.toContain('draft-name')
+      mounted.app.unmount()
+      mounted = mountApp()
+      if (path === 'connections') { click(mounted.root, 'choose-github'); context.subPath = 'create/connection/github'; await nextTick() }
+      click(mounted.root, 'complete-connection')
+      expect(navigationEvents.at(-1)?.detail).toEqual({ path: 'import/repository', replace: true })
+      mounted.app.unmount()
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, 'window', descriptor)
+      else Reflect.deleteProperty(globalThis, 'window')
+    }
+  })
+
   it('retains view identity on credential renewal while fencing mutations and clearing a caller change', async () => {
     const context = reactive<RailgridContext>({ basePath: '/ui/providers/code', tenant: 'same-tenant', token: 'token-a', user: { userId: 'user-a' }, subPath: 'connections' })
     const root = node('root')
@@ -256,8 +394,11 @@ describe('Code App context authority generation', () => {
       app.provide(ssrContextKey, { modules: new Set<string>() })
       app.mount(root)
       click(root, 'start-repository-connection')
-      expect(navigationEvents.at(-1)?.detail).toEqual({ path: 'create/connection/token' })
+      expect(navigationEvents.at(-1)?.detail).toEqual({ path: 'connections' })
 
+      context.subPath = 'connections'
+      await nextTick()
+      click(root, 'choose-token')
       context.subPath = 'create/connection/token'
       await nextTick()
       click(root, 'complete-connection')
@@ -287,6 +428,9 @@ describe('Code App context authority generation', () => {
       app.mount(root)
       click(root, 'start-repository-connection')
 
+      context.subPath = 'connections'
+      await nextTick()
+      click(root, 'choose-token')
       context.subPath = 'create/connection/token'
       await nextTick()
       context.user = { userId: 'user-b' }

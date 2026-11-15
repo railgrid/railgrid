@@ -30,15 +30,16 @@ const compileStatements = statements => ts.transpileModule(optimisticActorHelper
 // boundary without starting unrelated preview or assistant services.
 async function contextStateHarness(t, initialContext) {
   const statements = ast.statements.filter(node => {
-    if (ts.isFunctionDeclaration(node)) return node.name?.text === 'appContextFingerprint'
+    if (ts.isFunctionDeclaration(node)) return ['appContextFingerprint', 'hasProjectRequestTransport'].includes(node.name?.text)
     if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) return false
     const call = node.expression
     const source = call.arguments[0]
-    return call.expression.getText(ast) === 'watch' && source && ts.isArrowFunction(source) &&
-      source.body.getText(ast) === 'appContextFingerprint(props.ctx)' &&
+    return call.expression.getText(ast) === 'watch' && source && ts.isArrayLiteralExpression(source) &&
+      source.getText(ast).includes('appContextFingerprint(props.ctx)') &&
+      source.getText(ast).includes('hasProjectRequestTransport(props.ctx)') &&
       call.arguments[1]?.getText(ast).includes('invalidateProjectContextState()')
   })
-  assert.equal(statements.length, 2)
+  assert.equal(statements.length, 3)
   const outputText = compileStatements(statements)
   const scope = effectScope()
   t.after(() => scope.stop())
@@ -65,6 +66,7 @@ async function contextStateHarness(t, initialContext) {
     const loadModelProviderConnections = () => {};
     const loadImportRepositories = () => {};
     const loadDevelopmentTemplates = () => {};
+    const scheduleProjectDeletionPoll = () => {};
     ${outputText}
     return { context, selected, messages, prompt, resets: () => resets, reads: () => reads };
   `)(ref, watch, initialContext))
@@ -101,6 +103,18 @@ test('legacy bearer-only credential changes remain an authority boundary', async
   h.context.value = { ...context, token: 'different-token' }
   assert.equal(h.resets(), 1)
   assert.equal(h.selected.value, null)
+})
+
+test('host transport arrival and removal preserve the current draft and snapshots', async t => {
+  const context = { tenant: 'tenant-a', orgUUID: 'org-a', workspaceUUID: 'workspace-a', user: { sub: 'alice' } }
+  const h = await contextStateHarness(t, context)
+  h.context.value = { ...context, fetch: async () => Response.json({}) }
+  h.context.value = context
+  assert.equal(h.resets(), 0)
+  assert.equal(h.reads(), 0)
+  assert.equal(h.selected.value?.name, 'project-a')
+  assert.equal(h.messages.value[0]?.content, 'Loaded conversation')
+  assert.equal(h.prompt.value, 'Unsubmitted draft')
 })
 
 // Execute the actual App stop-state boundaries with Vue reactivity, without
@@ -240,7 +254,7 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     let assistantStopRequestGeneration = 0;
     let projectLoadSerial = 1;
     let pendingMessageSubmission = null;
-    let pendingFirstProjectSubmission = null;
+    let pendingFirstProjectSubmission = initialState.pendingFirstProjectSubmission ?? null;
     const pendingAcceptedAssistantOptimisticMessages = new Map();
     let activeAssistantThreadSequence = 0;
     let appComponentMounted = true;
@@ -334,8 +348,9 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     const projectContextFingerprint = (ctx) => contextFingerprint(ctx);
     const assistantRunStartFingerprint = fingerprint;
     const assistantRunTerminal = isTerminal;
-    const firstProjectSubmissionMatches = () => false;
-    const firstProjectSubmissionAccepted = () => false;
+    const firstProjectSubmissionMatches = state.firstProjectSubmissionMatches;
+    const firstProjectRetryConflict = state.firstProjectRetryConflict;
+    const firstProjectSubmissionAccepted = state.firstProjectSubmissionAccepted;
     const assistantRunController = { disconnect() {}, stop: async () => { stopCalls.push(activeAssistantRun?.id ?? ''); } };
     const resetAssistantStopState = () => {};
     const resetAssistantThreadItemWindow = () => {};
@@ -1868,26 +1883,16 @@ test('first-project retry also retains the server thread identity', () => {
   assert.equal(state.firstProjectStartPlan(bound).createProject, false)
 })
 
-test('first-project startup rotates identity only for a pre-acceptance HTTP 5xx', async () => {
-  const pending = state.firstProjectSubmissionWithThread(
-    state.firstProjectSubmissionWithProject(state.newFirstProjectSubmission('ship it', 'request-1', 'gpt-high'), 'demo'),
-    'thread-1',
-  )
-  assert.equal(state.shouldRotateFirstProjectRequestID({ status: 503 }, false), true)
-  assert.equal(state.shouldRotateFirstProjectRequestID({ status: 500 }, true), false)
-  assert.equal(state.shouldRotateFirstProjectRequestID({ status: 409 }, false), false)
-  assert.equal(state.shouldRotateFirstProjectRequestID(new TypeError('network lost'), false), false)
-  const rotated = state.firstProjectSubmissionWithClientRequestID(pending, 'request-2')
-  assert.deepEqual(rotated, { ...pending, clientRequestID: 'request-2' })
-
+test('first-project startup preserves its identity across ambiguous failures', async () => {
+  const pending = state.firstProjectSubmissionWithStartAttempt(state.firstProjectSubmissionWithThread(
+    state.firstProjectSubmissionWithProject(state.newFirstProjectSubmission('ship it', 'request-1', 'gpt-high'), 'demo'), 'thread-1'))
+  assert.equal(pending.clientRequestID, 'request-1')
+  assert.equal(pending.startAttempted, true)
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  const startPath = appSource.slice(appSource.indexOf('async function createProjectAndStartConversation('))
-  assert.match(startPath, /let startPostAttempted = false/)
-  assert.match(startPath, /let startPostAccepted = false/)
-  assert.match(startPath, /startPostAttempted = true[\s\S]*const canonical = await startPreProjectAssistantTurn/)
-  assert.match(startPath, /const canonical = await startPreProjectAssistantTurn[\s\S]*startPostAccepted = true[\s\S]*clearPreProjectAttachments\(true\)/)
-  assert.match(startPath, /e instanceof ProjectAPIRequestError && startPostAttempted && shouldRotateFirstProjectRequestID\(e, startPostAccepted\)/)
-  assert.match(startPath, /firstProjectSubmissionWithClientRequestID\(submission, crypto\.randomUUID\(\)\)/)
+  const startPath = appSource.slice(appSource.indexOf('async function createProjectAndStartConversation('), appSource.indexOf('async function openSettings('))
+  assert.match(startPath, /firstProjectSubmissionWithStartAttempt\(submission\)[\s\S]*?startPreProjectAssistantTurn/)
+  assert.doesNotMatch(startPath, /firstProjectSubmissionWithClientRequestID/)
+  assert.match(startPath, /pendingForContent\?\.startAttempted[\s\S]*?Restore the original model/)
 })
 
 test('first-project attachment retry remains current on the project-less create route', () => {
@@ -1911,6 +1916,50 @@ test('first-project pending submission matches the project/message handoff into 
   assert.equal(state.firstProjectSubmissionMatches(pending, 'demo', 'ship it', 'gemini-fast'), false)
   assert.equal(state.firstProjectSubmissionMatches(pending, 'other', 'ship it'), false)
   assert.equal(state.firstProjectSubmissionMatches(pending, 'demo', 'different'), false)
+})
+
+test('first-project retry remains bound to its thread and settings after a start attempt', async () => {
+  const project = state.firstProjectSubmissionWithProject(state.newFirstProjectSubmission('ship it', 'request-1', 'model', 'high'), 'demo')
+  const bound = state.firstProjectSubmissionWithThread(project, 'original')
+  const pending = state.firstProjectSubmissionWithStartAttempt(bound)
+  assert.equal(state.firstProjectRetryConflict(pending, 'demo', 'ship it', 'other', 'model', 'high'), 'thread')
+  assert.equal(state.firstProjectRetryConflict(pending, 'demo', 'ship it', '', 'model', 'high'), 'thread')
+  assert.equal(state.firstProjectRetryConflict(pending, 'demo', 'ship it', 'original', 'other', 'high'), 'settings')
+  assert.equal(state.firstProjectRetryConflict(pending, 'demo', 'ship it', 'original', 'model', 'low'), 'settings')
+  assert.equal(state.firstProjectRetryConflict(pending, 'demo', 'ship it', 'original', 'model', 'high'), '')
+  assert.equal(state.firstProjectRetryConflict(bound, 'demo', 'ship it', 'other', 'model', 'high'), '')
+  assert.equal(state.firstProjectRetryConflict(pending, 'demo', 'different', 'other', 'model', 'high'), '')
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const sendPath = appSource.slice(appSource.indexOf('async function sendMessage('))
+  assert.match(sendPath, /firstProjectRetryConflict\(pendingFirstProjectSubmission, projectName, content, submissionThreadID/)
+  assert.match(sendPath, /firstRetryConflict[\s\S]*?return false[\s\S]*?const firstProjectPending/)
+})
+
+test('ambiguous first-turn retry sends only to its original thread with its original request ID', async t => {
+  const pending = state.firstProjectSubmissionWithStartAttempt(state.firstProjectSubmissionWithThread(
+    state.firstProjectSubmissionWithProject(state.newFirstProjectSubmission('first message', 'first-request', 'model-a'), 'project-a'), 'thread-a'))
+  const h = await assistantSubmissionHarness(t, [], { pendingFirstProjectSubmission: pending })
+  h.activeAssistantThreadID.value = 'thread-b'
+  assert.equal(await h.sendMessage(), false)
+  assert.equal(h.startCalls.length, 0)
+  assert.match(h.error.value, /another conversation/)
+  h.activeAssistantThreadID.value = 'thread-a'
+  h.selectedLLMModelID.value = 'model-b'
+  assert.equal(await h.sendMessage(), false)
+  assert.equal(h.startCalls.length, 0)
+  assert.match(h.error.value, /original model/)
+  h.selectedLLMModelID.value = 'model-a'
+  const retry = h.sendMessage()
+  assert.equal(h.startCalls.length, 1)
+  assert.equal(h.startCalls[0].args[2], 'thread-a')
+  assert.equal(h.startCalls[0].args[3].clientUserMessageID, 'first-request')
+  h.startCalls[0].reject(Object.assign(new Error('server error'), { status: 503 }))
+  assert.equal(await retry, false)
+  const again = h.sendMessage()
+  assert.equal(h.startCalls.length, 2)
+  assert.equal(h.startCalls[1].args[3].clientUserMessageID, 'first-request')
+  h.startCalls[1].reject(new Error('connection lost'))
+  assert.equal(await again, false)
 })
 
 test('message retry identity is bound to the requested operation', () => {
@@ -2277,7 +2326,7 @@ for (const kind of ['approval', 'input']) {
 test('draft cleanup follows identity transitions without purging on token refresh or thread navigation', t => {
   const statements = ast.statements.filter(node =>
     ts.isFunctionDeclaration(node) && node.name?.text === 'assistantComposerDraftIdentity' ||
-    ts.isExpressionStatement(node) && node.getText(ast).startsWith('watch(() => JSON.stringify(assistantComposerDraftIdentity(props.ctx))'),
+    ts.isExpressionStatement(node) && node.getText(ast).startsWith('watch(() => JSON.stringify(assistantComposerDraftIdentity(props.ctx)), (current, previous)'),
   )
   assert.equal(statements.length, 2)
   const scope = effectScope()
@@ -2431,4 +2480,65 @@ test('recovery with no active turn clears a stale rail spinner after missed term
   assert.equal(h.assistantThreads.value[0].status, 'idle')
   assert.equal(h.assistantThreads.value[1].status, 'active')
   assert.equal(h.messageStreaming.value, false)
+})
+
+test('create-route startup reuses thread and turn IDs after lost responses', async () => {
+  const names = new Set(['startPreProjectAssistantTurn', 'createProjectAndStartConversation'])
+  const statements = ast.statements.filter(n => ts.isFunctionDeclaration(n) && names.has(n.name?.text))
+  assert.equal(statements.length, 2)
+  const code = compileStatements(statements)
+  const h = new Function('ref', 'state', 'code', `
+    const calls = { projects: [], threads: [], starts: [] };
+    const props = { ctx: {}, navigate() {} };
+    const selected = ref(null), selectedNameFromPath = ref(''), isCreateRoute = ref(true);
+    const selectedLLMModelID = ref('model-a'), selectedLLMModel = ref({id:'model-a'});
+    const landingReasoningEffort = ref('high'), landingReasoningEffortError = ref(''), landingReasoningEfforts = ref({}), landingStarterPrompts = [];
+    const projectCreateUncertain = ref(false), projectCreateWarningStorageUnavailable = ref(false);
+    const messageStreaming = ref(false), conversationStatus = ref(''), error = ref(null), prompt = ref('');
+    const messages = ref([]), projects = ref([]), assistantThreads = ref([]), activeAssistantThreadID = ref('');
+    const preProjectAttachments = ref([]), createWithGit = ref(false), reviewedGitConnection = ref('');
+    let pendingFirstProjectSubmission = null, projectCreateGeneration = 0, preProjectAttachmentProjectName = '';
+    let activeProjectContextFingerprint = '', appComponentMounted = true;
+    const {newFirstProjectSubmission, firstProjectSubmissionWithProject, firstProjectSubmissionWithThread, firstProjectSubmissionWithStartAttempt, firstProjectStartPlan, firstProjectSubmissionIsCurrent, firstProjectSubmissionCanRetryFromCreateRoute} = state;
+    let serial = 0; const crypto = { randomUUID: () => 'id-' + ++serial };
+    const appContextFingerprint = () => 'context', reasoningEffortsForDraftScope = () => ({}), initialReasoningEffortSnapshot = () => ({}), supportedThreadReasoningEffortSnapshot = value => value;
+    const beginBusyOperation = () => 1, releaseBusyOperation = () => {}, resetWorkbench = () => {}, nextTick = async () => {};
+    const assistantComposerDraftIdentity = () => ({}), markProjectCreateUncertain = () => true, clearProjectCreateUncertainty = () => true, readProjectCreateUncertainty = () => 'clear';
+    const projectCreateWait = {begin: () => ({signal:{}}), finish() {}};
+    const initializeWorkbenchForNewProject = () => {}, ensurePreProjectAttachmentsUploaded = async () => true;
+    const preProjectStartContentParts = () => [], isAssistantAttachmentReceiptUnavailableError = () => false;
+    const assistantThreadFocusScope = () => ({}), persistAssistantThreadFocus = () => {}, isAbortError = () => false, handleProjectAPIInitializing = () => false;
+    const CREATE_PROJECT_ROUTE = '~new';
+    const api = {
+      createProjectStream: async (...args) => { calls.projects.push(args); return {name:'project-a'}; },
+      getProject: async () => ({name:'project-a'}),
+      createAssistantThread: async (...args) => { calls.threads.push(args); if (calls.threads.length === 1) throw new Error('thread response lost'); return {id:args[3]}; },
+      startAssistantTurn: async (...args) => { calls.starts.push(args); throw Object.assign(new Error('ambiguous start'), {status:503}); },
+    };
+    ${code}
+    return {createProjectAndStartConversation, calls, error, selectedLLMModel, landingReasoningEffort, selected, pending: () => pendingFirstProjectSubmission};
+  `)(ref, state, code)
+  await h.createProjectAndStartConversation('first message', { templateName: 'auth', displayName: 'Protected app' })
+  assert.deepEqual(h.calls.projects[0][1], { description: undefined, prompt: 'first message', repositoryMode: 'none', connectionRef: undefined, templateName: 'auth', displayName: 'Protected app' })
+  assert.equal(h.calls.projects.length, 1)
+  assert.equal(h.calls.threads.length, 1)
+  assert.equal(h.calls.starts.length, 0)
+  const threadID = h.calls.threads[0][3], requestID = h.pending().clientRequestID
+  h.selected.value = null // Return to the project-less create route.
+  await h.createProjectAndStartConversation('first message')
+  assert.equal(h.calls.projects.length, 1)
+  assert.equal(h.calls.threads.length, 2)
+  assert.equal(h.calls.threads[1][3], threadID)
+  assert.equal(h.calls.starts[0][2], threadID)
+  assert.equal(h.calls.starts[0][3].clientUserMessageID, requestID)
+  h.selectedLLMModel.value = {id:'model-b'}
+  await h.createProjectAndStartConversation('first message')
+  assert.match(h.error.value, /original model/)
+  assert.equal(h.calls.starts.length, 1)
+  h.selectedLLMModel.value = {id:'model-a'}
+  await h.createProjectAndStartConversation('first message')
+  assert.equal(h.calls.threads.length, 2)
+  assert.equal(h.calls.starts.length, 2)
+  assert.equal(h.calls.starts[1][2], threadID)
+  assert.equal(h.calls.starts[1][3].clientUserMessageID, requestID)
 })

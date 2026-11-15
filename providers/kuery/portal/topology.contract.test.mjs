@@ -232,7 +232,7 @@ test('topology switch and resource activation are native, labeled controls', () 
 
 test('filtered-empty topology renders a status before either representation', () => {
   const source = readFileSync(new URL('./src/components/TopologyView.vue', import.meta.url), 'utf8')
-  const noClusters = source.indexOf('No clusters engaged')
+  const noClusters = source.indexOf('No topology objects found')
   const noMatches = source.indexOf('No resources match the current topology filters')
   const list = source.indexOf("representation === 'list'")
   assert.ok(noClusters > 0 && noMatches > noClusters && list > noMatches)

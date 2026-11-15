@@ -154,7 +154,7 @@ export class KueryDashboardTile extends HTMLElement {
     const stats = `<span class="${dashboardTileSemanticClass.stat} ${dashboardTileSemanticClass.statTotal}">${ic('search', dashboardTileSemanticClass.statIcon)}<strong class="${dashboardTileSemanticClass.statNum}">${this._views.length}</strong> <span class="${dashboardTileSemanticClass.statLabel}">${
       this._views.length === 1 ? 'saved view' : 'saved views'
     }</span></span><span class="${dashboardTileSemanticClass.stat}">${ic('cpu', dashboardTileSemanticClass.statIcon)}<strong class="${dashboardTileSemanticClass.statNum}">${this._edges.length}</strong> <span class="${dashboardTileSemanticClass.statLabel}">${
-      this._edges.length === 1 ? 'edge engaged' : 'edges engaged'
+      this._edges.length === 1 ? 'Kubernetes edge connected' : 'Kubernetes edges connected'
     }</span></span>`
 
     const body = rows.length

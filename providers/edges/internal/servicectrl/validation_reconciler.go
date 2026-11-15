@@ -288,13 +288,13 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 		return r.commit(ctx, c, orig, es, validationResyncInterval)
 	}
 
-	// A kube Service needs a targetRef to have anything to dial. The CRD's CEL
-	// rule enforces this, but an object written before the rule (or by a client
-	// that bypassed it) would otherwise silently validate against loopback.
-	if isKube(es) && (es.Spec.TargetRef == nil || es.Spec.TargetRef.Name == "" || es.Spec.TargetRef.Namespace == "") {
+	// A kube Service needs a direct host or a complete targetRef. Keep the
+	// guard for objects written before validation or through a bypass, so they
+	// cannot silently validate against loopback.
+	if missingKubeTarget(es) {
 		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "MissingTargetRef",
-			"spec.targetRef is required when spec.edgeRef.kind is KubernetesCluster")
-		setNotProbed(es, "spec.targetRef is missing, so the service was never reached")
+			"spec.host or a complete spec.targetRef is required when spec.edgeRef.kind is KubernetesCluster")
+		setNotProbed(es, "spec.host and a complete spec.targetRef are missing, so the service was never reached")
 		es.Status.Phase = "Unreachable"
 		return r.commit(ctx, c, orig, es, validationResyncInterval)
 	}

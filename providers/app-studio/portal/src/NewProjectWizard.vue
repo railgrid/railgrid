@@ -16,6 +16,7 @@ const props = defineProps<{
   // disabled blocks Create while the parent isn't ready (setup incomplete).
   disabled?: boolean
   disabledReason?: string
+  createLabel?: string
   setupItems?: CreateSetupItem[]
   setupError?: string
   setupLoading?: boolean
@@ -61,7 +62,7 @@ const stepHeading = ref<HTMLElement | null>(null)
 let planRequestSerial = 0
 let catalogRequestSerial = 0
 
-const hasInitialPrompt = computed(() => Boolean(props.initialPrompt?.trim()))
+const hasInitialPrompt = ref(Boolean(props.initialPrompt?.trim()))
 function isVerifiedAuthTemplate(template: DevelopmentTemplate | undefined): template is DevelopmentTemplate {
   return template?.browserPreview === true && template.railgridAuthSupported === true && template.railgridAuthReason === 'supported'
 }
@@ -126,14 +127,14 @@ async function loadCompatibleTemplateCatalog() {
   compatibleTemplateChoice.value = ''
   try {
     const templates = await api.listDevelopmentTemplates(ctx)
-    if (serial !== catalogRequestSerial || !props.authCompatibleOnly || props.ctx !== ctx) return
+    if (serial !== catalogRequestSerial || !props.authCompatibleOnly) return
     compatibleTemplateCatalog.value = templates
     compatibleTemplateChoice.value = templates.find(isVerifiedAuthTemplate)?.name ?? ''
   } catch (e) {
-    if (serial !== catalogRequestSerial || props.ctx !== ctx) return
+    if (serial !== catalogRequestSerial) return
     compatibleCatalogError.value = e instanceof Error ? e.message : 'Could not check which templates support Railgrid Auth.'
   } finally {
-    if (serial === catalogRequestSerial && props.ctx === ctx) compatibleCatalogLoading.value = false
+    if (serial === catalogRequestSerial) compatibleCatalogLoading.value = false
   }
 }
 
@@ -192,7 +193,7 @@ async function runPlan() {
 }
 
 function confirmCreate() {
-  if (props.disabled || props.creationChecking) return
+  if (props.disabled || props.creationChecking || !prompt.value.trim()) return
   if (props.authCompatibleOnly && (!isVerifiedAuthTemplate(selectableTemplates.value.find((template) => template.name === chosenTemplate.value)))) {
     error.value = 'Choose a verified Railgrid Auth template before creating this project.'
     return
@@ -222,6 +223,7 @@ watch(
   () => props.initialPrompt,
   (value) => {
     const seed = value?.trim() ?? ''
+    hasInitialPrompt.value = Boolean(seed)
     if (!seed) {
       invalidatePlanRequest()
       planning.value = false
@@ -240,27 +242,39 @@ watch(
   { immediate: true },
 )
 
+function authority(ctx: RailgridContext | null): string {
+  return JSON.stringify([ctx?.tenant ?? '', ctx?.orgUUID ?? '', ctx?.workspaceUUID ?? '',
+    ctx?.user?.userId ?? '', ctx?.user?.sub ?? '', ctx?.user?.email ?? ''])
+}
+
 watch(
-  () => props.ctx,
-  () => {
+  () => [authority(props.ctx), props.ctx?.fetch, props.ctx?.token] as const,
+  ([currentAuthority], [previousAuthority]) => {
+    if (currentAuthority === previousAuthority) {
+      // Fence in-flight work when the transport changes, without discarding a
+      // completed review or editable draft. Restart only interrupted work.
+      if (planning.value) {
+        invalidatePlanRequest()
+        planning.value = false
+        void runPlan()
+      }
+      if (compatibleCatalogLoading.value) void loadCompatibleTemplateCatalog()
+      return
+    }
     invalidatePlanRequest()
+    hasInitialPrompt.value = false
     planning.value = false
     plan.value = null
     chosenTemplate.value = ''
     displayName.value = ''
     error.value = null
-    const seed = props.initialPrompt?.trim() ?? ''
     if (props.authCompatibleOnly) {
-      prompt.value = props.initialDraft?.trim() ?? ''
+      prompt.value = ''
       step.value = 'describe'
       void loadCompatibleTemplateCatalog()
       return
     }
-    if (seed) {
-      prompt.value = seed
-      void runPlan()
-      return
-    }
+    prompt.value = ''
     step.value = 'describe'
   },
 )
@@ -429,7 +443,7 @@ onMounted(async () => {
 
           <section aria-labelledby="review-request-heading">
             <h3 id="review-request-heading" class="text-[14px] font-semibold">Your request</h3>
-            <p class="mt-2 whitespace-pre-wrap break-words text-[13px] text-text-secondary [overflow-wrap:anywhere]">{{ initialPrompt || prompt }}</p>
+            <p class="mt-2 whitespace-pre-wrap break-words text-[13px] text-text-secondary [overflow-wrap:anywhere]">{{ prompt }}</p>
           </section>
 
           <section v-if="attachments?.length || attachmentError" aria-labelledby="review-attachments-heading">
@@ -565,9 +579,9 @@ onMounted(async () => {
           <button
             type="button"
             class="app-studio-touch-target k-btn k-btn--primary"
-            :disabled="disabled || creationChecking || !hasValidTemplateChoice"
+            :disabled="disabled || creationChecking || !hasValidTemplateChoice || !prompt.trim()"
             @click="confirmCreate"
-          >Create project</button>
+          >{{ createLabel || 'Create project' }}</button>
         </div>
       </footer>
     </section>

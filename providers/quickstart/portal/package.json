@@ -7,10 +7,11 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
-    "test": "node --test src/quickstartLayout.test.mjs src/quickstartBehavior.test.mjs",
+    "test": "node --test src/quickstartLayout.test.mjs src/quickstartBehavior.test.mjs src/quickstartFocus.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "happy-dom": "^20.14.6",
     "typescript": "^5.6.3",
     "vite": "^6.4.1"
   }

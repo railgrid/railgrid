@@ -2,3 +2,8 @@
 export const REMOTE_REPOSITORY_PATTERN = /^[A-Za-z0-9-]+\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/
 
 export const REPOSITORY_NAME_PATTERN = /^(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/
+
+// The Railgrid resource name is already normalized before this is called.
+export function defaultGitHubRepositoryName(resourceName: string): string {
+  return resourceName.slice(0, 100)
+}

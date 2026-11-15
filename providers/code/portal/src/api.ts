@@ -8,7 +8,7 @@
 // path segment) and railgridContext.token (bearer). The one non-kcp call is
 // oauthConfig, which probes the provider backend directly.
 
-import { REMOTE_REPOSITORY_PATTERN, REPOSITORY_NAME_PATTERN } from './repositoryIdentity'
+import { defaultGitHubRepositoryName, REMOTE_REPOSITORY_PATTERN, REPOSITORY_NAME_PATTERN } from './repositoryIdentity'
 import {
   createKubeClient,
   isKubeError,
@@ -144,6 +144,11 @@ export function setAPIContext(context: APIReadContext): void {
 interface KCPMetadata {
   name: string
   uid: string
+  annotations?: unknown
+  namespace?: unknown
+  labels?: unknown
+  ownerReferences?: unknown
+  resourceVersion?: string
   generation?: number | null
   creationTimestamp?: string | null
   deletionTimestamp?: string | null
@@ -164,6 +169,17 @@ interface RawCR {
     observedGeneration?: number | null
     conditions?: KCPCondition[] | null
   } & Record<string, unknown>) | null
+}
+
+// Only errors created before dispatch belong to this private set. A transport
+// rejection can carry arbitrary properties and must never clear uncertainty.
+const preDispatchErrors = new WeakSet<object>()
+const rejectedConnectionWrites = new WeakSet<object>()
+export function isRejectedConnectionWrite(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && rejectedConnectionWrites.has(error)
+}
+export function isPreDispatchError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && preDispatchErrors.has(error)
 }
 
 function protocolError(message: string): ErrorResponse {
@@ -479,6 +495,12 @@ function repoFromCR(cr: RawCR): Repository {
   return {
     name: cr.metadata.name,
     uid: cr.metadata.uid,
+    resourceVersion: typeof cr.metadata.resourceVersion === 'string' ? cr.metadata.resourceVersion : undefined,
+    existingOnly: cr.metadata.annotations === undefined
+      ? false
+      : isRecord(cr.metadata.annotations) && (cr.metadata.annotations['code.railgrid.ai/existing-only'] === undefined || typeof cr.metadata.annotations['code.railgrid.ai/existing-only'] === 'string')
+        ? cr.metadata.annotations['code.railgrid.ai/existing-only'] === 'true'
+        : undefined,
     deletionTimestamp: cr.metadata.deletionTimestamp ?? undefined,
     generation: reconciliation.generation,
     observedGeneration: reconciliation.observedGeneration,
@@ -581,11 +603,11 @@ function collabFromCR(cr: RawCR): Collaborator {
 
 // dns1123 turns arbitrary text into a safe object name.
 export function normalizeResourceName(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 253) || 'x'
+  return s.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 253).replace(/-+$/, '') || 'x'
 }
 
 // ── Kubernetes write helpers ───────────────────────────────────────────────
-// refForManifest resolves the REST ref an apply targets from the manifest's
+// refForManifest resolves the REST ref a write targets from the manifest's
 // apiVersion/kind: the code group's CRDs, or the core-group Secret that holds a
 // Connection's credential.
 function refForManifest(manifest: Record<string, unknown>): KubeResourceRef {
@@ -593,29 +615,63 @@ function refForManifest(manifest: Record<string, unknown>): KubeResourceRef {
     return CODE_RESOURCES[manifest.kind]
   }
   if (manifest.kind === 'Secret' && manifest.apiVersion === 'v1') return SECRETS
-  throw protocolError(`apply does not support ${String(manifest.apiVersion)} ${String(manifest.kind)}`)
+  throw protocolError(`write does not support ${String(manifest.apiVersion)} ${String(manifest.kind)}`)
 }
 
-// applyCR is server-side apply (create-or-update). Its idempotent semantics
-// handle the "adopt an existing object" case (e.g. a leftover credential
-// Secret) without client-side resourceVersion juggling; the portal's field
-// manager owns exactly the fields the manifest carries.
-async function applyCR(manifest: Record<string, unknown>, context = captureRequestContext()): Promise<RawCR> {
+// createCR creates a new resource atomically. A name collision must fail rather
+// than changing an existing resource through server-side apply.
+async function createCR(manifest: Record<string, unknown>, context = captureRequestContext()): Promise<RawCR> {
   const ref = refForManifest(manifest)
   const client = kubeClientFor(context)
-  const object = await kubeCall(() => client.apply(ref, manifest as never))
+  const object = await kubeCall(() => client.create(ref, manifest as never))
   const resource = isCodeResourceKind(manifest.kind)
-    ? validateResourceForKind(object, manifest.kind, 'apply response', { requireTypeMeta: true })
-    : validateRawCR(object, 'apply response', {
+    ? validateResourceForKind(object, manifest.kind, 'create response', { requireTypeMeta: true })
+    : validateRawCR(object, 'create response', {
         requireSpec: hasOwn(manifest, 'spec'),
         requireTypeMeta: true,
       })
   const expectedMetadata = isRecord(manifest.metadata) ? manifest.metadata : null
   if (resource.apiVersion !== manifest.apiVersion || resource.kind !== manifest.kind ||
     !expectedMetadata || resource.metadata.name !== expectedMetadata.name) {
-    throw protocolError('apply returned a different resource than requested')
+    throw protocolError('create returned a different resource than requested')
   }
   return resource
+}
+
+// Bound each setup write independently. A transport may ignore abort, so a
+// timed-out Connection create must never start the Secret create later.
+const CONNECTION_WRITE_TIMEOUT_MS = 15_000
+async function createConnectionPart(manifest: Record<string, unknown>, context: APIRequestContext, classifyRejection = false): Promise<RawCR> {
+  let rejectedStatus: number | undefined
+  const controller = new AbortController()
+  const scopedContext: APIRequestContext = {
+    ...context,
+    fetch: async (input, init) => {
+      const response = await context.fetch(input, { ...init, signal: controller.signal })
+      if (classifyRejection && response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) rejectedStatus = response.status
+      return response
+    },
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort()
+      reject(new Error('Connection setup request timed out; its outcome is unknown.'))
+    }, CONNECTION_WRITE_TIMEOUT_MS)
+  })
+  try {
+    return await Promise.race([createCR(manifest, scopedContext), timeout])
+  } catch (error) {
+    if (rejectedStatus !== undefined) {
+      const detail = error as { message?: unknown }
+      const rejection = { reason: 'ConnectionRejected', message: typeof detail?.message === 'string' ? detail.message : `HTTP ${rejectedStatus}: Connection request rejected.` }
+      rejectedConnectionWrites.add(rejection)
+      throw rejection
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 // deleteCodeResource deletes a code-group resource by name. An exact
@@ -623,12 +679,12 @@ async function applyCR(manifest: Record<string, unknown>, context = captureReque
 // (a type-level 404, a lookalike miss for a different object, a 5xx) surfaces.
 // Capture authority once so a concurrent workspace/token switch cannot redirect
 // any part of the request.
-async function deleteCodeResource(kind: CodeResourceKind, name: string): Promise<void> {
+async function deleteCodeResource(kind: CodeResourceKind, name: string, preconditions?: { uid: string; resourceVersion: string }): Promise<void> {
   const context = captureRequestContext()
   const ref = CODE_RESOURCES[kind]
   const client = kubeClientFor(context)
   try {
-    await client.delete(ref, name)
+    await client.delete(ref, name, preconditions ? { preconditions } : undefined)
   } catch (error) {
     if (isKubeObjectNotFound(error, ref, name)) return
     if (isKubeError(error)) throw kubeErrorResponse(error)
@@ -797,12 +853,20 @@ export const api = {
   // that order so the Secret can own-reference the Connection and be garbage-
   // collected with it. type is 'pat' for a pasted token or 'oauth' for one from
   // the GitHub connect flow — same storage, only the credential's origin differs.
-  // Idempotent: an existing Connection is adopted and its Secret overwritten,
-  // so reconnecting never trips over leftovers from a prior connection.
+  // Both creates are atomic: collisions cannot adopt another object. A failed
+  // Secret create can leave a Connection that needs inspection and deletion.
   async connect(input: { name: string; owner: string; token: string; refreshToken?: string; expiry?: string; baseURL?: string; type?: 'pat' | 'oauth' }): Promise<Connection> {
     const context = captureRequestContext()
     const name = normalizeResourceName(input.name)
-    const secretName = name + '-token'
+    const random = new Uint8Array(16)
+    try {
+      globalThis.crypto.getRandomValues(random)
+    } catch {
+      const error: ErrorResponse = { reason: 'PreDispatch', message: 'Could not generate a secure credential name. No connection was created.' }
+      preDispatchErrors.add(error)
+      throw error
+    }
+    const secretName = `code-token-${Array.from(random, byte => byte.toString(16).padStart(2, '0')).join('')}`
     // 1) Connection referencing the (not-yet-created) Secret.
     const spec: Record<string, unknown> = {
       provider: 'github',
@@ -811,15 +875,22 @@ export const api = {
       secretRef: { name: secretName, namespace: CRED_NAMESPACE, key: TOKEN_KEY },
     }
     if (input.baseURL) spec.baseURL = input.baseURL
-    const conn = await applyCR({
+    const conn = await createConnectionPart({
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Connection',
       metadata: { name },
       spec,
-    }, context)
+    }, context, true)
+    const returnedSpec = conn.spec
+    const returnedRef = returnedSpec?.secretRef
+    if (returnedSpec?.provider !== 'github' || returnedSpec.type !== spec.type || returnedSpec.owner !== input.owner ||
+      (returnedSpec.baseURL || '') !== (input.baseURL || '') || !isRecord(returnedRef) ||
+      returnedRef.name !== secretName || returnedRef.namespace !== CRED_NAMESPACE || returnedRef.key !== TOKEN_KEY) {
+      throw protocolError('created Connection did not retain the requested configuration')
+    }
     // 2) Secret holding the token, owned by the Connection so kcp GC removes it
-    // with the Connection. applyCR's create-or-update adopts a leftover Secret.
-    await applyCR({
+    // with the Connection. Never adopt a pre-existing Secret.
+    const secret = await createConnectionPart({
       apiVersion: 'v1',
       kind: 'Secret',
       metadata: {
@@ -838,6 +909,13 @@ export const api = {
         [EXPIRY_KEY]: input.expiry ?? '',
       },
     }, context)
+    const metadata = secret.metadata
+    const ownerRefs = metadata.ownerReferences
+    if (metadata.namespace !== CRED_NAMESPACE || !isRecord(metadata.labels) || metadata.labels['railgrid.ai/owner'] !== 'code' ||
+      !Array.isArray(ownerRefs) || !ownerRefs.some(ref => isRecord(ref) && ref.apiVersion === `${GROUP}/${VERSION}` &&
+        ref.kind === 'Connection' && ref.name === name && ref.uid === conn.metadata.uid)) {
+      throw protocolError('created Secret did not retain the requested ownership')
+    }
     return connFromCR(conn)
   },
 
@@ -919,7 +997,7 @@ export const api = {
     autoInit?: boolean
   }): Promise<Repository> {
     const name = normalizeResourceName(input.name)
-    const remote = input.repo?.trim() || (input.mode === 'import' ? input.name.trim() : name.slice(0, 100))
+    const remote = input.repo?.trim() || (input.mode === 'import' ? input.name.trim() : defaultGitHubRepositoryName(name))
     const importing = input.mode === 'import'
     if (importing && !REMOTE_REPOSITORY_PATTERN.test(remote)) throw new Error('Enter the repository as owner/repository.')
     if (!importing && remote.includes('/')) throw new Error('Choose Import existing repository to add owner/repository.')
@@ -933,7 +1011,7 @@ export const api = {
     if (!importing && input.visibility) spec.visibility = input.visibility
     if (!importing && input.description) spec.description = input.description
     if (!importing && input.autoInit) spec.autoInit = true
-    const created = await applyCR({
+    const created = await createCR({
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Repository',
       metadata: { name, annotations: { [importing ? 'code.railgrid.ai/existing-only' : 'code.railgrid.ai/create-only']: 'true' } },
@@ -942,8 +1020,9 @@ export const api = {
     return repoFromCR(created)
   },
 
-  async deleteRepository(name: string): Promise<void> {
-    await deleteCodeResource('Repository', name)
+  async deleteRepository(name: string, preconditions: { uid: string; resourceVersion: string }): Promise<void> {
+    if (typeof preconditions?.uid !== 'string' || !preconditions.uid.trim() || typeof preconditions.resourceVersion !== 'string' || !preconditions.resourceVersion.trim()) throw new Error('Repository identity is unavailable. Refresh and try again.')
+    await deleteCodeResource('Repository', name, preconditions)
   },
 
   // updateRepositoryConnection repoints an existing Repository at a different
@@ -971,7 +1050,7 @@ export const api = {
     if (input.title) spec.title = input.title
     if (input.publicKey) spec.publicKey = input.publicKey
     if (input.readOnly) spec.readOnly = true
-    const created = await applyCR({
+    const created = await createCR({
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'DeployKey',
       metadata: { name },
@@ -1000,13 +1079,44 @@ export const api = {
       username: input.username,
     }
     if (input.permission) spec.permission = input.permission
-    const created = await applyCR({
+    const manifest = {
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Collaborator',
       metadata: { name },
       spec,
-    })
-    return collabFromCR(created)
+    }
+    const context = captureRequestContext()
+    const client = kubeClientFor(context)
+    const ref = CODE_RESOURCES.Collaborator
+    let object: unknown
+    try {
+      object = await client.create(ref, manifest)
+    } catch (error) {
+      if (!isKubeError(error) || error.status !== 409 || error.body?.reason !== 'AlreadyExists') {
+        if (isKubeError(error)) throw kubeErrorResponse(error)
+        throw error
+      }
+      const existing = await kubeGet('Collaborator', name, context)
+      if (existing.metadata.name !== name || existing.spec?.repositoryRef !== input.repositoryRef || existing.spec?.username !== input.username) {
+        throw <ErrorResponse>{ reason: 'NameCollision', message: `A different collaborator already uses the resource name "${name}".` }
+      }
+      if (existing.metadata.deletionTimestamp) {
+        throw <ErrorResponse>{ reason: 'Conflict', message: 'This collaborator is being deleted. Retry after deletion completes.' }
+      }
+      const version = existing.metadata.resourceVersion
+      if (typeof version !== 'string' || !version) throw protocolError('Collaborator get response was missing metadata.resourceVersion')
+      object = await kubeCall(() => client.patch(ref, name, [
+        { op: 'test', path: '/metadata/uid', value: existing.metadata.uid },
+        { op: 'test', path: '/metadata/resourceVersion', value: version },
+        { op: 'add', path: '/spec/permission', value: input.permission || 'pull' },
+      ], { type: 'json' }))
+    }
+    const resource = validateResourceForKind(object, 'Collaborator', 'collaborator write response', { requireTypeMeta: true })
+    if (resource.apiVersion !== manifest.apiVersion || resource.kind !== manifest.kind || resource.metadata.name !== name ||
+      resource.spec?.repositoryRef !== input.repositoryRef || resource.spec?.username !== input.username) {
+      throw protocolError('collaborator write returned a different resource than requested')
+    }
+    return collabFromCR(resource)
   },
 
   async deleteCollaborator(name: string): Promise<void> {

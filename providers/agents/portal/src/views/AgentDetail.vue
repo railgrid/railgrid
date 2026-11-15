@@ -281,6 +281,7 @@ async function remove(): Promise<void> {
   if (deleteBusy.value) return
   const authority = captureAuthority()
   const name = props.name
+  const uid = agent.value?.metadata.uid
   const ok = await confirmDialog({
     title: `Delete agent “${name}”?`,
     message: 'This also deletes its chat history.',
@@ -291,7 +292,7 @@ async function remove(): Promise<void> {
   deleteBusy.value = true
   try {
     const result = await mutate(authority.store, {
-      run: async () => { await authority.store.deleteAgent(name); return true },
+      run: async () => { await authority.store.deleteAgent(name, uid); return true },
       success: `Agent “${name}” deleted.`,
       failure: 'Delete failed',
     })
@@ -314,7 +315,9 @@ async function remove(): Promise<void> {
       :subtitle="subtitle"
       :loaded="slice.hasSnapshot"
       :loading="slice.loading"
+      :refresh-mode="slice.refreshMode"
       :error="readError"
+      :focus-scope="JSON.stringify([authorityEpoch, name])"
       :stale="slice.hasSnapshot && !!slice.error"
       retryable
       @retry="store.load('agents')"

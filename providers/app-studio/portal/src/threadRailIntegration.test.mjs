@@ -106,7 +106,7 @@ test('does not apply or present create-thread responses after unmount', () => {
   assert.match(createSource, /catch \(e\) \{[\s\S]*if \(createIsCurrent\(\)\) \{[\s\S]*threadError\.value = e instanceof Error \? e\.message : String\(e\)/)
 
   const firstProjectSource = app.slice(app.indexOf('async function createProjectAndStartConversation'), app.indexOf('\nasync function openSettings'))
-  assert.match(firstProjectSource, /const current = \(\) => appComponentMounted && pendingFirstProjectSubmission === submission[\s\S]*firstProjectSubmissionIsCurrent\(/)
+  assert.match(firstProjectSource, /const current = \(\) => appComponentMounted && appContextFingerprint\(props\.ctx\) === submissionFingerprint && pendingFirstProjectSubmission === submission[\s\S]*firstProjectSubmissionIsCurrent\(/)
 
   const sendSource = app.slice(app.indexOf('async function sendMessage'), app.indexOf('function cancelMessageStream'))
   assert.match(sendSource, /const sendContextFingerprint = projectContextFingerprint\(sendContext\)/)

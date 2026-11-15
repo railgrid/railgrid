@@ -38,6 +38,7 @@ vi.mock('./components/DynamicForm.vue', () => ({
 
 const template = {
   name: 'demo-template',
+        uid: 'template-uid', generation: 1,
   version: 'v2',
   displayName: 'Demo template',
   description: 'A test template',
@@ -64,6 +65,7 @@ describe('mounted Infrastructure provisioning validation boundary', () => {
   let host: HTMLDivElement
 
   beforeEach(() => {
+    window.sessionStorage.clear()
     beginValidation()
     vi.mocked(api.getTemplate).mockResolvedValue({ template } as never)
     vi.mocked(api.createInstance).mockResolvedValue({ name: 'demo-instance' } as never)
@@ -84,8 +86,38 @@ describe('mounted Infrastructure provisioning validation boundary', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }))
   }
 
+  it.each(['a..b', 'a.-b', 'a-.b'])('rejects invalid DNS subdomain name %s at the name field', async (name) => {
+    app = createApp(ProvisionPage, { recoveryScope: 'test-scope', templateName: template.name })
+    app.mount(host)
+    await flush()
+    const input = host.querySelector<HTMLInputElement>('#infrastructure-instance-name')!
+    input.value = name
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+    expect(input.getAttribute('aria-invalid')).toBe('true')
+    expect(document.activeElement).toBe(input)
+    expect(state.validateCalls).toBe(0)
+    expect(api.createInstance).not.toHaveBeenCalled()
+  })
+
+  it.each(['a.b-c', 'a'.repeat(64)])('accepts Kubernetes DNS subdomain name %s', async (name) => {
+    app = createApp(ProvisionPage, { recoveryScope: 'test-scope', templateName: template.name })
+    app.mount(host)
+    await flush()
+    const input = host.querySelector<HTMLInputElement>('#infrastructure-instance-name')!
+    input.value = name
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+    expect(state.validateCalls).toBe(1)
+    state.resolveValidation?.({ valid: true, values: {} })
+    await flush()
+    expect(api.createInstance).toHaveBeenCalledWith(expect.objectContaining({ name }))
+  })
+
   it('latches before deferred validation and ignores duplicate submits', async () => {
-    app = createApp(ProvisionPage, { templateName: template.name })
+    app = createApp(ProvisionPage, { recoveryScope: 'test-scope', templateName: template.name })
     app.mount(host)
     await flush()
 
@@ -96,7 +128,8 @@ describe('mounted Infrastructure provisioning validation boundary', () => {
     await flush()
 
     expect(state.validateCalls).toBe(1)
-    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+    expect(host.querySelector<HTMLFieldSetElement>('fieldset.provision-fields')?.disabled).toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')?.getAttribute('aria-disabled')).toBe('true')
     expect(api.createInstance).not.toHaveBeenCalled()
 
     state.resolveValidation?.({ valid: true, values: { enabled: false } })
@@ -110,7 +143,7 @@ describe('mounted Infrastructure provisioning validation boundary', () => {
     const templateName = ref(template.name)
     const provisioned = vi.fn()
     app = createApp(defineComponent({
-      setup: () => () => h(ProvisionPage, { templateName: templateName.value, onProvisioned: provisioned }),
+      setup: () => () => h(ProvisionPage, { recoveryScope: 'test-scope', templateName: templateName.value, onProvisioned: provisioned }),
     }))
     app.mount(host)
     await flush()

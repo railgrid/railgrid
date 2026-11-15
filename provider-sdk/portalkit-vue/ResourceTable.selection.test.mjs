@@ -7,6 +7,8 @@ import { computed, effectScope, nextTick, reactive, ref, watch } from '../../por
 
 test('resource page background reads leave recovery idle and queued retries announce immediately', async () => {
   const source = readFileSync(new URL('./ResourcePage.vue', import.meta.url), 'utf8')
+  assert.equal((source.match(/:aria-disabled="retrying \|\| undefined"\s+:aria-busy="retrying \|\| undefined"\s+@click="requestRetry"/g) || []).length, 2, 'both retry controls remain focusable and expose their busy state')
+  assert.doesNotMatch(source, /:disabled="retrying"/)
   const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
   const parsed = ts.createSourceFile('ResourcePage.ts', script, ts.ScriptTarget.Latest, true)
   const names = new Set(['pageElement', 'explicitReadState', 'showInitialError', 'initialReadPending', 'retryRequested', 'retrying', 'refreshAnnouncement', 'ariaBusy'])
@@ -145,7 +147,7 @@ test('empty inventory visibility preserves filtered and off-page selection contr
     activeFilters: { value: false }, isServerPagination: { value: false },
     serverTotal: { value: null }, serverHasNext: { value: false },
     selectedCount: { value: 0 }, visibleColumns: { value: [{ key: 'app' }, { key: 'user' }] },
-    hasConfiguredControls: { value: true },
+    hasConfiguredControls: { value: true }, controlsShown: { value: false },
   }
   const code = ts.transpileModule(declarations.join('\n'), {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
@@ -159,12 +161,15 @@ test('empty inventory visibility preserves filtered and off-page selection contr
   context.props.loading = false
 
   context.props.rows = [{ app: 'Reports' }]
+  context.controlsShown.value = true
   assert.equal(state.selectionSurfaceVisible.value, true)
   assert.equal(state.renderedColumnCount.value, 3)
   assert.equal(state.showControls.value, true)
 
   context.props.rows = []
+  context.controlsShown.value = false
   context.activeFilters.value = true
+  context.controlsShown.value = true
   assert.equal(state.showControls.value, true, 'a zero-match query can be cleared')
   assert.equal(state.selectionSurfaceVisible.value, true, 'filtering does not change the selection column layout')
 

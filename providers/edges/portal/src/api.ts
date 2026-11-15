@@ -163,10 +163,12 @@ function requireTenant(context: RequestContext): string {
 // workspace has no edges APIBinding, which must not read as "this edge was
 // deleted". A client-detected protocol failure on a 2xx body (not JSON, no
 // items array, inconsistent pagination) is ProtocolError; every other HTTP
-// failure stays HTTPError with the server's Status message.
+// failure stays HTTPError with the server's Status message, except an explicit
+// AlreadyExists response, which create forms can associate with a name field.
 function toErrorResponse(error: unknown): unknown {
   if (!isKubeError(error)) return error
   if (error.status >= 200 && error.status < 300) return protocolError(error.message)
+  if (error.status === 409 && error.reason === 'AlreadyExists') return <ErrorResponse>{ reason: 'AlreadyExists', message: error.message }
   if (error.status === 404) {
     if (isKubeResourceUnavailable(error)) {
       return <ErrorResponse>{ reason: 'ResourceUnavailable', message: `the edges API is not available in this workspace: ${error.message}` }
@@ -188,10 +190,12 @@ function isNotFoundResponse(error: unknown): boolean {
 async function withKube<T>(
   work: (client: KubeClient) => Promise<T>,
   context: RequestContext = requestContext(),
+  signal?: AbortSignal,
 ): Promise<T> {
   assertCurrentContext(context)
+  const transport = fencedTransport(context)
   const client = createKubeClient({
-    fetch: fencedTransport(context),
+    fetch: signal ? (input, init) => transport(input, { ...init, signal }) : transport,
     cluster: requireTenant(context),
     fieldManager: FIELD_MANAGER,
     onResponse: () => assertCurrentContext(context),
@@ -244,7 +248,7 @@ function edgeResource(type: EdgeType): { ref: KubeResourceRef; kind: EdgeDetail[
 // enough that the merged list is unpaged. MacOSServer is optional while older
 // tenant APIBindings converge, so an unavailable macOS collection contributes
 // no rows while real authorization/protocol failures still surface.
-export async function listEdges(): Promise<Edge[]> {
+export async function listEdges(signal?: AbortSignal): Promise<Edge[]> {
   return withKube(async (client) => {
     const [clusters, servers, macos] = await Promise.all([
       client.listAll<KubeObject & RawItem>(KUBERNETES_CLUSTERS),
@@ -258,7 +262,7 @@ export async function listEdges(): Promise<Edge[]> {
     const server = servers.map((it) => toEdge(it, 'server'))
     const mac = macos.map((it) => toEdge(it, 'macos'))
     return [...kube, ...server, ...mac].sort((a, b) => a.name.localeCompare(b.name))
-  })
+  }, requestContext(), signal)
 }
 
 interface RawEdgeObject extends KubeObject {
@@ -292,9 +296,12 @@ interface RawEdgeObject extends KubeObject {
 // getEdge fetches one edge with the product-facing status plus a read-only
 // object snapshot for the detail view's opt-in technical disclosure. The
 // default view never renders the API group/version or raw object shape.
-export async function getEdge(name: string, type: EdgeType): Promise<EdgeDetail> {
+export async function getEdge(name: string, type: EdgeType, signal?: AbortSignal): Promise<EdgeDetail> {
   const { ref, kind } = edgeResource(type)
-  const cr = await withKube((client) => client.get<RawEdgeObject>(ref, name))
+  const cr = await withKube((client) => client.get<RawEdgeObject>(ref, name), requestContext(), signal)
+  if (!isRecord(cr) || cr.apiVersion !== EDGES_API_VERSION || cr.kind !== kind || !isRecord(cr.metadata) || cr.metadata.name !== name) {
+    throw protocolError('Edge response did not identify the requested edge')
+  }
   const s = cr.status ?? {}
   // The bootstrap token is an onboarding credential, not part of the
   // read-only technical object snapshot. Keep it on EdgeDetail for the join
@@ -352,6 +359,7 @@ export async function createEdge(
   name: string,
   type: EdgeType,
   labels?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<void> {
   const { ref, kind } = edgeResource(type)
   const hasLabels = !!labels && Object.keys(labels).length > 0
@@ -361,7 +369,19 @@ export async function createEdge(
     metadata: { name, ...(hasLabels ? { labels } : {}) },
     spec: type === 'kubernetes' && hasLabels ? { labels } : {},
   }
-  await withKube((client) => client.create(ref, object))
+  await withKube(async (client) => {
+    try {
+      const created: unknown = await client.create(ref, object)
+      if (!isRecord(created) || created.apiVersion !== EDGES_API_VERSION || created.kind !== kind || !isRecord(created.metadata) || created.metadata.name !== name) {
+        throw new Error('Edge create response did not identify the requested edge')
+      }
+    } catch (error) {
+      if (isKubeError(error) && [400, 401, 403, 404, 409, 422].includes(error.status)) {
+        throw { reason: 'EdgeCreateRejected', message: `This attempt did not create edge ${name}: ${error.message} Check Edges if the name already exists.` }
+      }
+      throw { reason: 'EdgeCreateUnknown', message: `Could not confirm whether edge ${name} was created. Check Edges before retrying. If it exists, open its details to install the agent.` }
+    }
+  }, requestContext(), signal)
 }
 
 // updateEdgeHarness merge-patches spec.harness — the one field that decides
@@ -405,14 +425,23 @@ export interface EdgeProbe {
 
 // probeEdge fetches the join token + connection state for a freshly-created
 // edge. A not-yet-visible edge is null, not an error, because the wizard polls.
-export async function probeEdge(name: string, type: EdgeType): Promise<EdgeProbe | null> {
-  const { ref } = edgeResource(type)
+export async function probeEdge(name: string, type: EdgeType, signal?: AbortSignal): Promise<EdgeProbe | null> {
+  const { ref, kind } = edgeResource(type)
   let cr: RawEdgeObject
   try {
-    cr = await withKube((client) => client.get<RawEdgeObject>(ref, name))
+    cr = await withKube((client) => client.get<RawEdgeObject>(ref, name), requestContext(), signal)
   } catch (error) {
     if (isNotFoundResponse(error)) return null
     throw error
+  }
+  if (!isRecord(cr) || cr.apiVersion !== EDGES_API_VERSION || cr.kind !== kind || !isRecord(cr.metadata) || cr.metadata.name !== name) {
+    throw protocolError('Edge response did not identify the requested edge')
+  }
+  if (cr.status !== undefined && (!isRecord(cr.status) ||
+    (cr.status.joinToken !== undefined && typeof cr.status.joinToken !== 'string') ||
+    (cr.status.connected !== undefined && typeof cr.status.connected !== 'boolean') ||
+    (cr.status.agentVersion !== undefined && typeof cr.status.agentVersion !== 'string'))) {
+    throw protocolError('Edge probe status had an invalid shape')
   }
   return {
     joinToken: cr.status?.joinToken,
@@ -626,6 +655,7 @@ async function fetchListPage(
   namespace: string | undefined,
   options: KubernetesListOptions,
   context: RequestContext,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   assertCurrentContext(context)
   const cluster = requireTenant(context)
@@ -636,6 +666,7 @@ async function fetchListPage(
   const res = await fencedTransport(context)(target, {
     method: 'GET',
     credentials: 'same-origin',
+    signal,
     headers: { Accept: 'application/json' },
   })
   let text: string
@@ -671,9 +702,10 @@ function parseRawEdgeService(item: unknown, index: number): RawEdgeService {
 async function listServicesPageRaw(
   options: KubernetesListOptions = {},
   context: RequestContext = requestContext(),
+  signal?: AbortSignal,
 ): Promise<RawListPage<RawEdgeService>> {
   const request = validateListOptions(options, 'Services')
-  const data = await fetchListPage(SERVICES, undefined, request, context)
+  const data = await fetchListPage(SERVICES, undefined, request, context, signal)
   return parseListPage(data, 'Services', parseRawEdgeService)
 }
 
@@ -686,14 +718,18 @@ export async function listServicesPage(options: KubernetesListOptions = {}): Pro
 // This deliberately does not search the bounded list cache: a deep link may
 // target a resource beyond the table's current cursor page, and the instance
 // view must distinguish an authoritative not-found from an incomplete list.
-export async function getService(name: string): Promise<EdgeService> {
-  const resource = await withKube((client) => client.get<KubeObject & RawEdgeService>(SERVICES, name))
+export async function getService(name: string, signal?: AbortSignal): Promise<EdgeService> {
+  const resource = await withKube((client) => client.get<KubeObject & RawEdgeService>(SERVICES, name), requestContext(), signal)
+  if (!isRecord(resource) || !isRecord(resource.metadata) || resource.metadata.name !== name) {
+    throw protocolError('Service response did not identify the requested service')
+  }
   return toEdgeService(resource)
 }
 
 async function listAllPages<T>(
   kind: 'Services' | 'Workloads',
-  fetchPage: (options: KubernetesListOptions, context: RequestContext) => Promise<RawListPage<T>>,
+  fetchPage: (options: KubernetesListOptions, context: RequestContext, signal?: AbortSignal) => Promise<RawListPage<T>>,
+  signal?: AbortSignal,
 ): Promise<T[]> {
   const context = requestContext()
   const items: T[] = []
@@ -704,7 +740,7 @@ async function listAllPages<T>(
     const page = await fetchPage({
       limit: LIST_PAGE_SIZE,
       ...(continueToken === undefined ? {} : { continue: continueToken }),
-    }, context)
+    }, context, signal)
     assertCurrentContext(context)
     items.push(...page.items)
     if (!page.continue) {
@@ -723,14 +759,14 @@ async function listAllPages<T>(
 // listServices returns every Service across all edges (for the top-level
 // Services view). The page walker is bounded so a broken server cannot leave
 // the refresh pending forever or silently return a partial aggregate.
-export async function listServices(): Promise<EdgeService[]> {
-  const items = await listAllPages('Services', listServicesPageRaw)
+export async function listServices(signal?: AbortSignal): Promise<EdgeService[]> {
+  const items = await listAllPages('Services', listServicesPageRaw, signal)
   return items.map(toEdgeService).sort((a, b) => a.name.localeCompare(b.name))
 }
 
 // listEdgeServices returns the Services for one edge (by spec.edgeRef.name).
-export async function listEdgeServices(edgeName: string): Promise<EdgeService[]> {
-  return (await listServices()).filter((es) => es.edgeName === edgeName)
+export async function listEdgeServices(edgeName: string, signal?: AbortSignal): Promise<EdgeService[]> {
+  return (await listServices(signal)).filter((es) => es.edgeName === edgeName)
 }
 
 // updateEdgeServiceInstructions merge-patches spec.instructions — the free-form
@@ -780,7 +816,7 @@ export async function updateEdgeService(name: string, e: EdgeServiceEdit): Promi
 // far more services than a host), so the user names the target explicitly. The
 // object carries the edge label so it lists alongside discovered ones, but NOT
 // the discovered label — the discovery reconciler must never prune it.
-export async function createKubeEdgeService(d: EdgeServiceDraft): Promise<void> {
+function kubeEdgeServiceObject(d: EdgeServiceDraft): KubeObject {
   // Targeting is independent of edge kind: spec.host dials an address directly
   // (agent loopback, or a LAN device like a UniFi console); spec.targetRef reaches
   // a named Kubernetes Service by cluster DNS. host wins if both are set.
@@ -796,7 +832,7 @@ export async function createKubeEdgeService(d: EdgeServiceDraft): Promise<void> 
   } else if (d.targetName?.trim()) {
     spec.targetRef = { namespace: d.targetNamespace?.trim() || 'default', name: d.targetName.trim() }
   }
-  const object: KubeObject = {
+  return {
     apiVersion: EDGES_API_VERSION,
     kind: 'Service',
     metadata: {
@@ -805,7 +841,22 @@ export async function createKubeEdgeService(d: EdgeServiceDraft): Promise<void> 
     },
     spec,
   }
-  await withKube((client) => client.create(SERVICES, object))
+}
+
+export async function createKubeEdgeService(d: EdgeServiceDraft, signal?: AbortSignal): Promise<void> {
+  await withKube(async (client) => {
+    try {
+      const created: unknown = await client.create(SERVICES, kubeEdgeServiceObject(d))
+      if (!isRecord(created) || !isRecord(created.metadata) || created.metadata.name !== d.name) {
+        throw new Error('service create response did not identify the submitted service')
+      }
+    } catch (error) {
+      // A response can be lost after the server commits the create. Only a
+      // non-timeout client error establishes that this attempt was rejected.
+      if (isKubeError(error) && error.status >= 400 && error.status < 500 && error.status !== 408) throw error
+      throw <ErrorResponse>{ reason: 'ServiceCreateUnknown', message: 'The service may have been created, but the result could not be confirmed.' }
+    }
+  }, requestContext(), signal)
 }
 
 // deleteEdgeService removes a Service (used for declared kube services).
@@ -945,9 +996,12 @@ export async function listWorkloads(): Promise<Workload[]> {
   return items.map(toWorkload).sort((a, b) => a.name.localeCompare(b.name))
 }
 
-export async function getWorkload(name: string): Promise<Workload | null> {
+export async function getWorkload(name: string, signal?: AbortSignal): Promise<Workload | null> {
   try {
-    const cr = await withKube((client) => client.get<KubeObject & RawWorkload>(WORKLOADS, name, { namespace: WORKLOAD_NS }))
+    const cr = await withKube((client) => client.get<KubeObject & RawWorkload>(WORKLOADS, name, { namespace: WORKLOAD_NS }), requestContext(), signal)
+    if (!isRecord(cr) || !isRecord(cr.metadata) || cr.metadata.name !== name) {
+      throw protocolError('The API returned a workload with an unexpected identity; retry the read.')
+    }
     return toWorkload(cr)
   } catch (error) {
     if (isNotFoundResponse(error)) return null
@@ -989,7 +1043,18 @@ export async function createWorkload(d: WorkloadDraft): Promise<void> {
       },
     },
   }
-  await withKube((client) => client.create(WORKLOADS, object, { namespace: WORKLOAD_NS }))
+  await withKube(async (client) => {
+    try {
+      const created: unknown = await client.create(WORKLOADS, object, { namespace: WORKLOAD_NS })
+      if (!isRecord(created) || created.apiVersion !== EDGES_API_VERSION || created.kind !== 'Workload'
+        || !isRecord(created.metadata) || created.metadata.name !== d.name || created.metadata.namespace !== WORKLOAD_NS) {
+        throw new Error('The create response did not identify the requested workload.')
+      }
+    } catch (error) {
+      if (isKubeError(error) && [400, 401, 403, 404, 409, 422].includes(error.status)) throw error
+      throw { reason: 'CreateOutcomeUnknown', message: 'The workload request may have succeeded, but its result could not be confirmed.' }
+    }
+  })
 }
 
 export async function deleteWorkload(name: string): Promise<void> {
@@ -1012,7 +1077,7 @@ export async function deployMarketplaceApp(opts: {
   // targetNamespace is the edge-cluster namespace the chart renders into; the
   // follow-up Service's targetRef points at the same namespace.
   targetNamespace?: string
-}): Promise<void> {
+}, signal?: AbortSignal): Promise<void> {
   const targetNamespace = normalizeTargetNamespace(opts.targetNamespace)
   const workload: KubeObject = {
     apiVersion: EDGES_API_VERSION,
@@ -1036,9 +1101,7 @@ export async function deployMarketplaceApp(opts: {
       },
     },
   }
-  await withKube((client) => client.create(WORKLOADS, workload, { namespace: WORKLOAD_NS }))
-
-  await createKubeEdgeService({
+  const service = kubeEdgeServiceObject({
     name: opts.name,
     edgeName: opts.edgeName,
     serviceType: opts.serviceType,
@@ -1047,4 +1110,26 @@ export async function deployMarketplaceApp(opts: {
     port: opts.port,
     instructions: opts.instructions,
   })
+  const recovery = `Check Services, then create it there if needed: use Service name ${opts.name}, select edge ${opts.edgeName}, type ${opts.serviceType}, target ${targetNamespace ?? DEFAULT_TARGET_NAMESPACE}/${opts.name}, and port ${opts.port}. You can also deploy again with another name.`
+  await withKube(async (client) => {
+    try {
+      const created = await client.create(WORKLOADS, workload, { namespace: WORKLOAD_NS })
+      if (!isRecord(created) || !isRecord(created.metadata) || created.metadata.name !== opts.name || created.kind !== 'Workload' || created.metadata.namespace !== WORKLOAD_NS) throw protocolError('Unexpected Workload response')
+    } catch (error) {
+      if (isKubeError(error) && [400, 401, 403, 404, 409, 422].includes(error.status)) {
+        throw { reason: 'MarketplaceWorkloadRejected', message: `This attempt did not create workload ${opts.name}: ${error.message} Check Workloads or choose another name.` }
+      }
+      throw { reason: 'MarketplaceWorkloadUnknown', message: `Could not confirm whether workload ${opts.name} was created. Check Workloads before retrying or choose another name.` }
+    }
+    if (signal?.aborted) throw { reason: 'MarketplaceServiceUnknown', message: `Workload ${opts.name} was created, but the Service request was interrupted. ${recovery}` }
+    try {
+      const created = await client.create(SERVICES, service)
+      if (!isRecord(created) || !isRecord(created.metadata) || created.metadata.name !== opts.name || created.kind !== 'Service') throw protocolError('Unexpected Service response')
+    } catch (error) {
+      if (isKubeError(error) && [400, 401, 403, 404, 409, 422].includes(error.status)) {
+        throw { reason: 'MarketplaceServiceRejected', message: `Workload ${opts.name} was created, but this attempt did not create the Service: ${error.message} ${recovery}` }
+      }
+      throw { reason: 'MarketplaceServiceUnknown', message: `Workload ${opts.name} was created, but the Service could not be confirmed. ${recovery}` }
+    }
+  }, requestContext(), signal)
 }

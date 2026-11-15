@@ -4,6 +4,13 @@
 
 # ResourceTable and filtering contract
 
+Retry remains focusable while a read is in flight and rejects duplicate
+activation. Pass `focusScope` with the current authority and collection
+identity to restore focus to the table if the retry control disappears. A
+constant scope is safe when the table is remounted on every authority and
+collection change. Without a scope, disappearing controls do not trigger
+focus recovery.
+
 ## Purpose
 
 `ResourceTable` presents resource collections while preserving native table
@@ -54,6 +61,8 @@ below the primary value. Callers still select which columns fit the task.
 Interactive row hover uses a 4% accent tint with primary text. Interactive rows
 use `tabindex="0"` and Enter/Space emits `rowClick`; nested links, buttons,
 inputs, selects, summaries, and other explicit controls remain independent.
+When only some rows can be opened, `rowInteractive` limits row navigation,
+focus and hover to eligible rows without disabling their nested controls.
 
 Client pagination searches and filters the complete loaded row set before
 slicing the page; opted-in sortable columns sort that complete filtered set

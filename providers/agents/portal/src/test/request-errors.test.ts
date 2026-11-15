@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiClient, ApiError } from '../api'
 import { admissionDenialSummary, parseAdmissionDenial, presentRequestFailure } from '../request-errors'
-import { Resources, ResourceError } from '../resources'
+import { AGENT_CREATE_REQUEST_TIMEOUT_MS, Resources, ResourceError } from '../resources'
 import type { RailgridContext } from '../types'
 
 const CLUSTER = 'tenant-a'
@@ -34,7 +34,94 @@ async function rejected<T>(promise: Promise<T>): Promise<RequestError> {
   throw new Error('expected the request to fail')
 }
 
+describe('agent deletion', () => {
+  it('sends the confirmed UID as a Kubernetes delete precondition', async () => {
+    const transport = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ kind: 'Status', status: 'Success' }), { status: 200 }))
+    const resources = new Resources()
+    resources.setContext(contextWith(transport))
+    await resources.deleteAgent('scout', 'old-uid')
+    const init = transport.mock.calls[0][1] as RequestInit
+    expect(init.method).toBe('DELETE')
+    expect(JSON.parse(String(init.body))).toMatchObject({ preconditions: { uid: 'old-uid' } })
+  })
+})
+
 describe('remote request errors', () => {
+  it.each(['', 'null', '{}', '{"metadata":{"name":"other"},"spec":{}}', 'not json'])(
+    'treats an unusable successful agent response as uncertain: %s', async body => {
+      const resources = new Resources()
+      resources.setContext(contextWith(async () => new Response(body, { status: 201 })))
+      const error = await rejected(resources.createAgent({ name: 'scout' }))
+      expect(error.reason).toBe('AgentCreateUnknown')
+    },
+  )
+
+  it('bounds an agent POST even when the transport ignores abort', async () => {
+    vi.useFakeTimers()
+    try {
+      const resources = new Resources()
+      resources.setContext(contextWith(() => new Promise(() => {})))
+      const result = rejected(resources.createAgent({ name: 'scout' }))
+      await vi.advanceTimersByTimeAsync(AGENT_CREATE_REQUEST_TIMEOUT_MS)
+      expect((await result).reason).toBe('AgentCreateUnknown')
+    } finally { vi.useRealTimers() }
+  })
+
+  it.each(['response', 'network failure'])('stops template schedule writes when the workspace changes before %s', async outcome => {
+    let release!: (response: Response) => void
+    let fail!: (error: Error) => void
+    const transport = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/schedules')) return new Promise<Response>((resolve, reject) => { release = resolve; fail = reject })
+      return new Response(JSON.stringify({ metadata: { name: 'scout' }, spec: {} }), { status: 201 })
+    })
+    const resources = new Resources()
+    resources.setContext(contextWith(transport))
+    const result = rejected(resources.createAgentFromTemplate(
+      { metadata: { name: 'scout' }, spec: {} } as never,
+      [{ metadata: { name: 'first' }, spec: {} }, { metadata: { name: 'second' }, spec: {} }] as never,
+    ))
+    await vi.waitFor(() => expect(release).toBeDefined())
+    resources.setContext({ ...contextWith(transport), tenant: 'tenant-b' })
+    if (outcome === 'response') release(new Response(JSON.stringify({ metadata: { name: 'first' }, spec: {} }), { status: 201 }))
+    else fail(new TypeError('network lost'))
+    expect((await result).reason).toBe('AgentCreateUnknown')
+    expect(transport).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([[403, 'rejected'], [409, 'unknown'], [500, 'unknown'], [0, 'unknown']] as const)(
+    'classifies schedule creation outcome for status %s', async (status, outcome) => {
+      const transport = vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/schedules')) {
+          if (!status) throw new TypeError('connection lost')
+          return new Response(JSON.stringify({ kind: 'Status', status: 'Failure', message: 'failed', code: status }), { status })
+        }
+        return new Response(JSON.stringify({ metadata: { name: 'scout' }, spec: {} }), { status: 201 })
+      })
+      const resources = new Resources()
+      resources.setContext(contextWith(transport))
+      const result = await resources.createAgentFromTemplate(
+        { metadata: { name: 'scout' }, spec: {} } as never,
+        [{ metadata: { name: 'digest' }, spec: {} } as never],
+      )
+      expect(result.warnings).toEqual([{ schedule: 'digest', outcome }])
+      expect(transport).toHaveBeenCalledTimes(2)
+    },
+  )
+  it.each(['{}', '{"metadata":{"name":"other"},"spec":{}}'])(
+    'treats an unusable successful template schedule response as unknown: %s', async body => {
+      const resources = new Resources()
+      resources.setContext(contextWith(async input => new Response(
+        String(input).includes('/schedules') ? body : JSON.stringify({ metadata: { name: 'scout' }, spec: {} }),
+        { status: 201 },
+      )))
+      const result = await resources.createAgentFromTemplate(
+        { metadata: { name: 'scout' }, spec: {} } as never,
+        [{ metadata: { name: 'digest' }, spec: {} } as never],
+      )
+      expect(result.createdSchedules).toEqual([])
+      expect(result.warnings).toEqual([{ schedule: 'digest', outcome: 'unknown' }])
+    },
+  )
   it('keeps an HTTP status and safe summary while redacting and bounding the diagnostic', async () => {
     const raw = `gateway response Authorization: Bearer ${SECRET} ${'x'.repeat(8_000)}`
     const transport = vi.fn(async () => new Response(JSON.stringify({ message: raw }), { status: 403, statusText: 'Forbidden' }))

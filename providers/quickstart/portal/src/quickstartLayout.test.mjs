@@ -43,7 +43,7 @@ test('Quickstart reads its CRs with the kube client and calls the verb as a kcp 
   assert.doesNotMatch(element, /replace\(\/\^\\\/ui\\\/providers/)
   // No ad-hoc REST, and no polling for a context the host pushes.
   assert.doesNotMatch(element, /['"`]\/api\//)
-  assert.doesNotMatch(element, /setTimeout/)
+  assert.match(element, /setTimeout\(\(\) => reject/)
 })
 
 test('Quickstart ships a dashboard tile built on the shared tile kit', async () => {
@@ -64,9 +64,10 @@ test('Quickstart preserves the create draft through a failed request and restore
   assert.match(source, /name="message"[^\r\n]*value="\$\{escapeHTML\(this\._draftMessage\)\}/)
   const create = source.slice(source.indexOf('private async _create'), source.indexOf('// The data-plane verb.'))
   assert.match(create, /if \(this\._busy \|\| !this\._canLoad\(\)\) return/)
-  assert.match(create, /await this\._kube\(ctx\)\.create[\s\S]*this\._draftName = ''[\s\S]*catch/)
+  assert.match(create, /await bounded\(this\._kube\(ctx\)\.create[\s\S]*this\._draftName = ''[\s\S]*catch/)
   assert.doesNotMatch(create.slice(create.indexOf('catch')), /_draft(?:Name|Message) = ''/)
-  assert.match(create, /this\._render\(\)[\s\S]*input\[name="name"\][\s\S]*\.focus\(\)/)
+  assert.doesNotMatch(create, /\.focus\(\)/)
+  assert.match(source, /const focusKey = ownedFocus\?\.getAttribute\('data-focus-key'\)/)
 })
 
 test('Quickstart greeting names keep host-owned detail navigation', async () => {

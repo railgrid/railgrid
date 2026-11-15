@@ -469,7 +469,9 @@ export class ApiClient {
   patchAgent = (name: string, body: AgentPatch): Promise<Agent> => this.resources.patchAgent(name, body)
   setAgentSkillEnabled = (name: string, skillID: string, enabled: boolean): Promise<Agent> =>
     this.resources.setAgentSkillEnabled(name, skillID, enabled)
-  deleteAgent = (name: string): Promise<void> => this.resources.deleteAgent(name)
+  grantSearchConnection = (name: string, connection: string, expectedUID: string): Promise<Agent> =>
+    this.resources.grantSearchConnection(name, connection, expectedUID)
+  deleteAgent = (name: string, uid: string): Promise<void> => this.resources.deleteAgent(name, uid)
 
   // Library presentation reads Skill objects and the published provider catalog.
   getSkillLibrary = (): Promise<AgentSkillCatalog> => loadSkillLibrary(this.context())

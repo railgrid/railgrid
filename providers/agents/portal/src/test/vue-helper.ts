@@ -24,6 +24,17 @@ export async function settleVue(passes = 4, delayMS = 0): Promise<void> {
   }
 }
 
+// Vue timestamps listeners and capture events with Date.now(). A synthetic click
+// on a newly mounted target must occur in a later millisecond than its listener.
+export async function waitForNextClockTick(): Promise<void> {
+  const start = Date.now()
+  for (let attempts = 0; attempts < 100; attempts += 1) {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    if (Date.now() > start) return
+  }
+  throw new Error('Clock did not advance before the synthetic click')
+}
+
 export async function mountVue(component: Component, initialProps: Record<string, unknown>): Promise<MountedVue> {
   const props = shallowReactive<Record<string, unknown>>({ ...initialProps })
   const navigations: Route[] = []

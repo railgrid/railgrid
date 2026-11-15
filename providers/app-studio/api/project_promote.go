@@ -172,10 +172,14 @@ func (s *Server) ensureProjectRegistryPullSecret(ctx context.Context, c *asclien
 	res := c.Resource(secretResource, projectLLMSecretNamespace)
 	existing, err := res.Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		if _, err = res.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
+		if _, err = res.Create(ctx, desired, metav1.CreateOptions{}); err == nil {
+			return name, nil
+		} else if !apierrors.IsAlreadyExists(err) {
 			return "", err
 		}
-		return name, nil
+		// A concurrent writer created the Secret. Re-read its version before
+		// updating so a subsequent change is reported as a conflict.
+		existing, err = res.Get(ctx, name, metav1.GetOptions{})
 	}
 	if err != nil {
 		return "", err

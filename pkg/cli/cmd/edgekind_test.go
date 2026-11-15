@@ -21,6 +21,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -297,5 +298,33 @@ func TestDuplicateEdgeNames(t *testing.T) {
 	dupes := duplicateEdgeNames(items)
 	if !dupes["minis"] || dupes["lenovo"] {
 		t.Fatalf("duplicateEdgeNames = %v, want only minis", dupes)
+	}
+}
+
+func TestPollJoinTokenKeepsResolvedKindWithDuplicateNames(t *testing.T) {
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	calls := 0
+	dyn.PrependReactor("get", "*", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		get := action.(clienttesting.GetAction)
+		if get.GetResource() != railgridclient.LinuxServerGVR || get.GetName() != "minis" {
+			t.Fatalf("poll requested %s/%s, want linuxservers/minis", get.GetResource().Resource, get.GetName())
+		}
+		calls++
+		status := map[string]interface{}{}
+		if calls > 1 {
+			status["joinToken"] = "server-token"
+		}
+		return true, &unstructured.Unstructured{Object: map[string]interface{}{
+			"metadata": map[string]interface{}{"name": "minis"},
+			"status":   status,
+		}}, nil
+	})
+	edge, gvr, err := getEdgeByName(context.Background(), dyn, "server/minis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := pollJoinTokenDynamic(context.Background(), dyn, gvr, edge.GetName(), time.Second)
+	if err != nil || token != "server-token" {
+		t.Fatalf("poll = %q, %v; want server-token", token, err)
 	}
 }

@@ -17,6 +17,7 @@ railgrid-provider-quickstart {
 }
 
 railgrid-provider-quickstart .quickstart-page { min-width: 0; width: 100%; }
+railgrid-provider-quickstart .quickstart-pending[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
 
 railgrid-provider-quickstart .quickstart-panel {
   min-width: 0;

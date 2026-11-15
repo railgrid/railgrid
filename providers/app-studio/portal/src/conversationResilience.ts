@@ -155,6 +155,8 @@ export interface PendingFirstProjectSubmission {
   reasoningEffortByModel?: Record<string, string>
   /** The server-owned thread to replay when the first start response is lost. */
   threadID?: string
+  /** A start POST may have reached the server and must retain its identity. */
+  startAttempted?: boolean
 }
 
 /**
@@ -190,7 +192,7 @@ export function newFirstProjectSubmission(
 
 function copyFirstProjectSubmission(
   submission: PendingFirstProjectSubmission,
-  patch: Partial<Pick<PendingFirstProjectSubmission, 'projectName' | 'threadID' | 'clientRequestID'>>,
+  patch: Partial<Pick<PendingFirstProjectSubmission, 'projectName' | 'threadID' | 'clientRequestID' | 'startAttempted'>>,
 ): PendingFirstProjectSubmission {
   return {
     ...submission,
@@ -213,16 +215,8 @@ export function firstProjectSubmissionWithClientRequestID(submission: PendingFir
   return copyFirstProjectSubmission(submission, { clientRequestID })
 }
 
-/**
- * A received 5xx means the startup request reached the server but was
- * rejected before this client observed durable acceptance. Rotate only that
- * explicit failure boundary; transport failures remain ambiguous and must
- * replay with the original idempotency identity.
- */
-export function shouldRotateFirstProjectRequestID(error: unknown, startPostAccepted: boolean): boolean {
-  if (startPostAccepted || !error || typeof error !== 'object') return false
-  const status = (error as { status?: unknown }).status
-  return typeof status === 'number' && status >= 500 && status < 600
+export function firstProjectSubmissionWithStartAttempt(submission: PendingFirstProjectSubmission): PendingFirstProjectSubmission {
+  return copyFirstProjectSubmission(submission, { startAttempted: true })
 }
 
 export function firstProjectStartPlan(submission: PendingFirstProjectSubmission) {
@@ -268,6 +262,13 @@ export function firstProjectSubmissionAccepted(submission: PendingFirstProjectSu
 
 export function firstProjectSubmissionMatches(submission: PendingFirstProjectSubmission | null | undefined, projectName: string, content: string, modelID?: string, reasoningEffort?: string): submission is PendingFirstProjectSubmission {
 	return Boolean(submission && submission.projectName === projectName && submission.content === content && (modelID === undefined || submission.modelID === modelID) && (reasoningEffort === undefined || submission.reasoningEffort === reasoningEffort))
+}
+
+export function firstProjectRetryConflict(submission: PendingFirstProjectSubmission | null | undefined, projectName: string, content: string, activeThreadID: string, modelID: string, reasoningEffort: string): 'thread' | 'settings' | '' {
+  if (!submission?.startAttempted || !firstProjectSubmissionMatches(submission, projectName, content)) return ''
+  if (submission.threadID !== activeThreadID) return 'thread'
+  if (!firstProjectSubmissionMatches(submission, projectName, content, modelID, reasoningEffort)) return 'settings'
+  return ''
 }
 
 export function firstProjectSubmissionIsCurrent(submission: PendingFirstProjectSubmission, generation: number, currentGeneration: number, selectedProject: string, routeProject: string, draftProject: string): boolean {

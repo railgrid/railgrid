@@ -2,7 +2,7 @@ import type { JSONSchema } from './types'
 
 const COMPUTED_PREFIX = 'Computed by the platform'
 
-function omittedFromCreate(schema: JSONSchema | undefined): boolean {
+export function omittedFromCreate(schema: JSONSchema | undefined): boolean {
   return Boolean(schema?.readOnly || schema?.description?.startsWith(COMPUTED_PREFIX))
 }
 
@@ -21,6 +21,7 @@ export function createWritableValue(schema: JSONSchema | undefined, value: unkno
       ? schema.additionalProperties
       : undefined
     for (const [name, child] of Object.entries(source)) {
+      if (schema?.additionalProperties === false && !Object.prototype.hasOwnProperty.call(schema.properties ?? {}, name)) continue
       const childSchema = schema?.properties?.[name] ?? additionalSchema
       const writable = createWritableValue(childSchema, child)
       if (writable !== undefined) result[name] = writable

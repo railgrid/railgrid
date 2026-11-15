@@ -1361,6 +1361,47 @@ describe('connection test feedback', () => {
     expect(writeText).toHaveBeenCalledWith(requestURL)
   })
 
+  it('keeps inbound setup single-flight and ignores a previous authority response', async () => {
+    const first = deferred<{ registered: boolean; note: string; webhookURL: string }>()
+    const second = deferred<{ registered: boolean; note: string; webhookURL: string }>()
+    const enableInbound = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const connection = { metadata: { name: 'slack' }, spec: { type: 'slack', channel: 'C012345' } } satisfies Connection
+    const api = stubApi({ enableInbound, listConnections: () => Promise.resolve([connection]) })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { channels: [{ name: 'primary', connectionRef: 'slack', primary: true }] })]
+    store.connections.data = [connection]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+    store.agents.loaded = true
+    const view = await mountVue(AgentConfig, { store, api, name: 'scout', authorityEpoch: 1 })
+    mounted.push(view)
+    await settle()
+    const button = () => view.element.querySelector<HTMLButtonElement>('.agents-inbound-actions button')!
+    button().click()
+    button().click()
+    await settle()
+    expect(enableInbound).toHaveBeenCalledTimes(1)
+    expect(button().disabled).toBe(true)
+    await view.setProps({ authorityEpoch: 2 })
+    button().click()
+    await settle()
+    expect(enableInbound).toHaveBeenCalledTimes(2)
+    second.resolve({ registered: false, note: 'New setup', webhookURL: 'new-url' })
+    await settle(6)
+    first.resolve({ registered: false, note: 'Old setup', webhookURL: 'old-url' })
+    await settle(6)
+    const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    ;[...view.element.querySelectorAll('button')].find(b => text(b) === 'Copy Slack request URL')!.click()
+    await settle()
+    expect(write).toHaveBeenCalledWith('new-url')
+    const dismiss = view.element.querySelector<HTMLButtonElement>('[aria-label="Dismiss Slack request URL"]')!
+    button().remove()
+    dismiss.focus()
+    dismiss.click()
+    await settle()
+    expect(document.activeElement?.textContent).toBe('Channels')
+    expect(text(view.element)).not.toContain('Copy Slack request URL')
+  })
+
   it('reports Telegram registration success without presenting its callback URL', async () => {
     const callbackURL = 'https://railgrid.example.test/services/providers/agents/inbound/telegram/secret'
     const enableInbound = vi.fn().mockResolvedValue({ registered: true, note: 'Telegram webhook registered.', webhookURL: callbackURL })

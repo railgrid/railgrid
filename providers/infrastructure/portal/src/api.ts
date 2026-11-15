@@ -10,11 +10,12 @@
 // The tenant-facing API surface is flat: Templates (the catalog) plus ONE
 // Instance kind. Which product an Instance is rides in spec.template; its
 // template-shaped input lives in spec.values. Objects come back whole, so
-// reads are plain GET/LIST and writes are server-side apply / DELETE.
+// reads are plain GET/LIST and writes are create / DELETE.
 
 import type { ErrorResponse, Instance, InstanceChild, JSONSchema, Template, TemplateExposure, TemplateView } from './types'
 import {
   createKubeClient,
+  isKubeAlreadyExists,
   isKubeError,
   isKubeForbidden,
   isKubeNotFound,
@@ -31,8 +32,6 @@ const GROUP = 'infrastructure.railgrid.ai'
 const VERSION = 'v1alpha1'
 const INSTANCES: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'instances' }
 const TEMPLATES: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'templates' }
-// Field manager recorded on every server-side apply this portal performs.
-const FIELD_MANAGER = 'provider-infrastructure'
 
 let clusterName: string | null = null
 let contextGeneration = 0
@@ -113,15 +112,14 @@ function kube(): KubeClient {
   return createKubeClient({
     fetch: hubFetch(),
     cluster: clusterName,
-    fieldManager: FIELD_MANAGER,
     onResponse: () => assertCurrentContext(expectedContext),
   })
 }
 
 // mapKubeError translates a KubeError onto the {reason,message} contract the
 // views branch on. A 404 for a named object is NotFound; a 404 for the
-// resource type (no APIBinding in the workspace yet) or a 403 is
-// APIBindingMissing; a client-side wire failure (a 2xx the client could not
+// resource type is ResourceUnavailable and a 403 is PermissionDenied; neither
+// establishes whether an APIBinding exists. A client-side wire failure (a 2xx the client could not
 // make sense of) is ProtocolError; everything else is HTTPError. Non-kube
 // errors — including the context fence — pass through untouched.
 function mapKubeError(error: unknown): unknown {
@@ -130,8 +128,10 @@ function mapKubeError(error: unknown): unknown {
     return protocolError(`${error.message}; retry the read.`)
   }
   let reason = 'HTTPError'
-  if (isKubeResourceUnavailable(error) || isKubeForbidden(error)) reason = 'APIBindingMissing'
+  if (isKubeForbidden(error)) return <ErrorResponse>{ reason: 'PermissionDenied', message: 'You do not have permission to perform this action in this workspace. Ask a workspace administrator for access.' }
+  if (isKubeResourceUnavailable(error)) return <ErrorResponse>{ reason: 'ResourceUnavailable', message: 'This resource is unavailable in this workspace. Ask a workspace administrator to check that the provider is enabled and available.' }
   else if (isKubeNotFound(error)) reason = 'NotFound'
+  else if (isKubeAlreadyExists(error)) reason = 'AlreadyExists'
   return <ErrorResponse>{ reason, message: error.message }
 }
 
@@ -145,15 +145,10 @@ async function withKube<T>(run: (client: KubeClient) => Promise<T>): Promise<T> 
   }
 }
 
-// applyCR applies a manifest (create-or-update) with server-side apply and
-// returns the resulting object.
-function applyCR(manifest: RawObject): Promise<RawObject> {
-  return withKube(client => client.apply<RawObject>(INSTANCES, manifest))
-}
-
 interface RawObject extends KubeObject {
   spec?: {
     template?: string
+    oidcBridgeSecretRef?: { name?: string }
     values?: Record<string, unknown> | string
   }
   // status carries the well-known phase/message/conditions plus any
@@ -249,6 +244,8 @@ function templateFromObject(obj: KubeObject): Template {
   }
   return {
     name,
+    uid: obj.metadata.uid,
+    generation: obj.metadata.generation,
     platformOwned: labels['railgrid.ai/platform-owned'] === 'true',
     displayName: (spec.displayName as string) || name,
     description: (spec.description as string) ?? '',
@@ -314,6 +311,8 @@ function instanceFromObj(c: RawObject): Instance {
   }
   return {
     uid: c.metadata?.uid,
+    resourceVersion: c.metadata?.resourceVersion,
+    oidcSecretName: c.spec?.oidcBridgeSecretRef?.name,
     name: c.metadata?.name ?? '',
     namespace: c.metadata?.namespace ?? '',
     template: tmpl,
@@ -356,12 +355,12 @@ async function getTemplates(force = false): Promise<Template[]> {
 
 // Build the wire manifest for an Instance CR: the template name under
 // spec.template, the form input under spec.values.
-function buildInstanceManifest(name: string, templateName: string, values: Record<string, unknown>): RawObject {
+function buildInstanceManifest(name: string, templateName: string, values: Record<string, unknown>, oidcSecretName?: string): RawObject {
   return {
     apiVersion: GROUP + '/' + VERSION,
     kind: 'Instance',
     metadata: { name, labels: { 'railgrid.ai/template': templateName } },
-    spec: { template: templateName, values },
+    spec: { template: templateName, values, ...(oidcSecretName ? { oidcBridgeSecretRef: { name: oidcSecretName } } : {}) },
   }
 }
 
@@ -370,10 +369,15 @@ function buildInstanceManifest(name: string, templateName: string, values: Recor
 // type or any other failure propagates as its mapped ErrorResponse.
 async function fetchInstanceObject(name: string): Promise<RawObject | null> {
   try {
-    return await withKube(client => client.get<RawObject>(INSTANCES, name))
+    return await kube().get<RawObject>(INSTANCES, name)
   } catch (e) {
-    if ((e as ErrorResponse).reason === 'NotFound') return null
-    throw e
+    if (isKubeNotFound(e) && isKubeError(e)) {
+      const details = e.body?.details
+      if (e.body?.reason === 'NotFound' && details?.name === name &&
+        details.group === INSTANCES.group && details.kind === INSTANCES.resource) return null
+      if (details?.name) throw <ErrorResponse>{ reason: 'HTTPError', message: e.message }
+    }
+    throw mapKubeError(e)
   }
 }
 
@@ -414,7 +418,7 @@ function validateInstanceListItem(value: unknown, index: number): RawObject {
   if (typeof metadata.name !== 'string' || metadata.name.trim() === '') {
     throw protocolError(`the API returned malformed Instances item ${index} metadata.name; retry the read.`)
   }
-  for (const key of ['uid', 'namespace', 'creationTimestamp', 'deletionTimestamp']) {
+  for (const key of ['uid', 'resourceVersion', 'namespace', 'creationTimestamp', 'deletionTimestamp']) {
     optionalInstanceString(metadata, key, `Instances item ${index} metadata.${key}`)
   }
   if (metadata.generation !== undefined && metadata.generation !== null &&
@@ -455,15 +459,22 @@ function validateInstanceListItem(value: unknown, index: number): RawObject {
   return value as RawObject
 }
 
+function validateNamedInstance(value: unknown, name: string): RawObject {
+  if (!isRecord(value) || value.apiVersion !== 'infrastructure.railgrid.ai/v1alpha1' || value.kind !== 'Instance') {
+    throw protocolError('the API returned a malformed Instance; retry the read.')
+  }
+  const instance = validateInstanceListItem(value, 0)
+  if (instance.metadata.name !== name) {
+    throw protocolError('the API returned an Instance with an unexpected name; retry the read.')
+  }
+  return instance
+}
+
 // listInstanceObjects fetches one cursor page of Instances. The kube client
 // normalises the List envelope (continue is undefined on a terminal page,
 // remainingItemCount without continue is a wire failure); the invariant is
 // re-checked here so the typed page contract holds regardless of transport.
-//
-// A tenant that has not accepted the API binding sees the same stable
-// empty read as the legacy list: a 404 on the collection can only mean the
-// resource type is unavailable in this workspace, and the list pages keep
-// that contract as empty rather than surfacing it as an error.
+
 async function listInstanceObjects(options: InstanceListOptions): Promise<{ items: unknown[]; continue?: string; remainingItemCount?: number; resourceVersion?: string }> {
   const request = validateInstanceListOptions(options)
   const client = kube()
@@ -474,7 +485,6 @@ async function listInstanceObjects(options: InstanceListOptions): Promise<{ item
       ...(request.continue === undefined ? {} : { continue: request.continue }),
     })
   } catch (e) {
-    if (isKubeNotFound(e)) return { items: [] }
     throw mapKubeError(e)
   }
   if (page.remainingItemCount !== undefined && page.remainingItemCount > 0 && !page.continue) {
@@ -552,8 +562,7 @@ async function listInstancesPage(options: InstanceListOptions = {}): Promise<Ins
   const items = raw.items.map(instanceFromObj)
   // Enrichment is deliberately page-local. This keeps a cursor page bounded
   // and prevents a page's template view from triggering reads for other pages.
-  // An empty page needs no catalog: this also keeps the unbound-workspace
-  // read (an empty list) from tripping over a missing Templates binding.
+  // An empty page needs no catalog.
   if (items.length > 0) {
     const templates = await getTemplates()
     await enrichInstances(items, templates)
@@ -622,18 +631,45 @@ export const api = {
   async createInstance(body: {
     templateName: string
     templateVersion?: string
+    oidcSecretName?: string
     name: string
     values: Record<string, unknown>
   }): Promise<Instance> {
     const expectedContext = requestContext()
-    const templates = await getTemplates()
-    assertCurrentContext(expectedContext)
-    if (!templates.some(t => t.name === body.templateName)) {
-      throw <ErrorResponse>{ reason: 'TemplateNotFound', message: 'template ' + body.templateName + ' not found' }
+    const client = kube()
+    try {
+      const created = await client.create<RawObject>(INSTANCES, buildInstanceManifest(body.name, body.templateName, body.values, body.oidcSecretName))
+      assertCurrentContext(expectedContext)
+      return instanceFromObj(validateNamedInstance(created, body.name))
+    } catch (error) {
+      if (isContextChangedError(error)) throw error
+      // Only a client error response establishes that the create was rejected.
+      // A transport failure, server failure, or unreadable success may follow a
+      // committed write, so do not invite an automatic repeat.
+      if (isKubeError(error) && error.status >= 400 && error.status < 500 && error.status !== 408) throw mapKubeError(error)
+      throw <ErrorResponse>{ reason: 'CreateOutcomeUnknown', message: 'The provision request may have succeeded, but its result could not be confirmed.' }
     }
-    const created = await applyCR(buildInstanceManifest(body.name, body.templateName, body.values))
-    assertCurrentContext(expectedContext)
-    return instanceFromObj(created)
+  },
+
+  async setOIDCSecret(instance: Instance, name: string): Promise<void> {
+    if (!instance.uid || !instance.resourceVersion) throw <ErrorResponse>{ reason: 'Unverified', message: 'Refresh the instance before changing its Secret reference.' }
+    const expectedContext = requestContext()
+    const client = kube()
+    try {
+      await client.patch(INSTANCES, instance.name, [
+        { op: 'test', path: '/metadata/uid', value: instance.uid },
+        { op: 'test', path: '/metadata/resourceVersion', value: instance.resourceVersion },
+        { op: 'add', path: '/spec/oidcBridgeSecretRef', value: { name } },
+      ], { type: 'json' })
+      assertCurrentContext(expectedContext)
+    } catch (error) {
+      if (isContextChangedError(error)) throw error
+      // JSON Patch test failures can be reported as either conflict or
+      // unprocessable by Kubernetes servers.
+      if (isKubeError(error) && (error.status === 409 || error.status === 422)) throw <ErrorResponse>{ reason: 'Conflict', message: 'The update could not be applied; the instance may have changed.' }
+      if (isKubeError(error) && error.status >= 400 && error.status < 500 && error.status !== 408) throw mapKubeError(error)
+      throw <ErrorResponse>{ reason: 'UpdateOutcomeUnknown', message: 'The update may have succeeded. Refresh the instance and check its Secret reference before trying again.' }
+    }
   },
 
   async listInstancesPage(options: InstanceListOptions = {}): Promise<InstanceListPage> {
@@ -682,12 +718,13 @@ export const api = {
     const found = await fetchInstanceObject(name)
     if (!found) throw <ErrorResponse>{ reason: 'InstanceNotFound', message: 'instance ' + name + ' not found' }
     assertCurrentContext(expectedContext)
-    return instanceFromObj(found)
+    return instanceFromObj(validateNamedInstance(found, name))
   },
 
-  async deleteInstance(name: string): Promise<void> {
+  async deleteInstance(instance: Pick<Instance, 'name' | 'uid'>): Promise<void> {
+    if (!instance.uid) throw <ErrorResponse>{ reason: 'Unverified', message: 'Refresh the instance before deleting it.' }
     const expectedContext = requestContext()
-    await withKube(client => client.delete(INSTANCES, name))
+    await withKube(client => client.delete(INSTANCES, instance.name, { preconditions: { uid: instance.uid } }))
     assertCurrentContext(expectedContext)
   },
 }

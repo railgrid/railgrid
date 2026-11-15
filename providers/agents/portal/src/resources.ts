@@ -306,6 +306,7 @@ export const AGENT_PROGRESS_REQUEST_TIMEOUT_MS = 15 * 1000
 
 export const AGENT_PATCH_TIMEOUT_MS = 15 * 1000
 export const AGENT_RECONCILE_TIMEOUT_MS = 15 * 1000
+export const AGENT_CREATE_REQUEST_TIMEOUT_MS = 15 * 1000
 
 // checkRetention mirrors the schema's bounds on spec.deliveryRetention so a
 // typo is refused before the request rather than by a 422 from kcp.
@@ -387,6 +388,38 @@ function asResourceError(error: unknown): ResourceError {
   const diagnostic = error instanceof Error ? error.message : String(error)
   const failure = presentRequestFailure(0, diagnostic)
   return new ResourceError(0, 'NetworkError', failure.message, failure.technicalDiagnostic)
+}
+
+// Classify only the agent POST itself: errors in preflight reads cannot have
+// created an agent, while a lost response or server error may follow a commit.
+async function createAgentResource(client: KubeClient, agent: Agent & KubeObject): Promise<Agent> {
+  try {
+    const created = await client.create<Agent & KubeObject>(AGENTS, agent)
+    if (!created || created.metadata?.name !== agent.metadata.name || !created.spec || typeof created.spec !== 'object' || Array.isArray(created.spec)) {
+      throw new ResourceError(0, 'AgentCreateUnknown', 'The agent may have been created. Check Agents before starting another attempt.')
+    }
+    return created
+  } catch (error) {
+    const failure = asResourceError(error)
+    if ([400, 401, 403, 404, 409, 422].includes(failure.status) && failure.reason !== 'ContextChanged') throw failure
+    throw new ResourceError(failure.status, 'AgentCreateUnknown', 'The agent may have been created. Check Agents before starting another attempt.', failure.technicalDiagnostic)
+  }
+}
+
+// Only a confirmed rejection proves a create did not commit. A malformed
+// success, timeout, context rotation, or lost response needs inspection.
+async function createAutomationResource<T extends KubeObject>(client: KubeClient, resource: Parameters<KubeClient['create']>[0], object: T): Promise<T> {
+  try {
+    const created = await client.create<T>(resource, object)
+    if (!created || created.metadata?.name !== object.metadata?.name || !created.spec || typeof created.spec !== 'object' || Array.isArray(created.spec)) {
+      throw new ResourceError(0, 'AutomationCreateUnknown', 'This automation may have been created. Check before trying again.')
+    }
+    return created
+  } catch (error) {
+    const failure = asResourceError(error)
+    if ([400, 401, 403, 404, 409, 422].includes(failure.status) && failure.reason !== 'ContextChanged') throw failure
+    throw new ResourceError(failure.status, 'AutomationCreateUnknown', 'This automation may have been created. Check before trying again.', failure.technicalDiagnostic)
+  }
 }
 
 type HttpErrorShape = Error & { status: number; reason?: string; technicalDiagnostic?: string }
@@ -651,7 +684,7 @@ async function clearUnusedCredentialReservation(
 export interface TemplateCreateResult {
   agent: Agent
   createdSchedules: string[]
-  warnings: string[]
+  warnings: Array<{ schedule: string; outcome: 'rejected' | 'unknown' }>
 }
 
 export class Resources {
@@ -691,6 +724,14 @@ export class Resources {
     } catch (error) {
       throw asResourceError(error)
     }
+  }
+
+  private agentCreateClient(context: RailgridContext | null = this.ctx, timeoutMessage = 'Agent creation timed out. Check Agents before starting another attempt.'): KubeClient {
+    const bounded = createBoundedRequestFetch(providerFetch(context), {
+      timeoutMs: AGENT_CREATE_REQUEST_TIMEOUT_MS,
+      timeoutMessage,
+    })
+    return this.client(context, bounded)
   }
 
   // ---- capabilities --------------------------------------------------------
@@ -807,13 +848,13 @@ export class Resources {
       }
       if (channels.length) spec.channels = channels
 
-      return client.create<Agent & KubeObject>(AGENTS, {
+      return createAgentResource(client, {
         apiVersion: API_VERSION,
         kind: 'Agent',
         metadata: { name },
         spec,
       } as Agent & KubeObject)
-    })
+    }, () => this.agentCreateClient())
 
   /**
    * createAgentFromTemplate writes an instantiated template: the agent first,
@@ -821,23 +862,32 @@ export class Resources {
    * the agent is useful on its own, and the caller sees exactly what landed.
    * Mirrors createAgentFromRequest in api/agent_templates.go.
    */
-  createAgentFromTemplate = (agent: Agent, schedules: Schedule[]): Promise<TemplateCreateResult> =>
-    this.run(async (client) => {
+  createAgentFromTemplate = (agent: Agent, schedules: Schedule[]): Promise<TemplateCreateResult> => {
+    const context = this.ctx
+    // This guard runs only after the agent POST has succeeded. A context
+    // change can leave schedule writes incomplete or with unknown outcomes.
+    const checkContext = () => {
+      if ((this.ctx?.tenant || '').trim() !== (context?.tenant || '').trim()) {
+        throw new ResourceError(0, 'AgentCreateUnknown', 'The agent was created, but its schedules need review.')
+      }
+    }
+    return this.run(async (client) => {
       const name = (agent.metadata?.name ?? '').trim()
       if (!name) throw validationError('name is required')
       const channels = agent.spec.channels ?? []
       if (channels.length > 0) await this.assertChannelsUnclaimed(client, name, channels)
-      const created = await client.create<Agent & KubeObject>(AGENTS, {
+      const created = await createAgentResource(client, {
         apiVersion: API_VERSION,
         kind: 'Agent',
         metadata: { name },
         spec: agent.spec,
       } as Agent & KubeObject)
       const createdSchedules: string[] = []
-      const warnings: string[] = []
+      const warnings: TemplateCreateResult['warnings'] = []
       for (const sched of schedules) {
+        checkContext()
         try {
-          await client.create<Schedule & KubeObject>(SCHEDULES, {
+          await createAutomationResource<Schedule & KubeObject>(client, SCHEDULES, {
             apiVersion: API_VERSION,
             kind: 'Schedule',
             metadata: { name: sched.metadata.name },
@@ -845,11 +895,17 @@ export class Resources {
           } as unknown as Schedule & KubeObject)
           createdSchedules.push(sched.metadata.name)
         } catch (e) {
-          warnings.push(`schedule "${sched.metadata.name}" was not created: ${(e as Error).message}`)
+          checkContext()
+          if (e instanceof ResourceError && e.reason === 'ContextChanged') throw e
+          // A lost response, conflict, or server error can follow a committed
+          // write. Only explicit client rejections prove this attempt failed.
+          const status = isHttpError(e) ? e.status : 0
+          warnings.push({ schedule: sched.metadata.name, outcome: [400, 401, 403, 422].includes(status) ? 'rejected' : 'unknown' })
         }
       }
       return { agent: created, createdSchedules, warnings }
-    })
+    }, () => this.agentCreateClient(context))
+  }
 
   patchAgent = (name: string, body: AgentPatch): Promise<Agent> => {
     const context = this.ctx
@@ -971,9 +1027,33 @@ export class Resources {
     }, () => this.client(context, bounded))
   }
 
-  deleteAgent = (name: string): Promise<void> =>
+  grantSearchConnection = (name: string, connection: string, expectedUID: string): Promise<Agent> => {
+    const context = this.ctx
+    const bounded = createBoundedRequestFetch(providerFetch(context), {
+      timeoutMs: AGENT_PATCH_TIMEOUT_MS,
+      timeoutMessage: 'Saving agent tools timed out. Refresh to confirm the change.',
+    })
+    return this.run(async (client) => {
+      const current = await client.get<Agent & KubeObject>(AGENTS, name)
+      const uid = current.metadata?.uid
+      const resourceVersion = current.metadata?.resourceVersion
+      if (!uid || !resourceVersion) throw validationError('agent is missing its UID or resourceVersion; refresh and try again')
+      if (!expectedUID || uid !== expectedUID) throw validationError('agent changed; refresh and try again')
+      const tools = current.spec?.tools || {}
+      const interactive = tools.interactive || {}
+      const connections = [...new Set([...(interactive.connections || []), connection])]
+      const families = [...new Set([...(interactive.families || []), 'core', 'web'])]
+      return client.patch<Agent & KubeObject>(AGENTS, name, [
+        { op: 'test', path: '/metadata/uid', value: uid },
+        { op: 'test', path: '/metadata/resourceVersion', value: resourceVersion },
+        { op: 'add', path: '/spec/tools', value: { ...tools, interactive: { ...interactive, connections, families } } },
+      ], { type: 'json' })
+    }, () => this.client(context, bounded))
+  }
+
+  deleteAgent = (name: string, uid: string): Promise<void> =>
     this.run(async (client) => {
-      await client.delete(AGENTS, name)
+      await client.delete(AGENTS, name, { preconditions: { uid } })
     })
 
   /**
@@ -1062,7 +1142,7 @@ export class Resources {
       if (type === 'wakeup' && !(body.runAt ?? '').trim()) {
         throw validationError('runAt is required for wakeup type')
       }
-      return client.create<Schedule & KubeObject>(SCHEDULES, {
+      return createAutomationResource<Schedule & KubeObject>(client, SCHEDULES, {
         apiVersion: API_VERSION,
         kind: 'Schedule',
         metadata: { name },
@@ -1077,7 +1157,7 @@ export class Resources {
           runAt: body.runAt ? rfc3339(body.runAt) : undefined,
         }),
       } as unknown as Schedule & KubeObject)
-    })
+    }, () => this.agentCreateClient(this.ctx, 'Creation timed out. Check automation before starting another attempt.'))
 
   patchSchedule = (name: string, body: SchedulePatch): Promise<Schedule> =>
     this.run((client) => {
@@ -1110,7 +1190,7 @@ export class Resources {
       // Whether the named Webhook exists is the reconciler's Validated
       // condition (UnknownWebhookRef), not a read here: the webhook can be
       // created after the trigger that routes from it.
-      return client.create<Trigger & KubeObject>(TRIGGERS, {
+      return createAutomationResource<Trigger & KubeObject>(client, TRIGGERS, {
         apiVersion: API_VERSION,
         kind: 'Trigger',
         metadata: { name },
@@ -1123,7 +1203,7 @@ export class Resources {
           channelRef: (body.channelRef ?? '').trim() || undefined,
         }),
       } as unknown as Trigger & KubeObject)
-    })
+    }, () => this.agentCreateClient(this.ctx, 'Creation timed out. Check automation before starting another attempt.'))
 
   patchTrigger = (name: string, body: TriggerPatch): Promise<Trigger> =>
     this.run((client) => {
@@ -1488,10 +1568,10 @@ export class Resources {
         const view = credentialView(item)
         if (!view.connectionRef) return view
         const connection = connections.find(parent => parent.metadata?.name === view.connectionRef)
-        if (!connection && unreadableConnections.has(view.connectionRef)) return view
+        if (!connection && unreadableConnections.has(view.connectionRef)) return { ...view, secretResolved: undefined }
         if (!connection || connection.metadata?.deletionTimestamp || connection.spec?.connectionRef || isHarnessProvider(connection.spec?.provider)) return { ...view, connectionUnavailable: true, ready: false, statusMessage: 'Provider connection is missing or invalid.' }
         const parent = credentialView(connection, true)
-        return { ...view, ...(parent.secretResolved !== undefined ? { secretResolved: parent.secretResolved } : {}), provider: parent.provider, baseURL: parent.baseURL, anthropicWorkspaceID: parent.anthropicWorkspaceID, secretRef: parent.secretRef, secretKey: parent.secretKey, discovered: parent.discovered, connectionName: parent.displayName || parent.name }
+        return { ...view, secretResolved: parent.secretResolved, provider: parent.provider, baseURL: parent.baseURL, anthropicWorkspaceID: parent.anthropicWorkspaceID, secretRef: parent.secretRef, secretKey: parent.secretKey, discovered: parent.discovered, connectionName: parent.displayName || parent.name }
       })
       out.push(...connections.map(item => credentialView(item, true)))
       out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
@@ -1978,7 +2058,7 @@ interface KubeModelCredential {
   }
   status?: {
     observedGeneration?: number
-    conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>
+    conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string; observedGeneration?: number }>
     models?: string[]
   }
 }
@@ -1999,7 +2079,7 @@ function credentialView(object: KubeModelCredential, isConnection = false): Cred
   const secretResolved = find(CONDITION_SECRET_RESOLVED)
   const reachable = find(CONDITION_REACHABLE)
   const firstProblem = [secretResolved, reachable, ready].find((c) => c && c.status !== 'True')
-  const currentStatus = !isConnection || object.metadata?.generation === undefined
+  const currentStatus = object.metadata?.generation === undefined
     || object.metadata.generation === object.status?.observedGeneration
   return {
     name: object.metadata?.name ?? '',
@@ -2016,7 +2096,9 @@ function credentialView(object: KubeModelCredential, isConnection = false): Cred
     secretRef: object.spec?.secretRef?.name ?? '',
     secretKey: object.spec?.secretKey ?? '',
     ready: ready ? ready.status === 'True' : undefined,
-    secretResolved: currentStatus && secretResolved ? secretResolved.status === 'True' : undefined,
+    secretResolved: currentStatus && secretResolved && (secretResolved.observedGeneration === undefined || secretResolved.observedGeneration === object.metadata?.generation)
+      ? secretResolved.status === 'True' ? true : secretResolved.status === 'False' ? false : undefined
+      : undefined,
     statusMessage: firstProblem?.message ?? '',
     discovered: currentStatus ? object.status?.models ?? [] : [],
   }

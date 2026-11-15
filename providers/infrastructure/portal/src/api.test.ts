@@ -173,7 +173,7 @@ describe('stable Instance API lifecycle contract', () => {
     expect(calls.at(-1)).toMatchObject({ method: 'GET', path: objectPath(tenant, 'templates', 'universal-coding-sandbox') })
   })
 
-  it('maps a missing template to TemplateNotFound and an unbound workspace to APIBindingMissing', async () => {
+  it('distinguishes missing templates, unavailable resources, and denied reads', async () => {
     const tenant = 'template-lookup-errors'
     setTenant(tenant)
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -185,8 +185,8 @@ describe('stable Instance API lifecycle contract', () => {
     }))
 
     await expect(api.getTemplate('missing')).rejects.toMatchObject({ reason: 'TemplateNotFound' })
-    await expect(api.getTemplate('unbound')).rejects.toMatchObject({ reason: 'APIBindingMissing' })
-    await expect(api.listTemplates()).rejects.toMatchObject({ reason: 'APIBindingMissing' })
+    await expect(api.getTemplate('unbound')).rejects.toMatchObject({ reason: 'ResourceUnavailable' })
+    await expect(api.listTemplates()).rejects.toMatchObject({ reason: 'PermissionDenied', message: expect.stringContaining('workspace administrator') })
   })
 
   it('lists the stable Instances collection with UID/deletion metadata and identities', async () => {
@@ -313,7 +313,7 @@ describe('stable Instance API lifecycle contract', () => {
     expect(calls.every(req => isList(req, tenant, 'instances'))).toBe(true)
   })
 
-  it('reads an unbound workspace as an empty Instance list rather than an error', async () => {
+  it('reports an unavailable Instance collection on page and identity reads', async () => {
     const tenant = 'instance-unbound'
     setTenant(tenant)
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -322,11 +322,25 @@ describe('stable Instance API lifecycle contract', () => {
       throw new Error('unexpected request ' + req.method + ' ' + req.path)
     }))
 
-    await expect(api.listInstancesPage({ limit: 1 })).resolves.toEqual({ items: [] })
-    await expect(api.listInstanceIdentities()).resolves.toEqual([])
+    await expect(api.listInstancesPage({ limit: 1 })).rejects.toMatchObject({ reason: 'ResourceUnavailable' })
+    await expect(api.listInstanceIdentities()).rejects.toMatchObject({ reason: 'ResourceUnavailable' })
+    await expect(api.listInstances()).rejects.toMatchObject({ reason: 'ResourceUnavailable' })
   })
 
-  it('surfaces a forbidden Instance list as APIBindingMissing and other failures as HTTPError', async () => {
+  it('rejects a traversal when a later Instance page becomes unavailable', async () => {
+    const tenant = 'instance-later-unavailable'
+    setTenant(tenant)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = call(input, init)
+      if (isList(req, tenant, 'instances')) return req.query.continue ? typeNotFound() : instanceList([instance()], { continue: 'next' })
+      if (isList(req, tenant, 'templates')) return templateList()
+      throw new Error('unexpected request ' + req.method + ' ' + req.path)
+    }))
+    await expect(api.listInstances()).rejects.toMatchObject({ reason: 'ResourceUnavailable' })
+    await expect(api.listInstanceIdentities()).rejects.toMatchObject({ reason: 'ResourceUnavailable' })
+  })
+
+  it('surfaces a forbidden Instance list as PermissionDenied and other failures as HTTPError', async () => {
     const tenant = 'instance-list-errors'
     setTenant(tenant)
     let status = 403
@@ -340,7 +354,7 @@ describe('stable Instance API lifecycle contract', () => {
       throw new Error('unexpected request ' + req.method + ' ' + req.path)
     }))
 
-    await expect(api.listInstancesPage()).rejects.toMatchObject({ reason: 'APIBindingMissing' })
+    await expect(api.listInstancesPage()).rejects.toMatchObject({ reason: 'PermissionDenied', message: expect.stringContaining('workspace administrator') })
     status = 502
     await expect(api.listInstancesPage()).rejects.toMatchObject({ reason: 'HTTPError', message: 'bad gateway' })
   })
@@ -654,15 +668,14 @@ describe('stable Instance API lifecycle contract', () => {
     expect(templateLists).toBe(3)
   })
 
-  it('keeps createInstance on the server-side apply contract', async () => {
+  it('creates an instance with an atomic POST', async () => {
     const tenant = 'create-contract'
     setTenant(tenant)
-    let applied: KubeCall | undefined
+    let created: KubeCall | undefined
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
-      if (isList(req, tenant, 'templates')) return templateList()
-      if (req.method === 'PATCH' && req.path === objectPath(tenant, 'instances', 'demo')) {
-        applied = req
+      if (req.method === 'POST' && req.path === collectionPath(tenant, 'instances')) {
+        created = req
         return response(instance())
       }
       throw new Error('unexpected request ' + req.method + ' ' + req.path)
@@ -670,9 +683,9 @@ describe('stable Instance API lifecycle contract', () => {
 
     await expect(api.createInstance({ templateName: 'widget', name: 'demo', values: { foo: 'bar' } }))
       .resolves.toMatchObject({ name: 'demo', template: 'widget' })
-    expect(applied?.contentType).toBe('application/apply-patch+yaml')
-    expect(applied?.query).toEqual({ fieldManager: 'provider-infrastructure', force: 'true' })
-    expect(applied?.body).toMatchObject({
+    expect(created?.contentType).toBe('application/json')
+    expect(created?.query).toEqual({})
+    expect(created?.body).toMatchObject({
       apiVersion: 'infrastructure.railgrid.ai/v1alpha1',
       kind: 'Instance',
       metadata: { name: 'demo' },
@@ -680,23 +693,136 @@ describe('stable Instance API lifecycle contract', () => {
     })
   })
 
-  it('surfaces an unbound workspace on create as APIBindingMissing', async () => {
-    const tenant = 'create-unbound'
+  it('sends only the OIDC Secret name and guards a repair by identity and version', async () => {
+    setTenant('oidc-reference')
+    const calls: KubeCall[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(call(input, init))
+      return response(instance())
+    }))
+    await api.createInstance({ templateName: 'widget', name: 'demo', values: {}, oidcSecretName: 'my-oidc' })
+    expect(calls[0].body).toMatchObject({ spec: { oidcBridgeSecretRef: { name: 'my-oidc' } } })
+    await api.setOIDCSecret({ name: 'demo', uid: 'uid-1', resourceVersion: '4' } as never, 'new-oidc')
+    expect(calls[1].body).toEqual([
+      { op: 'test', path: '/metadata/uid', value: 'uid-1' },
+      { op: 'test', path: '/metadata/resourceVersion', value: '4' },
+      { op: 'add', path: '/spec/oidcBridgeSecretRef', value: { name: 'new-oidc' } },
+    ])
+    expect(calls[1].contentType).toBe('application/json-patch+json')
+    await expect(api.setOIDCSecret({ name: 'demo' } as never, 'new-oidc')).rejects.toMatchObject({ reason: 'Unverified' })
+    expect(calls).toHaveLength(2)
+  })
+
+  it.each([409, 422])('requires rechecking a rejected Secret JSON Patch (%i)', async status => {
+    setTenant('oidc-conflict')
+    vi.stubGlobal('fetch', vi.fn(async () => kubeStatus(status, status === 409 ? 'Conflict' : 'Invalid', 'patch test failed')))
+    await expect(api.setOIDCSecret({ name: 'demo', uid: 'uid-1', resourceVersion: '4' } as never, 'new-oidc'))
+      .rejects.toMatchObject({ reason: 'Conflict' })
+  })
+
+  it('creates without reading the template catalog', async () => {
+    const tenant = 'create-named-template'
     setTenant(tenant)
+    const calls: KubeCall[] = []
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
-      if (isList(req, tenant, 'templates')) return templateList()
-      if (req.method === 'PATCH') return kubeStatus(403, 'Forbidden', 'instances.infrastructure.railgrid.ai is forbidden: no RBAC policy matched')
+      calls.push(req)
+      if (isList(req, tenant, 'templates')) return kubeStatus(403, 'Forbidden', 'list denied')
+      if (req.method === 'POST' && req.path === collectionPath(tenant, 'instances')) return response(instance())
       throw new Error('unexpected request ' + req.method + ' ' + req.path)
     }))
 
     await expect(api.createInstance({ templateName: 'widget', name: 'demo', values: {} }))
-      .rejects.toMatchObject({ reason: 'APIBindingMissing' })
-    await expect(api.createInstance({ templateName: 'nope', name: 'demo', values: {} }))
-      .rejects.toMatchObject({ reason: 'TemplateNotFound' })
+      .resolves.toMatchObject({ name: 'demo' })
+    expect(calls.map(req => req.path)).toEqual([
+      collectionPath(tenant, 'instances'),
+    ])
   })
 
-  it('deletes through a plain DELETE of the named Instance', async () => {
+  it.each(['network', 'server', 'timeout', 'malformed'])('marks a %s create outcome uncertain', async (failure) => {
+    const tenant = `create-uncertain-${failure}`
+    setTenant(tenant)
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      if (failure === 'network') throw new TypeError('network disconnected')
+      if (failure === 'server') return kubeStatus(503, 'ServiceUnavailable', 'unavailable')
+      if (failure === 'timeout') return kubeStatus(408, 'Timeout', 'timeout')
+      return new Response('not-json', { status: 201 })
+    }))
+    await expect(api.createInstance({ templateName: 'widget', name: 'demo', values: {} }))
+      .rejects.toMatchObject({ reason: 'CreateOutcomeUnknown' })
+  })
+
+  it.each([
+    {},
+    instance({ metadata: { name: 'other' } }),
+    instance({ kind: 'Other' }),
+    instance({ status: { conditions: 'invalid' } }),
+  ])('rejects a malformed or mismatched create response as uncertain', async (body) => {
+    const tenant = 'create-invalid-instance'
+    setTenant(tenant)
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      return response(body)
+    }))
+    await expect(api.createInstance({ templateName: 'widget', name: 'demo', values: {} }))
+      .rejects.toMatchObject({ reason: 'CreateOutcomeUnknown' })
+  })
+
+  it.each([{}, instance({ metadata: { name: 'other' } }), instance({ kind: 'Other' })])
+  ('rejects a malformed or mismatched instance inspection', async (body) => {
+    const tenant = 'inspect-invalid-instance'
+    setTenant(tenant)
+    vi.stubGlobal('fetch', vi.fn(async () => response(body)))
+    await expect(api.getInstance('demo')).rejects.toMatchObject({ reason: 'ProtocolError' })
+  })
+
+  it('surfaces an existing instance without updating it', async () => {
+    const tenant = 'create-duplicate'
+    setTenant(tenant)
+    const writes: KubeCall[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = call(input, init)
+      writes.push(req)
+      return kubeStatus(409, 'AlreadyExists', 'instances "demo" already exists')
+    }))
+    await expect(api.createInstance({ templateName: 'widget', name: 'demo', values: { foo: 'new' } }))
+      .rejects.toMatchObject({ reason: 'AlreadyExists' })
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toMatchObject({ method: 'POST', path: collectionPath(tenant, 'instances') })
+  })
+
+  it('rejects a create response after the workspace changes', async () => {
+    const tenant = 'create-old-authority'
+    setTenant(tenant)
+    let resolveCreate!: (result: Response) => void
+    let signalCreate!: () => void
+    const started = new Promise<void>(resolve => { signalCreate = resolve })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = call(input, init)
+      expect(req.method).toBe('POST')
+      signalCreate()
+      return new Promise<Response>(resolve => { resolveCreate = resolve })
+    }))
+    const pending = api.createInstance({ templateName: 'widget', name: 'demo', values: {} })
+    await started
+    setTenant('create-new-authority')
+    resolveCreate(response(instance()))
+    await expect(pending).rejects.toMatchObject({ reason: 'ContextChanged' })
+  })
+
+  it('surfaces a forbidden create as PermissionDenied', async () => {
+    const tenant = 'create-unbound'
+    setTenant(tenant)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = call(input, init)
+      if (req.method === 'POST') return kubeStatus(403, 'Forbidden', 'instances.infrastructure.railgrid.ai is forbidden: no RBAC policy matched')
+      throw new Error('unexpected request ' + req.method + ' ' + req.path)
+    }))
+
+    await expect(api.createInstance({ templateName: 'widget', name: 'demo', values: {} }))
+      .rejects.toMatchObject({ reason: 'PermissionDenied', message: expect.stringContaining('workspace administrator') })
+  })
+
+  it('deletes only the confirmed Instance UID', async () => {
     const tenant = 'delete-contract'
     setTenant(tenant)
     const calls: KubeCall[] = []
@@ -712,10 +838,12 @@ describe('stable Instance API lifecycle contract', () => {
       throw new Error('unexpected request ' + req.method + ' ' + req.path)
     }))
 
-    await expect(api.deleteInstance('demo')).resolves.toBeUndefined()
+    await expect(api.deleteInstance({ name: 'demo', uid: 'uid-1' })).resolves.toBeUndefined()
     expect(calls).toHaveLength(1)
-    expect(calls[0]?.body).toMatchObject({ kind: 'DeleteOptions' })
-    await expect(api.deleteInstance('gone')).rejects.toMatchObject({ reason: 'NotFound' })
+    expect(calls[0]?.body).toMatchObject({ kind: 'DeleteOptions', preconditions: { uid: 'uid-1' } })
+    await expect(api.deleteInstance({ name: 'gone', uid: 'uid-2' })).rejects.toMatchObject({ reason: 'NotFound' })
+    await expect(api.deleteInstance({ name: 'demo' })).rejects.toMatchObject({ reason: 'Unverified' })
+    expect(calls).toHaveLength(2)
   })
 
   it('maps an exact stable Instance miss without hiding unrelated errors', async () => {
@@ -726,11 +854,28 @@ describe('stable Instance API lifecycle contract', () => {
       if (isGet(req, tenant, 'instances') === 'demo') return namedNotFound('instances', 'demo')
       if (isGet(req, tenant, 'instances') === 'unbound') return typeNotFound()
       if (isGet(req, tenant, 'instances') === 'broken') return response('upstream exploded', 500)
+      if (isGet(req, tenant, 'instances') === 'other-name') return namedNotFound('instances', 'another')
+      if (isGet(req, tenant, 'instances') === 'other-kind') return namedNotFound('applications', 'other-kind')
+      if (isGet(req, tenant, 'instances') === 'other-group') return kubeStatus(404, 'NotFound', 'different group', {
+        name: 'other-group', group: 'other.example', kind: 'instances',
+      })
+      if (isGet(req, tenant, 'instances') === 'missing-group') return kubeStatus(404, 'NotFound', 'missing group', {
+        name: 'missing-group', kind: 'instances',
+      })
+      if (isGet(req, tenant, 'instances') === 'missing-kind') return kubeStatus(404, 'NotFound', 'missing kind', {
+        name: 'missing-kind', group: 'infrastructure.railgrid.ai',
+      })
+      if (isGet(req, tenant, 'instances') === 'other-reason') return kubeStatus(404, 'Forbidden', 'different reason', {
+        name: 'other-reason', group: 'infrastructure.railgrid.ai', kind: 'instances',
+      })
       return namedNotFound('applications', 'demo')
     }))
 
     await expect(api.getInstance('demo')).rejects.toMatchObject({ reason: 'InstanceNotFound' })
-    await expect(api.getInstance('unbound')).rejects.toMatchObject({ reason: 'APIBindingMissing' })
+    await expect(api.getInstance('unbound')).rejects.toMatchObject({ reason: 'ResourceUnavailable' })
     await expect(api.getInstance('broken')).rejects.toMatchObject({ reason: 'HTTPError', message: 'upstream exploded' })
+    for (const name of ['other-name', 'other-kind', 'other-group', 'missing-group', 'missing-kind', 'other-reason']) {
+      await expect(api.getInstance(name)).rejects.toMatchObject({ reason: 'HTTPError' })
+    }
   })
 })

@@ -76,6 +76,7 @@ railgrid-provider-edges .fld > span { overflow-wrap: anywhere; }
 railgrid-provider-edges .field-error { color: var(--color-danger, #ff5d5d); font-size: 11px; }
 /* Persistent help text under a form control (swapped for .field-error while invalid). */
 railgrid-provider-edges .field-help { color: var(--color-text-muted, #5d5f78); font-size: 11px; line-height: 1.4; }
+railgrid-provider-edges .service-create-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
 railgrid-provider-edges .service-create-grid,
 railgrid-provider-edges .workload-create-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
 railgrid-provider-edges .service-create-grid--two,

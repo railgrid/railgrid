@@ -16,11 +16,11 @@ describe('Marketplace workload target regression', () => {
   })
 
   it('fences route teardown and disables cancellation while deployment is in flight', () => {
-    expect(source).toMatch(/import \{ computed, onMounted, onUnmounted, ref \} from 'vue'/)
+    expect(source).toMatch(/import \{ computed, nextTick, onMounted, onUnmounted, ref \} from 'vue'/)
     expect(source).toMatch(/let active = true\s+let lifecycleGeneration = 0/)
     expect(source).toMatch(/function cancel\(\): void \{\s+if \(busy\.value\) return[\s\S]*active = false[\s\S]*emit\('cancel'\)/)
-    expect(source).toMatch(/const latestEdges = await listEdges\(\)\s+if \(!isCurrent\(generation\)\) return/)
-    expect(source).toMatch(/await deployMarketplaceApp\(\{[\s\S]*\}\)\s+if \(!isCurrent\(generation\)\) return\s+emit\('completed'/)
+    expect(source).toMatch(/const latestEdges = await boundedRequest\(\(signal\) => listEdges\(signal\), [^\n]+\)\s+if \(!isCurrent\(generation\)\) return/)
+    expect(source).toMatch(/await boundedRequest\(\(signal\) => deployMarketplaceApp\(\{[\s\S]*?\}, signal\)\)[\s\S]*?if \(!isCurrent\(generation\)\) return[\s\S]*?emit\('completed'/)
     expect(source).toMatch(/onUnmounted\(\(\) => \{[\s\S]*active = false[\s\S]*lifecycleGeneration \+= 1/)
     expect(source).toMatch(/k-back-action" :disabled="busy" @click="cancel"/)
     expect(source).toMatch(/>Cancel<\/button>/)

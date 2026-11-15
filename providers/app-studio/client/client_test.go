@@ -123,7 +123,7 @@ func TestResourceListForwardsLabelSelectorToServer(t *testing.T) {
 	}
 }
 
-func TestResourceCreateAndUpdateAreUpserts(t *testing.T) {
+func TestResourceCreateIsExclusiveAndUpdateIsUpsert(t *testing.T) {
 	proxy := tenanttest.NewServer(t)
 	proxy.Register(ProjectGVR)
 	client := scopedClient(t, proxy)
@@ -139,17 +139,17 @@ func TestResourceCreateAndUpdateAreUpserts(t *testing.T) {
 		t.Fatalf("created object = %#v, want server-assigned resourceVersion and uid", created.Object)
 	}
 
-	// Create on an existing object updates it without a resourceVersion.
+	// A second create must leave the existing object unchanged.
 	second := tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\nspec:\n  displayName: Second\n")
-	updated, err := projects.Create(context.Background(), second, metav1.CreateOptions{})
-	if err != nil {
-		t.Fatalf("create-as-update: %v", err)
+	if _, err := projects.Create(context.Background(), second, metav1.CreateOptions{}); !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("duplicate create error = %v, want AlreadyExists", err)
 	}
-	if updated.GetUID() != created.GetUID() || updated.GetResourceVersion() == created.GetResourceVersion() {
-		t.Fatalf("upsert result = %#v, want same uid and a new resourceVersion", updated.Object)
+	if name, _, _ := unstructured.NestedString(proxy.Get(ProjectGVR, "", "demo").Object, "spec", "displayName"); name != "First" {
+		t.Fatalf("stored displayName = %q, want First", name)
 	}
-	if name, _, _ := unstructured.NestedString(proxy.Get(ProjectGVR, "", "demo").Object, "spec", "displayName"); name != "Second" {
-		t.Fatalf("stored displayName = %q, want Second", name)
+	updated, err := projects.Update(context.Background(), second, metav1.UpdateOptions{})
+	if err != nil || updated.GetUID() != created.GetUID() || updated.GetResourceVersion() == created.GetResourceVersion() {
+		t.Fatalf("update result = %#v, error = %v, want same uid and new resourceVersion", updated, err)
 	}
 
 	// A caller-supplied resourceVersion is honoured as a compare-and-swap.
@@ -157,6 +157,43 @@ func TestResourceCreateAndUpdateAreUpserts(t *testing.T) {
 	stale.SetResourceVersion(created.GetResourceVersion())
 	if _, err := projects.Update(context.Background(), stale, metav1.UpdateOptions{}); !apierrors.IsConflict(err) {
 		t.Fatalf("stale update error = %v, want Conflict", err)
+	}
+}
+
+func TestScopedCreateStatusStillPatchesStatus(t *testing.T) {
+	proxy := tenanttest.NewServer(t)
+	proxy.Add(ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\nspec:\n  displayName: Keep\nstatus:\n  phase: Pending\n"))
+	obj := tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\nstatus:\n  phase: Ready\n")
+	got, err := scopedClient(t, proxy).Resource(projectResource, "").Create(context.Background(), obj, metav1.CreateOptions{}, "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase, _, _ := unstructured.NestedString(got.Object, "status", "phase"); phase != "Ready" {
+		t.Fatalf("phase = %q, want Ready", phase)
+	}
+	if name, _, _ := unstructured.NestedString(got.Object, "spec", "displayName"); name != "Keep" {
+		t.Fatalf("displayName = %q, want Keep", name)
+	}
+	patches := proxy.RequestsFor(http.MethodPatch, ProjectGVR)
+	if len(patches) != 1 || patches[0].Subresource != "status" {
+		t.Fatalf("status requests = %#v", patches)
+	}
+}
+
+func TestScopedCreateUsesNamespace(t *testing.T) {
+	gvr := schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
+	proxy := tenanttest.NewServer(t)
+	proxy.Register(gvr)
+	resource := tenant.Resource{GVR: gvr, Kind: "Secret", Namespaced: true}
+	obj := tenanttest.ObjectFromYAML(t, "apiVersion: v1\nkind: Secret\nmetadata:\n  name: demo\n")
+	if _, err := scopedClient(t, proxy).Resource(resource, "default").Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if proxy.Get(gvr, "default", "demo") == nil {
+		t.Fatal("Secret was not created in default namespace")
+	}
+	if obj.GetNamespace() != "" {
+		t.Fatal("create mutated the caller's object")
 	}
 }
 

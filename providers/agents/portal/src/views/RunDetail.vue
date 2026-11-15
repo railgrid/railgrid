@@ -57,7 +57,7 @@ const props = withDefaults(defineProps<{
   /** When set, this detail is rendered inside an agent's Runs workbench. */
   embeddedAgent?: string
   authorityEpoch?: number
-}>(), { embeddedAgent: '', authorityEpoch: 0 })
+}>(), { embeddedAgent: '' })
 
 const emit = defineEmits<{ navigate: [route: Route] }>()
 const revision = useStoreRevision(() => props.store)
@@ -581,6 +581,7 @@ onBeforeUnmount(() => {
       :loading="loading"
       :refresh-mode="refreshMode"
       :error="error"
+      :focus-scope="authorityEpoch != null && runId ? JSON.stringify([authorityEpoch, runId, embeddedAgent]) : undefined"
       :stale="!!run && !!error"
       retryable
       @retry="load('foreground')"

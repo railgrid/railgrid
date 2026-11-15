@@ -27,6 +27,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 // SvcTargetHeader mirrors the agent-side constant (pkg/agent/tunnel). The agent
@@ -90,7 +92,10 @@ func (t Target) SvcTarget() string {
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("%s://%s:%d", t.Scheme, host, t.Port)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	return t.Scheme + "://" + net.JoinHostPort(host, strconv.Itoa(int(t.Port)))
 }
 
 // SetSvcHeaders stamps the agent control headers for this target on h: the

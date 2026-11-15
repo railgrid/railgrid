@@ -64,19 +64,23 @@ export async function listSavedViews(kube: KubeClient): Promise<SavedView[]> {
 }
 
 /**
- * listEdges returns the workspace's connected KubernetesCluster edges by name.
+ * listEdgeInventory separates confirmed connected KubernetesCluster edges from
+ * the total inventory. A missing status is not evidence of a connection.
  *
- * Only connected ones: a disconnected edge is not queryable (kuery disengages
- * it), so offering it in an edge selector would produce a query that
- * legitimately returns nothing and looks like a bug.
+ * Connection alone does not prove Kuery has engaged or synced an edge.
  */
-export async function listEdges(kube: KubeClient): Promise<string[]> {
+export async function listEdgeInventory(kube: KubeClient): Promise<{ connected: string[]; total: number }> {
   const edges = await kube.listAll<EdgeCluster>(EDGE_REF)
-  return edges
-    .filter(edge => edge.status?.connected !== false)
+  const connected = edges
+    .filter(edge => edge.status?.connected === true)
     .map(edge => edge.metadata.name)
     .filter(Boolean)
     .sort()
+  return { connected, total: edges.length }
+}
+
+export async function listEdges(kube: KubeClient): Promise<string[]> {
+  return (await listEdgeInventory(kube)).connected
 }
 
 /** isReady reads a SavedView's Ready condition, which the reconciler stamps. */
@@ -122,13 +126,14 @@ export async function playgroundViewName(user: string): Promise<string> {
  * Idempotent, and tolerant of the race with another tab: AlreadyExists is the
  * success case.
  */
-export async function ensurePlaygroundView(kube: KubeClient, name: string, user: string): Promise<void> {
+export async function ensurePlaygroundView(kube: KubeClient, name: string, user: string, isCurrent: () => boolean = () => true): Promise<void> {
   try {
     await kube.get(SAVEDVIEW_REF, name)
     return
   } catch (error) {
     if (!isNotFound(error)) throw error
   }
+  if (!isCurrent()) return
   try {
     await kube.create<SavedView>(SAVEDVIEW_REF, {
       apiVersion: `${SAVEDVIEW_REF.group}/${SAVEDVIEW_REF.version}`,

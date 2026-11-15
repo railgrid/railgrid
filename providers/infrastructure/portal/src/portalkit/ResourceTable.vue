@@ -27,6 +27,7 @@ import {
   type TableSortValue,
 } from './table'
 import ResourceTableFilter from './ResourceTableFilter.vue'
+import { useCollectionSession } from './useCollectionSession'
 import { useDelayedLoading } from './useDelayedLoading'
 
 type ResourceTableColumn = {
@@ -99,11 +100,15 @@ const props = withDefaults(defineProps<{
   stale?: boolean
   /** Shows the built-in Retry action. Callers must handle the retry event. */
   retryable?: boolean
+  /** Stable caller-owned identity for retry focus recovery. */
+  focusScope?: string
   emptyText?: string
   filterEmptyText?: string
   searchEmptyText?: string
   combinedFilterEmptyText?: string
   interactive?: boolean
+  /** Restricts row navigation without disabling nested row controls. */
+  rowInteractive?: (row: Record<string, unknown>, index: number) => boolean
   searchable?: boolean
   searchPlaceholder?: string
   searchKeys?: string[]
@@ -243,8 +248,14 @@ const primaryTooltip = ref<{
   positioned: boolean
 } | null>(null)
 const primaryTooltipElement = ref<HTMLElement | null>(null)
+const searchInput = ref<HTMLInputElement | null>(null)
+const controlsElement = ref<HTMLElement | null>(null)
 const headerSelectionCheckbox = ref<HTMLInputElement | null>(null)
 const tableScrollRegion = ref<HTMLElement | null>(null)
+let invalidatedRetry: Element | null = null
+function onFocusIn(event: FocusEvent) {
+  if (event.target === invalidatedRetry) invalidatedRetry = null
+}
 const tableHasHorizontalOverflow = ref(false)
 const tableScrollAtEnd = ref(false)
 let activeTooltipAnchor: HTMLElement | null = null
@@ -390,9 +401,10 @@ const pendingBodyText = computed(() => filterPending.value
 const hasConfiguredControls = computed(() =>
   props.variant === 'queryable' && (props.searchable || props.filters.length > 0),
 )
+const controlsShown = useCollectionSession(() => props.rows.length > 0 || activeFilters.value)
 const showControls = computed(() =>
   hasConfiguredControls.value
-    && (isServerPagination.value || props.rows.length > 0 || activeFilters.value || (!!props.loading && props.loaded !== true)),
+    && (isServerPagination.value || controlsShown.value || (!!props.loading && props.loaded !== true)),
 )
 const showPagination = computed(() => {
   if (!paginationEnabled.value) return false
@@ -438,6 +450,8 @@ function requestRetry() {
 }
 
 function finishRetry() {
+  retryRequested.value = false
+  if (props.focusScope) return
   const focused = typeof document === 'undefined' ? null : document.activeElement
   const table = tableElement.value
   if (table && focused && focused.closest('.k-table--resource') === table
@@ -447,7 +461,6 @@ function finishRetry() {
     const target = tableScrollRegion.value ?? table
     target.focus({ preventScroll: true })
   }
-  retryRequested.value = false
 }
 watch(() => props.loading, (loading, wasLoading) => {
   if (wasLoading && !loading) {
@@ -457,6 +470,25 @@ watch(() => props.loading, (loading, wasLoading) => {
 })
 watch(() => props.error, error => {
   if (!error) finishRetry()
+})
+
+watch(() => [props.error, props.loaded, props.retryable, props.focusScope] as const, async (current, previous, onCleanup) => {
+  const root = tableElement.value
+  if (!root) return
+  const document = root.ownerDocument
+  const focused = document.activeElement
+  if (!(focused instanceof HTMLElement) || focused.closest('.k-table--resource') !== root || !focused.matches('.k-table__retry')) return
+  if (current[3] !== previous[3]) {
+    invalidatedRetry = focused
+    return
+  }
+  if (!current[3] || focused === invalidatedRetry) return
+  let cancelled = false
+  onCleanup(() => { cancelled = true })
+  await nextTick()
+  if (cancelled || props.focusScope !== current[3] || !root.isConnected || focused.isConnected || document.activeElement !== document.body) return
+  const target = root.querySelector<HTMLElement>('.k-table__retry') ?? tableScrollRegion.value ?? root
+  target.focus()
 })
 
 watch([currentQuery, filterSignature], () => clearSelection(), { flush: 'sync' })
@@ -626,11 +658,9 @@ function setPageSize(value: number) {
   emitChange('page-size', 1, null)
 }
 
-const searchInput = ref<HTMLInputElement | null>(null)
-
 function clearQuery() {
   setQuery('')
-  searchInput.value?.focus()
+  focusAfterClear()
 }
 
 function setQuery(value: string) {
@@ -1053,7 +1083,15 @@ onBeforeUnmount(() => {
   tableScrollResizeObserver?.disconnect()
 })
 
+function focusAfterClear() {
+  void nextTick(() => {
+    const target = searchInput.value || controlsElement.value?.querySelector<HTMLElement>('button')
+    target?.focus()
+  })
+}
+
 function clearFilters() {
+  focusAfterClear()
   const next = Object.fromEntries(props.filters.map(filter => [filter.key, '']))
   if (currentQuery.value || hasFacetFilters.value) clearSelection()
   if (props.query === undefined) query.value = ''
@@ -1092,6 +1130,10 @@ function rowAriaLabel(row: Record<string, unknown>, index: number): string | und
   return label || undefined
 }
 
+function isRowInteractive(row: Record<string, unknown>, index: number): boolean {
+  return props.interactive && (props.rowInteractive?.(row, index) ?? true)
+}
+
 function isExplicitControlTarget(event: Event): boolean {
   const currentTarget = event.currentTarget as Element | null
   const target = event.target as Element | null
@@ -1103,20 +1145,20 @@ function isExplicitControlTarget(event: Event): boolean {
   return Boolean(control && control !== currentTarget)
 }
 
-function onRowClick(row: Record<string, unknown>, event?: MouseEvent | KeyboardEvent) {
-  if (!props.interactive || (event && isExplicitControlTarget(event))) return
+function onRowClick(row: Record<string, unknown>, index: number, event?: MouseEvent | KeyboardEvent) {
+  if (!isRowInteractive(row, index) || (event && isExplicitControlTarget(event))) return
   emit('rowClick', row)
 }
 
-function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
+function onRowKeydown(row: Record<string, unknown>, index: number, event: KeyboardEvent) {
   if ((event.key === 'ArrowRight' || event.key === 'ArrowLeft') && event.target === event.currentTarget) {
     if (stepRowDisclosure(event.currentTarget as HTMLElement, event.key === 'ArrowRight' ? 1 : -1)) event.preventDefault()
     return
   }
-  if (!props.interactive || event.repeat || isExplicitControlTarget(event)) return
+  if (!isRowInteractive(row, index) || event.repeat || isExplicitControlTarget(event)) return
   if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return
   event.preventDefault()
-  onRowClick(row, event)
+  onRowClick(row, index, event)
 }
 </script>
 
@@ -1130,6 +1172,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
     data-resource-table
     :class="[`k-table--${variant}`, { 'k-table--workbench': appearance === 'workbench', 'k-table--selecting': selectionSurfaceVisible && selectedCount > 0 }]"
     :aria-busy="ariaBusy"
+    @focusin="onFocusIn"
   >
     <!-- Keep the live region outside layout so background reads cannot move the table. -->
     <Teleport :to="tableElement?.closest('dialog, [aria-modal=true]') ?? 'body'">
@@ -1200,6 +1243,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
       <div v-if="showControls || selectionSurfaceVisible" class="k-table__toolbar-stack">
         <div
           v-if="showControls"
+          ref="controlsElement"
           class="k-table__controls"
           role="search"
           :aria-label="`Filter ${tableAriaLabel.toLocaleLowerCase()}`"
@@ -1301,16 +1345,16 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
               <tr
                 class="stagger-item k-table__row"
                 :class="{
-                  'k-table__row--interactive': interactive,
+                  'k-table__row--interactive': isRowInteractive(row, i),
                   'k-table__row--selected': selectionSurfaceVisible && isRowSelected(row) && rowSelectionState(row).selectable,
                 }"
-                :tabindex="interactive ? 0 : undefined"
-                :aria-label="interactive ? rowAriaLabel(row, i) : undefined"
+                :tabindex="isRowInteractive(row, i) ? 0 : undefined"
+                :aria-label="isRowInteractive(row, i) ? rowAriaLabel(row, i) : undefined"
                 :style="{ animationDelay: `${i * 35}ms` }"
-                @click="onRowClick(row, $event)"
+                @click="onRowClick(row, i, $event)"
                 @focusin="syncRowPrimaryOverflow"
                 @focusout="hideTooltip"
-                @keydown="onRowKeydown(row, $event)"
+                @keydown="onRowKeydown(row, i, $event)"
               >
                 <td v-if="selectionSurfaceVisible" class="k-table__cell k-table__selection-cell">
                   <label

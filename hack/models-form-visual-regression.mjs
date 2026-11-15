@@ -357,7 +357,9 @@ function checkContracts(result) {
     check('display heading', result.title.style.fontFamily.includes('Instrument Sans Variable') && result.title.style.fontStretch === '100%' && result.title.style.fontSize === '18px', result.title.style)
     check('back then heading then form', result.back.rect.bottom <= result.header.rect.y && result.header.rect.bottom <= result.form.rect.y, { back: result.back.rect, header: result.header.rect, form: result.form.rect })
     check('fixed back icon', result.backIcon.rect?.width === 14 && result.backIcon.rect?.height === 14 && result.backIcon.flexShrink === '0', result.backIcon)
-    check('route heading focus', result.focus.active?.class?.includes('k-create-title') && result.focus.active.tabIndex === -1 && result.focus.outlineStyle === 'solid' && result.focus.outlineWidth === '2px' && result.focus.outlineOffset === '2px' && result.focus.outlineColor === result.accentColor, result.focus)
+    // Static route headings retain programmatic focus for announcements without
+    // a control-like outline (see the shared PortalKit heading focus rule).
+    check('route heading focus', result.focus.activeWithinRoot && result.focus.active?.tag === 'h1' && result.focus.active.class?.includes('k-create-title') && result.focus.active.tabIndex === -1 && result.focus.outlineStyle === 'none', result.focus)
     check('named controls with resolvable help', result.accessibility.length >= 2 && result.accessibility.every(control => control.labelled && control.missingDescriptions.length === 0), result.accessibility)
     const credentialStagePresent = result.structure.sections.some(heading => /credential|api key/i.test(heading) || (vertex && /service account/i.test(heading)))
     check('provider and credential stages precede model binding', result.structure.sections.length >= 2 && result.structure.sections.some(heading => /provider|connection/i.test(heading)) && credentialStagePresent && !result.structure.sections.some(heading => /model|verify/i.test(heading)), result.structure.sections)
@@ -417,7 +419,8 @@ function checkSharedGeometry(app, agents) {
   // App Studio keeps its own section navigation above this nested route;
   // compare the shared frame's size and alignment without requiring equal
   // viewport Y coordinates across different host shells.
-  compareRect('back action', app.back.rect, agents.back.rect, ['x', 'width', 'height'])
+  // Labels identify different destinations, so their widths may differ.
+  compareRect('back action', app.back.rect, agents.back.rect, ['x', 'height'])
   compareRect('route title', app.title.rect, agents.title.rect, ['x', 'width', 'height'])
   compareRect('form width', app.form.rect, agents.form.rect, ['x', 'width'])
   compareRect('provider control', app.landmarks.providerControl.rect, agents.landmarks.providerControl.rect, ['x', 'width', 'height'])

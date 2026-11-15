@@ -18,7 +18,7 @@ describe('Infrastructure primary provisioning workflow', () => {
     expect(provision).toContain('class="k-create-surface k-create-surface--wide"')
     expect(provision).toContain('class="provision-identity"')
     expect(provision).toContain('const { name: _name, ...properties } = schema.properties')
-    expect(provision).toContain('const writableValues = createWritableValues(currentTemplate.inputsSchema, values.value)')
+    expect(provision).toContain('const writableValues = createWritableValues(currentTemplate.inputsSchema, draft)')
     expect(provision).toContain('values: writableValues')
     expect(provision).toContain('id="infrastructure-instance-name"')
     expect(provision).toContain('required')

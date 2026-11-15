@@ -10,6 +10,7 @@
 import { ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Models from '../views/Models.vue'
+import ConfirmDialog from '../portalkit/ConfirmDialog.vue'
 import { ApiClient } from '../api'
 import { resolveConfirm } from '../portalkit/confirm'
 import { AppStore } from '../store'
@@ -66,6 +67,84 @@ function loadedStore(api: ApiClient, credentials: Credential[]): AppStore {
 }
 
 describe('combined Models page', () => {
+  it('adopts an active catalog read across model tab navigation and permits another read', async () => {
+    const pending = deferred<Awaited<ReturnType<ApiClient['catalog']>>>()
+    const catalog = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue([])
+    const api = stubApi({ catalog })
+    const store = loadedStore(api, [{ name: 'example', model: 'example-model', ready: true }])
+    const exposed = ref<{ loadCatalog: () => Promise<void> } | null>(null)
+    const view = await mountVue(Models, { ref: exposed, store, api, routeOwned: true, modelsTab: 'models' })
+    const previousHash = location.hash
+    location.hash = '#/models/usage'
+    await view.setProps({ modelsTab: 'usage' })
+    pending.resolve([])
+    await settleVue()
+    await exposed.value!.loadCatalog()
+    expect(catalog).toHaveBeenCalledTimes(2)
+    location.hash = previousHash
+  })
+
+  it('drops a queued catalog read when the view unmounts', async () => {
+    const pending = deferred<Awaited<ReturnType<ApiClient['catalog']>>>()
+    const catalog = vi.fn().mockReturnValue(pending.promise)
+    const api = stubApi({ catalog })
+    const store = loadedStore(api, [])
+    const exposed = ref<{ loadCatalog: () => Promise<void> } | null>(null)
+    const view = await mountVue(Models, { ref: exposed, store, api })
+    const queued = exposed.value!.loadCatalog()
+    view.unmount()
+    pending.resolve([])
+    await queued
+    expect(catalog).toHaveBeenCalledOnce()
+  })
+
+  it('queues a manual model refresh behind an active catalog read', async () => {
+    const first = deferred<Awaited<ReturnType<ApiClient['catalog']>>>()
+    const second = deferred<Awaited<ReturnType<ApiClient['catalog']>>>()
+    const catalog = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const api = stubApi({ catalog })
+    const store = loadedStore(api, [{ name: 'example', model: 'example-model', ready: true }])
+    vi.spyOn(store, 'load').mockResolvedValue()
+    const { element } = await mountVue(Models, { store, api, setupNavigation: true })
+    const refresh = element.querySelector<HTMLButtonElement>('[aria-label="Refresh models"]')!
+    expect(refresh.disabled).toBe(false)
+    refresh.focus()
+    refresh.click()
+    await settleVue()
+    expect(refresh.getAttribute('aria-busy')).toBe('true')
+    expect(refresh.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(refresh)
+    refresh.click()
+    expect(catalog).toHaveBeenCalledTimes(1)
+    first.resolve([])
+    await settleVue()
+    expect(catalog).toHaveBeenCalledTimes(2)
+    expect(refresh.getAttribute('aria-busy')).toBe('true')
+    second.resolve([])
+    await settleVue()
+    expect(refresh.getAttribute('aria-disabled')).toBe('false')
+    expect(document.activeElement).toBe(refresh)
+  })
+
+  it('refreshes the model catalog and credentials from the models header', async () => {
+    const catalog = vi.fn().mockResolvedValue([])
+    const api = stubApi({ catalog })
+    const store = loadedStore(api, [{ name: 'example', model: 'example-model', ready: true }])
+    const load = vi.spyOn(store, 'load').mockResolvedValue()
+    const { element } = await mountVue(Models, { store, api, setupNavigation: true })
+    await settleVue()
+    catalog.mockClear()
+
+    element.querySelector<HTMLButtonElement>('[aria-label="Refresh models"]')!.click()
+    await settleVue()
+    expect(load).toHaveBeenCalledWith('credentials')
+    expect(catalog).toHaveBeenCalledOnce()
+
+    load.mockClear()
+    element.querySelector<HTMLButtonElement>('[aria-label="Refresh provider connections"]')!.click()
+    expect(load).toHaveBeenCalledWith('credentials')
+  })
+
   it('keeps model assignments, capabilities and pricing in expandable row details', async () => {
     const api = stubApi({ catalog: async () => [{ id: 'example-model', family: 'example', contextWindow: 128_000, vision: true, inputPer1M: 2, outputPer1M: 8 }] })
     const store = loadedStore(api, [{ name: 'example', model: 'example-model', ready: true }])
@@ -716,6 +795,168 @@ describe('event-stream liveness', () => {
 
 describe('model collection layouts', () => {
   beforeEach(() => localStorage.removeItem('railgrid:agents:models:layout'))
+
+  it.each(['cancel', 'failure', 'success'])('restores focus after the real confirmation dialog: %s', async outcome => {
+    const api = stubApi({ catalog: async () => [], deleteCredential: outcome === 'failure' ? async () => { throw new Error('failed') } : async () => {} })
+    const store = loadedStore(api, [{ name: 'main', model: 'gpt-5' }])
+    vi.spyOn(store, 'load').mockImplementation(async () => {
+      if (outcome === 'success') {
+        store.credentials.data = []
+        store.dispatchEvent(new Event('change'))
+      }
+    })
+    const view = await mountVue(Models, { store, api })
+    const dialog = await mountVue(ConfirmDialog, {})
+    const button = view.element.querySelector<HTMLButtonElement>('[aria-label="Delete main"]')!
+    button.focus()
+    button.click()
+    await settleVue()
+    expect(document.activeElement).toBe(dialog.element.querySelector('.k-modal-btn--cancel'))
+    dialog.element.querySelector<HTMLButtonElement>(outcome === 'cancel' ? '.k-modal-btn--cancel' : '.k-modal-btn--confirm')!.click()
+    await settleVue(12)
+    expect(document.activeElement).toBe(outcome === 'success' ? view.element.querySelector('#available-models-title') : button)
+    dialog.unmount()
+    view.unmount()
+  })
+
+  it('respects focus moved during the deletion refresh with the real confirmation dialog', async () => {
+    const refresh = deferred<void>()
+    const api = stubApi({ catalog: async () => [], deleteCredential: async () => {} })
+    const store = loadedStore(api, [{ name: 'main', model: 'gpt-5' }])
+    vi.spyOn(store, 'load').mockImplementation(async () => {
+      await refresh.promise
+      store.credentials.data = []
+      store.dispatchEvent(new Event('change'))
+    })
+    const view = await mountVue(Models, { store, api })
+    const dialog = await mountVue(ConfirmDialog, {})
+    const button = view.element.querySelector<HTMLButtonElement>('[aria-label="Delete main"]')!
+    button.focus()
+    button.click()
+    await settleVue()
+    dialog.element.querySelector<HTMLButtonElement>('.k-modal-btn--confirm')!.click()
+    await settleVue()
+    const refreshButton = view.element.querySelector<HTMLButtonElement>('[aria-label="Refresh models"]')!
+    refreshButton.focus()
+    refresh.resolve()
+    await settleVue(12)
+    expect(document.activeElement).toBe(refreshButton)
+    dialog.unmount()
+    view.unmount()
+  })
+
+  it.each(['grid', 'list'])('restores focus after deleting the last model in %s layout', async layout => {
+    localStorage.setItem('railgrid:agents:models:layout', layout)
+    const api = stubApi({ catalog: async () => [], deleteCredential: async () => {} })
+    const store = loadedStore(api, [{ name: 'main', model: 'gpt-5' }])
+    vi.spyOn(store, 'load').mockImplementation(async () => {
+      store.credentials.data = []
+      store.dispatchEvent(new Event('change'))
+    })
+    const view = await mountVue(Models, { store, api })
+    const button = view.element.querySelector<HTMLButtonElement>('[aria-label="Delete main"]')!
+    button.focus()
+    button.click()
+    resolveConfirm(true)
+    await settleVue(10)
+    expect(document.activeElement).toBe(view.element.querySelector('#available-models-title'))
+    view.unmount()
+  })
+
+  it('does not move focus for a background removal or when focus moved during deletion', async () => {
+    const deletion = deferred<void>()
+    const api = stubApi({ catalog: async () => [], deleteCredential: () => deletion.promise })
+    const model = { name: 'main', model: 'gpt-5' }
+    const store = loadedStore(api, [model])
+    vi.spyOn(store, 'load').mockImplementation(async () => {
+      store.credentials.data = []
+      store.dispatchEvent(new Event('change'))
+    })
+    const view = await mountVue(Models, { store, api })
+    const refresh = view.element.querySelector<HTMLButtonElement>('[aria-label="Refresh models"]')!
+    refresh.focus()
+    store.credentials.data = []
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    expect(document.activeElement).toBe(refresh)
+    store.credentials.data = [model]
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    const button = view.element.querySelector<HTMLButtonElement>('[aria-label="Delete main"]')!
+    button.focus()
+    button.click()
+    resolveConfirm(true)
+    await settleVue()
+    refresh.focus()
+    deletion.resolve()
+    await settleVue(10)
+    expect(document.activeElement).toBe(refresh)
+    view.unmount()
+  })
+
+  it('does not restore focus after the authority epoch changes', async () => {
+    const deletion = deferred<void>()
+    const api = stubApi({ catalog: async () => [], deleteCredential: () => deletion.promise })
+    const store = loadedStore(api, [{ name: 'main', model: 'gpt-5' }])
+    const view = await mountVue(Models, { store, api, authorityEpoch: 1 })
+    const button = view.element.querySelector<HTMLButtonElement>('[aria-label="Delete main"]')!
+    button.focus()
+    button.click()
+    resolveConfirm(true)
+    await settleVue()
+    await view.setProps({ authorityEpoch: 2 })
+    deletion.resolve()
+    await settleVue(10)
+    expect(document.activeElement).not.toBe(view.element.querySelector('#available-models-title'))
+    view.unmount()
+  })
+
+  it.each(['grid', 'list'])('keeps model search through an empty snapshot in %s layout', async layout => {
+    localStorage.setItem('railgrid:agents:models:layout', layout)
+    const api = stubApi({ catalog: async () => [], usage: async () => usageWithNulls })
+    const store = makeStore(api)
+    const model = { name: 'careful', provider: 'openai', model: 'gpt-6-sol', ready: true }
+    store.credentials.data = [model]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api })
+    await settleVue(4, 150)
+    const search = view.element.querySelector<HTMLInputElement>(layout === 'grid' ? '[aria-label="Search models"]' : '[aria-label="Search Models"]')!
+    search.value = 'sol'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await settleVue(4, 150)
+    store.credentials.data = []
+    store.dispatchEvent(new Event('change'))
+    await settleVue(4, 150)
+    expect(view.element.querySelector<HTMLInputElement>(layout === 'grid' ? '[aria-label="Search models"]' : '[aria-label="Search Models"]')?.value).toBe('sol')
+    expect(view.element.textContent).not.toContain('Connect a provider to add models')
+    store.credentials.data = [model]
+    store.dispatchEvent(new Event('change'))
+    await settleVue(4, 150)
+    expect(view.element.textContent).toContain('careful')
+    view.unmount()
+  })
+
+  it('keeps a model status filter when the last matching model disappears', async () => {
+    localStorage.setItem('railgrid:agents:models:layout', 'list')
+    const api = stubApi({ catalog: async () => [], usage: async () => usageWithNulls })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'careful', provider: 'openai', model: 'gpt-6-sol', ready: false }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api })
+    await settleVue(4, 150)
+    const filter = [...view.element.querySelectorAll<HTMLButtonElement>('[role="combobox"]')].find(el => el.getAttribute('aria-labelledby')?.split(' ').some(id => document.getElementById(id)?.textContent?.trim() === 'Status'))!
+    filter.click()
+    await settleVue()
+    ;[...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(el => el.textContent?.trim() === 'Not reachable')!.click()
+    await settleVue(4, 150)
+    store.credentials.data = []
+    store.dispatchEvent(new Event('change'))
+    await settleVue(4, 150)
+    expect(view.element.querySelector('table[aria-label="Models"]')).not.toBeNull()
+    expect(view.element.querySelector('.k-table__filter.is-active')).not.toBeNull()
+    expect(view.element.textContent).not.toContain('Connect a provider to add models')
+    view.unmount()
+  })
 
   it.each(['grid', 'list'])('offers Edit instead of a doomed probe for a model-less legacy row (%s)', async layout => {
     localStorage.setItem('railgrid:agents:models:layout', layout)

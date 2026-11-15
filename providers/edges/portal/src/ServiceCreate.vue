@@ -7,7 +7,7 @@ import type { Edge, EdgeServiceDraft, EdgeType, ErrorResponse } from './types'
 import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import { toast } from './portalkit/toast'
-import { parseServiceHost, servicePortError } from './serviceValidation'
+import { displayServiceHost, parseServiceHost, servicePortError } from './serviceValidation'
 
 const props = withDefaults(defineProps<{
   initialEdgeType?: EdgeType | null
@@ -144,7 +144,7 @@ const endpointSummary = computed(() => {
   if (targetMode.value === 'host') {
     if (hostRequired.value && !normalizedHost.value) return 'Host required'
     const scheme = parsedHost.value.scheme || draft.value.scheme || 'http'
-    return `${scheme}://${normalizedHost.value || 'agent-loopback'}:${Number(port)}`
+    return `${scheme}://${displayServiceHost(normalizedHost.value || 'agent-loopback')}:${Number(port)}`
   }
   const namespace = draft.value.targetNamespace.trim() || 'default'
   return `${namespace}/${draft.value.targetName.trim() || 'not-selected'}:${Number(port)}`

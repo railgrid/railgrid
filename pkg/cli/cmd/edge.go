@@ -27,6 +27,8 @@ import (
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/railgrid/railgrid/pkg/agent/harnessplane"
@@ -159,10 +161,10 @@ func newEdgeCreateCommand() *cobra.Command {
 			printHarnessPosture(out, edgeType, harnessSpec, setting)
 
 			// Poll for the join token (set by the hub controller on creation).
-			joinToken, err := pollJoinTokenDynamic(ctx, name, 30*time.Second)
+			joinToken, err := pollJoinTokenDynamic(ctx, dynClient, gvr, name, 30*time.Second)
 			if err != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not retrieve join token: %v\n", err)
-				_, _ = fmt.Fprintf(out, "\nRun 'railgrid edge join-command %s' to print the join command once the token is available.\n", name)
+				_, _ = fmt.Fprintf(out, "\nRun 'railgrid edge join-command %s/%s' to print the join command once the token is available.\n", edgeType, name)
 				return nil
 			}
 
@@ -235,15 +237,10 @@ func printHarnessPosture(w io.Writer, edgeType string, harnessSpec map[string]in
 }
 
 // pollJoinTokenDynamic polls the Edge resource until Status.JoinToken is set or timeout expires.
-func pollJoinTokenDynamic(ctx context.Context, name string, timeout time.Duration) (string, error) {
-	dynClient, err := loadDynamicClient()
-	if err != nil {
-		return "", err
-	}
-
+func pollJoinTokenDynamic(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, name string, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
-		edge, _, err := getEdgeByName(ctx, dynClient, name)
+		edge, err := dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return "", fmt.Errorf("getting edge: %w", err)
 		}
@@ -348,7 +345,7 @@ func printJoinCommand(w io.Writer, name, edgeType, hubURL, joinToken string) {
 		p("    --token %s\n", joinToken)
 	}
 	p("\n")
-	p("Run 'railgrid edge join-command %s' to print this again.\n", name)
+	p("Run 'railgrid edge join-command %s/%s' to print this again.\n", edgeType, name)
 }
 
 // newEdgeJoinCommandCommand returns the 'railgrid edge join-command <name>' subcommand.
@@ -367,7 +364,7 @@ func newEdgeJoinCommandCommand() *cobra.Command {
 				return err
 			}
 
-			edge, _, err := getEdgeByName(ctx, dynClient, name)
+			edge, gvr, err := getEdgeByName(ctx, dynClient, name)
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", name, err)
 			}
@@ -378,7 +375,7 @@ func newEdgeJoinCommandCommand() *cobra.Command {
 			joinToken := getNestedString(*edge, "status", "joinToken")
 			if joinToken == "" {
 				// Token not yet generated — poll briefly.
-				joinToken, err = pollJoinTokenDynamic(ctx, name, 10*time.Second)
+				joinToken, err = pollJoinTokenDynamic(ctx, dynClient, gvr, name, 10*time.Second)
 				if err != nil {
 					return fmt.Errorf("join token not available for edge %q: %w", name, err)
 				}

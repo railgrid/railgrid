@@ -7,7 +7,6 @@ import AgentDigestSchedule from '../components/AgentDigestSchedule.vue'
 import FormSelect, { type FormSelectOption } from '../portalkit/FormSelect.vue'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
 import { portalHref } from '../portalkit/navigation'
-import { toast } from '../portalkit/toast'
 import { confirmDialog } from '../portalkit/confirm'
 import { mutate } from '../mutate'
 import type { ApiClient } from '../api'
@@ -49,11 +48,12 @@ const props = withDefaults(defineProps<{
   api: ApiClient
   authorityEpoch?: number
   createSession?: number
+  initialFocusAllowed?: boolean
   initialDraft?: AgentCreateDraft | null
   initialBackendType?: AgentBackendType
   /** A template name from #/create/agent/<template>; preselected once the catalog loads. */
   initialTemplate?: string
-}>(), { authorityEpoch: 0, createSession: 0, initialDraft: null, initialBackendType: AGENT_BACKEND_MODEL, initialTemplate: '' })
+}>(), { authorityEpoch: 0, createSession: 0, initialFocusAllowed: true, initialDraft: null, initialBackendType: AGENT_BACKEND_MODEL, initialTemplate: '' })
 const emit = defineEmits<{
   navigate: [route: Route]
   'add-credential': [detail: {
@@ -104,7 +104,132 @@ const systemPrompt = ref(initialDraft.systemPrompt)
 const channel = ref(initialDraft.channel)
 const errors = reactive<Record<string, string>>({})
 const busy = ref(false)
+type CreateAttempt = { name: string; template: boolean; id: string }
+const unreadableAttempt = ref(false)
+const storageUnavailable = ref(false)
+let unreadableRecord: string | null = null
+let recoveryRecordKey: string | null = null
+let recoveryRecord: string | null = null
+let submittedAttemptId = ''
+function attemptKey(): string | null {
+  const tenant = props.api.tenant()
+  const user = props.api.contextAuthority().userKey
+  if (!tenant.orgUUID || !tenant.workspaceUUID || !user) return null
+  return `railgrid:agents:create-attempt:${JSON.stringify([tenant.orgUUID, tenant.workspaceUUID, user])}`
+}
+function readAttempt(key: string | null): CreateAttempt | null {
+  unreadableAttempt.value = false
+  storageUnavailable.value = false
+  unreadableRecord = null
+  recoveryRecordKey = null
+  recoveryRecord = null
+  if (!key) return null
+  try {
+    const keys: string[] = []
+    if (localStorage.getItem(key) !== null) keys.push(key)
+    for (let i = 0; i < localStorage.length; i++) {
+      const candidate = localStorage.key(i)
+      if (candidate?.startsWith(`${key}:`)) keys.push(candidate)
+    }
+    const recordKey = keys.sort()[0]
+    recoveryRecordKey = recordKey || null
+    recoveryRecord = null
+    if (!recordKey) return null
+    const raw = localStorage.getItem(recordKey)
+    if (raw === null) throw new Error('Recovery record disappeared')
+    recoveryRecord = raw
+    unreadableRecord = raw
+    const value = JSON.parse(raw)
+    if (value && typeof value.name === 'string' && value.name && typeof value.template === 'boolean' && typeof value.id === 'string') return value
+  } catch {
+    if (unreadableRecord === null) { storageUnavailable.value = true; return null }
+  }
+  unreadableAttempt.value = true
+  return null
+}
+function retryAttemptRead(): void {
+  const focused = document.activeElement
+  const authority = captureAuthority()
+  const epoch = props.authorityEpoch
+  const session = props.createSession
+  uncertainCreate.value = readAttempt(attemptKey())
+  restoreRecoveryFocus(focused, authority, epoch, session)
+}
+function clearUnreadableAttempt(): void {
+  const key = recoveryRecordKey
+  if (!key) return
+  const focused = document.activeElement
+  const authority = captureAuthority()
+  const epoch = props.authorityEpoch
+  const session = props.createSession
+  try {
+    if (unreadableRecord === null || localStorage.getItem(key) !== unreadableRecord) throw new Error('Recovery record changed or is unavailable')
+    localStorage.removeItem(key)
+    unreadableAttempt.value = false
+    unreadableRecord = null
+    uncertainCreate.value = readAttempt(attemptKey())
+    createInspection.value = ''
+    restoreRecoveryFocus(focused, authority, epoch, session)
+  } catch {
+    if (refreshChangedRecovery()) restoreRecoveryFocus(focused, authority, epoch, session)
+    else createInspection.value = 'Could not clear the recovery record. Check browser storage and try again.'
+  }
+}
+function clearAttempt(key: string | null, raw: string | null): boolean {
+  if (!key) return true
+  try {
+    if (raw === null || localStorage.getItem(key) !== raw) return false
+    localStorage.removeItem(key)
+    return true
+  } catch { return false }
+}
+const uncertainCreate = ref<CreateAttempt | null>(readAttempt(attemptKey()))
+const inspectingCreate = ref(false)
+const createInspection = ref('')
+const createInspectionCompleted = ref(false)
+const createConfirmed = ref(false)
+const createRejected = ref(false)
+let inspectionSerial = 0
+let inspectionController: AbortController | null = null
+function restoreRecoveryFocus(focused: Element | null, authority: ReturnType<typeof captureAuthority>, epoch: number, session: number): void {
+  void nextTick(() => {
+    if (focused instanceof HTMLElement && !focused.isConnected && document.activeElement === document.body &&
+        authorityIsCurrent(authority) && props.authorityEpoch === epoch && props.createSession === session) nameInput.value?.focus()
+  })
+}
+// Another tab may have resolved or replaced the record while this page was open.
+// Re-read without deleting the replacement and require a fresh inspection for it.
+function refreshChangedRecovery(): boolean {
+  const previousKey = recoveryRecordKey
+  const previousRaw = recoveryRecord
+  const refreshed = readAttempt(attemptKey())
+  const changed = storageUnavailable.value || previousKey !== recoveryRecordKey || previousRaw !== recoveryRecord
+  if (!changed) return false
+  inspectionSerial++
+  inspectionController?.abort()
+  inspectionController = null
+  inspectingCreate.value = false
+  uncertainCreate.value = refreshed
+  createInspection.value = ''
+  createInspectionCompleted.value = false
+  createConfirmed.value = false
+  createRejected.value = false
+  return true
+}
+const agentsHref = computed(() => portalHref('/providers/agents/#/agents', props.api.tenant()))
+watch([() => props.authorityEpoch, () => props.createSession], () => {
+  inspectionSerial++
+  inspectionController?.abort()
+  inspectionController = null
+  uncertainCreate.value = readAttempt(attemptKey())
+  inspectingCreate.value = false
+  createInspection.value = ''
+  createInspectionCompleted.value = false
+  createConfirmed.value = false
+  createRejected.value = false
+})
 const nameInput = ref<HTMLInputElement | null>(null)
+const title = ref<HTMLElement | null>(null)
 const form = ref<HTMLFormElement | null>(null)
 const settings = ref<HTMLDetailsElement | null>(null)
 const templatePicker = ref<HTMLDialogElement | null>(null)
@@ -116,7 +241,8 @@ const isHarness = computed(() => backendType.value === AGENT_BACKEND_HARNESS)
 // chat endpoint cannot drive a coding harness, and a `claude setup-token` value
 // is not a bearer any chat API would accept. So each picker offers only its own.
 const chatCredentials = computed(() => { revision.value; return props.store.chatCredentials() })
-const harnessCredentials = computed(() => { revision.value; return props.store.harnessCredentials().filter(item => !credentialUnavailable(item)) })
+const allHarnessCredentials = computed(() => { revision.value; return props.store.harnessCredentials() })
+const harnessCredentials = computed(() => allHarnessCredentials.value.filter(item => !credentialUnavailable(item)))
 const edgeSlice = computed(() => { revision.value; return { ...props.store.edges } })
 // A runner is a process on a machine, so a KubernetesCluster edge can never host
 // one. It is filtered here as well as refused by the write path: an option that
@@ -174,6 +300,9 @@ const connectionSlice = computed(() => { revision.value; return { ...props.store
 const connections = computed(() => connectionSlice.value.data)
 const githubSelectionUnavailable = computed(() => connectionSlice.value.hasSnapshot && Boolean(harnessGitHubConnection.value) &&
   !usableGitHubConnections.value.some(connection => connection.metadata.name === harnessGitHubConnection.value))
+const genericGithubOptions = computed(() => githubSelectionUnavailable.value
+  ? [...githubConnectionOptions.value, { value: harnessGitHubConnection.value, label: `${harnessGitHubConnection.value} · unavailable` }]
+  : githubConnectionOptions.value)
 const connectionSetupHref = (type?: string) => portalHref(
   '/providers/agents/#/create/connection' + (type ? '/' + type : ''), props.api.tenant(),
 )
@@ -181,6 +310,8 @@ const githubSetupHref = computed(() => githubConnections.value.length
   ? portalHref('/providers/agents/#/connections', props.api.tenant())
   : connectionSetupHref('github'))
 const harnessSetupHref = computed(() => portalHref('/providers/agents/#/create/model/harness', props.api.tenant()))
+const modelsHref = computed(() => portalHref('/providers/agents/#/models', props.api.tenant()))
+const harnessManagementHref = computed(() => portalHref('/providers/agents/#/models/provider-connections', props.api.tenant()))
 const reviewerSetupOpened = ref(false)
 const pendingRefresh = new Set<'edges' | 'credentials' | 'connections'>()
 function openReviewerSetup(resource: 'edges' | 'credentials' | 'connections'): void {
@@ -316,11 +447,12 @@ function openTemplates(): void {
 }
 
 const guidance = computed(() => {
-  if (isCodeReviewer.value) return { title: 'Review behavior', description: 'Reports findings in chat and posts a GitHub review only when asked.' }
   if (isNewsReporter.value) return { title: 'Scheduled digest', description: 'Review the schedule and destination before creating the agent.' }
-  if (isResearcher.value) return { title: 'Research behavior', description: 'Investigates independent questions in parallel.' }
-  if (isWorkspaceAssistant.value) return { title: 'Workspace behavior', description: 'Asks before making changes.' }
-  return { title: 'After you create the agent', description: 'A conversation opens when the agent is created.' }
+  if (selectedTemplate.value && customPrompt.value) return { title: 'Custom instructions', description: 'Review your instructions to confirm how this agent should behave.' }
+  if (isCodeReviewer.value) return { title: 'Review behavior', description: 'Default instructions ask it to report findings in chat and post a GitHub review only when asked.' }
+  if (isResearcher.value) return { title: 'Research behavior', description: 'Default instructions ask it to investigate independent questions in parallel.' }
+  if (isWorkspaceAssistant.value) return { title: 'Workspace behavior', description: 'Default instructions ask it to ask before making changes.' }
+  return { title: 'Create an agent', description: 'Choose how this agent will run and what it should do.' }
 })
 
 async function applyTeamExample(example: string): Promise<void> {
@@ -370,6 +502,18 @@ const requiresReview = computed(() => {
     access?.toolsets?.length || access?.connections?.length ||
     connectionSlots.value.some(slot => slotWiring.value[slot.key]))
 })
+const guidanceValues = computed(() => [
+  { label: 'Agent', value: name.value.trim() || 'Not entered yet', technical: true },
+  { label: 'Template', value: selectedTemplate.value?.spec.displayName || (template.value ? 'Loading template' : 'None') },
+  { label: 'Execution', value: isHarness.value ? 'Coding harness' : 'Chat model' },
+  ...(selectedTemplate.value?.spec.schedules?.length
+    ? [{ label: 'Schedules', value: String(selectedTemplate.value.spec.schedules.length) }]
+    : []),
+])
+const guidanceNextSteps = computed(() => [
+  ...(requiresReview.value ? ['Review any schedules and background access before creation.'] : []),
+  'A conversation opens when the agent is created.',
+])
 const canSubmit = computed(() => {
   if (template.value && !selectedTemplate.value) return false
   if (!selectedTemplate.value) return isHarness.value
@@ -383,16 +527,122 @@ const canSubmit = computed(() => {
     connectionSlots.value.every(slot => !slot.required || hasOption(connectionOptions(slot.connectionType || '', true), slotWiring.value[slot.key]))
 })
 
+let stopInitialFocus = () => {}
 onMounted(() => {
-  void nextTick(() => nameInput.value?.focus())
+  const authority = captureAuthority()
+  const epoch = props.authorityEpoch
+  const session = props.createSession
+  const initialFocus = document.activeElement
+  let movedFocus = false
+  const onFocus = (event: FocusEvent) => {
+    // The route owner focuses the page title during navigation.
+    if (event.target !== title.value) movedFocus = true
+  }
+  document.addEventListener('focusin', onFocus)
+  const stopWatch = watch(nameInput, input => {
+    if (!input) return
+    void nextTick(() => {
+      const active = document.activeElement
+      if (!movedFocus && props.initialFocusAllowed && authorityIsCurrent(authority) && props.authorityEpoch === epoch &&
+          props.createSession === session && (active === initialFocus || active === document.body || active === title.value)) input.focus()
+      stopInitialFocus()
+    })
+  }, { immediate: true, flush: 'post' })
+  stopInitialFocus = () => {
+    stopWatch()
+    document.removeEventListener('focusin', onFocus)
+  }
   if (template.value) void loadTemplates()
   window.addEventListener('focus', refreshAfterSetup)
   document.addEventListener('visibilitychange', refreshOnVisibility)
 })
 onUnmounted(() => {
+  inspectionSerial++
+  inspectionController?.abort()
+  inspectionController = null
+  stopInitialFocus()
   window.removeEventListener('focus', refreshAfterSetup)
   document.removeEventListener('visibilitychange', refreshOnVisibility)
 })
+
+async function inspectUncertainCreate(): Promise<void> {
+  const uncertain = uncertainCreate.value
+  if (!uncertain || inspectingCreate.value) return
+  const serial = ++inspectionSerial
+  const controller = new AbortController()
+  inspectionController = controller
+  const authority = captureAuthority()
+  const epoch = props.authorityEpoch
+  const session = props.createSession
+  const current = () => serial === inspectionSerial && authorityIsCurrent(authority) &&
+    props.authorityEpoch === epoch && props.createSession === session && uncertainCreate.value === uncertain
+  inspectingCreate.value = true
+  createInspectionCompleted.value = false
+  createInspection.value = ''
+  try {
+    const agents = await props.api.listAgents(controller.signal)
+    if (!current()) return
+    createInspection.value = agents.some(agent => agent.metadata.name === uncertain.name)
+      ? `An agent named “${uncertain.name}” is present. Its name alone does not establish which request created it. Review it in Agents.`
+      : `No agent named “${uncertain.name}” was found. The original request may still be processing; check again before sending another request.`
+    createInspectionCompleted.value = true
+  } catch {
+    if (current()) createInspection.value = 'Could not check Agents. Try again before sending another request.'
+  } finally {
+    if (current()) {
+      inspectingCreate.value = false
+      inspectionController = null
+    }
+  }
+}
+
+function allowAnotherCreate(): void {
+  if (!uncertainCreate.value || !createInspectionCompleted.value || inspectingCreate.value) return
+  const focused = document.activeElement
+  const authority = captureAuthority()
+  const epoch = props.authorityEpoch
+  const session = props.createSession
+  inspectionSerial++
+  if (!clearAttempt(recoveryRecordKey, recoveryRecord)) {
+    if (refreshChangedRecovery()) restoreRecoveryFocus(focused, authority, epoch, session)
+    else createInspection.value = 'Could not clear the recovery record. Check browser storage and try again.'
+    return
+  }
+  uncertainCreate.value = readAttempt(attemptKey())
+  createInspection.value = ''
+  createInspectionCompleted.value = false
+  createConfirmed.value = false
+  createRejected.value = false
+  restoreRecoveryFocus(focused, authority, epoch, session)
+}
+
+// Persist only the submitted identity before dispatch. The draft can contain
+// sensitive instructions and is deliberately never stored here.
+async function runCreateAttempt<T>(name: string, template: boolean, run: () => Promise<T>, needsReview: (result: T) => boolean = () => false): Promise<T> {
+  const key = attemptKey()
+  const attempt: CreateAttempt = { name, template, id: crypto.randomUUID() }
+  submittedAttemptId = attempt.id
+  const recordKey = key ? `${key}:${attempt.id}` : null
+  const record = JSON.stringify(attempt)
+  if (key) {
+    const previous = readAttempt(key)
+    if (previous) uncertainCreate.value = previous
+    if (previous || unreadableAttempt.value || storageUnavailable.value) throw new Error('A previous create request needs inspection before another request.')
+    try { localStorage.setItem(recordKey!, record) } catch { throw new Error('Could not save create recovery state. Check browser storage and try again.') }
+  }
+  try {
+    const result = await run()
+    if (!needsReview(result) && !clearAttempt(recordKey, record)) {
+      throw { reason: 'AgentCreateRecoveryClearFailed' }
+    }
+    return result
+  } catch (error) {
+    if (!['AgentCreateUnknown', 'AgentCreateRecoveryClearFailed'].includes((error as { reason?: string })?.reason || '') && !clearAttempt(recordKey, record)) {
+      throw { reason: 'AgentCreateRejectedRecoveryClearFailed' }
+    }
+    throw error
+  }
+}
 
 function clearErrors(): void {
   for (const key of Object.keys(errors)) delete errors[key]
@@ -438,7 +688,7 @@ function cancel(): void {
 }
 
 async function submit(): Promise<void> {
-  if (busy.value) return
+  if (busy.value || uncertainCreate.value || unreadableAttempt.value || storageUnavailable.value) return
   clearErrors()
   const normalizedName = name.value.trim()
   if (!normalizedName) errors.name = 'A name is required.'
@@ -453,6 +703,7 @@ async function submit(): Promise<void> {
     }
     if (!hasOption(edgeOptions.value, harnessEdge.value)) errors.harnessEdge = 'Pick the machine this agent runs its turns on.'
     if (!hasOption(harnessCredentialOptions.value, harnessCredential.value)) errors.harnessCredential = 'Pick the harness identity its turns run as.'
+    if (!selectedTemplate.value && githubSelectionUnavailable.value) errors.harnessGitHubConnection = 'Choose an available GitHub connection or remove it.'
   } else if (!credentialOptions.value.some(option => option.value === modelCredential.value)) {
     errors.modelCredential = 'Pick the model this agent reasons with.'
   }
@@ -504,24 +755,39 @@ async function submit(): Promise<void> {
   }
   const prompt = systemPrompt.value.trim()
   if (prompt) body.systemPrompt = prompt
+  const authority = captureAuthority()
+  const epoch = props.authorityEpoch
+  const session = props.createSession
   busy.value = true
   let result: Agent | undefined
   try {
     result = await mutate(props.store, {
-      run: () => props.api.createAgent(body),
+      run: () => runCreateAttempt(normalizedName, false, () => props.api.createAgent(body)),
       failure: 'Create failed',
       reload: ['agents'],
+      onFailure: error => {
+        const reason = (error as { reason?: string })?.reason
+        if (!['AgentCreateUnknown', 'AgentCreateRecoveryClearFailed', 'AgentCreateRejectedRecoveryClearFailed'].includes(reason || '')) return false
+        if (authorityIsCurrent(authority) && props.authorityEpoch === epoch && props.createSession === session) {
+          uncertainCreate.value = readAttempt(attemptKey())
+          if (!uncertainCreate.value && !unreadableAttempt.value && !storageUnavailable.value) uncertainCreate.value = { name: normalizedName, template: false, id: submittedAttemptId }
+          createConfirmed.value = uncertainCreate.value?.id === submittedAttemptId && reason === 'AgentCreateRecoveryClearFailed'
+          createRejected.value = uncertainCreate.value?.id === submittedAttemptId && reason === 'AgentCreateRejectedRecoveryClearFailed'
+          createInspectionCompleted.value = createRejected.value
+        }
+        return true
+      },
     })
   } finally {
     busy.value = false
   }
-  if (result) emit('create-success', {
+  if (result && authorityIsCurrent(authority) && props.authorityEpoch === epoch && props.createSession === session) emit('create-success', {
     resource: 'agent',
     name: normalizedName,
     item: result,
-    store: props.store,
-    authorityEpoch: props.authorityEpoch,
-    createSession: props.createSession,
+    store: authority.store,
+    authorityEpoch: epoch,
+    createSession: session,
   })
 }
 
@@ -573,6 +839,8 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
   })
   if (access.length) effects.push(`Background runs can use ${access.join(', ')}.`)
   const authority = captureAuthority()
+  const epoch = props.authorityEpoch
+  const session = props.createSession
 
   busy.value = true
   let result
@@ -583,25 +851,60 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
         message: effects.join(' '),
         confirmLabel: 'Create & open chat',
       })
-      if (!confirmed || !authorityIsCurrent(authority)) return
+      if (!confirmed || !authorityIsCurrent(authority) || props.authorityEpoch !== epoch || props.createSession !== session) return
+      // The review dialog can stay open while a background refresh changes the
+      // available resources. Validate the exact wiring being submitted again.
+      for (const slot of chosen.spec.wiring ?? []) {
+        const value = wiring[slot.key]
+        if (!value && !slot.required) continue
+        const options = slot.slot === 'modelCredential' ? credentialOptions.value
+          : slot.slot === 'channel' ? channelOptions.value
+            : slot.slot === 'edge' ? edgeOptions.value
+              : slot.slot === 'harnessCredential' ? harnessCredentialOptions.value
+                : slot.slot === 'githubConnection' ? githubConnectionOptions.value
+                  : slot.slot === 'connection' ? connectionOptions(slot.connectionType || '', !!slot.required)
+                    : null
+        if (!options || hasOption(options, value)) continue
+        const key = slot.slot === 'edge' ? 'harnessEdge'
+          : slot.slot === 'githubConnection' ? 'harnessGitHubConnection'
+            : slot.slot === 'connection' ? `slot-${slot.key}` : slot.slot
+        errors[key] = 'This selection is no longer available. Choose another.'
+      }
+      if (Object.keys(errors).length) {
+        void nextTick(() => form.value?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus())
+        return
+      }
     }
     result = await mutate(props.store, {
-      run: () => props.api.createAgentFromTemplate(agent, schedules),
+      run: () => runCreateAttempt(normalizedName, schedules.length > 0, () => props.api.createAgentFromTemplate(agent, schedules),
+        result => result.warnings.some(warning => warning.outcome === 'unknown')),
       failure: 'Create failed',
       reload: schedules.length ? ['agents', 'schedules'] : ['agents'],
+      onFailure: error => {
+        const reason = (error as { reason?: string })?.reason
+        if (!['AgentCreateUnknown', 'AgentCreateRecoveryClearFailed', 'AgentCreateRejectedRecoveryClearFailed'].includes(reason || '')) return false
+        if (authorityIsCurrent(authority) && props.authorityEpoch === epoch && props.createSession === session) {
+          uncertainCreate.value = readAttempt(attemptKey())
+          if (!uncertainCreate.value && !unreadableAttempt.value && !storageUnavailable.value) uncertainCreate.value = { name: normalizedName, template: schedules.length > 0, id: submittedAttemptId }
+          createConfirmed.value = uncertainCreate.value?.id === submittedAttemptId && reason === 'AgentCreateRecoveryClearFailed'
+          createRejected.value = uncertainCreate.value?.id === submittedAttemptId && reason === 'AgentCreateRejectedRecoveryClearFailed'
+          createInspectionCompleted.value = createRejected.value
+        }
+        return true
+      },
     })
   } finally {
     busy.value = false
   }
-  if (!result) return
-  for (const warning of result.warnings) toast('error', warning)
+  if (!result || !authorityIsCurrent(authority) || props.authorityEpoch !== epoch || props.createSession !== session) return
   emit('create-success', {
     resource: 'agent',
     name: normalizedName,
     item: result.agent,
-    store: props.store,
-    authorityEpoch: props.authorityEpoch,
-    createSession: props.createSession,
+    warnings: result.warnings,
+    store: authority.store,
+    authorityEpoch: epoch,
+    createSession: session,
   })
 }
 </script>
@@ -613,7 +916,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
     </button>
     <header class="k-create-header agents-create-header">
       <div>
-        <h1 class="k-create-title">New agent</h1>
+        <h1 ref="title" class="k-create-title">New agent</h1>
         <p v-if="selectedTemplate" class="k-create-description" data-selected-template>{{ selectedTemplate.spec.displayName }} template</p>
         <p v-else class="k-create-description">Set up an agent for your workspace.</p>
       </div>
@@ -763,6 +1066,13 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
               </div>
             </section>
 
+            <div v-if="channelSlot || connectionSlots.length || githubSlot || (isHarness && !selectedTemplate)" id="agent-create-connections-state">
+              <div v-if="connectionSlice.error" class="k-inline-notification" :class="connectionSlice.hasSnapshot ? 'k-inline-notification--warning' : 'k-inline-notification--error'" :role="connectionSlice.hasSnapshot ? 'status' : 'alert'">
+                <span class="k-inline-notification__body"><span class="k-inline-notification__message">{{ connectionSlice.hasSnapshot ? 'Showing the last loaded connections.' : 'Could not load connections.' }} {{ connectionSlice.error }}</span></span>
+                <button class="k-inline-notification__action" type="button" :disabled="busy || connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry connections' }}</button>
+              </div>
+              <p v-else-if="!connectionSlice.hasSnapshot" role="status">Loading connections…</p>
+            </div>
             <section v-if="digestParameter" class="agents-create-section" aria-labelledby="agent-create-digest-heading">
               <h2 id="agent-create-digest-heading">Digest delivery</h2>
               <AgentDigestSchedule :model-value="parameters[digestParameter.key] || ''" :key="template"
@@ -771,11 +1081,11 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                 :default-value="digestParameter.default || ''" :disabled="busy" :error="errors[`param-${digestParameter.key}`]" />
               <label v-if="channelSlot">
                 <span id="agent-create-channel-label">Primary channel{{ channelSlot?.required ? ' *' : ' (optional)' }}</span>
-                <FormSelect id="agent-create-channel" v-model="channel" :options="channelOptions" :disabled="busy" :required="!!channelSlot?.required" :invalid="Boolean(errors.channel)" labelledby="agent-create-channel-label" :describedby="['agent-create-channel-hint', errors.channel ? 'agent-create-channel-error' : ''].filter(Boolean).join(' ')" />
+                <FormSelect id="agent-create-channel" v-model="channel" :options="channelOptions" :disabled="busy || !connectionSlice.hasSnapshot" :required="!!channelSlot?.required" :invalid="Boolean(errors.channel)" labelledby="agent-create-channel-label" :describedby="['agent-create-channel-hint', 'agent-create-connections-state', errors.channel ? 'agent-create-channel-error' : ''].filter(Boolean).join(' ')" />
                 <span v-if="errors.channel" id="agent-create-channel-error" class="agents-fielderr" role="alert">{{ errors.channel }}</span>
                 <span id="agent-create-channel-hint" class="agents-hint">{{ channelSlot?.required && !hasOption(channelOptions, channel) ? 'Choose a channel for the digest.' : channelSlot?.description || 'Where this agent messages you.' }}</span>
               </label>
-              <div v-if="channelSlot?.required && !channels.length" class="agents-form-actions">
+              <div v-if="connectionSlice.hasSnapshot && channelSlot?.required && !channels.length" class="agents-form-actions">
                 <a class="k-dashboard-action agents-setup-link" :href="connectionSetupHref()" target="_blank" rel="noopener noreferrer"
                   aria-label="Add a channel (opens in a new tab)" @click="pendingRefresh.add('connections')" @auxclick.middle="pendingRefresh.add('connections')">
                   Add a channel <ExternalLink aria-hidden="true" />
@@ -840,7 +1150,11 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                     <div v-if="isCodeReviewer && !harnessCredentials.length" class="agents-template-parameter">
                       <span>Harness credential *</span>
                       <div class="agents-form-actions">
-                        <a class="k-dashboard-action agents-setup-link" :href="harnessSetupHref" target="_blank" rel="noopener noreferrer"
+                        <a v-if="allHarnessCredentials.length" class="k-dashboard-action agents-setup-link" :href="harnessManagementHref" target="_blank" rel="noopener noreferrer"
+                          aria-label="Review harness identities (opens in a new tab)" @click="openReviewerSetup('credentials')" @auxclick.middle="openReviewerSetup('credentials')">
+                          Review unavailable harness identities <ExternalLink aria-hidden="true" />
+                        </a>
+                        <a v-else class="k-dashboard-action agents-setup-link" :href="harnessSetupHref" target="_blank" rel="noopener noreferrer"
                           aria-label="Add harness credential (opens in a new tab)" @click="openReviewerSetup('credentials')" @auxclick.middle="openReviewerSetup('credentials')">
                           Add harness credential <ExternalLink aria-hidden="true" />
                         </a>
@@ -862,10 +1176,15 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                       <span v-if="errors.harnessCredential" id="agent-create-harnesscred-error" class="agents-fielderr" role="alert">{{ errors.harnessCredential }}</span>
                       <span v-if="!isCodeReviewer" id="agent-create-harnesscred-hint" class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness}.` : 'Choose a Claude Code or Codex credential.' }}</span>
                       <span v-if="harnessCredentials.length === 0" id="agent-create-harnesscred-empty" class="agents-hint">
-                        No harness identities yet —
+                        <template v-if="allHarnessCredentials.length">
+                          No available harness identities.
+                          <a class="k-dashboard-action agents-setup-link" :href="harnessManagementHref" target="_blank" rel="noopener noreferrer" @click="pendingRefresh.add('credentials')" @auxclick.middle="pendingRefresh.add('credentials')">Review harness identities <ExternalLink aria-hidden="true" /></a>
+                          <button type="button" class="k-btn k-btn--ghost" :disabled="busy || credentials.loading" @click="store.load('credentials')">Check again</button>
+                        </template>
+                        <template v-else>No harness identities yet —
                         <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('harness')">
                           add a Claude Code or Codex one under Models → Provider connections
-                        </button>
+                        </button></template>
                       </span>
                     </label>
                   </div>
@@ -895,9 +1214,9 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                     <span id="agent-create-github-label">GitHub connection{{ githubSlot?.required ? ' *' : '' }}</span>
                     <FormSelect v-if="usableGitHubConnections.length || !githubSlot?.required" id="agent-create-github" name="harnessGitHubConnection"
                       :model-value="githubSelectionUnavailable ? '' : harnessGitHubConnection" @update:model-value="harnessGitHubConnection = $event"
-                      :options="githubConnectionOptions" :disabled="busy" :required="!!githubSlot?.required"
+                      :options="githubConnectionOptions" :disabled="busy || !connectionSlice.hasSnapshot" :required="!!githubSlot?.required"
                       :invalid="githubSelectionUnavailable || Boolean(errors.harnessGitHubConnection)" labelledby="agent-create-github-label"
-                      :describedby="[githubConnectionStatus ? 'agent-create-github-status' : '', !isCodeReviewer ? 'agent-create-github-hint' : ''].filter(Boolean).join(' ')" />
+                      :describedby="[githubSlot ? 'agent-create-connections-state' : '', githubConnectionStatus ? 'agent-create-github-status' : '', !isCodeReviewer ? 'agent-create-github-hint' : ''].filter(Boolean).join(' ')" />
                     <p v-if="!isCodeReviewer" id="agent-create-github-hint" class="agents-hint">{{ githubSlot?.description }}</p>
                     <div v-if="githubSlot?.required && !usableGitHubConnections.length && connectionSlice.hasSnapshot" class="agents-form-actions">
                       <a class="k-dashboard-action agents-setup-link" :href="githubSetupHref" target="_blank" rel="noopener noreferrer"
@@ -908,8 +1227,6 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                       </a>
                       <button v-if="!isCodeReviewer || connectionSlice.error" type="button" class="k-btn k-btn--ghost" :disabled="busy || connectionSlice.loading" @click="store.load('connections')">Check again</button>
                     </div>
-                    <button v-if="!connectionSlice.hasSnapshot && connectionSlice.error" class="k-btn k-btn--ghost" type="button"
-                      :disabled="busy || connectionSlice.loading" @click="store.load('connections')">Retry GitHub connections</button>
                     <p v-if="githubConnectionStatus" id="agent-create-github-status" role="status"
                       :class="githubSelectionUnavailable ? 'agents-fielderr' : 'agents-hint'">{{ githubConnectionStatus }}</p>
                   </div>
@@ -941,34 +1258,41 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                     <span id="agent-create-model-hint" class="agents-hint">{{ selectedTemplate && !hasOption(credentialOptions, modelCredential) ? 'Choose a model to create this agent.' : chatCredentials.some(model => model.name === modelCredential && model.ready === true) ? 'Ready to use' : 'The default model for this agent.' }}</span>
                   </label>
                   <p v-if="credentialOptions.length === 0" id="agent-create-model-empty" class="agents-hint">
-                    This workspace needs a chat model.
-                    <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('chat')">Connect a model</button>
+                    <template v-if="chatCredentials.length">
+                      No available chat models.
+                      <a class="k-dashboard-action agents-setup-link" :href="modelsHref" target="_blank" rel="noopener noreferrer" @click="pendingRefresh.add('credentials')" @auxclick.middle="pendingRefresh.add('credentials')">Review models <ExternalLink aria-hidden="true" /></a>
+                      <button type="button" class="k-btn k-btn--ghost" :disabled="busy || credentials.loading" @click="store.load('credentials')">Check again</button>
+                    </template>
+                    <template v-else>This workspace needs a chat model.
+                      <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('chat')">Connect a model</button>
+                    </template>
                   </p>
                 </div>
-                <label v-for="slot in connectionSlots" :key="slot.key">
+                <div v-for="slot in connectionSlots" :key="slot.key">
                   <span :id="`agent-create-slot-${slot.key}-label`">{{ slot.connectionType === 'websearch' ? 'Web search' : slotLabel(slot) }}{{ slot.required ? ' *' : ' (optional)' }}</span>
                   <FormSelect
                     :id="`agent-create-slot-${slot.key}`"
                     :model-value="slotWiring[slot.key] ?? ''"
                     @update:model-value="value => { slotWiring[slot.key] = value }"
                     :options="connectionOptions(slot.connectionType || '', !!slot.required)"
-                    :disabled="busy"
+                    :disabled="busy || !connectionSlice.hasSnapshot"
                     :required="!!slot.required"
                     :invalid="Boolean(errors[`slot-${slot.key}`])"
                     :labelledby="`agent-create-slot-${slot.key}-label`"
-                    :describedby="[`agent-create-slot-${slot.key}-hint`, errors[`slot-${slot.key}`] ? `agent-create-slot-${slot.key}-error` : ''].filter(Boolean).join(' ')"
+                    :describedby="[`agent-create-slot-${slot.key}-hint`, 'agent-create-connections-state', errors[`slot-${slot.key}`] ? `agent-create-slot-${slot.key}-error` : ''].filter(Boolean).join(' ')"
                   />
                   <span v-if="errors[`slot-${slot.key}`]" :id="`agent-create-slot-${slot.key}-error`" class="agents-fielderr" role="alert">{{ errors[`slot-${slot.key}`] }}</span>
                   <span :id="`agent-create-slot-${slot.key}-hint`" class="agents-hint">{{ slot.connectionType === 'websearch' && !slotWiring[slot.key] ? 'Without web search, the agent can only read pages you link it to.' : slot.description }}</span>
-                </label>
+                  <a v-if="connectionSlice.hasSnapshot && connectionOptions(slot.connectionType || '', !!slot.required).length === 1" class="k-dashboard-action agents-setup-link" :href="connectionSetupHref(slot.connectionType)" target="_blank" rel="noopener noreferrer" @click="pendingRefresh.add('connections')" @auxclick.middle="pendingRefresh.add('connections')">Add {{ slotLabel(slot) }} <ExternalLink aria-hidden="true" /></a>
+                </div>
               </div>
               <label v-if="channelSlot && !digestParameter">
                 <span id="agent-create-channel-label">Primary channel{{ channelSlot?.required ? ' *' : ' (optional)' }}</span>
-                <FormSelect id="agent-create-channel" v-model="channel" :options="channelOptions" :disabled="busy" :required="!!channelSlot?.required" :invalid="Boolean(errors.channel)" labelledby="agent-create-channel-label" :describedby="['agent-create-channel-hint', errors.channel ? 'agent-create-channel-error' : ''].filter(Boolean).join(' ')" />
+                <FormSelect id="agent-create-channel" v-model="channel" :options="channelOptions" :disabled="busy || !connectionSlice.hasSnapshot" :required="!!channelSlot?.required" :invalid="Boolean(errors.channel)" labelledby="agent-create-channel-label" :describedby="['agent-create-channel-hint', 'agent-create-connections-state', errors.channel ? 'agent-create-channel-error' : ''].filter(Boolean).join(' ')" />
                 <span v-if="errors.channel" id="agent-create-channel-error" class="agents-fielderr" role="alert">{{ errors.channel }}</span>
                 <span id="agent-create-channel-hint" class="agents-hint">{{ channelSlot?.description || 'Optional — where this agent messages you.' }}</span>
               </label>
-              <div v-if="!digestParameter && channelSlot?.required && !channels.length" class="agents-form-actions">
+              <div v-if="!digestParameter && connectionSlice.hasSnapshot && channelSlot?.required && !channels.length" class="agents-form-actions">
                 <a class="k-dashboard-action agents-setup-link" :href="connectionSetupHref()" target="_blank" rel="noopener noreferrer"
                   aria-label="Add a channel (opens in a new tab)" @click="pendingRefresh.add('connections')" @auxclick.middle="pendingRefresh.add('connections')">
                   Add a channel <ExternalLink aria-hidden="true" />
@@ -986,8 +1310,8 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
               <p v-if="!isHarness && !channelSlot && !connectionSlots.length" class="agents-hint">Add connections or automation after creating the agent.</p>
               <label v-if="isHarness">
                 <span id="agent-create-github-label">GitHub connection{{ githubSlot?.required ? ' *' : '' }}</span>
-                <FormSelect id="agent-create-github" v-model="harnessGitHubConnection" name="harnessGitHubConnection" :options="githubConnectionOptions" :disabled="busy" :required="!!githubSlot?.required" :invalid="Boolean(errors.harnessGitHubConnection)" labelledby="agent-create-github-label" :describedby="['agent-create-github-hint', errors.harnessGitHubConnection ? 'agent-create-github-error' : ''].filter(Boolean).join(' ')" />
-                <span v-if="errors.harnessGitHubConnection" id="agent-create-github-error" class="agents-fielderr" role="alert">{{ errors.harnessGitHubConnection }}</span>
+                <FormSelect id="agent-create-github" v-model="harnessGitHubConnection" name="harnessGitHubConnection" :options="genericGithubOptions" :disabled="busy || !connectionSlice.hasSnapshot" :required="!!githubSlot?.required" :invalid="githubSelectionUnavailable || Boolean(errors.harnessGitHubConnection)" labelledby="agent-create-github-label" :describedby="['agent-create-github-hint', 'agent-create-connections-state', githubSelectionUnavailable || errors.harnessGitHubConnection ? 'agent-create-github-error' : ''].filter(Boolean).join(' ')" />
+                <span v-if="githubSelectionUnavailable || errors.harnessGitHubConnection" id="agent-create-github-error" class="agents-fielderr" role="alert">{{ errors.harnessGitHubConnection || 'The selected GitHub connection is unavailable. Choose another or remove it.' }}</span>
                 <span id="agent-create-github-hint" class="agents-hint">{{ githubSlot?.description || 'Optional — its token reaches the harness as GH_TOKEN for each turn, never the machine, so `gh` can read and review pull requests.' }}</span>
               </label>
               <p v-if="isHarness" class="agents-hint">A coding harness uses its own tools, configured on the selected machine.</p>
@@ -1032,15 +1356,39 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
             </details>
           </div>
 
-          <CreateGuidance :title="guidance.title" :description="guidance.description" />
+          <CreateGuidance :title="guidance.title" :description="guidance.description" :values="guidanceValues" :next-steps="guidanceNextSteps" />
         </div>
 
         <div v-if="errors.template" class="k-inline-notification k-inline-notification--error" role="alert">
           <span class="k-inline-notification__body"><span class="k-inline-notification__message">{{ errors.template }}</span></span>
         </div>
+        <div v-if="storageUnavailable" class="k-inline-notification k-inline-notification--error" role="alert">
+          <p>Browser storage is unavailable. Retry reading recovery state before creating an agent.</p>
+          <button type="button" class="k-btn k-btn--ghost" @click="retryAttemptRead">Retry reading recovery state</button>
+        </div>
+        <div v-if="unreadableAttempt" class="k-inline-notification k-inline-notification--error" role="alert">
+          <p>A previous agent creation recovery record could not be read. Check Agents and any schedules for a previous request before allowing another request; it may still be processing.</p>
+          <a :href="agentsHref" target="_blank" rel="noopener noreferrer">View Agents</a>
+          <button type="button" class="k-btn k-btn--ghost" @click="clearUnreadableAttempt">Clear unreadable record and allow another request</button>
+          <p v-if="createInspection" role="status">{{ createInspection }}</p>
+        </div>
+        <div v-if="uncertainCreate" class="k-inline-notification k-inline-notification--error" role="alert">
+          <span class="k-inline-notification__body"><span class="k-inline-notification__message">
+            <template v-if="createConfirmed">Agent “{{ uncertainCreate.name }}” was created, but its recovery record could not be cleared. Check browser storage and review the agent before starting another attempt.</template>
+            <template v-else-if="createRejected">The request for agent “{{ uncertainCreate.name }}” was rejected, but its recovery record could not be cleared. Check browser storage, then allow another request.</template>
+            <template v-else>Agent “{{ uncertainCreate.name }}” may have been created. Check Agents before starting another attempt.</template>
+            <template v-if="uncertainCreate.template && !createRejected"> Template schedules may have been submitted. Review the agent and its schedules before creating any schedules separately.</template>
+            Keep this page open to retain your draft while you check.
+            <template v-if="!attemptKey()"> Recovery state cannot be retained after leaving this page because your user identity is unavailable.</template>
+          </span></span>
+          <a v-if="!createRejected" :href="agentsHref" target="_blank" rel="noopener noreferrer">View Agents</a>
+          <button v-if="!createRejected" type="button" class="k-btn k-btn--ghost" :disabled="inspectingCreate" @click="inspectUncertainCreate">{{ inspectingCreate ? 'Checking…' : 'Check agent' }}</button>
+          <p v-if="createInspection" role="status">{{ createInspection }}</p>
+          <button v-if="createInspectionCompleted" type="button" class="k-btn k-btn--ghost" @click="allowAnotherCreate">Allow another request</button>
+        </div>
         <div class="k-create-actions">
           <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">Cancel</button>
-          <button class="k-btn k-btn--primary" type="submit" :disabled="busy || !canSubmit">
+          <button class="k-btn k-btn--primary" type="submit" :disabled="busy || !!uncertainCreate || unreadableAttempt || storageUnavailable || !canSubmit">
             <Check aria-hidden="true" /> {{ busy ? 'Creating…' : requiresReview ? 'Review & create' : 'Create & open chat' }}
           </button>
         </div>

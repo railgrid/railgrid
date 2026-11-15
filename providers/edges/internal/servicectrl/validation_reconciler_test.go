@@ -31,6 +31,33 @@ import (
 	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
 )
 
+func TestKubernetesServiceTarget(t *testing.T) {
+	for _, tt := range []struct {
+		name, host string
+		ref        *edgesv1alpha1.KubeServiceRef
+		missing    bool
+		wantHost   string
+	}{
+		{"host only", "::1", nil, false, "::1"},
+		{"host takes precedence", "::1", &edgesv1alpha1.KubeServiceRef{Name: "svc", Namespace: "ns"}, false, "::1"},
+		{"target ref", "", &edgesv1alpha1.KubeServiceRef{Name: "svc", Namespace: "ns"}, false, "svc.ns.svc"},
+		{"missing both", "", nil, true, ""},
+		{"incomplete target", "", &edgesv1alpha1.KubeServiceRef{Name: "svc"}, true, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			es := &edgesv1alpha1.Service{Spec: edgesv1alpha1.ServiceSpec{
+				EdgeRef: edgesv1alpha1.ServiceEdgeRef{Kind: kubernetesClusterKind}, Host: tt.host, TargetRef: tt.ref,
+			}}
+			if got := missingKubeTarget(es); got != tt.missing {
+				t.Fatalf("missingKubeTarget() = %t, want %t", got, tt.missing)
+			}
+			if !tt.missing && targetHost(es) != tt.wantHost {
+				t.Errorf("targetHost() = %q, want %q", targetHost(es), tt.wantHost)
+			}
+		})
+	}
+}
+
 // TestProbeRetryBackoff pins the retry schedule a failing probe follows: a
 // Service created before its backend answers is re-probed after 5s, then
 // doubling, never slower than the 10-minute cycle; a success resets it; and

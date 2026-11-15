@@ -53,8 +53,8 @@ test('impact drill-down preserves mounted tab state and falls back to the host r
   assert.match(app, /<ImpactView v-if="impact"/u)
   assert.match(app, /<div v-show="!impact" class="kuery-collection-surfaces">/u)
   assert.doesNotMatch(app, /<template v-else>/u)
-  assert.match(app, /:active="!impact && active === 'topology'"/u)
-  assert.match(app, /:active="!impact && active === 'playground'"/u)
+  assert.match(app, /:active="!impact && edgesAvailable && active === 'topology'"/u)
+  assert.match(app, /:active="!impact && edgesAvailable && active === 'playground'"/u)
   assert.match(impact, /import \{ portalHref \} from '\.\.\/portalkit\/navigation'/u)
   assert.match(impact, /<ResourceBackLink :href="portalHref\('\/providers\/kuery'\)"/u)
   assert.doesNotMatch(impact, /href="\/(?:ui\/)?providers\/kuery"/u)
@@ -71,11 +71,14 @@ test('workspace discovery reads kube objects and fences late responses', () => {
   assert.match(app, /const request = requestContext\.value/u)
   assert.match(app, /const isCurrent = \(\): boolean => requestID === current/u)
   assert.match(app, /const kube = kubeClientFor\(request\)/u)
-  assert.match(app, /const discovered = await listEdges\(kube\)/u)
+  assert.match(app, /const discovered = await listEdgeInventory\(kube\)/u)
   assert.doesNotMatch(app, /listSavedViews/u)
-  assert.match(app, /if \(!isCurrent\(\)\) return[\s\S]*edges\.value = discovered/u)
+  assert.match(app, /if \(!isCurrent\(\)\) return[\s\S]*edges\.value = discovered\.connected/u)
+  assert.match(app, /edgeTotal\.value = discovered\.total/u)
+  assert.match(app, /edgeTotal \? 'View edges' : 'Connect edge'/u)
+  assert.match(app, /edgeTotal \? '\/providers\/edges' : '\/providers\/edges\/connect\/edge\/kubernetes'/u)
   assert.match(app, /if \(isCurrent\(\)\) loading\.value = false/u)
-  assert.match(app, /watch\(\[identity, token\],[\s\S]*currentIdentity === previousIdentity && currentToken !== previousToken/u)
+  assert.match(app, /watch\(\[identity, token, \(\) => context\.value\?\.fetch\],[\s\S]*currentIdentity === previousIdentity && \(currentToken !== previousToken \|\| currentFetch !== previousFetch\)/u)
   // The gate is the host transport and a workspace, never the deprecated token.
   assert.doesNotMatch(app, /request\.token &&/u)
   // No /api/ route survives anywhere in the shell.
@@ -88,7 +91,7 @@ test('workspace discovery reads kube objects and fences late responses', () => {
 test('ad-hoc queries run as a verb on a per-user SavedView', () => {
   assert.match(app, /const scratchView = ref\(''\)/u)
   assert.match(app, /await playgroundViewName\(request\.user\)/u)
-  assert.match(app, /await ensurePlaygroundView\(kube, name, request\.user\)/u)
+  assert.match(app, /await ensurePlaygroundView\(kube, name, request\.user, isCurrent\)/u)
   for (const view of ['TopologyView', 'InventoryView', 'PlaygroundView', 'ImpactView']) {
     assert.match(app, new RegExp(`<${view}[^>]*:saved-view="scratchView"`, 'u'))
   }
@@ -156,6 +159,8 @@ test('dashboard tile fences post-await writes to mounted context and request', (
   assert.match(tile, /this\._contextGeneration \+= 1[\s\S]*this\._poller\?\.stop\(\)/u)
   assert.match(tile, /class="kuery-tile-live" role="status" aria-live="polite" aria-atomic="true"/u)
   assert.match(tile, /dashboardTileSemanticClass\.root/u)
+  assert.match(tile, /Kubernetes edges connected/u)
+  assert.doesNotMatch(tile, /edges engaged/u)
   assert.match(tile, /dashboardTileSemanticClass\.row/u)
   assert.match(tile, /dashboardTileSemanticClass\.empty/u)
   assert.match(styles, /railgrid-dashboard-tile-kuery \{ display: block; font-size: 13px; \}/u)

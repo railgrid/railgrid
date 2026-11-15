@@ -41,7 +41,7 @@ test('announces asynchronous conversation and settings feedback', () => {
   assert.match(app, /<InlineNotification\s+v-if="projectSettingsError \|\| projectSettingsStatus"\s+:tone="projectSettingsError \? 'error' : 'success'"/)
   assert.match(notification, /const assertive = \(\) => props.tone === 'error'/)
   assert.match(notification, /:role="liveRole\(\)"[\s\S]*:aria-live="liveMode\(\)"[\s\S]*aria-atomic="true"/)
-  assert.match(app, /v-if="error && !projectDeletionError"[^>]*role="alert"[^>]*aria-live="assertive"[^>]*aria-atomic="true"/)
+  assert.match(app, /v-if="error"[^>]*role="alert"[^>]*aria-live="assertive"[^>]*aria-atomic="true"/)
   assert.match(app, /<InlineNotification v-if="llmSettingsError"[^>]*tone="error"/)
   assert.match(app, /v-if="error"[^>]*max-w-\[860px\][^>]*role="alert"[^>]*aria-live="assertive"[^>]*aria-atomic="true"/)
   assert.match(dashboardTile, /v-else-if="error && !hasSnapshot"[^>]*role="alert"[^>]*aria-live="assertive"/)

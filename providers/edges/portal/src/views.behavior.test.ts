@@ -27,6 +27,7 @@ const api = vi.hoisted(() => ({
   setToken: vi.fn(),
   setTenant: vi.fn(),
   setHostFetch: vi.fn(),
+  isContextChangedError: (error: unknown) => (error as { reason?: string })?.reason === 'ContextChanged',
 }))
 const confirm = vi.hoisted(() => ({
   confirmDialog: vi.fn(),
@@ -44,6 +45,7 @@ import ServiceEdit from './ServiceEdit.vue'
 import ServiceCreate from './ServiceCreate.vue'
 import Workloads from './Workloads.vue'
 import WorkloadCreate from './WorkloadCreate.vue'
+import workloadCreateSource from './WorkloadCreate.vue?raw'
 import Wizard from './Wizard.vue'
 import Detail from './Detail.vue'
 import HarnessCard from './HarnessCard.vue'
@@ -254,6 +256,8 @@ const workload = {
 }
 
 beforeEach(() => {
+  const values = new Map<string, string>()
+  vi.stubGlobal('localStorage', { get length() { return values.size }, key: (index: number) => [...values.keys()][index] ?? null, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) })
   vi.clearAllMocks()
   confirm.confirmDialog.mockResolvedValue(false)
   api.fetchServiceCatalog.mockResolvedValue([])
@@ -345,6 +349,157 @@ describe('edge dashboard read state', () => {
 })
 
 describe('edge shell read authority', () => {
+  it.each([
+    ['edge', App, edge, api.deleteEdge, api.listEdges, { ctx: { tenant: 'tenant-a', user: { userId: 'user-a' }, subPath: '' } }],
+    ['service', Services, service, api.deleteEdgeService, api.listServicesPage, {}],
+    ['workload', Workloads, workload, api.deleteWorkload, api.listWorkloadsPage, {}],
+  ] as const)('keeps %s delete failure separate from read recovery', async (_label, component, resource, deleteMock, readMock, props) => {
+    confirm.confirmDialog.mockResolvedValue(true)
+    deleteMock.mockRejectedValueOnce(new Error('Deletion denied'))
+    const mounted = await mount(component, props)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      readMock.mockRejectedValueOnce(new Error('Read unavailable'))
+      await state.refresh('background')
+      expect(state.error).toBe('Read unavailable')
+      await state.onDelete(resource)
+      expect(state.deleteError).toContain('Deletion denied')
+      expect(state.error).toBe('Read unavailable')
+      await state.refresh('foreground')
+      expect(state.error).toBeNull()
+      expect(state.deleteError).toContain('Deletion denied')
+    } finally { mounted.unmount() }
+  })
+
+  it.each([
+    ['edge', App, edge, api.deleteEdge, { ctx: { tenant: 'tenant-a', user: { userId: 'user-a' }, subPath: '' } }],
+    ['service', Services, service, api.deleteEdgeService, {}],
+    ['workload', Workloads, workload, api.deleteWorkload, {}],
+  ] as const)('preserves overlapping %s deletion outcomes', async (_label, component, resource, deleteMock, props) => {
+    const older = deferred<void>()
+    const newer = deferred<void>()
+    confirm.confirmDialog.mockResolvedValue(true)
+    deleteMock.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise)
+    const mounted = await mount(component, props)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      const first = state.onDelete(resource)
+      await flush()
+      const second = state.onDelete({ ...resource, name: 'second-resource' })
+      await flush()
+      newer.resolve()
+      await second
+      older.reject(new Error('Older failure'))
+      await first
+      expect(state.deleteError).toContain(resource.name)
+      expect(state.deleteError).toContain('Older failure')
+      expect(toastMock).toHaveBeenCalledWith('info', expect.stringContaining('second-resource'))
+    } finally { mounted.unmount() }
+  })
+
+  it.each([
+    ['edge', App, edge, api.deleteEdge, { ctx: { tenant: 'tenant-a', user: { userId: 'user-a' }, subPath: '' } }],
+    ['service', Services, service, api.deleteEdgeService, {}],
+    ['workload', Workloads, workload, api.deleteWorkload, {}],
+  ] as const)('preserves %s failures when confirmations overlap', async (_label, component, resource, deleteMock, props) => {
+    const firstConfirmation = deferred<boolean>()
+    const secondConfirmation = deferred<boolean>()
+    confirm.confirmDialog.mockReturnValueOnce(firstConfirmation.promise).mockReturnValueOnce(secondConfirmation.promise)
+    deleteMock.mockRejectedValueOnce(new Error('First denial')).mockRejectedValueOnce(new Error('Second denial'))
+    const mounted = await mount(component, props)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      const first = state.onDelete(resource)
+      const second = state.onDelete({ ...resource, name: 'second-resource' })
+      firstConfirmation.resolve(true)
+      await first
+      secondConfirmation.resolve(true)
+      await second
+      expect(state.deleteError).toContain('First denial')
+      expect(state.deleteError).toContain('Second denial')
+      expect(state.deleteError).toContain('second-resource')
+    } finally { mounted.unmount() }
+  })
+
+  it.each([
+    ['service', Services, 'onDelete', service, api.deleteEdgeService],
+    ['workload', Workloads, 'onDelete', workload, api.deleteWorkload],
+  ] as const)('does not delete a %s after its collection unmounts during confirmation', async (_label, component, action, resource, deleteMock) => {
+    const confirmation = deferred<boolean>()
+    confirm.confirmDialog.mockReturnValueOnce(confirmation.promise)
+    const mounted = await mount(component)
+    await flush()
+    const deleting = mounted.instance.setupState[action](resource)
+    mounted.unmount()
+    confirmation.resolve(true)
+    await deleting
+    expect(deleteMock).not.toHaveBeenCalled()
+  })
+
+  it.each(['onDelete', 'removeService'] as const)('does not run detail %s after unmount during confirmation', async (action) => {
+    const confirmation = deferred<boolean>()
+    confirm.confirmDialog.mockReturnValueOnce(confirmation.promise)
+    api.getEdge.mockResolvedValueOnce(edge)
+    const mounted = await mount(Detail, { name: edge.name, type: edge.type })
+    await flush()
+    const deleting = action === 'onDelete' ? mounted.instance.setupState.onDelete() : mounted.instance.setupState.removeService(service.name)
+    expect(confirm.confirmDialog).toHaveBeenCalledOnce()
+    mounted.unmount()
+    confirmation.resolve(true)
+    await deleting
+    expect(api.deleteEdge).not.toHaveBeenCalled()
+    expect(api.deleteEdgeService).not.toHaveBeenCalled()
+  })
+
+  it('cancels a pending delete confirmation when the workspace changes', async () => {
+    const confirmation = deferred<boolean>()
+    confirm.confirmDialog.mockReturnValueOnce(confirmation.promise)
+    const mounted = await mount(App, { ctx: { tenant: 'tenant-a', token: 'token', user: { userId: 'user-a' }, subPath: '' } })
+    try {
+      await flush()
+      const deleting = mounted.instance.setupState.onDelete(edge)
+      mounted.instance.props.ctx = { tenant: 'tenant-b', token: 'token', user: { userId: 'user-a' }, subPath: '' }
+      await flush()
+      confirmation.resolve(true)
+      await deleting
+      expect(api.deleteEdge).not.toHaveBeenCalled()
+    } finally { mounted.unmount() }
+  })
+
+  it('cancels a pending edge delete confirmation when the shell unmounts', async () => {
+    const confirmation = deferred<boolean>()
+    confirm.confirmDialog.mockReturnValueOnce(confirmation.promise)
+    const mounted = await mount(App, { ctx: { tenant: 'tenant-a', token: 'token', user: { userId: 'user-a' }, subPath: '' } })
+    await flush()
+    const deleting = mounted.instance.setupState.onDelete(edge)
+    mounted.unmount()
+    confirmation.resolve(true)
+    await deleting
+    expect(api.deleteEdge).not.toHaveBeenCalled()
+  })
+
+  it('does not expose a previous workspace delete failure in the new workspace', async () => {
+    const deletion = deferred<void>()
+    confirm.confirmDialog.mockResolvedValueOnce(true)
+    api.deleteEdge.mockReturnValueOnce(deletion.promise)
+    const mounted = await mount(App, { ctx: { tenant: 'tenant-a', token: 'token', user: { userId: 'user-a' }, subPath: '' } })
+    try {
+      await flush()
+      const deleting = mounted.instance.setupState.onDelete(edge)
+      await flush()
+      expect(api.deleteEdge).toHaveBeenCalledWith(edge)
+      mounted.instance.props.ctx = { tenant: 'tenant-b', token: 'token', user: { userId: 'user-a' }, subPath: '' }
+      await flush()
+      deletion.reject(new Error('Old workspace delete failed'))
+      await deleting
+      expect(mounted.instance.setupState.error).toBeNull()
+      expect(mounted.instance.setupState.deleteError).toBeNull()
+    } finally { mounted.unmount() }
+  })
+
   it('preserves collection identity on token renewal and clears the actual host caller change', async () => {
     const mounted = await mount(App, { ctx: { tenant: 'tenant-a', token: 'old-token', user: { userId: 'user-a' }, subPath: '' } })
     try {
@@ -389,6 +544,71 @@ describe('service creation read recovery', () => {
       expect(state.draft.instructions).toBe('Living room lights')
       expect(state.draft.edgeName).toBe(edge.name)
     } finally { mounted.unmount() }
+  })
+
+  it('requires both initial reads and recovers without losing entered values', async () => {
+    api.fetchServiceCatalog.mockRejectedValueOnce(new Error('Catalog unavailable'))
+    const mounted = await mount(ServiceCreate)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.draft.name = 'living-room'
+      state.draft.instructions = 'Keep these instructions'
+      state.draft.targetName = 'backend'
+      expect(state.readError).toContain('Catalog unavailable')
+      expect(state.canCreate).toBe(false)
+      await state.onCreate()
+      expect(api.createKubeEdgeService).not.toHaveBeenCalled()
+      await state.loadInputs()
+      expect(state.draft.name).toBe('living-room')
+      expect(state.draft.instructions).toBe('Keep these instructions')
+      expect(state.draft.serviceType).toBe('generic')
+      expect(state.draft.port).toBe(80)
+      expect(state.canCreate).toBe(true)
+    } finally { mounted.unmount() }
+  })
+
+  it('retains and labels successful snapshots after a failed refresh', async () => {
+    const catalog = [{ type: 'custom', displayName: 'Custom', defaultPort: 1234, defaultScheme: 'http', auth: 'none', credential: { fields: [] } }]
+    api.fetchServiceCatalog.mockResolvedValueOnce(catalog)
+    const mounted = await mount(ServiceCreate)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.draft.name = 'service'
+      state.draft.port = 4321
+      state.draft.targetName = 'backend'
+      api.fetchServiceCatalog.mockRejectedValueOnce(new Error('Catalog offline'))
+      api.listEdges.mockRejectedValueOnce(new Error('Edges offline'))
+      await state.loadInputs()
+      expect(state.readError).toContain('Showing the last loaded service types')
+      expect(state.readError).toContain('Showing the last loaded edges')
+      expect(state.catalog).toEqual(catalog)
+      expect(state.edges).toEqual([edge])
+      expect(state.draft.port).toBe(4321)
+      expect(state.canCreate).toBe(true)
+    } finally { mounted.unmount() }
+  })
+
+  it('ignores older reads and results that arrive after unmount', async () => {
+    const mounted = await mount(ServiceCreate)
+    const state = mounted.instance.setupState
+    await flush()
+    const old = deferred<typeof edge[]>()
+    api.listEdges.mockReturnValueOnce(old.promise)
+    const earlier = state.loadInputs()
+    api.listEdges.mockResolvedValueOnce([{ ...edge, name: 'new-edge' }])
+    await state.loadInputs()
+    old.resolve([{ ...edge, name: 'old-edge' }])
+    await earlier
+    expect(state.edges[0].name).toBe('new-edge')
+    const pending = deferred<typeof edge[]>()
+    api.listEdges.mockReturnValueOnce(pending.promise)
+    const afterUnmount = state.loadInputs()
+    mounted.unmount()
+    pending.resolve([{ ...edge, name: 'unmounted-edge' }])
+    await afterUnmount
+    expect(state.edges[0].name).toBe('new-edge')
   })
 })
 
@@ -750,6 +970,66 @@ describe('edge list views', () => {
     }
   })
 
+  it.each(views)('$label retains the prerequisite guide after an empty read fails to refresh', async (view) => {
+    view.pageMock.mockResolvedValueOnce({ items: [], continue: undefined })
+    api.listEdges.mockResolvedValue([])
+    const connectEdge = vi.fn()
+    const mounted = await mount(view.component, { onConnectEdge: connectEdge })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.showFirstRun).toBe(true)
+      view.pageMock.mockRejectedValueOnce({ message: 'Refresh failed' })
+      await state.refresh('background')
+      await flush()
+      expect(state.showFirstRun).toBe(true)
+      expect(state.error).toBe('Refresh failed')
+      state.handleFirstRunPrimary()
+      expect(connectEdge).toHaveBeenCalledOnce()
+      const retry = deferred<unknown>()
+      view.pageMock.mockReturnValueOnce(retry.promise)
+      const retryRead = state.refresh('foreground')
+      await flush()
+      expect(state.foregroundLoading).toBe(true)
+      expect(state.showFirstRun).toBe(true)
+      expect(state.error).toBe('Refresh failed')
+      retry.resolve({ items: [], continue: undefined })
+      await retryRead
+      await flush()
+      expect(state.showFirstRun).toBe(true)
+      expect(state.error).toBeNull()
+    } finally { mounted.unmount() }
+  })
+
+  it.each(views)('$label does not show first-run guidance on an initial read failure', async (view) => {
+    view.pageMock.mockRejectedValueOnce({ message: 'Initial read failed' })
+    const mounted = await mount(view.component)
+    try {
+      await flush()
+      expect(mounted.instance.setupState.showFirstRun).toBe(false)
+      expect(mounted.instance.setupState.error).toBe('Initial read failed')
+    } finally { mounted.unmount() }
+  })
+
+  it.each(views)('$label restores retry focus when a populated result replaces the guide', async (view) => {
+    view.pageMock.mockResolvedValueOnce({ items: [], continue: undefined })
+    const mounted = await mount(view.component)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      view.pageMock.mockRejectedValueOnce({ message: 'Refresh failed' })
+      await state.refresh('background')
+      const focus = vi.fn()
+      state.readRetry = {}
+      state.readHeading = { focus }
+      Object.assign(globalThis.document, { activeElement: state.readRetry, body: {} })
+      await state.refresh('foreground')
+      await flush()
+      expect(state.showFirstRun).toBe(false)
+      expect(focus).toHaveBeenCalledOnce()
+    } finally { mounted.unmount() }
+  })
+
   it('routes an empty Services first-run action through the missing-edge prerequisite', async () => {
     api.listServicesPage.mockResolvedValueOnce({ items: [], continue: undefined })
     api.listEdges.mockResolvedValueOnce([])
@@ -799,10 +1079,30 @@ describe('edge list views', () => {
 
       state.tableQuery = ''
       await nextTick()
-      expect(state.showFirstRun).toBe(true)
+      expect(state.showFirstRun).toBe(false)
     } finally {
       mounted.unmount()
     }
+  })
+
+  it('retains the edge guide after a failed refresh but not an initial failure', async () => {
+    const mounted = await mount(EdgeCollection, {
+      edges: [], loaded: false, loading: false, refreshMode: 'background', error: 'Initial failure', foregroundLoading: false,
+    })
+    try {
+      const state = mounted.instance.setupState
+      expect(state.showFirstRun).toBe(false)
+      mounted.instance.props.loaded = true
+      mounted.instance.props.error = null
+      await nextTick()
+      expect(state.showFirstRun).toBe(true)
+      mounted.instance.props.error = 'Refresh failure'
+      await nextTick()
+      expect(state.showFirstRun).toBe(true)
+      mounted.instance.props.error = null
+      await nextTick()
+      expect(state.showFirstRun).toBe(true)
+    } finally { mounted.unmount() }
   })
 
   it('routes an empty Workloads first-run action through the Kubernetes-edge prerequisite', async () => {
@@ -881,13 +1181,21 @@ describe('edge list views', () => {
   })
 
   it('revalidates a marketplace target before mutation when the selected edge disappears', async () => {
+    vi.stubGlobal('window', { location: { pathname: '/ui/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/providers/edges' } })
     const latestEdges = deferred<unknown[]>()
     api.listEdges.mockReset()
     api.listEdges.mockResolvedValueOnce([edge]).mockImplementationOnce(() => latestEdges.promise)
-    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana' })
+    const { descriptor } = parse(workloadCreateSource)
+    // The lightweight host renderer has no DOM input events; the recovery
+    // controls do not depend on v-model's DOM directives.
+    const template = descriptor.template!.content.replaceAll('v-model=', ':value=')
+    const render = compile(template, { prefixIdentifiers: true, bindingMetadata: compileScript(descriptor, { id: 'workload-recovery' }).bindings })
+    const mounted = await mount({ ...WorkloadCreate, render }, { mode: 'marketplace', appType: 'grafana', cluster: 'test-cluster', userKey: 'test-user' })
     try {
       await flush()
       const state = mounted.instance.setupState
+      state.deployName = 'my-grafana'
+      state.draft.targetNamespace = 'monitoring'
       expect(state.deployEdge).toBe('edge-a')
       expect(state.canSubmit).toBe(true)
 
@@ -905,10 +1213,29 @@ describe('edge list views', () => {
       await flush()
       expect(api.deployMarketplaceApp).not.toHaveBeenCalled()
       expect(state.deployEdge).toBe('')
-      expect(state.error).toBe('The selected KubernetesCluster edge is no longer available. Choose another edge.')
+      expect(state.error).toContain('Connect an edge in another tab')
       expect(state.busy).toBe(false)
+      const descendants = (node: HostNode): HostNode[] => [node, ...node.children.flatMap(descendants)]
+      const nodes = descendants(mounted.root)
+      const link = nodes.find(node => node.type === 'a' && node.props.target === '_blank')
+      expect(link?.props.href).toBe('/ui/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/providers/edges/connect/edge/kubernetes/success/workloads/cancel/workloads')
+      expect(link?.props.rel).toBe('noopener noreferrer')
+      const retry = nodes.find(node => node.type === 'button' && node.children.some(child => child.text === 'Check again'))
+      expect(retry).toBeDefined()
+      api.listEdges.mockResolvedValueOnce([{ ...edge, name: 'edge-b' }])
+      ;(retry?.props.onClick as () => void)()
+      await flush()
+      expect(state.deployName).toBe('my-grafana')
+      expect(state.draft.targetNamespace).toBe('monitoring')
+      expect(state.deployEdge).toBe('')
+      expect(state.error).toBeNull()
+      expect(state.canSubmit).toBe(false)
+      state.deployEdge = 'edge-b'
+      await nextTick()
+      expect(state.canSubmit).toBe(true)
     } finally {
       mounted.unmount()
+      vi.unstubAllGlobals()
     }
   })
 
@@ -936,10 +1263,9 @@ describe('edge list views', () => {
   })
 
   it.each([
-    ['empty value', 'env=', 'Selector keys and values cannot be empty.'],
-    ['missing separator', 'env', 'Use key=value pairs separated by commas.'],
-    ['duplicate key', 'env=dev,env=prod', 'Selector key "env" is listed more than once.'],
-    ['mixed valid and invalid entries', 'env=dev,region', 'Use key=value pairs separated by commas.'],
+    ['missing separator', 'env', 'Enter unique Kubernetes labels as key=value pairs separated by commas. Values may be empty.'],
+    ['duplicate key', 'env=dev,env=prod', 'Enter unique Kubernetes labels as key=value pairs separated by commas. Values may be empty.'],
+    ['mixed valid and invalid entries', 'env=dev,region', 'Enter unique Kubernetes labels as key=value pairs separated by commas. Values may be empty.'],
   ])('rejects a manual workload selector with an %s', async (_label, selector, expectedError) => {
     const mounted = await mount(WorkloadCreate, { mode: 'manual' })
     try {
@@ -952,6 +1278,26 @@ describe('edge list views', () => {
       expect(state.canSubmit).toBe(false)
       await state.submit()
       expect(api.createWorkload).not.toHaveBeenCalled()
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('preserves a selected marketplace edge on refresh and requires a choice if it disappears', async () => {
+    const edgeB = { ...edge, name: 'edge-b' }
+    api.listEdges.mockResolvedValueOnce([edge, edgeB])
+    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana', cluster: 'test-cluster', userKey: 'test-user' })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.deployEdge = 'edge-b'
+      api.listEdges.mockResolvedValueOnce([edgeB, edge])
+      await state.loadEdges(true)
+      expect(state.deployEdge).toBe('edge-b')
+      api.listEdges.mockResolvedValueOnce([edge])
+      await state.loadEdges(true)
+      expect(state.deployEdge).toBe('')
+      expect(state.canSubmit).toBe(false)
     } finally {
       mounted.unmount()
     }
@@ -1054,7 +1400,7 @@ describe('edge list views', () => {
   })
 
   it('passes the target namespace through a marketplace deploy', async () => {
-    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana' })
+    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana', cluster: 'test-cluster', userKey: 'test-user' })
     try {
       await flush()
       const state = mounted.instance.setupState
@@ -1062,7 +1408,7 @@ describe('edge list views', () => {
       await nextTick()
       expect(state.canSubmit).toBe(true)
       await state.submit()
-      expect(api.deployMarketplaceApp).toHaveBeenCalledWith(expect.objectContaining({ targetNamespace: 'monitoring' }))
+      expect(api.deployMarketplaceApp).toHaveBeenCalledWith(expect.objectContaining({ targetNamespace: 'monitoring' }), expect.any(AbortSignal))
 
       state.draft.targetNamespace = 'Monitoring'
       await nextTick()
@@ -1076,7 +1422,7 @@ describe('edge list views', () => {
     const freshEdges = deferred<unknown[]>()
     api.listEdges.mockReset()
     api.listEdges.mockResolvedValueOnce([edge]).mockImplementationOnce(() => freshEdges.promise)
-    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana' })
+    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana', cluster: 'test-cluster', userKey: 'test-user' })
     const state = mounted.instance.setupState
     await flush()
     const submit = state.submit()
@@ -1094,12 +1440,32 @@ describe('edge list views', () => {
     expect(state.edges).toEqual([edge])
   })
 
+  it('uses the reviewed marketplace inputs across a deferred preflight', async () => {
+    const freshEdges = deferred<unknown[]>()
+    api.listEdges.mockReset().mockResolvedValueOnce([edge]).mockImplementationOnce(() => freshEdges.promise)
+    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana', cluster: 'test-cluster', userKey: 'test-user' })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.deployName = 'reviewed'
+      state.draft.targetNamespace = 'reviewed-ns'
+      const submit = state.submit()
+      state.deployName = 'changed'
+      state.draft.targetNamespace = 'changed-ns'
+      freshEdges.resolve([edge])
+      await submit
+      expect(api.deployMarketplaceApp).toHaveBeenCalledWith(expect.objectContaining({ name: 'reviewed', targetNamespace: 'reviewed-ns', edgeName: edge.name }), expect.any(AbortSignal))
+    } finally {
+      mounted.unmount()
+    }
+  })
+
   it('keeps cancellation disabled while a marketplace deployment is in flight', async () => {
     const freshEdges = deferred<unknown[]>()
     const canceled = vi.fn()
     api.listEdges.mockReset()
     api.listEdges.mockResolvedValueOnce([edge]).mockImplementationOnce(() => freshEdges.promise)
-    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana', onCancel: canceled })
+    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana', cluster: 'test-cluster', userKey: 'test-user', onCancel: canceled })
     try {
       await flush()
       const state = mounted.instance.setupState
@@ -1121,7 +1487,7 @@ describe('edge list views', () => {
   it('ignores the initial marketplace edge read after the route unmounts', async () => {
     const initialEdges = deferred<unknown[]>()
     api.listEdges.mockReset().mockImplementation(() => initialEdges.promise)
-    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana' })
+    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana', cluster: 'test-cluster', userKey: 'test-user' })
     const state = mounted.instance.setupState
     mounted.unmount()
     initialEdges.resolve([edge])
@@ -1168,7 +1534,7 @@ describe('edge list views', () => {
         host: '192.168.1.1',
         targetName: '',
         edgeKind: 'KubernetesCluster',
-      }))
+      }), expect.any(AbortSignal))
       expect(toastMock).toHaveBeenCalledTimes(1)
       expect(toastMock).toHaveBeenCalledWith('info', 'Service creation requested for unifi.')
     } finally {
@@ -1193,7 +1559,7 @@ describe('edge list views', () => {
       expect(api.createKubeEdgeService).toHaveBeenCalledWith(expect.objectContaining({
         edgeName: 'shared',
         edgeKind: 'LinuxServer',
-      }))
+      }), expect.any(AbortSignal))
     } finally {
       mounted.unmount()
     }
@@ -1224,7 +1590,7 @@ describe('edge list views', () => {
         edgeKind: 'MacOSServer',
         host: '127.0.0.1',
         targetName: '',
-      }))
+      }), expect.any(AbortSignal))
     } finally {
       mounted.unmount()
     }
@@ -2173,6 +2539,7 @@ describe('edge onboarding controls', () => {
     const markup = await renderToString(createSSRApp(Wizard, { cluster: null, requiredType: 'kubernetes' }))
     expect(markup).toContain('id="edge-type-server"')
     expect(markup).toMatch(/id="edge-type-server"[^>]*disabled/)
+    expect(markup).toContain('This edge type is required for this flow.')
 
     const mounted = await mount(Wizard, { cluster: null, requiredType: 'kubernetes' })
     try {
@@ -2268,6 +2635,23 @@ describe('edge onboarding controls', () => {
     }
   })
 
+  it('keeps the edge draft and recovery guidance after an uncertain create', async () => {
+    api.createEdge.mockRejectedValueOnce({ reason: 'EdgeCreateUnknown', message: 'Check Edges before retrying.' })
+    const mounted = await mount(Wizard, { cluster: null })
+    try {
+      const state = mounted.instance.setupState
+      state.name = 'edge-recovery'
+      state.labels = 'env=prod'
+      await state.handleCreate()
+      expect(state.step).toBe(1)
+      expect(state.name).toBe('edge-recovery')
+      expect(state.labels).toBe('env=prod')
+      expect(state.uncertain).toEqual({ name: 'edge-recovery', type: 'kubernetes' })
+    } finally {
+      mounted.unmount()
+    }
+  })
+
   it('moves focus to the heading after both wizard step transitions', async () => {
     const mounted = await mount(Wizard, { cluster: null })
     try {
@@ -2336,25 +2720,89 @@ describe('edge onboarding controls', () => {
     vi.useRealTimers()
   })
 
-  it('does not restore a setup token from an older probe after a newer probe connects', async () => {
+  it('shows token recovery after repeated probe failures and clears it when a token arrives', async () => {
+    vi.useFakeTimers()
+    api.probeEdge.mockRejectedValue(new Error('unavailable'))
+    const mounted = await mount(Wizard, { cluster: null })
+    try {
+      const state = mounted.instance.setupState
+      state.name = 'edge-recovery'
+      await state.handleCreate()
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(state.tokenError).toContain("railgrid edge join-command 'kubernetes/edge-recovery'")
+      expect(state.joinToken).toBeNull()
+
+      api.probeEdge.mockResolvedValue({ joinToken: 'late-secret', connected: false })
+      await vi.advanceTimersByTimeAsync(2500)
+      expect(state.joinToken).toBe('late-secret')
+      expect(state.tokenError).toBeNull()
+      expect(state.connectionAnnouncement).toBe('Waiting for edge-recovery to connect.')
+    } finally {
+      mounted.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['kubernetes', 'server', 'macos'] as const)('qualifies the recovery command for %s', async (type) => {
+    vi.useFakeTimers()
+    api.probeEdge.mockRejectedValue(new Error('unavailable'))
+    const mounted = await mount(Wizard, { cluster: null, requiredType: type })
+    try {
+      const state = mounted.instance.setupState
+      state.name = 'shared-name'
+      await state.handleCreate()
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(state.tokenError).toContain(`railgrid edge join-command '${type}/shared-name'`)
+    } finally {
+      mounted.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels the token deadline and polling on teardown', async () => {
+    vi.useFakeTimers()
+    const pendingProbe = deferred<{ joinToken: string; connected: boolean } | null>()
+    api.probeEdge.mockReturnValue(pendingProbe.promise)
+    const mounted = await mount(Wizard, { cluster: null })
+    try {
+      const state = mounted.instance.setupState
+      state.name = 'edge-teardown'
+      await state.handleCreate()
+      await vi.advanceTimersByTimeAsync(2500)
+      mounted.unmount()
+      await vi.advanceTimersByTimeAsync(30000)
+      pendingProbe.resolve({ joinToken: 'late-secret', connected: false })
+      await flush()
+      expect(api.probeEdge).toHaveBeenCalledOnce()
+      expect(state.tokenError).toBeNull()
+      expect(state.joinToken).toBeNull()
+    } finally {
+      mounted.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('times out hung probes, shows recovery, and ignores a late result after reconnecting', async () => {
     vi.useFakeTimers()
     const olderProbe = deferred<{ joinToken: string; connected: boolean } | null>()
     const newerProbe = deferred<{ joinToken: string; connected: boolean } | null>()
-    api.probeEdge
-      .mockReturnValueOnce(olderProbe.promise)
-      .mockReturnValueOnce(newerProbe.promise)
+    api.probeEdge.mockReturnValue(olderProbe.promise)
     const mounted = await mount(Wizard, { cluster: null })
     try {
       const state = mounted.instance.setupState
       state.name = 'edge-race'
       await state.handleCreate()
 
-      vi.advanceTimersByTime(2500)
-      await flush()
-      vi.advanceTimersByTime(2500)
-      await flush()
-      expect(api.probeEdge).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(2500)
+      const firstSignal = api.probeEdge.mock.calls[0][2] as AbortSignal
+      await vi.advanceTimersByTimeAsync(10000)
+      expect(firstSignal.aborted).toBe(true)
+      await vi.advanceTimersByTimeAsync(17500)
+      expect(state.tokenError).toContain("railgrid edge join-command 'kubernetes/edge-race'")
+      expect(api.probeEdge).toHaveBeenCalledTimes(3)
 
+      api.probeEdge.mockReturnValue(newerProbe.promise)
+      await vi.advanceTimersByTimeAsync(10000)
       newerProbe.resolve({ joinToken: 'current-secret', connected: true })
       await flush()
       expect(state.step).toBe(3)

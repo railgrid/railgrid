@@ -11,7 +11,7 @@ import {
   DEFAULT_ROUTE,
   MENUS,
   activeMenu,
-  hashFor,
+  hashFor, webhookReturnRoute,
   parseHash,
   questionRunForSubPath,
   routeForSubPath,
@@ -48,7 +48,9 @@ const store = shallowRef(markRaw(new AppStore(api.value)))
 const route = ref<Route>(props.overlay ? { kind: 'agent', name: props.overlay.agent, tab: 'chat' } : parseHash())
 const authorityEpoch = ref(0)
 const createSession = ref(0)
+const agentCreateFocusAllowed = ref(true)
 const newAgentComposerRoute = ref<string | null>(null)
+const creationWarnings = ref<{ agent: string; warnings: NonNullable<CreateSuccessDetail['warnings']> } | null>(null)
 const continueAddModelAfterProviderConnect = ref(false)
 const storeRevision = ref(0)
 const agentCreateDraft = shallowRef<AgentCreateDraft | null>(null)
@@ -66,6 +68,12 @@ let authority: ContextAuthority | null = null
 let boundStore: AppStore | null = null
 let focusCollectionAfterEdit: 'connections' | 'toolsets' | null = null
 let focusRequest = 0
+let pendingRouteFocusCleanup: (() => void) | null = null
+function invalidateRouteFocus(): void {
+  focusRequest += 1
+  pendingRouteFocusCleanup?.()
+  pendingRouteFocusCleanup = null
+}
 
 provideAgentsRuntime({ store, api, route, authorityEpoch, host, domPrefix: props.overlay ? 'overlay-' : '' })
 
@@ -134,6 +142,7 @@ const routeSurfaceKey = computed(() => {
     return `${authorityEpoch.value}:agent:${current.kind === 'agent' ? current.name : current.agent}`
   }
   if (current.kind === 'run') return `${authorityEpoch.value}:run:${current.id}`
+  if (current.kind === 'create' && current.resource === 'skill') return `${authorityEpoch.value}:menu:skills`
   if (current.kind === 'create') return `${authorityEpoch.value}:create:${createSession.value}`
   if (current.kind === 'edit') return `${authorityEpoch.value}:edit:${current.resource}:${current.name}`
   if (current.kind === 'automation') return `${authorityEpoch.value}:automation:${current.agent}:${current.resource}:edit:${current.name}`
@@ -264,11 +273,15 @@ function restoreRouteFromHash(normalize: boolean): void {
 }
 
 function focusAfterNavigation(previous: Route, next: Route): void {
+  if ((previous.kind === 'create' && previous.resource === 'skill' && next.kind === 'menu' && next.menu === 'skills') || (previous.kind === 'menu' && previous.menu === 'skills' && next.kind === 'create' && next.resource === 'skill')) {
+    invalidateRouteFocus()
+    return
+  }
   const previousWorkspace = agentWorkspaceForRoute(previous)
   const nextWorkspace = agentWorkspaceForRoute(next)
   if (previousWorkspace && nextWorkspace && previousWorkspace.name === nextWorkspace.name) {
     // The retained workspace and its create dialog own focus across these routes.
-    focusRequest += 1
+    invalidateRouteFocus()
     return
   }
   scheduleRouteFocus(next)
@@ -278,16 +291,39 @@ function scheduleCollectionFocus(): void {
   if (!focusCollectionAfterEdit || route.value.kind !== 'menu' || route.value.menu !== 'connections') return
   const target = focusCollectionAfterEdit
   focusCollectionAfterEdit = null
-  const request = ++focusRequest
+  invalidateRouteFocus()
+  const request = focusRequest
   void nextTick(() => requestAnimationFrame(() => {
     if (request === focusRequest) root.value?.querySelector<HTMLElement>(`[data-${target}-heading]`)?.focus()
   }))
 }
 
 function scheduleRouteFocus(next: Route): void {
-  const request = ++focusRequest
+  invalidateRouteFocus()
+  const request = focusRequest
   if (isAutomationCreateRoute(next)) return
-  void nextTick(() => requestAnimationFrame(() => {
+  // Agent creation may focus its first field as soon as the form mounts. Do
+  // not let this later frame override that focus or a user's own movement.
+  let focusMoved = false
+  if (isAgentCreateRoute(next)) agentCreateFocusAllowed.value = true
+  const trackFocus = () => {
+    if (request !== focusRequest) return
+    focusMoved = true
+    agentCreateFocusAllowed.value = false
+  }
+  if (isAgentCreateRoute(next)) document.addEventListener('focusin', trackFocus)
+  let frame: number | null = null
+  const cleanup = () => {
+    document.removeEventListener('focusin', trackFocus)
+    if (frame !== null) cancelAnimationFrame(frame)
+  }
+  pendingRouteFocusCleanup = cleanup
+  void nextTick(() => {
+    if (request !== focusRequest) return
+    frame = requestAnimationFrame(() => {
+    cleanup()
+    if (pendingRouteFocusCleanup === cleanup) pendingRouteFocusCleanup = null
+    if (focusMoved) return
     if (request !== focusRequest || hashFor(route.value) !== hashFor(next)) return
     if (newAgentComposerRoute.value === hashFor(next) &&
       document.activeElement?.matches('.agents-composer [contenteditable="true"]')) return
@@ -300,7 +336,8 @@ function scheduleRouteFocus(next: Route): void {
     if (!target) return
     if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1')
     target.focus()
-  }))
+    })
+  })
 }
 
 function maybeLoad(): void {
@@ -335,6 +372,7 @@ function rotateContext(context: RailgridContext | null, resetRoute: boolean): vo
   boundStore?.removeEventListener('change', onStoreChange)
   boundStore = null
   const previousStore = store.value
+  const previousApi = api.value
   const previousAuthority = authority
   authorityEpoch.value += 1
   createSession.value += 1
@@ -343,6 +381,7 @@ function rotateContext(context: RailgridContext | null, resetRoute: boolean): vo
 
   const nextApi = markRaw(new ApiClient())
   nextApi.setContext(context)
+  previousApi.setContext(null)
   api.value = nextApi
   const nextStore = markRaw(new AppStore(nextApi))
   const nextAuthority = nextApi.contextAuthority()
@@ -357,6 +396,7 @@ function rotateContext(context: RailgridContext | null, resetRoute: boolean): vo
     continueAddModelAfterProviderConnect.value = false
   }
   newAgentComposerRoute.value = null
+  creationWarnings.value = null
   if (resetRoute) clearAgentCreateSetup()
   if (resetRoute) go(DEFAULT_ROUTE, 'replace')
   if (authority.usable) {
@@ -429,6 +469,7 @@ function createSuccessRoute(detail: CreateSuccessDetail): Route {
   switch (detail.resource) {
     case 'agent': return { kind: 'agent', name: detail.name || '', tab: 'chat' }
     case 'model': return modelCreateOwner
+    case 'skill': return { kind: 'menu', menu: 'skills' }
     // A webhook owns its URL and its delivery log: land on it, so the URL the
     // sender needs is the first thing the person sees.
     case 'webhook': return { kind: 'edit', resource: 'webhook', name: detail.name || '' }
@@ -438,9 +479,10 @@ function createSuccessRoute(detail: CreateSuccessDetail): Route {
 }
 
 function createOwnerRoute(current: Extract<Route, { kind: 'create' }>): Route {
+  if (current.resource === 'skill') return { kind: 'menu', menu: 'skills', ...(current.returnAgent ? { returnAgent: current.returnAgent } : {}) }
   if (current.resource === 'model') return modelCreateOwner
   if (current.resource === 'agent') return { kind: 'menu', menu: 'agents' }
-  if (current.resource === 'webhook') return { kind: 'menu', menu: 'webhooks' }
+  if (current.resource === 'webhook') return current.webhookReturn ? webhookReturnRoute(current.webhookReturn) : { kind: 'menu', menu: 'webhooks' }
   return { kind: 'menu', menu: 'connections' }
 }
 
@@ -506,11 +548,22 @@ function onCreateSuccess(detail: CreateSuccessDetail): void {
   }
   if (detail.resource === 'model' && modelCreateOwner.kind === 'agent') { go(modelCreateOwner, 'replace'); return }
   if (detail.resource === 'agent') clearAgentCreateSetup()
-  const destination = detail.destination || createSuccessRoute(detail)
+  if (detail.resource === 'agent' && detail.name && detail.warnings?.length) {
+    creationWarnings.value = { agent: detail.name, warnings: [...detail.warnings] }
+  }
+  const destination = detail.resource === 'webhook' && route.value.webhookReturn
+    ? { kind: 'edit' as const, resource: 'webhook' as const, name: detail.name || '', webhookReturn: route.value.webhookReturn }
+    : detail.destination || createSuccessRoute(detail)
   go(destination, 'replace')
   if (detail.resource === 'agent' && destination.kind === 'agent' && destination.tab === 'chat') {
     newAgentComposerRoute.value = hashFor(destination)
   }
+}
+
+function onRecoveryScheduleCreated(detail: { agent: string; name: string; store: AppStore; authorityEpoch: number }): void {
+  if (detail.store !== store.value || detail.authorityEpoch !== authorityEpoch.value || creationWarnings.value?.agent !== detail.agent) return
+  const remaining = creationWarnings.value.warnings.filter(warning => warning.schedule !== detail.name)
+  creationWarnings.value = remaining.length ? { agent: detail.agent, warnings: remaining } : null
 }
 
 function onCreateCancel(detail: Pick<CreateSuccessDetail, 'store' | 'authorityEpoch' | 'createSession'>): void {
@@ -530,7 +583,7 @@ function onCreateCancel(detail: Pick<CreateSuccessDetail, 'store' | 'authorityEp
 function onEditCancel(detail: EditCancelDetail): void {
   if (!sourceIsCurrent(detail) || route.value.kind !== 'edit' || detail.resource !== route.value.resource || detail.name !== route.value.name) return
   if (detail.resource === 'webhook') {
-    go({ kind: 'menu', menu: 'webhooks' }, 'replace')
+    go(route.value.webhookReturn ? webhookReturnRoute(route.value.webhookReturn) : { kind: 'menu', menu: 'webhooks' }, 'replace')
     return
   }
   focusCollectionAfterEdit = detail.resource === 'toolset' ? 'toolsets' : 'connections'
@@ -602,11 +655,13 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  invalidateRouteFocus()
   requestWorkspaceLayout(false)
   window.removeEventListener('hashchange', restoreRoute)
   window.removeEventListener('popstate', restoreRoute)
   boundStore?.removeEventListener('change', onStoreChange)
   boundStore = null
+  api.value.setContext(null)
   store.value.retire()
   resolveConfirm(false)
 })
@@ -628,6 +683,15 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
     </div>
 
     <div class="agents-view">
+      <div v-if="creationWarnings" class="k-inline-notification k-inline-notification--warning" role="alert" data-agent-creation-warning>
+        <span class="k-inline-notification__body">
+          <span class="k-inline-notification__message">Agent {{ creationWarnings.agent }} was created. Check its schedule setup.</span>
+          <span v-for="warning in creationWarnings.warnings" :key="warning.schedule" class="k-inline-notification__message">{{ warning.outcome === 'rejected' ? `Schedule “${warning.schedule}” was not created.` : `Could not confirm whether schedule “${warning.schedule}” was created.` }}</span>
+          <span class="k-inline-notification__message">Check schedules before creating one.</span>
+        </span>
+        <button type="button" class="k-inline-notification__action" @click="go({ kind: 'agent', name: creationWarnings.agent, tab: 'automation' })">View schedules</button>
+        <button type="button" class="k-inline-notification__action" @click="creationWarnings = null">Dismiss</button>
+      </div>
       <section v-if="route.kind === 'menu' && setupActive" class="k-resource-page k-resource-page--collection">
         <header class="k-resource-page__header">
           <div class="k-resource-page__heading">
@@ -659,13 +723,14 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :key="routeSurfaceKey"
         :store="store"
         :api="api"
+        :authority-epoch="authorityEpoch"
         :assistant-settings="!!ctx.agentOverlay"
         @navigate="go"
       />
       <SkillsLibrary
-        v-else-if="route.kind === 'menu' && route.menu === 'skills'"
+        v-else-if="(route.kind === 'menu' && route.menu === 'skills') || (route.kind === 'create' && route.resource === 'skill')"
         :key="routeSurfaceKey" :store="store" :api="api" :authority-epoch="authorityEpoch"
-        :return-agent="route.returnAgent" @navigate="go"
+        :return-agent="route.returnAgent" :create-route="route.kind === 'create'" @navigate="go"
       />
       <Activity
         v-else-if="route.kind === 'menu' && route.menu === 'activity'"
@@ -751,6 +816,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :initial-template="route.type && route.type !== 'harness' ? route.type : ''"
         :authority-epoch="authorityEpoch"
         :create-session="createSession"
+        :initial-focus-allowed="agentCreateFocusAllowed"
         @navigate="go"
         @add-credential="addAgentCredential"
         @create-success="onCreateSuccess"
@@ -785,6 +851,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       />
       <Webhooks
         v-else-if="route.kind === 'create' && route.resource === 'webhook'"
+        :webhook-return="route.webhookReturn"
         :key="routeSurfaceKey"
         :store="store"
         :api="api"
@@ -843,6 +910,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       />
       <Webhooks
         v-else-if="route.kind === 'edit' && route.resource === 'webhook'"
+        :webhook-return="route.webhookReturn"
         :key="routeSurfaceKey"
         :store="store"
         :api="api"
@@ -875,6 +943,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         create-route
         create-modal
         :authority-epoch="authorityEpoch"
+        @schedule-created="onRecoveryScheduleCreated"
         @navigate="go($event, 'replace')"
       />
     </div>

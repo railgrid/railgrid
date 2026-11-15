@@ -49,6 +49,237 @@ function markAuthoritative(store: ReturnType<typeof makeStore>, ...keys: Array<'
 }
 
 describe('route-owned creation surfaces', () => {
+  it.each([
+    ['code-reviewer', 'post a GitHub review only when asked'],
+    ['researcher', 'investigate independent questions in parallel'],
+    ['workspace-assistant', 'ask before making changes'],
+  ])('describes %s behavior as editable default instructions', async (template, behavior) => {
+    const catalog = (await import('../../public/agent-templates.json')).default as unknown[]
+    const api = stubApi({ agentTemplates: async () => catalog })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials', 'connections', 'edges')
+    const view = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: template })
+    const rail = view.querySelector('.k-create-guidance')!
+    expect(rail.textContent).toContain('Default instructions')
+    expect(rail.textContent).toContain(behavior)
+    const instructions = view.querySelector<HTMLTextAreaElement>('textarea[aria-labelledby="agent-create-system-prompt-label"]')!
+    instructions.value = 'Custom behavior'
+    instructions.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    expect(rail.textContent).toContain('Custom instructions')
+    expect(rail.textContent).not.toContain(behavior)
+  })
+
+  it('updates the agent summary and identifies template side effects', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default as unknown[]
+    const api = stubApi({ agentTemplates: async () => catalog })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials', 'connections', 'edges')
+    const view = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'news-reporter' })
+    const rail = view.querySelector('.k-create-guidance')!
+    expect(rail.textContent).toContain('News reporter')
+    expect(rail.textContent).toContain('Chat model')
+    expect(rail.textContent).toContain('Schedules')
+    expect(rail.textContent).toContain('Review any schedules and background access')
+    const name = view.querySelector<HTMLInputElement>('#agent-create-name')!
+    name.value = 'my-reporter'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    expect(rail.textContent).toContain('my-reporter')
+  })
+
+  it.each([
+    { backend: 'model', provider: 'openai', expected: 'Review models', route: '#/models' },
+    { backend: 'harness', provider: 'codex', expected: 'Review harness identities', route: '#/models/provider-connections' },
+  ] as const)('distinguishes unavailable $backend credentials and preserves the draft on retry', async ({ backend, provider, expected, route }) => {
+    const listCredentials = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([{ name: 'existing', provider, secretResolved: true }])
+    const api = stubApi({ listCredentials })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'existing', provider, secretResolved: false }]
+    markAuthoritative(store, 'agents', 'credentials', 'edges', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialBackendType: backend })
+    const name = el.querySelector<HTMLInputElement>('#agent-create-name')!
+    name.value = 'draft-agent'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    const link = [...el.querySelectorAll<HTMLAnchorElement>('a')].find(item => item.textContent?.includes(expected))!
+    expect(link.getAttribute('href')).toContain(route)
+    expect(link.target).toBe('_blank')
+    const retry = [...link.parentElement!.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.trim() === 'Check again')!
+    retry.click()
+    await settle(el)
+    expect(el.textContent).toContain('offline')
+    expect(name.value).toBe('draft-agent')
+    retry.click()
+    await settle(el)
+    expect(name.value).toBe('draft-agent')
+    expect(el.textContent).not.toContain('No available')
+  })
+
+  it.each(['model', 'harness'] as const)('offers setup for genuinely empty %s credentials', async backend => {
+    const api = stubApi()
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials', 'edges', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialBackendType: backend })
+    expect(el.textContent).toContain(backend === 'model' ? 'Connect a model' : 'No harness identities yet')
+    expect(el.textContent).not.toContain('No available')
+  })
+
+  it.each(['untouched', 'user focus', 'changed authority', 'changed route'] as const)(
+    'focuses a delayed agent form only in its original untouched context: %s', async scenario => {
+      const agents = deferred<Agent[]>()
+      const credentials = deferred<never[]>()
+      const api = stubApi({ listAgents: () => agents.promise, listCredentials: () => credentials.promise })
+      const store = makeStore(api)
+      const oldHash = location.hash
+      location.hash = '#/create/agent'
+      const loadAgents = store.load('agents')
+      const loadCredentials = store.load('credentials')
+      const view = await mountVue(AgentCreateView, { store, api, authorityEpoch: 1, createSession: 1 })
+      const title = view.element.querySelector<HTMLElement>('.k-create-title')!
+      title.tabIndex = -1
+      title.focus()
+      const outside = document.createElement('button')
+      document.body.appendChild(outside)
+      if (scenario === 'user focus') outside.focus()
+      if (scenario === 'changed authority') await view.setProps({ authorityEpoch: 2 })
+      if (scenario === 'changed route') location.hash = '#/connections'
+      agents.resolve([])
+      credentials.resolve([])
+      await Promise.all([loadAgents, loadCredentials])
+      await settleVue()
+      expect(document.activeElement).toBe(scenario === 'untouched'
+        ? view.element.querySelector('#agent-create-name')
+        : scenario === 'user focus' ? outside : title)
+      view.unmount()
+      outside.remove()
+      location.hash = oldHash
+    },
+  )
+
+  it('rechecks template wiring after review when a connection disappears', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default as unknown[]
+    const createAgentFromTemplate = vi.fn()
+    const api = stubApi({ agentTemplates: async () => catalog, createAgentFromTemplate, listConnections: async () => [] })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-4.1' }]
+    store.connections.data = [{ metadata: { name: 'tg' }, spec: { type: 'telegram', displayName: 'Team Telegram' } }] as never
+    markAuthoritative(store, 'agents', 'credentials', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'news-reporter' })
+    const topics = el.querySelector<HTMLInputElement>('#agent-create-param-topics')!
+    topics.value = 'kcp'
+    topics.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    topics.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await chooseFormSelect(el, '#agent-create-model', 'openai')
+    await chooseFormSelect(el, '#agent-create-channel', 'Team Telegram')
+    el.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settleVue()
+    expect(confirmState.open).toBe(true)
+    await store.load('connections')
+    resolveConfirm(true)
+    await settle(el)
+    expect(createAgentFromTemplate).not.toHaveBeenCalled()
+    expect(el.querySelector('#agent-create-channel-error')?.textContent).toContain('no longer available')
+    expect(el.querySelector<HTMLInputElement>('#agent-create-name')!.value).toBe('news-reporter')
+  })
+
+  it('requires an explicit choice when a selected harness GitHub connection disappears', async () => {
+    const createAgent = vi.fn()
+    const listConnections = vi.fn().mockResolvedValue([])
+    const api = stubApi({ createAgent, listConnections })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'codex', provider: 'codex' }]
+    store.edges.data = [{ kind: 'LinuxServer', name: 'build-01', connected: true }]
+    store.connections.data = [{ metadata: { name: 'github' }, spec: { type: 'github', displayName: 'Team GitHub' } }] as never
+    markAuthoritative(store, 'agents', 'credentials', 'edges', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialBackendType: 'harness' })
+    const name = el.querySelector<HTMLInputElement>('#agent-create-name')!
+    name.value = 'draft-agent'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await chooseFormSelect(el, '#agent-create-edge', 'build-01')
+    await chooseFormSelect(el, '#agent-create-harnesscred', 'codex')
+    await chooseFormSelect(el, '#agent-create-github', 'Team GitHub')
+    await store.load('connections')
+    await settle(el)
+    expect(name.value).toBe('draft-agent')
+    expect(el.querySelector('#agent-create-github')?.textContent).toContain('github · unavailable')
+    expect(el.querySelector('#agent-create-github')?.getAttribute('aria-invalid')).toBe('true')
+    el.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle(el)
+    expect(createAgent).not.toHaveBeenCalled()
+    expect(el.textContent).toContain('Choose an available GitHub connection or remove it')
+    await chooseFormSelect(el, '#agent-create-github', '— none —')
+    el.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle(el)
+    expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({ name: 'draft-agent', harness: expect.not.objectContaining({ githubConnectionRef: expect.anything() }) }))
+  })
+
+  it('recovers the optional harness GitHub picker after a failed read without losing the draft', async () => {
+    const listConnections = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([
+      { metadata: { name: 'github' }, spec: { type: 'github', displayName: 'Team GitHub' } },
+    ])
+    const api = stubApi({ listConnections })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials', 'edges')
+    await store.load('connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialBackendType: 'harness' })
+    const name = el.querySelector<HTMLInputElement>('#agent-create-name')!
+    name.value = 'draft-agent'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    expect(el.querySelector('#agent-create-connections-state [role=alert]')?.textContent).toContain('Could not load connections')
+    expect(el.querySelector<HTMLButtonElement>('#agent-create-github')!.disabled).toBe(true)
+    expect(el.querySelector('#agent-create-github')?.getAttribute('aria-describedby')).toContain('agent-create-connections-state')
+    el.querySelector<HTMLButtonElement>('#agent-create-connections-state button')!.click()
+    await settle(el)
+    expect(name.value).toBe('draft-agent')
+    await chooseFormSelect(el, '#agent-create-github', 'Team GitHub')
+    expect(el.querySelector('#agent-create-github')?.textContent).toContain('Team GitHub')
+  })
+
+  it('reports and retries a stale GitHub connection snapshot in a template', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default as unknown[]
+    const listConnections = vi.fn().mockResolvedValue([{ metadata: { name: 'github' }, spec: { type: 'github', displayName: 'Team GitHub' } }])
+    const api = stubApi({ agentTemplates: async () => catalog, listConnections })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials', 'edges', 'connections')
+    store.connections.data = [{ metadata: { name: 'github' }, spec: { type: 'github', displayName: 'Team GitHub' } }] as never
+    store.connections.error = 'offline'
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'code-reviewer' })
+    const state = el.querySelector('#agent-create-connections-state')!
+    expect(state.querySelector('[role=status]')?.textContent).toContain('Showing the last loaded connections')
+    expect(el.querySelector('#agent-create-github')?.getAttribute('aria-describedby')).toContain('agent-create-connections-state')
+    state.querySelector<HTMLButtonElement>('button')!.click()
+    await settle(el)
+    expect(listConnections).toHaveBeenCalledTimes(1)
+    expect(state.textContent).not.toContain('offline')
+  })
+
+  it('recovers a failed channel read without losing the agent draft', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default as unknown[]
+    const listConnections = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([
+      { metadata: { name: 'team' }, spec: { type: 'telegram', displayName: 'Team channel' } },
+    ])
+    const api = stubApi({ agentTemplates: async () => catalog, listConnections })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'main', model: 'gpt-5', ready: true }]
+    markAuthoritative(store, 'agents', 'credentials')
+    await store.load('connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'news-reporter' })
+    const name = el.querySelector<HTMLInputElement>('#agent-create-name')!
+    name.value = 'my-reporter'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    const state = el.querySelector('#agent-create-connections-state')!
+    expect(state.querySelector('[role=alert]')?.textContent).toContain('Could not load connections')
+    expect(el.querySelector<HTMLButtonElement>('#agent-create-channel')!.disabled).toBe(true)
+    expect(el.textContent).not.toContain('Add a channel')
+    expect(el.querySelector('#agent-create-channel')?.getAttribute('aria-describedby')).toContain('agent-create-connections-state')
+    ;[...state.querySelectorAll('button')].find(button => button.textContent?.includes('Retry connections'))!.click()
+    await settle(el)
+    expect(listConnections).toHaveBeenCalledTimes(2)
+    expect(name.value).toBe('my-reporter')
+    expect(el.querySelector<HTMLButtonElement>('#agent-create-channel')!.disabled).toBe(false)
+    await chooseFormSelect(el, '#agent-create-channel', 'Team channel')
+    expect(el.querySelector('#agent-create-channel')?.textContent).toContain('Team channel')
+  })
   it('opens machine setup in a scoped new tab and refreshes choices without discarding the agent draft', async () => {
     const api = stubApi()
     const store = makeStore(api)
@@ -81,8 +312,8 @@ describe('route-owned creation surfaces', () => {
     expect(el.querySelector('.agents-overlay')).toBeNull()
     expect(el.querySelector('.k-create-page')).not.toBeNull()
     expect(el.querySelector('[role="dialog"]')).toBeNull()
-    expect(el.querySelector('.k-create-body--guided .k-create-guidance')?.textContent).toContain('After you create the agent')
-    expect(el.querySelector('.k-create-guidance__values')).toBeNull()
+    expect(el.querySelector('.k-create-body--guided .k-create-guidance')?.textContent).toContain('A conversation opens')
+    expect(el.querySelector('.k-create-guidance__values')?.textContent).toContain('Chat model')
     expect(el.querySelector('button[type=submit]')?.textContent).toContain('Create & open chat')
     expect(el.querySelector('#agent-create-model')?.textContent).toContain('main')
     expect(el.querySelector('#agent-create-channel')).toBeNull()
@@ -257,6 +488,47 @@ describe('route-owned creation surfaces', () => {
     resolveConfirm(true)
     await settleVue()
     expect(createAgentFromTemplate.mock.calls[0]?.[0].spec.systemPrompt).toContain('Your area: EU energy policy.')
+  })
+
+  it('offers optional web search setup, refreshes on return, and preserves the draft', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const listConnections = vi.fn().mockResolvedValue([{ metadata: { name: 'search' }, spec: { type: 'websearch', displayName: 'Search' } }])
+    const api = stubApi({ agentTemplates: async () => catalog, listConnections })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'main', model: 'gpt-5', ready: true }]
+    markAuthoritative(store, 'agents', 'credentials', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'researcher' })
+    const name = el.querySelector<HTMLInputElement>('#agent-create-name')!
+    name.value = 'research-draft'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    const link = [...el.querySelectorAll<HTMLAnchorElement>('a')].find(item => item.getAttribute('href')?.includes('#/create/connection/websearch'))!
+    expect(link.getAttribute('href')).toBe('/ui/org/ws/providers/agents/#/create/connection/websearch')
+    expect(link.target).toBe('_blank')
+    link.addEventListener('click', event => event.preventDefault(), { once: true })
+    link.click()
+    window.dispatchEvent(new Event('focus'))
+    await settle(el)
+    expect(listConnections).toHaveBeenCalledTimes(1)
+    expect(name.value).toBe('research-draft')
+    await chooseFormSelect(el, '#agent-create-slot-websearch', 'Search')
+    expect(el.textContent).not.toContain('Without web search')
+  })
+
+  it('allows a researcher to be created without optional web search', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const createAgentFromTemplate = vi.fn(async (agent: Agent) => ({ agent, createdSchedules: [], warnings: [] }))
+    const api = stubApi({ agentTemplates: async () => catalog, createAgentFromTemplate })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'main', model: 'gpt-5', ready: true }]
+    markAuthoritative(store, 'agents', 'credentials', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'researcher' })
+    el.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settleVue()
+    expect(confirmState.open).toBe(true)
+    resolveConfirm(true)
+    await settleVue()
+    expect(createAgentFromTemplate).toHaveBeenCalledTimes(1)
+    expect(createAgentFromTemplate.mock.calls[0][0].spec.tools?.background?.connections || []).toEqual([])
   })
 
   it('preserves repository entries while refreshing setup in new tabs and allows an offline machine with a warning', async () => {
@@ -541,7 +813,7 @@ describe('route-owned creation surfaces', () => {
     expect(credential.getAttribute('aria-describedby')).toContain('agent-create-harnesscred-hint')
 
     expect(el.querySelector('#agent-create-execution-heading')?.textContent).toBe('Execution')
-    expect(el.querySelector('.k-create-guidance')?.textContent).toContain('After you create the agent')
+    expect(el.querySelector('.k-create-guidance')?.textContent).toContain('Coding harness')
 
     machine.click()
     await settle(el)
@@ -710,33 +982,28 @@ describe('route-owned creation surfaces', () => {
     const formSurface = await mount<Connections>('agents-connections', { store, api, routeOwned: true, createRoute: true, createType: 'github' })
     expect(formSurface.querySelector('.agents-conn-form')).not.toBeNull()
     expect(formSurface.querySelector('.k-create-surface--guided .k-create-guidance')).not.toBeNull()
+    formSurface.querySelector<HTMLFormElement>('form')!.requestSubmit()
+    expect(createConnection).not.toHaveBeenCalled()
     const name = formSurface.querySelector<HTMLInputElement>('input[name=name]')!
     name.value = 'gh'
     name.dispatchEvent(new InputEvent('input', { bubbles: true }))
     const token = formSurface.querySelector<HTMLInputElement>('input[name=token]')!
-    token.value = 'secret'
+    token.value = 'private-token-value'
     token.dispatchEvent(new InputEvent('input', { bubbles: true }))
-    formSurface.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
-    await settle(formSurface, 5)
-    expect(createConnection).not.toHaveBeenCalled()
-    expect(formSurface.querySelector('.k-wizard-steps [aria-current=step]')?.textContent).toBe('Review')
-    expect(formSurface.querySelector('.agents-connection-review')?.textContent).not.toContain('secret')
-    formSurface.querySelector<HTMLButtonElement>('.agents-step-back')!.click()
     await settle(formSurface)
-    expect(name.value).toBe('gh')
-    expect(token.value).toBe('secret')
+    expect(formSurface.querySelector('.k-create-guidance')?.textContent).not.toContain('private-token-value')
     formSurface.querySelector<HTMLButtonElement>('.agents-step-back')!.click()
     await settle(formSurface)
     expect(formSurface.querySelector('.k-wizard-steps [aria-current=step]')?.textContent).toBe('Type')
     formSurface.querySelector<HTMLButtonElement>('.agents-conn-tile')!.click()
     await settle(formSurface)
-    expect(formSurface.querySelector<HTMLInputElement>('input[name=token]')?.value).toBe('secret')
+    expect(formSurface.querySelector<HTMLInputElement>('input[name=token]')?.value).toBe('private-token-value')
     const form = formSurface.querySelector<HTMLFormElement>('form')!
-    form.dispatchEvent(new Event('submit', { cancelable: true }))
-    await settle(formSurface)
-    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    form.requestSubmit()
+    form.requestSubmit()
     await settle(formSurface, 5)
-    expect(createConnection).toHaveBeenCalledWith(expect.objectContaining({ name: 'gh', type: 'github', secret: 'secret' }))
+    expect(createConnection).toHaveBeenCalledTimes(1)
+    expect(createConnection).toHaveBeenCalledWith(expect.objectContaining({ name: 'gh', type: 'github', secret: 'private-token-value' }))
   })
 
   it('reacts when a platform OAuth app becomes available after the form mounts', async () => {
@@ -818,7 +1085,7 @@ describe('route-owned collection affordances', () => {
 
     const pendingStore = makeStore(api)
     const pendingAgents = await mount('agents-agents-list', { store: pendingStore, api })
-    expect(pendingAgents.querySelector('.agents-new-agent')).toBeNull()
+    expect(pendingAgents.querySelector('.k-first-run')).toBeNull()
 
     const agentsStore = makeStore(api)
     agentsStore.agents.loaded = true
@@ -826,7 +1093,7 @@ describe('route-owned collection affordances', () => {
     agentsStore.credentials.loaded = true
     agentsStore.credentials.hasSnapshot = true
     const agents = await mount('agents-agents-list', { store: agentsStore, api })
-    expect(agents.querySelector('.agents-new-agent')).not.toBeNull()
+    expect(agents.querySelector('.k-first-run')).not.toBeNull()
 
     const modelsStore = makeStore(api)
     modelsStore.credentials.loaded = true
@@ -936,7 +1203,7 @@ it('creates a reusable visualization toolset without an external connection', as
 it.each([false, true])('creates an agent with the final template inputs and schedule (edited instructions: %s)', async (edited) => {
   const catalog = (await import('../../public/agent-templates.json')).default as unknown[]
   const createAgentFromTemplate = vi.fn(async (agent: { metadata: { name: string } }, schedules: { metadata: { name: string } }[]) => ({
-    agent, createdSchedules: schedules.map(s => s.metadata.name), warnings: [],
+    agent, createdSchedules: edited ? [] : schedules.map(s => s.metadata.name), warnings: edited ? [{ schedule: 'news-reporter-daily-digest', outcome: 'unknown' as const }] : [],
   }))
   const api = stubApi({ agentTemplates: async () => catalog, createAgentFromTemplate })
   const store = makeStore(api)
@@ -1041,6 +1308,9 @@ it.each([false, true])('creates an agent with the final template inputs and sche
   resolveConfirm(true)
   await settle(el)
   expect(createAgentFromTemplate).toHaveBeenCalledTimes(1)
+  expect(mountedByElement.get(el)!.events['create-success'][0]).toMatchObject({
+    name: 'news-reporter', warnings: edited ? [{ schedule: 'news-reporter-daily-digest', outcome: 'unknown' }] : [],
+  })
   const [agent, schedules] = createAgentFromTemplate.mock.calls[0] as unknown as [
     { metadata: { name: string }; spec: Record<string, any> },
     { metadata: { name: string }; spec: Record<string, any> }[],

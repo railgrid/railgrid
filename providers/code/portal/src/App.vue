@@ -2,6 +2,7 @@
 import { computed, provide, ref, watch } from 'vue'
 import { GitBranch, Package, Plug } from 'lucide-vue-next'
 import type { RailgridContext } from './types'
+import type { RepositoryDraft } from './repositoryDraft'
 import { setAPIContext, setBasePath } from './api'
 import ConnectionsView from './views/ConnectionsView.vue'
 import ConnectionCreateView from './views/ConnectionCreateView.vue'
@@ -46,6 +47,7 @@ const journeyStorage = codeJourneyStorage()
 const prerequisiteReturnPath = ref<CodeReturnPath | null>(null)
 const prerequisiteExpectedPath = ref<string | null>(null)
 const prerequisiteTenantKey = ref<string | null>(null)
+const repositoryDraft = ref<{ value: RepositoryDraft; returnPath: CodeReturnPath; stage: 'detour' | 'return' } | null>(null)
 let observedJourneyAuthorityKey: string | null = null
 let deletionAuthority = ''
 
@@ -86,6 +88,7 @@ watch(
       if (nextDeletionAuthority !== deletionAuthority) {
         viewGeneration.value += 1
         deletions.clear()
+        repositoryDraft.value = null
       }
       deletionAuthority = nextDeletionAuthority
     }
@@ -101,6 +104,11 @@ watch(
   () => {
     const tenantKey = journeyTenantKey()
     const activePath = activeJourneyPath()
+    if (repositoryDraft.value && !(repositoryDraft.value.stage === 'detour'
+      ? activePath === 'connections' || activePath === prerequisiteExpectedPath.value
+      : activePath === repositoryDraft.value.returnPath)) {
+      repositoryDraft.value = null
+    }
     if (observedJourneyAuthorityKey && observedJourneyAuthorityKey !== tenantKey) {
       clearCodeReturnIntent(journeyStorage, observedJourneyAuthorityKey)
     }
@@ -112,6 +120,7 @@ watch(
       prerequisiteReturnPath.value = storedReturnPath
       prerequisiteExpectedPath.value = null
       prerequisiteTenantKey.value = tenantKey
+      if (tenantKey) writeCodeReturnIntent(journeyStorage, tenantKey, storedReturnPath, activePath)
       return
     }
 
@@ -156,6 +165,7 @@ function clearCurrentJourneyIntent(): void {
 }
 
 function navigate(path: string, options: { replace?: boolean } = {}) {
+  repositoryDraft.value = null
   prerequisiteReturnPath.value = null
   prerequisiteExpectedPath.value = null
   prerequisiteTenantKey.value = null
@@ -163,14 +173,35 @@ function navigate(path: string, options: { replace?: boolean } = {}) {
   dispatchNavigation(path, options)
 }
 
-function startRepositoryConnection(): void {
-  const expectedPath = 'create/connection/token'
+function startRepositoryConnection(draft?: RepositoryDraft): void {
+  const expectedPath = 'connections'
   const tenantKey = journeyTenantKey()
   prerequisiteReturnPath.value = route.value.create?.resource === 'repository' && route.value.create.mode === 'import' ? 'import/repository' : 'create/repository'
+  repositoryDraft.value = draft ? { value: draft, returnPath: prerequisiteReturnPath.value, stage: 'detour' } : null
   prerequisiteExpectedPath.value = expectedPath
   prerequisiteTenantKey.value = tenantKey
   if (tenantKey) writeCodeReturnIntent(journeyStorage, tenantKey, prerequisiteReturnPath.value, expectedPath)
   dispatchNavigation(expectedPath)
+}
+
+function createConnection(method: 'token' | 'github'): void {
+  const expectedPath = `create/connection/${method}`
+  const tenantKey = journeyTenantKey()
+  if (prerequisiteReturnPath.value && prerequisiteTenantKey.value === tenantKey) {
+    prerequisiteExpectedPath.value = expectedPath
+    if (tenantKey) writeCodeReturnIntent(journeyStorage, tenantKey, prerequisiteReturnPath.value, expectedPath)
+    dispatchNavigation(expectedPath)
+  } else navigate(expectedPath)
+}
+
+function returnToRepository(): void {
+  const returnPath = prerequisiteReturnPath.value
+  if (repositoryDraft.value && returnPath === repositoryDraft.value.returnPath) repositoryDraft.value.stage = 'return'
+  prerequisiteReturnPath.value = null
+  prerequisiteExpectedPath.value = null
+  prerequisiteTenantKey.value = null
+  clearCurrentJourneyIntent()
+  dispatchNavigation(returnPath || 'repositories', { replace: true })
 }
 
 function completeConnectionPrerequisite(success: boolean, connectionName?: string): void {
@@ -180,6 +211,13 @@ function completeConnectionPrerequisite(success: boolean, connectionName?: strin
   prerequisiteTenantKey.value = null
   clearCurrentJourneyIntent()
   if (returnPath) {
+    if (repositoryDraft.value) {
+      if (success && repositoryDraft.value.returnPath === returnPath) {
+        repositoryDraft.value.value.connectionRef = connectionName || ''
+        repositoryDraft.value.stage = 'return'
+      }
+      else repositoryDraft.value = null
+    }
     dispatchNavigation(success ? returnPath : 'repositories', { replace: true })
     return
   }
@@ -219,21 +257,25 @@ function completeConnectionPrerequisite(success: boolean, connectionName?: strin
           v-if="route.create?.resource === 'connection'"
           :key="`${viewGeneration}:create-connection:${route.create.method}`"
           :method="route.create.method"
+          :recovery-scope="props.ctx?.tenant && (props.ctx?.user?.userId || props.ctx?.user?.sub || props.ctx?.user?.email) ? JSON.stringify([props.ctx?.basePath || '', journeyTenantKey()]) : null"
           :deletions="deletions"
           @cancel="completeConnectionPrerequisite(false)"
+          @use-token="createConnection('token')"
           @created="(n: string) => completeConnectionPrerequisite(true, n)"
         />
         <RepositoryCreateView
           v-if="route.create?.resource === 'repository'"
           :key="`${viewGeneration}:create-repository:${route.create.mode || 'create'}`"
           :mode="route.create.mode || 'create'"
+          :recovery-scope="props.ctx?.tenant && (props.ctx?.user?.userId || props.ctx?.user?.sub || props.ctx?.user?.email) ? JSON.stringify([props.ctx?.basePath || '', journeyTenantKey()]) : null"
+          :initial-draft="repositoryDraft?.stage === 'return' && repositoryDraft.returnPath === activeJourneyPath() ? repositoryDraft.value : null"
           :deletions="deletions"
           @cancel="navigate('repositories', { replace: true })"
           @created="(n: string) => navigate('repositories/' + encodeURIComponent(n), { replace: true })"
           @create-connection="startRepositoryConnection"
         />
-        <ConnectionDetailView v-if="route.page === 'connections' && route.connection" :key="`${viewGeneration}:connection:${route.connection}`" :name="route.connection" :deletions="deletions" @back="navigate('connections')" />
-        <RepoDetailView v-if="route.repo" :key="`${viewGeneration}:repository:${route.repo}`" :name="route.repo" :deletions="deletions" @back="navigate('repositories')" />
+        <ConnectionDetailView v-if="route.page === 'connections' && route.connection" :key="`${viewGeneration}:connection:${route.connection}`" :name="route.connection" :authority-generation="viewGeneration" :deletions="deletions" @back="navigate('connections')" />
+        <RepoDetailView v-if="route.repo" :key="`${viewGeneration}:repository:${route.repo}`" :name="route.repo" :authority-generation="viewGeneration" :deletions="deletions" @back="navigate('repositories')" />
         <PackagesView v-if="route.page === 'packages'" :key="`${viewGeneration}:packages`" @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
 
         <!-- Keep collection-local query/filter/page/scroll state while a routed
@@ -245,7 +287,9 @@ function completeConnectionPrerequisite(success: boolean, connectionName?: strin
             :key="`${viewGeneration}:connections`"
             :deletions="deletions"
             @open="(n: string) => navigate('connections/' + encodeURIComponent(n))"
-            @create="(method: 'token' | 'github') => navigate('create/connection/' + method)"
+            :prerequisite="!!prerequisiteReturnPath"
+            @cancel-prerequisite="returnToRepository"
+            @create="createConnection"
           />
         </KeepAlive>
         <KeepAlive :max="1">

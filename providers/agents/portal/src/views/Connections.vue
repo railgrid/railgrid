@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { AlertCircle, ArrowLeft, Check, Link, Megaphone, Plug, Plus, Send, Shuffle, Wrench } from 'lucide-vue-next'
+import { ArrowRight, AlertCircle, ArrowLeft, Check, Link, Megaphone, Plug, Plus, Send, Shuffle, Wrench } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, ref, watch, type Component } from 'vue'
 import type { ApiClient } from '../api'
 import SecretHandoff from '../components/SecretHandoff.vue'

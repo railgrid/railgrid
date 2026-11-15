@@ -57,7 +57,7 @@ var projectResource = tenant.Resource{
 // ResourceClient is the per-resource surface App Studio needs. Its signatures
 // match dynamic.ResourceInterface's subset exactly, so both a raw
 // dynamic.ResourceInterface (tests built with NewFromDynamic) and the
-// upsert-preserving scopeResource (production) satisfy it.
+// scopeResource (production) satisfy it.
 type ResourceClient interface {
 	Get(ctx context.Context, name string, opts metav1.GetOptions, subresources ...string) (*unstructured.Unstructured, error)
 	List(ctx context.Context, opts metav1.ListOptions) (*unstructured.UnstructuredList, error)
@@ -78,8 +78,7 @@ type Client struct {
 }
 
 // NewFromScope creates a Client backed by a workspace- and caller-scoped
-// tenant.Scope. Create and Update on its resources are upserts (see
-// tenant.Scope.Apply).
+// tenant.Scope. Updates retain the upsert behavior of tenant.Scope.Apply.
 func NewFromScope(scope *tenant.Scope) *Client {
 	return &Client{scope: scope}
 }
@@ -106,8 +105,7 @@ func (c *Client) Resource(res tenant.Resource, namespace string) ResourceClient 
 
 // Dynamic returns the underlying dynamic client: the one given to
 // NewFromDynamic, or the workspace-scoped client behind a tenant.Scope.
-// Production code paths should prefer Resource() so they keep the upsert
-// semantics App Studio relies on.
+// Production code paths should prefer Resource() for its update semantics.
 func (c *Client) Dynamic() dynamic.Interface {
 	if c.scope != nil {
 		return c.scope.Dynamic()
@@ -247,9 +245,8 @@ func fromUnstructured[T any](u *unstructured.Unstructured) (*T, error) {
 }
 
 // scopeResource adapts a tenant.Scope to the ResourceClient surface.
-// Create and Update both map to Scope.Apply (create-or-update), so handlers
-// that were written against an upsert keep working; status writes go through
-// the status subresource.
+// Create is exclusive; Update maps to Scope.Apply (create-or-update). Status
+// writes go through the status subresource.
 type scopeResource struct {
 	scope     *tenant.Scope
 	res       tenant.Resource
@@ -272,11 +269,16 @@ func (g *scopeResource) List(ctx context.Context, opts metav1.ListOptions) (*uns
 	return &unstructured.UnstructuredList{Items: items}, nil
 }
 
-func (g *scopeResource) Create(ctx context.Context, obj *unstructured.Unstructured, _ metav1.CreateOptions, subresources ...string) (*unstructured.Unstructured, error) {
+func (g *scopeResource) Create(ctx context.Context, obj *unstructured.Unstructured, opts metav1.CreateOptions, subresources ...string) (*unstructured.Unstructured, error) {
 	if len(subresources) == 1 && subresources[0] == "status" {
 		return g.UpdateStatus(ctx, obj, metav1.UpdateOptions{})
 	}
-	return g.scope.Apply(ctx, g.res, g.withNamespace(obj))
+	obj = g.withNamespace(obj)
+	nri := g.scope.Dynamic().Resource(g.res.GVR)
+	if g.res.Namespaced && obj.GetNamespace() != "" {
+		return nri.Namespace(obj.GetNamespace()).Create(ctx, obj, opts, subresources...)
+	}
+	return nri.Create(ctx, obj, opts, subresources...)
 }
 
 func (g *scopeResource) Update(ctx context.Context, obj *unstructured.Unstructured, _ metav1.UpdateOptions, subresources ...string) (*unstructured.Unstructured, error) {

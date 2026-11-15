@@ -786,3 +786,41 @@ func findEnv(t *testing.T, p *aiv1alpha1.Project, name string) aiv1alpha1.Projec
 	t.Fatalf("environment %q not found", name)
 	return aiv1alpha1.ProjectEnvironmentSpec{}
 }
+
+func TestRegistryPullSecretConcurrentCreateRefetchesVersion(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"registry":"registry.example","username":"reader","token":"new-token"}}`))
+	}))
+	defer upstream.Close()
+	connection := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "code.railgrid.ai/v1alpha1", "kind": "Connection",
+		"metadata": map[string]any{"name": "source", "uid": "source-uid"},
+	}}
+	dyn := fake.NewSimpleDynamicClient(runtime.NewScheme(), connection)
+	var updatedVersion string
+	dyn.PrependReactor("create", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		obj := action.(k8stesting.CreateAction).GetObject().(*unstructured.Unstructured)
+		winner := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1", "kind": "Secret",
+			"metadata": map[string]any{"name": obj.GetName(), "namespace": obj.GetNamespace(), "resourceVersion": "winner-version"},
+		}}
+		if err := dyn.Tracker().Add(winner); err != nil {
+			t.Fatal(err)
+		}
+		return true, nil, apierrors.NewAlreadyExists(secretResource.GVR.GroupResource(), obj.GetName())
+	})
+	dyn.PrependReactor("update", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		updatedVersion = action.(k8stesting.UpdateAction).GetObject().(*unstructured.Unstructured).GetResourceVersion()
+		return false, nil, nil
+	})
+	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo"}, Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{ConnectionRef: "source"}}}
+	server := &Server{callers: newTestCallers(nil, upstream.URL)}
+	name, err := server.ensureProjectRegistryPullSecret(context.Background(), asclient.NewFromDynamic(dyn), identity{clusterID: "cluster-a"}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name == "" || updatedVersion != "winner-version" {
+		t.Fatalf("name=%q update resourceVersion=%q", name, updatedVersion)
+	}
+}

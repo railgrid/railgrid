@@ -9,7 +9,7 @@ import Activity from '../views/Activity.vue'
 import Automation from '../views/Automation.vue'
 import RunDetail from '../views/RunDetail.vue'
 import { agentFixture, makeStore, stubApi } from './helpers'
-import { mountVue, settleVue, text, type MountedVue } from './vue-helper'
+import { mountVue, settleVue, text, waitForNextClockTick, type MountedVue } from './vue-helper'
 
 const mounted: MountedVue[] = []
 
@@ -122,6 +122,61 @@ async function settleTableFilters(): Promise<void> {
 }
 
 describe('Activity.vue', () => {
+  it('queues a foreground refresh behind a background run read', async () => {
+    const background = deferred<{ items: RunSummary[]; nextCursor: string }>()
+    const foreground = deferred<{ items: RunSummary[]; nextCursor: string }>()
+    const listRuns = vi.fn().mockResolvedValueOnce({ items: [run()], nextCursor: '' })
+      .mockImplementationOnce(() => background.promise).mockImplementationOnce(() => foreground.promise)
+    const api = stubApi({ listRuns })
+    const store = makeStore(api)
+    const view = await mount(Activity, { store, api })
+    vi.useFakeTimers()
+    store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run' } }))
+    await vi.advanceTimersByTimeAsync(700)
+    const refresh = view.element.querySelector<HTMLButtonElement>('[aria-label="Refresh runs"]')!
+    expect(refresh.disabled).toBe(false)
+    refresh.focus()
+    refresh.click()
+    await settleVue()
+    expect(listRuns).toHaveBeenCalledTimes(2)
+    expect(refresh.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(refresh)
+    refresh.click()
+    background.resolve({ items: [run({ inputPreview: 'background result' })], nextCursor: '' })
+    await settleVue()
+    expect(listRuns).toHaveBeenCalledTimes(3)
+    expect(text(view.element)).toContain('background result')
+    foreground.resolve({ items: [run({ inputPreview: 'foreground result' })], nextCursor: '' })
+    await settleVue()
+    expect(text(view.element)).toContain('foreground result')
+    expect(listRuns).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps Inbox Refresh available during a background read', async () => {
+    const background = deferred<InboxItem[]>()
+    const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), listInbox: vi.fn().mockImplementation(() => background.promise) })
+    const store = makeStore(api)
+    Object.assign(store.inbox, { loaded: true, hasSnapshot: true })
+    const view = await mount(Activity, { store, api })
+    await openInbox(view)
+    const pending = store.load('inbox', { mode: 'background' })
+    await settleVue()
+    const refresh = view.element.querySelector<HTMLButtonElement>('[aria-label="Refresh inbox"]')!
+    expect(refresh.disabled).toBe(false)
+    expect(refresh.getAttribute('aria-busy')).toBeNull()
+    expect(text(refresh)).toBe('Refresh')
+    refresh.focus()
+    refresh.click()
+    await settleVue()
+    expect(refresh.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(refresh)
+    refresh.click()
+    background.resolve([])
+    await pending
+    await settleVue()
+    expect(api.listInbox).toHaveBeenCalledTimes(2)
+  })
+
   it('loads the first feed page and emits navigation from an accessible row', async () => {
     const listRuns = vi.fn().mockResolvedValue({ items: [run()], nextCursor: '' })
     const api = stubApi({ listRuns })
@@ -786,6 +841,23 @@ describe('Activity.vue', () => {
 })
 
 describe('RunDetail.vue', () => {
+  it('restores retry focus on success but not across a run change', async () => {
+    const getRun = vi.fn().mockRejectedValueOnce(new Error('Offline')).mockResolvedValue(detail())
+    const api = stubApi({ getRun })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5', authorityEpoch: 1 })
+    const retry = view.element.querySelector<HTMLButtonElement>('.k-resource-page__retry')!
+    retry.focus()
+    retry.click()
+    await settleVue()
+    expect(document.activeElement).toBe(view.element.querySelector('.k-resource-page__title'))
+
+    getRun.mockRejectedValueOnce(new Error('Offline'))
+    await view.setProps({ runId: 'r6' })
+    const nextRetry = view.element.querySelector<HTMLButtonElement>('.k-resource-page__retry')!
+    nextRetry.focus()
+    await view.setProps({ runId: 'r7' })
+    expect(document.activeElement).not.toBe(view.element.querySelector('.k-resource-page__title'))
+  })
   it('uses chat command labels and the shared output panel for recorded harness commands', async () => {
     const at = new Date().toISOString()
     const excerpt = 'permission denied\n'.repeat(20)
@@ -858,6 +930,9 @@ describe('RunDetail.vue', () => {
     expect(view.element.textContent).not.toContain(commandSecret)
     expect(view.element.textContent).not.toContain(outputSecret)
 
+    // Let the newly mounted target listener's attachment millisecond pass
+    // before clicking through the ancestor's Vue capture listener.
+    await waitForNextClockTick()
     buttonWithText(open!, 'Show full output').click()
     await settleVue()
     expect(output.textContent).toBe(safeResult)
@@ -1369,6 +1444,27 @@ describe('RunDetail.vue', () => {
     expect(view.element.querySelector('.k-resource-page__loading')).toBeNull()
   })
 
+  it('discards a pending read when the authority epoch changes', async () => {
+    const oldRequest = deferred<RunDetailData>()
+    const newRequest = deferred<RunDetailData>()
+    const getRun = vi.fn().mockResolvedValueOnce(detail({ agent: 'initial' }))
+      .mockImplementationOnce(() => oldRequest.promise)
+      .mockImplementationOnce(() => newRequest.promise)
+    const api = stubApi({ getRun })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5', authorityEpoch: 1 })
+    buttonWithText(view.element, 'Refresh').click()
+    await settleVue()
+    await view.setProps({ authorityEpoch: 2 })
+    expect(getRun).toHaveBeenCalledTimes(3)
+    newRequest.resolve(detail({ agent: 'new-authority' }))
+    await settleVue()
+    oldRequest.resolve(detail({ agent: 'old-authority' }))
+    await settleVue()
+    expect(text(view.element)).toContain('new-authority')
+    expect(text(view.element)).not.toContain('old-authority')
+    expect(getRun).toHaveBeenCalledTimes(3)
+  })
+
   it('supports cancel, approval, child navigation, and unseen-child event refresh', async () => {
     let children: RunSummary[] = [run({ id: 'c1', agent: 'researcher', trigger: 'spawn', class: 'background' })]
     const cancelRun = vi.fn().mockResolvedValue({})
@@ -1608,6 +1704,53 @@ describe('RunDetail.vue', () => {
     expect(summary).toContain('updates as they finish')
   })
 
+  it('coalesces slow polls and prioritizes a queued manual refresh', async () => {
+    vi.useFakeTimers()
+    const slow = deferred<RunDetailData>()
+    const manual = deferred<RunDetailData>()
+    const getRun = vi.fn().mockResolvedValueOnce(detail({ phase: 'Running' }))
+      .mockImplementationOnce(() => slow.promise)
+      .mockImplementationOnce(() => manual.promise)
+    const api = stubApi({ getRun })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    await vi.advanceTimersByTimeAsync(3000)
+    const button = [...view.element.querySelectorAll('button')].find(el => text(el).includes('Refresh'))!
+    button.click()
+    await settleVue()
+    expect(text(button)).toContain('Refreshing')
+    await vi.advanceTimersByTimeAsync(9000)
+    expect(getRun).toHaveBeenCalledTimes(2)
+    slow.resolve(detail({ phase: 'Running', agent: 'poll-result' }))
+    await settleVue()
+    expect(getRun).toHaveBeenCalledTimes(3)
+    expect(text(button)).toContain('Refreshing')
+    expect(text(view.element)).toContain('poll-result')
+    manual.resolve(detail({ phase: 'Succeeded', agent: 'manual-result' }))
+    await settleVue()
+    expect(text(view.element)).toContain('manual-result')
+  })
+
+  it('keeps refresh focused and ignores repeated activation during a foreground read', async () => {
+    const pending = deferred<RunDetailData>()
+    const getRun = vi.fn().mockResolvedValueOnce(detail())
+      .mockImplementationOnce(() => pending.promise)
+    const api = stubApi({ getRun })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    const button = buttonWithText(view.element, 'Refresh')
+    button.focus()
+    button.click()
+    await settleVue()
+    expect(button.disabled).toBe(false)
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(button)
+    button.click()
+    pending.resolve(detail())
+    await settleVue()
+    expect(getRun).toHaveBeenCalledTimes(2)
+    expect(document.activeElement).toBe(button)
+    expect(button.getAttribute('aria-disabled')).toBeNull()
+  })
+
   it('polls only while live and advances the elapsed readout', async () => {
     vi.useFakeTimers()
     let phase: RunDetailData['phase'] = 'Running'
@@ -1664,6 +1807,37 @@ describe('Automation.vue', () => {
     return store
   }
 
+  it.each([['schedule', 'schedules'], ['trigger', 'triggers']] as const)('refreshes the %s collection', async (kind, slice) => {
+    const api = stubApi()
+    const store = storeWithAgent(api)
+    const load = vi.spyOn(store, 'load').mockResolvedValue()
+    const view = await mount(Automation, { store, api, kind, agent: 'scout' })
+    load.mockClear()
+
+    view.element.querySelector<HTMLButtonElement>(`[aria-label="Refresh ${slice}"]`)!.click()
+    expect(load).toHaveBeenCalledWith(slice)
+  })
+
+  it('keeps the schedule refresh focused and ignores repeat activation while loading', async () => {
+    const pending = deferred<Schedule[]>()
+    const listSchedules = vi.fn().mockReturnValue(pending.promise)
+    const api = stubApi({ listSchedules })
+    const store = storeWithAgent(api)
+    const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout' })
+    const refresh = view.element.querySelector<HTMLButtonElement>('[aria-label="Refresh schedules"]')!
+    refresh.focus()
+    refresh.click()
+    await settleVue()
+    expect(refresh.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(refresh)
+    refresh.click()
+    expect(listSchedules).toHaveBeenCalledOnce()
+    pending.resolve([])
+    await settleVue()
+    expect(refresh.getAttribute('aria-disabled')).toBe('false')
+    expect(document.activeElement).toBe(refresh)
+  })
+
   it('uses ResourceTable read states for initial loading and stale rows', async () => {
     const api = stubApi()
     const loadingStore = storeWithAgent(api)
@@ -1702,14 +1876,62 @@ describe('Automation.vue', () => {
     const missing = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout', editName: 'missing' })
     expect(missing.element.querySelector('form')).toBeNull()
     expect(text(missing.element)).toContain('temporary refresh failure')
-    expect(text(missing.element)).toContain('Could not load this schedule')
-    expect(text(missing.element)).not.toContain('No schedule named')
+    expect(text(missing.element)).toContain('Showing the last loaded data')
+    expect(text(missing.element)).toContain('No schedule named “missing”')
+    expect([...missing.element.querySelectorAll('button')].some(button => text(button).includes('Retry'))).toBe(true)
+  })
+
+  it('keeps a missing edit-route snapshot visible during a background refresh and retry', async () => {
+    const pending = deferred<Schedule[]>()
+    const listSchedules = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValueOnce([])
+    const api = stubApi({ listSchedules })
+    const store = storeWithAgent(api)
+    store.schedules.loaded = true
+    store.schedules.hasSnapshot = true
+    const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout', editName: 'missing' })
+
+    const refresh = store.load('schedules', { mode: 'background' })
+    await settleVue()
+    expect(text(view.element)).toContain('No schedule named “missing”')
+    expect(text(view.element)).toContain('Checking schedules')
+    expect(view.element.querySelector('form')).toBeNull()
+    pending.reject(new Error('refresh failed'))
+    await refresh
+    await settleVue()
+    expect(text(view.element)).toContain('No schedule named “missing”')
+    expect(text(view.element)).toContain('refresh failed')
+    const retry = [...view.element.querySelectorAll('button')].find(button => text(button).includes('Retry'))!
+    retry.focus()
+    retry.click()
+    await settleVue()
+    expect(listSchedules).toHaveBeenCalledTimes(2)
+    expect(text(view.element)).toContain('No schedule named “missing”')
+    expect(text(view.element)).not.toContain('refresh failed')
+    expect(document.activeElement).toBe(view.element.querySelector('h1'))
+  })
+
+  it('does not move focus if the user leaves retry while the read is pending', async () => {
+    const pending = deferred<Schedule[]>()
+    const api = stubApi({ listSchedules: () => pending.promise })
+    const store = storeWithAgent(api)
+    store.schedules.loaded = true
+    store.schedules.hasSnapshot = true
+    store.schedules.error = 'refresh failed'
+    const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout', editName: 'missing' })
+    const retry = [...view.element.querySelectorAll('button')].find(button => text(button).includes('Retry'))!
+    retry.focus()
+    retry.click()
+    const back = view.element.querySelector<HTMLElement>('a')!
+    back.focus()
+    pending.resolve([])
+    await settleVue()
+    expect(document.activeElement).toBe(back)
   })
 
   it('preserves an in-progress schedule draft across store refreshes and sends the create payload', async () => {
     const pendingCreate = deferred<Schedule>()
     const createSchedule = vi.fn().mockImplementation(() => pendingCreate.promise)
-    const api = stubApi({ createSchedule })
+    const api = stubApi({ createSchedule, contextAuthority: () => ({ usable: true, tenantKey: 'org/ws', userKey: 'alice', token: null }) })
     const store = storeWithAgent(api)
     const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout', createRoute: true })
 
@@ -1767,7 +1989,7 @@ describe('Automation.vue', () => {
   it('keeps the creation dialog and its draft through a rejected save', async () => {
     const pendingCreate = deferred<Schedule>()
     const createSchedule = vi.fn().mockReturnValue(pendingCreate.promise)
-    const api = stubApi({ createSchedule })
+    const api = stubApi({ createSchedule, contextAuthority: () => ({ usable: true, tenantKey: 'org/ws', userKey: 'alice', token: null }) })
     const store = storeWithAgent(api)
     const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout', createRoute: true, createModal: true })
     const dialog = view.element.querySelector<HTMLDialogElement>('dialog')!
@@ -1830,9 +2052,9 @@ describe('Automation.vue', () => {
     expect(edit.element.querySelector('[data-testid="automation-webhook-url"]')).toBeNull()
     expect(edit.element.querySelector('input[name="deliveryRetention"]')).toBeNull()
     const open = [...edit.element.querySelectorAll<HTMLAnchorElement>('a')].find(link => text(link).includes('Open webhook gh'))!
-    expect(open.getAttribute('href')).toBe('#/webhooks/gh/edit')
+    expect(open.getAttribute('href')).toBe('#/webhooks/gh/edit?agent=scout&origin=edit&trigger=pr-review')
     open.click()
-    expect(edit.navigations).toEqual([{ kind: 'edit', resource: 'webhook', name: 'gh' }])
+    expect(edit.navigations).toEqual([{ kind: 'edit', resource: 'webhook', name: 'gh', webhookReturn: { agent: 'scout', origin: 'edit', trigger: 'pr-review' } }])
 
     const list = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout' })
     await settleVue()
@@ -1841,7 +2063,7 @@ describe('Automation.vue', () => {
     const row = list.element.querySelector('.k-table__row')!
     const link = [...row.querySelectorAll<HTMLAnchorElement>('a')].find(candidate => text(candidate) === 'gh')!
     link.click()
-    expect(list.navigations).toEqual([{ kind: 'edit', resource: 'webhook', name: 'gh' }])
+    expect(list.navigations).toEqual([{ kind: 'edit', resource: 'webhook', name: 'gh', webhookReturn: { agent: 'scout', origin: 'collection' } }])
   })
 
   it('edits a generic webhook filter as key=value lines and sends only the changed keys as a merge-patch fragment', async () => {
@@ -1950,7 +2172,7 @@ describe('Automation.vue', () => {
 
   it('lets the selected webhook’s sender drive the GitHub fields and carries the filter across a change', async () => {
     const createTrigger = vi.fn().mockResolvedValue({ metadata: { name: 'pr-review' }, spec: { agentRef: 'scout', webhookRef: 'gh' } })
-    const api = stubApi({ createTrigger })
+    const api = stubApi({ createTrigger, contextAuthority: () => ({ usable: true, tenantKey: 'org/ws', userKey: 'alice', token: null }) })
     const store = storeWithAgent(api)
     const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', createRoute: true })
     await settleVue()
@@ -1991,7 +2213,20 @@ describe('Automation.vue', () => {
     expect(view.element.querySelector('[aria-labelledby="automation-trigger-webhook-label"]')).toBeNull()
     expect(text(view.element)).toContain('this workspace has none yet')
     buttonWithText(view.element, 'Create a webhook').click()
-    expect(view.navigations).toEqual([{ kind: 'create', resource: 'webhook' }])
+    expect(view.navigations).toEqual([{ kind: 'create', resource: 'webhook', webhookReturn: { agent: 'scout', origin: 'create' } }])
+  })
+
+  it('returns webhook setup to the trigger being edited', async () => {
+    const api = stubApi()
+    const store = storeWithAgent(api)
+    store.triggers.data = [{ metadata: { name: 'pr-review' }, spec: { agentRef: 'scout', webhookRef: 'gh' } }]
+    store.triggers.hasSnapshot = true
+    const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', editName: 'pr-review' })
+    await settleVue()
+    const link = [...view.element.querySelectorAll<HTMLAnchorElement>('a')].find(anchor => text(anchor) === 'New webhook')!
+    link.click()
+    expect(view.navigations).toEqual([{ kind: 'create', resource: 'webhook', webhookReturn: { agent: 'scout', origin: 'edit', trigger: 'pr-review' } }])
+    expect(text(view.element)).toContain('discards this trigger draft')
   })
 
   it('names the webhook on the trigger row and surfaces a Validated=False condition', async () => {
@@ -2017,7 +2252,7 @@ describe('Automation.vue', () => {
 
   it('requires a webhook, creates a trigger with the parsed filter, and leaves the filter out when the editor is empty', async () => {
     const createTrigger = vi.fn().mockResolvedValue({ metadata: { name: 'pr-review' }, spec: { agentRef: 'scout', webhookRef: 'hooks' } })
-    const api = stubApi({ createTrigger })
+    const api = stubApi({ createTrigger, contextAuthority: () => ({ usable: true, tenantKey: 'org/ws', userKey: 'alice', token: null }) })
     const store = storeWithAgent(api)
     const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', createRoute: true })
     await settleVue()

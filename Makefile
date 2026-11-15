@@ -723,6 +723,10 @@ permission-claim-policy: ## Regenerate config/kcp/permissionclaimpolicy.yaml fro
 test-agentkit-input-geometry: ## Check shared input geometry in live Tilt (set AGENTKIT_TEST_AGENT/PROJECT and PLAYWRIGHT_MODULE)
 	node hack/test-agentkit-input-geometry.mjs
 
+.PHONY: test-toast-targets
+test-toast-targets: ## Check shared toast dismiss target geometry (set PLAYWRIGHT_MODULE if needed)
+	node hack/test-toast-targets.mjs
+
 .PHONY: test-agentkit-upload-retry
 test-agentkit-upload-retry: ## Verify ambiguous upload recovery against real Tilt storage in both portals
 	node hack/test-agentkit-upload-retry.mjs
@@ -756,7 +760,7 @@ test-create-flow-conformance: ## Verify route-owned creation uses the canonical 
 	@node --test hack/create-flow-conformance.test.mjs
 
 verify-ui-conformance: test-portal-settings-conformance test-create-flow-conformance ## Verify provider UI source uses the canonical k-* design vocabulary
-	@node --test provider-sdk/portalkit-vue/ResourceTable.selection.test.mjs provider-sdk/portalkit-vue/ResourceTable.sorting.test.mjs provider-sdk/portalkit-vue/ResourceTable.overflow.test.mjs provider-sdk/portalkit-vue/resource-technical.conformance.test.mjs
+	@node --test provider-sdk/portalkit-vue/ResourceTable.selection.test.mjs provider-sdk/portalkit-vue/ResourceTable.sorting.test.mjs provider-sdk/portalkit-vue/ResourceTable.overflow.test.mjs provider-sdk/portalkit-vue/ResourceTable.interaction.test.mjs provider-sdk/portalkit-vue/resource-technical.conformance.test.mjs
 	@node --test provider-sdk/portalkit/form-select.behavior.test.mjs
 	@node hack/verify-ui-conformance.test.mjs
 	@node hack/verify-ui-conformance.mjs

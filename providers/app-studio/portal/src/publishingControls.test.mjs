@@ -605,11 +605,11 @@ test('settles terminal project-list failures and keeps a visible Retry action', 
   assert.ok(loadCatch.includes('projectsLoaded.value = true'))
 
   const landingStart = app.indexOf('<div v-else-if="!isBuilderVisible"')
-  const errorStart = app.indexOf('<div v-if="error && !projectDeletionError"', landingStart)
+  const errorStart = app.indexOf('<div v-if="error"', landingStart)
   const gridStart = app.indexOf('<template v-if="projectLayout === \'grid\'">', errorStart)
   assert.ok(landingStart >= 0 && errorStart > landingStart && gridStart > errorStart)
   const listError = app.slice(errorStart, gridStart)
-  assert.ok(listError.includes('@click="load"'))
+  assert.ok(listError.includes('@click="projectsLoaded ? refreshProjects() : load()"'))
   assert.match(app, /const projectIndexRoutePending = computed\(\(\) =>[\s\S]*isProjectIndexRoute\.value[\s\S]*projects\.value\.length === 0[\s\S]*loading\.value \|\| !projectsLoaded\.value/)
 })
 

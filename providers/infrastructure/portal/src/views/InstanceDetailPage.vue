@@ -258,7 +258,7 @@ async function executeDelete() {
   const deletingInstance = inst.value
   deleting.value = true
   try {
-    await api.deleteInstance(props.instanceName)
+    await api.deleteInstance(deletingInstance)
     if (active) {
       props.tombstones.add(deletingInstance.name, deletingInstance.uid)
       toast('info', `Instance deletion requested for ${deletingInstance.name}.`)

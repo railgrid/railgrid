@@ -267,7 +267,7 @@ describe('agent deletion refresh races', () => {
     store.agents.data = [deleted]
 
     const inFlight = store.load('agents')
-    await store.deleteAgent('scout')
+    await store.deleteAgent('scout', 'old-uid')
     expect(store.agents.data).toEqual([])
     stale.resolve([deleted])
     await inFlight
@@ -281,26 +281,33 @@ describe('agent deletion refresh races', () => {
   })
 
   it('keeps the agent visible when the refresh confirms deletion was denied', async () => {
-    const agent: Agent = { metadata: { name: 'scout' }, spec: {} }
+    const agent: Agent = { metadata: { name: 'scout', uid: 'old-uid' }, spec: {} }
     const listAgents = vi.fn().mockResolvedValue([agent])
     const store = makeStore(stubApi({ listAgents, deleteAgent: vi.fn().mockRejectedValue(new Error('denied')) }))
     store.agents.data = [agent]
-    await expect(store.deleteAgent('scout')).rejects.toThrow('denied')
+    await expect(store.deleteAgent('scout', 'old-uid')).rejects.toThrow('denied')
     await vi.waitFor(() => expect(store.agents.loading).toBe(false))
     expect(listAgents).toHaveBeenCalledOnce()
     expect(store.agents.data).toEqual([agent])
   })
 
-  it('keeps a same-name replacement visible after a delete without a cached UID', async () => {
+  it('keeps a same-name replacement visible after a delete with a captured UID', async () => {
     const replacement: Agent = { metadata: { name: 'scout', uid: 'new-uid' }, spec: {} }
     const listAgents = vi.fn().mockResolvedValue([replacement])
     const store = makeStore(stubApi({ listAgents, deleteAgent: vi.fn().mockResolvedValue(undefined) }))
 
-    await store.deleteAgent('scout')
+    await store.deleteAgent('scout', 'old-uid')
     await vi.waitFor(() => expect(store.agents.loading).toBe(false))
     expect(store.agents.data).toEqual([replacement])
     await store.load('agents')
     expect(store.agents.data).toEqual([replacement])
+  })
+
+  it('refuses deletion without a captured UID', async () => {
+    const deleteAgent = vi.fn()
+    const store = makeStore(stubApi({ deleteAgent }))
+    await expect(store.deleteAgent('scout')).rejects.toThrow('identity is unavailable')
+    expect(deleteAgent).not.toHaveBeenCalled()
   })
 
   it('reconciles a deletion when the response is lost', async () => {
@@ -310,7 +317,7 @@ describe('agent deletion refresh races', () => {
     const store = makeStore(stubApi({ listAgents, deleteAgent: vi.fn().mockRejectedValue(new Error('connection reset')) }))
     store.agents.data = [agent]
 
-    await expect(store.deleteAgent('scout')).rejects.toThrow('connection reset')
+    await expect(store.deleteAgent('scout', 'old-uid')).rejects.toThrow('connection reset')
     expect(listAgents).toHaveBeenCalledOnce()
     expect(store.agents.data).toEqual([agent])
     refresh.resolve([{ ...agent, metadata: { ...agent.metadata, deletionTimestamp: '2026-01-01T00:00:00Z' } }])
@@ -366,8 +373,138 @@ describe('server-push freshness', () => {
     expect(listAgents).toHaveBeenCalledTimes(1)
     pending.resolve([{ metadata: { name: 'external-agent' }, spec: {} }])
     await pending.promise
+    await vi.waitFor(() => expect(listAgents).toHaveBeenCalledTimes(2))
     expect(store.agents.data[0]?.metadata.name).toBe('external-agent')
+  })
+
+  it('prioritizes a queued foreground refresh without invalidating the active background snapshot', async () => {
+    const first = deferred<Agent[]>()
+    const second = deferred<Agent[]>()
+    const listAgents = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const store = makeStore(stubApi({ listAgents }))
     store.refreshCollections(['agents'])
+    store.refreshCollections(['agents'])
+    const manual = store.load('agents')
+    expect(store.agents.refreshMode).toBe('foreground')
+    expect(store.agents.loading).toBe(true)
+    expect(listAgents).toHaveBeenCalledTimes(1)
+    first.resolve([{ metadata: { name: 'first' }, spec: {} }])
+    await vi.waitFor(() => expect(listAgents).toHaveBeenCalledTimes(2))
+    expect(store.agents.data[0]?.metadata.name).toBe('first')
+    expect(store.agents.refreshMode).toBe('foreground')
+    second.resolve([{ metadata: { name: 'second' }, spec: {} }])
+    await manual
+    expect(store.agents.data[0]?.metadata.name).toBe('second')
+    expect(store.agents.loading).toBe(false)
+  })
+
+  it('drops queued work on retirement', async () => {
+    const first = deferred<Agent[]>()
+    const listAgents = vi.fn().mockReturnValue(first.promise)
+    const store = makeStore(stubApi({ listAgents }))
+    const active = store.load('agents', { mode: 'background' })
+    const queued = store.load('agents')
+    store.retire()
+    await queued
+    first.resolve([{ metadata: { name: 'old' }, spec: {} }])
+    await active
+    expect(listAgents).toHaveBeenCalledTimes(1)
+    expect(store.agents.data).toEqual([])
+  })
+
+  it('removes an aborted queued request and retains surviving background waiters', async () => {
+    const first = deferred<Agent[]>()
+    const second = deferred<Agent[]>()
+    const listAgents = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const store = makeStore(stubApi({ listAgents }))
+    const active = store.load('agents', { mode: 'background' })
+    const cancelled = new AbortController()
+    const manual = store.load('agents', { signal: cancelled.signal })
+    const background = store.load('agents', { mode: 'background' })
+    cancelled.abort()
+    await manual
+    expect(store.agents.refreshMode).toBe('background')
+    first.resolve([])
+    await active
+    expect(listAgents).toHaveBeenCalledTimes(2)
+    expect(store.agents.refreshMode).toBe('background')
+    second.resolve([])
+    await background
+  })
+
+  it('does not start a sole cancelled queued read', async () => {
+    const first = deferred<Agent[]>()
+    const listAgents = vi.fn().mockReturnValue(first.promise)
+    const store = makeStore(stubApi({ listAgents }))
+    const active = store.load('agents')
+    const controller = new AbortController()
+    const queued = store.load('agents', { signal: controller.signal })
+    controller.abort()
+    await queued
+    first.resolve([])
+    await active
+    expect(listAgents).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports an active refresh timeout and releases a promoted waiter on retirement', async () => {
+    const first = deferred<Agent[]>()
+    const second = deferred<Agent[]>()
+    const listAgents = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const store = makeStore(stubApi({ listAgents }))
+    const controller = new AbortController()
+    const active = store.load('agents', { signal: controller.signal })
+    const queued = store.load('agents')
+    const error = new Error('Refresh timed out')
+    error.name = 'TimeoutError'
+    controller.abort(error)
+    await active
+    expect(store.agents.error).toBe('Refresh timed out')
+    expect(listAgents).toHaveBeenCalledTimes(2)
+    store.retire()
+    await queued
+  })
+
+  it('cancels a promoted read when its last waiter times out, allowing a later read', async () => {
+    const first = deferred<Agent[]>()
+    const promoted = deferred<Agent[]>()
+    const listAgents = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(promoted.promise).mockResolvedValueOnce([])
+    const store = makeStore(stubApi({ listAgents }))
+    const active = store.load('agents', { mode: 'background' })
+    const controller = new AbortController()
+    const queued = store.load('agents', { signal: controller.signal })
+    first.resolve([])
+    await active
+    expect(listAgents).toHaveBeenCalledTimes(2)
+    const error = new Error('Refresh timed out')
+    error.name = 'TimeoutError'
+    controller.abort(error)
+    await queued
+    await vi.waitFor(() => expect(store.agents.loading).toBe(false))
+    expect(store.agents.error).toBe('Refresh timed out')
+    await store.load('agents')
+    expect(listAgents).toHaveBeenCalledTimes(3)
+    promoted.resolve([{ metadata: { name: 'late' }, spec: {} }])
+    await Promise.resolve()
+    expect(store.agents.data).toEqual([])
+  })
+
+  it('demotes a promoted read when its foreground waiter cancels and a background waiter remains', async () => {
+    const first = deferred<Agent[]>()
+    const second = deferred<Agent[]>()
+    const listAgents = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const store = makeStore(stubApi({ listAgents }))
+    const active = store.load('agents', { mode: 'background' })
+    const controller = new AbortController()
+    const foreground = store.load('agents', { signal: controller.signal })
+    const background = store.load('agents', { mode: 'background' })
+    first.resolve([])
+    await active
+    expect(store.agents.refreshMode).toBe('foreground')
+    controller.abort()
+    await foreground
+    expect(store.agents.refreshMode).toBe('background')
+    second.resolve([])
+    await background
     expect(listAgents).toHaveBeenCalledTimes(2)
   })
 

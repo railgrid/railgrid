@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { legacyInfrastructurePath, parseInfrastructureSubPath } from './routes'
+import { instanceReviewHref, legacyInfrastructurePath, parseInfrastructureSubPath } from './routes'
 
 describe('Infrastructure provider routes', () => {
+  it('builds review links only from a workspace-scoped infrastructure base', () => {
+    const base = '/ui/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/providers/infrastructure'
+    expect(instanceReviewHref(base + '/', 'name/with space')).toBe(base + '/instances/name%2Fwith%20space')
+    for (const invalid of [undefined, '/ui/providers/infrastructure', '//example.com', base + '?x=1', base.replace('infrastructure', 'edges')]) {
+      expect(instanceReviewHref(invalid, 'name')).toBeNull()
+    }
+  })
   it('preserves list, direct detail, and browser-history paths from the shell', () => {
     expect(parseInfrastructureSubPath('')).toEqual({ page: 'templates' })
     expect(parseInfrastructureSubPath('/templates/')).toEqual({ page: 'templates' })

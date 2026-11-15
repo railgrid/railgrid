@@ -507,5 +507,5 @@ test('the gallery obtains thumbnail metadata from per-project views before fetch
   assert.match(galleryHydration, /if \(!projectThumbnailRequestIsCurrent\(guard\)\) return\s*\n\s*projectThumbnailRetryNames = new Set\(retryNames\)/)
   assert.match(galleryHydration, /projectThumbnailRetryNames\.delete\(name\)/)
   assert.match(galleryHydration, /for \(const name of replacedNames\) removeProjectThumbnail\(name\)/)
-  assert.match(app, /await hydrateProjectThumbnails\(visibleProjectList, guard, true\)/)
+  assert.match(app, /void hydrateProjectThumbnails\(visibleProjectList, guard, true\)/)
 })

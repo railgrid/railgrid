@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { servicePortError } from './serviceValidation'
+import { displayServiceHost, servicePortError } from './serviceValidation'
 
 describe('service port validation', () => {
   it('accepts the full valid integer range', () => {
@@ -11,4 +11,10 @@ describe('service port validation', () => {
       expect(servicePortError(port)).toBe('Enter a whole-number port from 1 to 65535.')
     }
   })
+})
+
+it('brackets IPv6 hosts exactly once for display alongside ports', () => {
+  expect(displayServiceHost('::1')).toBe('[::1]')
+  expect(displayServiceHost('[::1]')).toBe('[::1]')
+  expect(displayServiceHost('example.test')).toBe('example.test')
 })

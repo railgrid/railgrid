@@ -160,6 +160,22 @@ const channels = ref<ChannelRow[]>([])
 const channelError = ref('')
 const channelErrorTarget = ref<{ key: number; field: 'name' | 'connection' } | null>(null)
 const slackRequestURL = ref('')
+const inboundBusy = ref(false)
+let inboundGeneration = 0
+let inboundTrigger: HTMLButtonElement | null = null
+
+function clearInboundHandoff(restoreFocus = false): void {
+  if (restoreFocus) {
+    const heading = document.getElementById(domID('agent-channels-heading'))
+    const target = inboundTrigger?.isConnected && !inboundTrigger.disabled ? inboundTrigger : heading
+    if (target === heading) heading?.setAttribute('tabindex', '-1')
+    target?.focus()
+  }
+  inboundTrigger = null
+  inboundGeneration += 1
+  inboundBusy.value = false
+  slackRequestURL.value = ''
+}
 
 const formHydrated = ref(false)
 const executionSettingsOpen = ref(false)
@@ -1005,19 +1021,28 @@ function setRunOutput(value: string): void {
   )
 }
 
-async function enableInbound(name: string): Promise<void> {
+async function enableInbound(name: string, event: MouseEvent): Promise<void> {
+  if (inboundBusy.value) return
   const authority = captureAuthority()
+  inboundTrigger = event.currentTarget instanceof HTMLButtonElement ? event.currentTarget : null
   const agentName = props.name
+  const generation = ++inboundGeneration
+  inboundBusy.value = true
   slackRequestURL.value = ''
-  const result = await mutate(authority.store, {
-    run: () => authority.api.enableInbound(name),
-    failure: 'Enable inbound failed',
-    reload: ['connections'],
-  })
-  if (result && authorityIsCurrent(authority) && props.name === agentName) {
-    const connection = channelConnections.value.find(item => item.metadata.name === name)
-    if (connection?.spec.type === 'slack' && result.webhookURL) slackRequestURL.value = result.webhookURL
-    toast(result.registered ? 'ok' : 'info', result.note)
+  try {
+    const result = await mutate(authority.store, {
+      run: () => authority.api.enableInbound(name),
+      failure: 'Enable inbound failed',
+      onFailure: () => generation !== inboundGeneration,
+      reload: ['connections'],
+    })
+    if (result && generation === inboundGeneration && authorityIsCurrent(authority) && props.name === agentName) {
+      const connection = channelConnections.value.find(item => item.metadata.name === name)
+      if (connection?.spec.type === 'slack' && result.webhookURL) slackRequestURL.value = result.webhookURL
+      toast(result.registered ? 'ok' : 'info', result.note)
+    }
+  } finally {
+    if (generation === inboundGeneration) inboundBusy.value = false
   }
 }
 
@@ -1029,10 +1054,10 @@ watch(() => props.authorityEpoch, (epoch, previous) => {
   authorityGeneration += 1
   resetSaveState()
 })
-watch(() => [props.store, props.authorityEpoch, props.name], () => { slackRequestURL.value = '' })
+watch(() => [props.store, props.authorityEpoch, props.name], () => clearInboundHandoff(), { flush: 'sync' })
 onBeforeUnmount(() => {
   authorityGeneration += 1
-  slackRequestURL.value = ''
+  clearInboundHandoff()
 })
 
 async function testChannel(name: string): Promise<void> {
@@ -1586,7 +1611,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
     </Teleport>
 
     <AgentsWorkbenchSection class="agents-config-sec" :heading-id="domID('agent-channels-heading')" title="Channels" description="Where this agent messages you — and, for chat channels, where you message it. Bind a primary channel plus named secondaries; schedules and triggers can route to any of them by name.">
-      <SecretHandoff v-if="slackRequestURL" :value="slackRequestURL" label="Slack request URL" copy-label="Copy Slack request URL" @cleared="slackRequestURL = ''" />
+      <SecretHandoff v-if="slackRequestURL" :value="slackRequestURL" label="Slack request URL" copy-label="Copy Slack request URL" @cleared="clearInboundHandoff" />
       <div v-if="connectionSlice.error && !connectionSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>Could not load channel connections. {{ connectionSlice.error }}</span>
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
@@ -1624,7 +1649,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
             </span>
             <span class="muted">{{ inboundState(bound.connectionRef).note }}</span>
             <span class="agents-inbound-actions">
-              <button v-if="inboundState(bound.connectionRef).canEnable" class="k-btn k-btn--ghost secondary" type="button" @click="enableInbound(bound.connectionRef)">Enable inbound</button>
+              <button v-if="inboundState(bound.connectionRef).canEnable" class="k-btn k-btn--ghost secondary" type="button" :disabled="inboundBusy" @click="enableInbound(bound.connectionRef, $event)">{{ inboundBusy ? 'Enabling inbound…' : 'Enable inbound' }}</button>
               <button class="k-btn k-btn--ghost secondary" type="button" @click="testChannel(bound.connectionRef)"><Send :stroke-width="1.75" aria-hidden="true" /> Test</button>
             </span>
           </template>

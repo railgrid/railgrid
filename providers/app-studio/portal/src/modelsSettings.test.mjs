@@ -266,7 +266,7 @@ test('workspace invalidation fences a retry when the destination project has the
 
 test('workspace remount prevents an old retry error from restarting initialization', async () => {
   const { app, createState } = await modelSettingsLoader()
-  assert.match(app, /onBeforeUnmount\(\(\) => \{\s*appComponentMounted = false\s*invalidateLLMSettingsLoad\(\)/)
+  assert.match(app, /onBeforeUnmount\(\(\) => \{\s*appComponentMounted = false\s*importOperation\.invalidate\(\)\s*invalidateLLMSettingsLoad\(\)/)
   const state = createState('project-a')
   const { completion, retry } = await startInFlightModelRetry(state)
   state.invalidateLLMSettingsLoad()
@@ -1541,6 +1541,13 @@ test('shows model actions and states in a table even with a saved card preferenc
   }
 })
 
+test('retains model collection controls when the last model disappears', async () => {
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  assert.match(source, /const modelControlsActive = computed\(\(\) => !!modelQuery\.value\.trim\(\) \|\| Object\.values\(modelFilters\.value\)\.some\(Boolean\)\)/)
+  assert.match(source, /const showFirstRun = computed\(\(\) => !connectionCollectionShown\.value && !modelCollectionShown\.value && !modelControlsActive\.value/)
+  assert.match(source, /<ModelCollection v-if="modelRows\.length \|\| modelControlsActive \|\| modelCollectionShown" v-model:query="modelQuery" v-model:filter-values="modelFilters"/)
+})
+
 test('offers all Agents chat provider paths and keeps Google AI Studio', async () => {
   const html = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
   for (const label of ['OpenAI', 'Anthropic', 'OpenRouter', 'Custom OpenAI-compatible', 'Google AI Studio / Vertex AI']) {
@@ -1908,5 +1915,43 @@ test('discovery guidance only appears in the existing-connection editor', async 
     assert.equal(saves, editing ? 0 : 1)
     assert.equal(state.connectionNotice.value, editing ? '1 model found. Choose one to verify it, or save the changes.' : '')
     assert.equal(state.connectionStage.value, editing ? 'verify' : 'details')
+  }
+})
+
+test('provider deletion confirmation cannot cross workspace or route', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const parsed = ts.createSourceFile('App.ts', app.slice(app.indexOf('>') + 1, app.indexOf('</script>')), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const functions = ['beginLLMModelMutation', 'llmModelMutationIsCurrent', 'deleteModelProviderConnection'].map(name => {
+    const declaration = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
+    assert.ok(declaration)
+    return declaration.getText(parsed)
+  }).join('\n')
+  const { outputText } = ts.transpileModule(`
+    export function harness(confirmDialog, api) {
+      let llmModelMutationGeneration = 0;
+      const appComponentMounted = true;
+      const props = { ctx: { workspace: 'one' } };
+      const appContextFingerprint = ctx => ctx.workspace;
+      const routePath = { value: '/models' };
+      const llmModelTests = { value: {} }, llmSaving = { value: false }, llmActionError = { value: null };
+      const llmConnections = { value: [{ name: 'main' }] };
+      const toast = () => {};
+      ${functions}
+      return { props, routePath, deleteConnection: deleteModelProviderConnection };
+    }
+  `, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } })
+  const { harness } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
+  for (const change of ['workspace', 'route', 'none']) {
+    let confirm
+    const calls = []
+    const state = harness(() => new Promise(resolve => { confirm = resolve }), { deleteModelProviderConnection: async (...args) => calls.push(args) })
+    const original = state.props.ctx
+    const pending = state.deleteConnection({ name: 'main' })
+    if (change === 'workspace') state.props.ctx = { workspace: 'two' }
+    if (change === 'route') state.routePath.value = '/projects'
+    confirm(true)
+    await pending
+    assert.equal(calls.length, change === 'none' ? 1 : 0)
+    if (change === 'none') assert.equal(calls[0][0], original)
   }
 })

@@ -54,6 +54,11 @@ func supportedEdgeKind(es *edgesv1alpha1.Service) bool {
 	return connResource(es) != ""
 }
 
+func missingKubeTarget(es *edgesv1alpha1.Service) bool {
+	return isKube(es) && es.Spec.Host == "" &&
+		(es.Spec.TargetRef == nil || es.Spec.TargetRef.Name == "" || es.Spec.TargetRef.Namespace == "")
+}
+
 // targetHost is the agent-side address of the service. It must stay in lockstep
 // with the tunnel's serviceView.targetHost (service_proxy.go) so the validation
 // probe reaches the same host the proxy does:

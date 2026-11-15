@@ -2226,3 +2226,33 @@ func TestProjectAssistantDataPlaneSandboxCheckpointWithNoChangesUsesDiffFence(t 
 type sandboxRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f sandboxRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestEnsureSandboxConcurrentCreateChecksWinner(t *testing.T) {
+	for _, owned := range []bool{true, false} {
+		t.Run(fmt.Sprintf("owned=%t", owned), func(t *testing.T) {
+			name := "race-sandbox"
+			winner := newRunSandboxTestInstance(name, projectAssistantRunSandboxCacheStateNew, time.Now().UTC())
+			if !owned {
+				winner.SetAnnotations(nil)
+			}
+			dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+			dyn.PrependReactor("create", "instances", func(action clienttesting.Action) (bool, runtime.Object, error) {
+				if err := dyn.Tracker().Add(winner); err != nil {
+					t.Fatal(err)
+				}
+				return true, nil, apierrors.NewAlreadyExists(runSandboxInstancesResource.GVR.GroupResource(), name)
+			})
+			project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", UID: "project-uid"}}
+			created, err := (&Server{}).ensureProjectAssistantRunSandboxInstance(context.Background(), asclient.NewFromDynamic(dyn), project, name, projectAssistantRunSandboxDefaultTemplate)
+			if created {
+				t.Fatal("concurrent winner reported as newly created")
+			}
+			if owned && err != nil {
+				t.Fatalf("owned winner: %v", err)
+			}
+			if !owned && err == nil {
+				t.Fatal("unowned winner accepted")
+			}
+		})
+	}
+}

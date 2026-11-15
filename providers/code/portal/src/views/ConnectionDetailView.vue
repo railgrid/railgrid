@@ -25,7 +25,7 @@ import {
   type ResourceRefreshMode,
 } from '../refresh'
 
-const props = defineProps<{ name: string; deletions: ResourceDeletions }>()
+const props = defineProps<{ name: string; authorityGeneration?: number; deletions: ResourceDeletions }>()
 const emit = defineEmits<{ (e: 'back'): void }>()
 const deletionScope = 'connection'
 
@@ -224,6 +224,12 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
       emit('back')
       return
     }
+    if (err.reason === 'NotFound') {
+      conn.value = null
+      loaded.value = false
+      error.value = 'This connection is no longer available.'
+      return
+    }
     error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
   } finally {
     if (refresh.isCurrent(requestID)) {
@@ -268,6 +274,7 @@ onUnmounted(() => {
       </div>
 
       <ResourcePage
+        :focus-scope="authorityGeneration === undefined ? undefined : JSON.stringify([authorityGeneration, 'connection', name])"
         :title="conn?.name || name"
         kind="Connection"
         :loaded="connectionReadState"

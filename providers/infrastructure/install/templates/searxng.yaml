@@ -144,7 +144,7 @@ spec:
           enabled:
             type: boolean
             default: false
-            description: "Publish this instance on a public hostname, behind the OIDC gate. Default false — the platform reaches it internally and needs no hostname. Requires oidc.issuerURL + oidc.clientID and the client secret in your cloud-credentials Secret."
+            description: "Publish this instance on a public hostname, behind the OIDC gate. Default false — the platform reaches it internally and needs no hostname. Requires oidc.issuerURL + oidc.clientID and a labeled Secret containing the client secret."
           hostnamePrefix:
             type: string
             pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
@@ -171,7 +171,7 @@ spec:
             type: string
             enum: ["byo"]
             default: "byo"
-            description: "byo = your own IdP. Set issuerURL + clientID, and put the client secret in your cloud-credentials Secret under key oidc_client_secret."
+            description: "byo = your own IdP. Set issuerURL + clientID, and reference a labeled Secret containing key oidc_client_secret."
           issuerURL:
             type: string
             description: "Your IdP's OIDC issuer URL. Required when expose.enabled."

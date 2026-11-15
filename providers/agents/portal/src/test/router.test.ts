@@ -4,6 +4,7 @@ import {
   hashFor,
   parseHash,
   questionRunForSubPath,
+  resourceSlicesForRoute,
   syncHash,
   writeHash,
   type Route,
@@ -28,6 +29,11 @@ it('opens the Activity inbox from its link and keeps Activity selected', () => {
 })
 
 describe('create routes', () => {
+  it('revalidates assisted search prerequisites on entry', () => {
+    expect(resourceSlicesForRoute({ kind: 'create', resource: 'connection', type: 'assisted-search' })).toEqual(['credentials', 'agents', 'connections'])
+    expect(resourceSlicesForRoute({ kind: 'create', resource: 'connection', type: 'github' })).toEqual(['credentials'])
+  })
+
   it.each<[string, Route]>([
     ['#/create/agent', { kind: 'create', resource: 'agent' }],
     ['#/create/agent/harness', { kind: 'create', resource: 'agent', type: 'harness' }],
@@ -230,4 +236,30 @@ describe('skills library routing', () => {
     expect(activeMenu(route)).toBe('skills')
     expect(parseHash('#/agents/scout/skills')).toEqual({ kind: 'agent', name: 'scout', tab: 'skills' })
   })
+})
+
+it('round trips skill creation with its return context', () => {
+  const route = { kind: 'create', resource: 'skill', returnAgent: 'a/b' } as const
+  expect(hashFor(route)).toBe('#/create/skill?agent=a%2Fb')
+  expect(parseHash(hashFor(route))).toEqual(route)
+  expect(activeMenu(route)).toBe('skills')
+  expect(parseHash('#/create/skill')).toEqual({ kind: 'create', resource: 'skill' })
+})
+
+
+it('round trips only valid webhook prerequisite navigation context', () => {
+  for (const context of [
+    { agent: 'team/agent', origin: 'collection' },
+    { agent: 'team/agent', origin: 'create' },
+    { agent: 'team/agent', origin: 'edit', trigger: 'hook/trigger & one' },
+  ] as const) {
+    for (const route of [
+      { kind: 'create', resource: 'webhook', webhookReturn: context },
+      { kind: 'edit', resource: 'webhook', name: 'hook', webhookReturn: context },
+    ] as Route[]) expect(parseHash(hashFor(route))).toEqual(route)
+  }
+  expect(parseHash('#/create/webhook?agent=alice&origin=other')).toEqual({ kind: 'create', resource: 'webhook' })
+  expect(parseHash('#/webhooks/hook/edit?origin=create')).toEqual({ kind: 'edit', resource: 'webhook', name: 'hook' })
+  expect(parseHash('#/create/webhook?agent=alice&origin=edit')).toEqual({ kind: 'create', resource: 'webhook' })
+  expect(parseHash('#/create/webhook?agent=alice&origin=edit&trigger=')).toEqual({ kind: 'create', resource: 'webhook' })
 })

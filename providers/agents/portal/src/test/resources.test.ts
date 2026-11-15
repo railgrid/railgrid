@@ -324,6 +324,35 @@ describe('bounded Agent writes', () => {
 })
 
 describe('agents', () => {
+  it('adds search using current grants while preserving standalone families and other tools', async () => {
+    kcp.reply('GET /agents/scout', {
+      metadata: { name: 'scout', uid: 'agent-1', resourceVersion: '7' },
+      spec: { tools: { interactive: { connections: ['gh'], families: ['spawn', 'visualization'], toolsets: ['custom'] }, background: { families: ['core'] } } },
+    })
+    await resources.grantSearchConnection('scout', 'search', 'agent-1')
+    expect(kcp.lastOf('PATCH').body).toEqual([
+      { op: 'test', path: '/metadata/uid', value: 'agent-1' },
+      { op: 'test', path: '/metadata/resourceVersion', value: '7' },
+      { op: 'add', path: '/spec/tools', value: { interactive: { connections: ['gh', 'search'], families: ['spawn', 'visualization', 'core', 'web'], toolsets: ['custom'] }, background: { families: ['core'] } } },
+    ])
+  })
+
+  it('does not grant a replacement agent with the same name', async () => {
+    kcp.reply('GET /agents/scout', { metadata: { name: 'scout', uid: 'replacement', resourceVersion: '7' }, spec: {} })
+    await expect(resources.grantSearchConnection('scout', 'search', 'agent-1')).rejects.toThrow('agent changed')
+    expect(kcp.calls.filter(call => call.method === 'PATCH')).toHaveLength(0)
+  })
+
+  it('rejects a search grant if another writer changes the agent after the read', async () => {
+    kcp.reply('GET /agents/scout', { metadata: { name: 'scout', uid: 'agent-1', resourceVersion: '7' }, spec: { tools: { interactive: { connections: ['gh'] } } } })
+    kcp.mutateBeforeNextJsonPatch(object => {
+      (object.metadata as Record<string, unknown>).resourceVersion = '8'
+      ;(object.spec as Record<string, unknown>).tools = { interactive: { connections: ['gh', 'concurrent'] } }
+    })
+    await expect(resources.grantSearchConnection('scout', 'search', 'agent-1')).rejects.toMatchObject({ status: 409 })
+    expect(kcp.object('/agents/scout')?.spec).toMatchObject({ tools: { interactive: { connections: ['gh', 'concurrent'] } } })
+  })
+
   it('enables one skill from the current Agent without replacing Grants or unrelated skills', async () => {
     kcp.reply('GET /agents/scout', {
       metadata: { name: 'scout', uid: 'agent-1', resourceVersion: '7' },
@@ -1510,6 +1539,20 @@ describe('shared provider connections', () => {
     expect(listed.find(item => item.name === 'rotated')).toMatchObject({ isConnection: true, discovered: [], secretResolved: undefined })
     expect(listed.find(item => item.name === 'current')).toMatchObject({ isConnection: true, discovered: ['current-model'], secretResolved: false })
   })
+
+  it('does not treat stale or Unknown credential conditions as a resolved secret', async () => {
+    kcp.reply('GET /modelcredentials', { items: [
+      { metadata: { name: 'stale', generation: 2 }, spec: { provider: 'codex' }, status: { observedGeneration: 1, conditions: [{ type: 'SecretResolved', status: 'True' }] } },
+      { metadata: { name: 'unknown', generation: 2 }, spec: { provider: 'openai', model: 'one' }, status: { observedGeneration: 2, conditions: [{ type: 'SecretResolved', status: 'Unknown' }] } },
+      { metadata: { name: 'old-condition', generation: 2 }, spec: { provider: 'openai', model: 'two' }, status: { observedGeneration: 2, conditions: [{ type: 'SecretResolved', status: 'True', observedGeneration: 1 }] } },
+      { metadata: { name: 'bound' }, spec: { connectionRef: 'account', model: 'three' }, status: { conditions: [{ type: 'SecretResolved', status: 'True' }] } },
+    ] })
+    kcp.reply('GET /modelproviderconnections', { items: [{ metadata: { name: 'account', generation: 2 }, status: { observedGeneration: 1, conditions: [{ type: 'SecretResolved', status: 'True' }] } }] })
+    const listed = await resources.listCredentials()
+    for (const name of ['stale', 'unknown', 'old-condition', 'bound']) {
+      expect(listed.find(item => item.name === name)?.secretResolved).toBeUndefined()
+    }
+  })
 })
 
 describe('edges', () => {
@@ -1561,10 +1604,11 @@ describe('model listing with named connection grants', () => {
   })
 
   it('preserves a readable model and its observed readiness when connection metadata is forbidden', async () => {
-    kcp.reply('GET /modelcredentials', { items: [{ metadata: { name: 'fast' }, spec: { connectionRef: 'private', model: 'one' }, status: { conditions: [{ type: 'Ready', status: 'True' }] } }] })
+    kcp.reply('GET /modelcredentials', { items: [{ metadata: { name: 'fast' }, spec: { connectionRef: 'private', model: 'one' }, status: { conditions: [{ type: 'Ready', status: 'True' }, { type: 'SecretResolved', status: 'True' }] } }] })
     kcp.fail('GET /modelproviderconnections', 403, 'Forbidden')
     const listed = await resources.listCredentials()
     expect(listed).toEqual([expect.objectContaining({ name: 'fast', model: 'one', ready: true })])
+    expect(listed[0].secretResolved).toBeUndefined()
   })
 
   it('still reports failed model reads instead of hiding them as an empty collection', async () => {

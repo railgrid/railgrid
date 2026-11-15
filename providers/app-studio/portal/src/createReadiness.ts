@@ -21,9 +21,24 @@ export interface CreateSetupItem {
   action?: 'connect-git' | 'setup-llm'
 }
 
+// A focus refresh can supersede the request started by submission. Wait for
+// whichever request is current before evaluating its result.
+export async function waitForCurrentReadiness(getCurrent: () => Promise<void> | null): Promise<void> {
+  while (getCurrent()) await getCurrent()
+}
+
 // Git readiness is advisory; model setup remains the required creation gate.
 export function gitConnectionReady(readiness: ProjectCreateReadiness | null): boolean {
   return readiness?.gitConnection.ready === true
+}
+
+// Rechecking may discover a replacement, but never silently switches a selected
+// connection. An unchecked choice can adopt the available reference for later
+// selection, and a successful check clears the stale failure message.
+export function reconcileGitReview(withGit: boolean, reviewed: string, error: string, readiness: ProjectCreateReadiness | null) {
+  const current = gitConnectionReady(readiness) ? readiness?.gitConnection.connectionRef || '' : ''
+  if (!withGit) return { reviewed: current, error: current ? '' : error }
+  return { reviewed, error: current && current === reviewed ? '' : error }
 }
 
 export function createPromptBlockedMessage(_readiness: ProjectCreateReadiness | null): string {

@@ -15,6 +15,9 @@ describe('Edges provider routes', () => {
   it('parses provider-relative collection, action, and detail paths', () => {
     expect(parseSubPath(undefined)).toEqual({ page: 'edges' })
     expect(parseSubPath('connect/edge')).toEqual({ page: 'edges', connect: { resource: 'edge' } })
+    expect(parseSubPath('connect/edge/kubernetes')).toEqual({ page: 'edges', connect: { resource: 'edge', requiredType: 'kubernetes' } })
+    expect(edgeConnectPath(undefined, { requiredType: 'kubernetes' })).toBe('connect/edge/kubernetes')
+    expect(parseSubPath('connect/edge/kubernetes/unexpected')).toEqual({ page: 'edges', connect: { resource: 'edge' } })
     expect(parseSubPath('/create/service/')).toEqual({ page: 'services', create: { resource: 'service' } })
     expect(parseSubPath('create/service/server/edge%2Fa')).toEqual({
       page: 'services',

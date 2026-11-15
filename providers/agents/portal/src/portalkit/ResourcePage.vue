@@ -9,7 +9,7 @@
   metadata, status, actions, summary, and body remain caller-owned.
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, useAttrs, watch } from 'vue'
 import { AlertCircle } from 'lucide-vue-next'
 import { ensureRailgridUIStyles } from '../portalkit/styles'
 import type { ResourceReadState, ResourceRefreshMode } from '../portalkit/page-state'
@@ -34,6 +34,8 @@ const props = withDefaults(defineProps<{
   error?: ResourceReadState['error']
   stale?: ResourceReadState['stale']
   retryable?: ResourceReadState['retryable']
+  /** Stable caller-owned identity; enables retry focus recovery within that identity. */
+  focusScope?: string
 }>(), {
   variant: 'default',
   fill: false,
@@ -52,6 +54,13 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{ retry: [] }>()
+const attrs = useAttrs()
+let invalidatedRetry: Element | null = null
+
+function onFocusIn(event: FocusEvent) {
+  // A fresh focus after a scope change belongs to the current scope.
+  if (event.target === invalidatedRetry) invalidatedRetry = null
+}
 
 const explicitReadState = computed(() => props.loaded !== null)
 const showInitialError = computed(() =>
@@ -95,6 +104,8 @@ function requestRetry() {
 // latched through delayed acknowledgement and release it only when the caller
 // reports a settled loading edge or clears the error.
 function finishRetry() {
+  retryRequested.value = false
+  if (props.focusScope) return
   // The Retry button is about to leave the DOM. Move focus only if it is
   // still on this shell's button; do not pull a user back from another task.
   // A later background read can recover after an earlier retry failed.
@@ -105,7 +116,6 @@ function finishRetry() {
     const target = page.querySelector<HTMLElement>('.k-resource-page__title') ?? page
     target.focus({ preventScroll: true })
   }
-  retryRequested.value = false
 }
 watch(() => props.loading, (loading, wasLoading) => {
   if (wasLoading && !loading) {
@@ -116,6 +126,29 @@ watch(() => props.loading, (loading, wasLoading) => {
 watch(() => props.error, error => {
   if (!error) finishRetry()
 })
+
+// A retry control can disappear or move between the initial and stale error
+// branches. Only restore focus while the caller's resource identity is stable.
+watch(() => [props.error, props.loaded, props.retryable, props.focusScope] as const, async (current, previous, onCleanup) => {
+  const root = pageElement.value
+  if (!root) return
+  const document = root.ownerDocument
+  const focused = document.activeElement
+  if (!(focused instanceof HTMLElement) || focused.closest('.k-resource-page') !== root || !focused.matches('.k-resource-page__retry')) return
+  if (current[3] !== previous[3]) {
+    invalidatedRetry = focused
+    return
+  }
+  if (!current[3] || focused === invalidatedRetry) return
+  let cancelled = false
+  onCleanup(() => { cancelled = true })
+  await nextTick()
+  if (cancelled || props.focusScope !== current[3] || !root.isConnected || focused.isConnected || document.activeElement !== document.body) return
+  const target = root.querySelector<HTMLElement>(':scope > .k-resource-page__read-error > .k-resource-page__retry, :scope > .k-resource-page__stale > .k-resource-page__retry')
+    ?? root.querySelector<HTMLElement>(':scope > .k-resource-page__header .k-resource-page__title') ?? root
+  if (!target.matches('.k-resource-page__retry')) target.setAttribute('tabindex', '-1')
+  target.focus()
+})
 </script>
 
 <template>
@@ -125,6 +158,8 @@ watch(() => props.error, error => {
     tabindex="-1"
     :class="{ 'k-resource-page--fill': fill, 'k-resource-page--collection': variant === 'collection' }"
     :aria-busy="ariaBusy"
+    :aria-label="typeof attrs['aria-label'] === 'string' ? attrs['aria-label'] : ((!showHeader || $slots.header) && !attrs['aria-labelledby'] ? title : undefined)"
+    @focusin="onFocusIn"
   >
     <!-- Keep read announcements out of layout while preserving the
       caller-owned body. Foreground refreshes, background updates, and initial

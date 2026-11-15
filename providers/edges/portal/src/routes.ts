@@ -88,6 +88,9 @@ export function parseSubPath(subPath: string | null | undefined): EdgeRoute {
   if (parts[0] === 'connect' && parts[1] === 'edge') {
     if (parts.length === 2) return { page: 'edges', connect: { resource: 'edge' } }
     const hasRequiredType = isEdgeTypeSegment(parts[2])
+    if (hasRequiredType && parts.length === 3) {
+      return { page: 'edges', connect: { resource: 'edge', requiredType: parts[2] as EdgeType } }
+    }
     const actionIndex = hasRequiredType ? 3 : 2
     const requestedType = hasRequiredType ? parts[2] as EdgeType : undefined
     let successPath: string | undefined
@@ -202,8 +205,8 @@ export interface EdgeConnectOptions {
 }
 
 export function edgeConnectPath(successPath?: string, options: EdgeConnectOptions = {}): string {
-  if (!successPath) return 'connect/edge'
   const typeSegment = options.requiredType ? `/${options.requiredType}` : ''
+  if (!successPath) return `connect/edge${typeSegment}`
   const cancelPath = options.cancelPath ?? successPath
   return `connect/edge${typeSegment}/success/${encodeURIComponent(successPath)}/cancel/${encodeURIComponent(cancelPath)}`
 }

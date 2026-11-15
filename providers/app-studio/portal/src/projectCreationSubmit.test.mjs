@@ -58,3 +58,20 @@ test('cancel or scope change invalidates pending readiness without unlocking a n
   assert.equal(creates, 1)
   assert.equal(gate.pending.value, false)
 })
+
+test('canceled readiness cannot write an error into a later submission', async () => {
+  const gate = useProjectCreationSubmit()
+  const oldReady = deferred()
+  let error = ''
+  const old = gate.run(async isCurrent => {
+    await oldReady.promise
+    if (!isCurrent()) return false
+    error = 'Old Git connection failed'
+    return false
+  }, async () => {})
+  gate.invalidate()
+  await gate.run(async () => true, async () => { error = 'Current draft' })
+  oldReady.resolve()
+  await old
+  assert.equal(error, 'Current draft')
+})

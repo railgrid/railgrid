@@ -15,7 +15,23 @@ In the Agents workbench, schedule and trigger creation uses the existing create
 routes in a modal over the agent workspace. Keep the conversation and automation
 lists mounted. Place the dialog on the workbench side on wide screens and let its
 form scroll on short screens. Cancel and successful creation return to the
-automation collection.
+automation collection. An authoritative first empty section uses a compact
+embedded journey beneath its existing heading and action. For triggers, report
+webhook availability only after it has been checked; keep read failures and
+stale snapshots visible. Once a section has shown a resource, retain its table
+for that agent's session even if it becomes empty.
+When trigger setup needs a webhook, carry the originating agent and view through
+webhook creation. Cancel returns there; after creation, keep the webhook detail
+available for its URL and offer a return to the agent's triggers. Returning to
+trigger creation starts a fresh draft, and the form says so before navigation.
+
+Workspace skill creation uses a focused route with the existing SKILL.md and
+supporting-resource editor. Keep the Skills library mounted so its search and
+selection survive the detour. Import opens the same create route with its draft;
+Cancel returns to the library, and a confirmed create returns without waiting
+for the catalog refresh. An authoritative empty library offers create and
+import in its first-use guide; once the collection has been used, retain the
+catalog and its controls if it later becomes empty.
 
 Organization and workspace member additions, and the current workspace-scoped
 service-account creation form, use compact dialogs. Their short identity-and-role
@@ -59,18 +75,18 @@ immediate primary action, and shows the shortest meaningful journey. Missing
 prerequisites change the current step and action rather than leaving an inert
 empty table.
 
-Agents connection creation uses the shared stepper for **Type → Configure →
-Review**. Type selection retains the existing typed creation route. Returning to Type and
-advancing to Review are local steps within that route: the URL continues to name
+Agents connection creation uses the shared stepper for **Type → Configure**.
+Type selection retains the existing typed creation route. Returning to Type is
+a local step within that route: the URL continues to name
 the selected connection type. Reloading that typed URL opens Configure with a
 fresh draft; browser Back/Forward follow route history, not local step history.
 The in-form Back action preserves the draft in memory without persisting secrets
 to browser storage. This is intentional; Type before choosing a connection still
 has its own untyped `/create/connection` route. Back between
 steps preserves the draft when the same type is selected; selecting another type
-resets its credentials and configuration. Continue uses native field validation;
-only the Review step submits creation. Review shows identity and authentication
-mode without echoing credential or endpoint values. Toolset creation remains a
+resets its credentials and configuration. The configuration form uses native
+field validation and submits creation directly. Its guidance summarizes identity
+and authentication without echoing credential or endpoint values. Toolset creation remains a
 single focused form. Connection and toolset field regions stay within `42rem`
 while the surrounding route and guidance remain fluid. The connection wizard
 keeps progress, the form body, and actions in one task column with a separate
@@ -109,6 +125,15 @@ desktop and 4K widths.
 After creation, navigate to the resource when it owns status or recovery;
 otherwise return to the collection with the result clearly visible. This is the
 target standard; existing flows adopt it incrementally.
+
+Code repository creation and import show the shared first-run guide when no
+GitHub connection is available before the form starts. Its action opens
+connection setup and returns to the selected repository journey. If a connection
+disappears after the user has begun the form, retain the draft and show the
+connection error and recovery action alongside it. Keep the non-secret draft
+in memory through that connection detour and restore it on successful return;
+cancel, unrelated navigation, workspace or user changes, and reload discard it.
+Recheck the available connections on return before selecting one.
 
 Required setup and recommended integrations must be distinguishable. A recommended
 integration must offer an explicit skip action and must not block creation while

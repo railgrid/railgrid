@@ -7,7 +7,7 @@ import { formatAIWorkedDuration } from '../agentkit/conversation'
 import { formatFullTime, formatRelativeTime } from '../agentkit/timestamp'
 import type { ChatMessage as ChatMessageView } from '../types'
 import { runFailurePresentation, sanitizeTechnicalDiagnostic, technicalDiagnosticExcerpt, type FailureRecoveryTarget } from '../failure-presentation'
-import { mountVue, settleVue, text } from './vue-helper'
+import { mountVue, settleVue, text, waitForNextClockTick } from './vue-helper'
 
 type TimestampMessage = ChatMessageView & { createdAt?: string }
 
@@ -476,6 +476,7 @@ describe('AgentKit timestamp and chat presentation', () => {
     const disclosure = header.querySelector('button')!
     expect(text(header)).toBe('Chat connection interrupted')
     expect(disclosure.getAttribute('aria-label')).toBe('Chat connection interrupted. Show task details.')
+    await waitForNextClockTick()
     disclosure.click()
     await settleVue()
     expect(disclosure.getAttribute('aria-label')).toBe('Chat connection interrupted. Hide task details.')

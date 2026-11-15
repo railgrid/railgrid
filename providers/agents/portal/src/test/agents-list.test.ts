@@ -52,6 +52,24 @@ describe('agents list card semantics', () => {
     expect(mounted.navigations).toHaveLength(1)
   })
 
+  it('deletes the confirmed identity even if a replacement appears while confirming', async () => {
+    const deleteAgent = vi.fn().mockRejectedValue(new Error('UID precondition failed'))
+    const api = stubApi({ deleteAgent })
+    const store = makeStore(api)
+    store.agents.data = [{ ...agentFixture('scout'), metadata: { name: 'scout', uid: 'old-uid' } }]
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+    const mounted = await mountVue(AgentsList, { store, api })
+    mounted.element.querySelector<HTMLButtonElement>('[aria-label="More actions for scout"]')!.click()
+    await settleVue()
+    document.querySelector<HTMLButtonElement>('[role="menuitem"].k-menu-item--danger')!.click()
+    await settleVue()
+    store.agents.data = [{ ...agentFixture('scout'), metadata: { name: 'scout', uid: 'new-uid' } }]
+    store.dispatchEvent(new Event('change'))
+    resolveConfirm(true)
+    await settleVue()
+    expect(deleteAgent).toHaveBeenCalledWith('scout', 'old-uid')
+  })
+
   it('uses readable model labels and shows only actionable setup and nonempty metadata', async () => {
     const api = stubApi()
     const store = makeStore(api)
@@ -60,7 +78,7 @@ describe('agents list card semantics', () => {
       agentFixture('reporter'),
       agentFixture('unavailable', { backend: { type: 'model', model: { credentials: { chat: 'missing' } } } }),
     ]
-    store.credentials.data = [{ name: 'openai', displayName: 'GPT-4.1', model: 'gpt-4.1' }]
+    store.credentials.data = [{ name: 'openai', displayName: 'GPT-4.1', model: 'gpt-4.1', secretResolved: true }]
     store.schedules.data = [{ metadata: { name: 'daily' }, spec: { agentRef: 'reporter', type: 'cron' } }]
     Object.assign(store.agents, { loaded: true, hasSnapshot: true })
     store.credentials.hasSnapshot = true
@@ -78,6 +96,55 @@ describe('agents list card semantics', () => {
     store.dispatchEvent(new Event('change'))
     await settleVue()
     expect(text(unavailable)).not.toContain('Needs setup')
+    expect(text(unavailable)).toContain('Setup unknown')
+    expect(text(unavailable)).toContain('Could not verify model.')
+  })
+
+  it('distinguishes unknown setup from confirmed blockers and recovers when credentials load', async () => {
+    localStorage.setItem(AGENTS_LAYOUT_PREFERENCE_KEY, 'list')
+    try {
+      const api = stubApi()
+      const store = makeStore(api)
+      store.agents.data = [agentFixture('scout'), agentFixture('missing-ref', { backend: { type: 'model', model: { credentials: {} } } })]
+      Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+      const mounted = await mountVue(AgentsList, { store, api })
+      const rows = () => [...mounted.element.querySelectorAll('.k-table__row')]
+      expect(text(rows()[0])).toContain('Setup unknown')
+      expect(text(rows()[0])).toContain('Checking model')
+      expect(text(rows()[1])).toContain('Needs setup')
+
+      store.credentials.error = 'network error'
+      store.dispatchEvent(new Event('change'))
+      await settleVue()
+      expect(text(rows()[0])).toContain('Could not verify model')
+      expect(text(mounted.element)).toContain('Some agent information could not be refreshed: credentials')
+
+      const triggers = mounted.element.querySelectorAll<HTMLButtonElement>('.k-table__filter-trigger')
+      triggers[1].click()
+      await settleVue()
+      const unknown = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => text(option) === 'Setup unknown')!
+      unknown.click()
+      await new Promise(resolve => setTimeout(resolve, 140))
+      await settleVue()
+      expect(rows()).toHaveLength(1)
+      expect(text(rows()[0])).toContain('scout')
+
+      store.credentials.data = [{ name: 'openai', model: 'gpt-4.1' }]
+      Object.assign(store.credentials, { hasSnapshot: true, error: '' })
+      store.dispatchEvent(new Event('change'))
+      await settleVue()
+      expect(rows()).toHaveLength(1)
+      expect(text(rows()[0])).toContain('Setup unknown')
+      expect(text(rows()[0])).toContain('Model status unknown')
+      store.credentials.data[0].secretResolved = true
+      store.dispatchEvent(new Event('change'))
+      await settleVue()
+      expect(rows()).toHaveLength(0)
+      expect(text(mounted.element)).not.toContain('Some agent information could not be refreshed: credentials')
+      mounted.unmount()
+    } finally {
+      localStorage.removeItem(AGENTS_LAYOUT_PREFERENCE_KEY)
+    }
   })
 
   it('treats provider connections and credentials for the other backend as unavailable', async () => {
@@ -103,6 +170,34 @@ describe('agents list card semantics', () => {
     expect(text(reviewer)).toContain('Choose a harness identity in Config')
   })
 
+  it('shows an unknown harness identity until credential verification recovers', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('reviewer', {
+      backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'codex' } },
+    })]
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+    const mounted = await mountVue(AgentsList, { store, api })
+    const card = mounted.element.querySelector('.agents-card')!
+    expect(text(card)).toContain('Checking harness identity')
+    expect(card.querySelector('a')?.getAttribute('aria-describedby')).toBe(card.querySelector('.agents-backend-blocker')?.id)
+    Object.assign(store.credentials, { hasSnapshot: true, error: 'unavailable', data: [{ name: 'codex', provider: 'codex', secretResolved: true }] })
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    expect(text(card)).toContain('Could not verify harness identity')
+    store.credentials.error = ''
+    store.credentials.data[0].secretResolved = undefined
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    expect(text(card)).toContain('Setup unknown')
+    expect(text(card)).toContain('Harness identity status unknown')
+    store.credentials.data[0].secretResolved = true
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    expect(text(card)).toContain('Codex on build-01')
+    expect(text(card)).not.toContain('Setup unknown')
+  })
+
   it('flags a removed harness machine only when the backend condition matches the current generation', async () => {
     const api = stubApi()
     const store = makeStore(api)
@@ -113,7 +208,7 @@ describe('agents list card semantics', () => {
     const readiness = { type: 'BackendReady', status: 'False', reason: 'UnknownEdgeRef', observedGeneration: 1 }
     agent.status = { conditions: [readiness] }
     store.agents.data = [agent]
-    store.credentials.data = [{ name: 'codex', provider: 'codex' }]
+    store.credentials.data = [{ name: 'codex', provider: 'codex', secretResolved: true }]
     Object.assign(store.agents, { loaded: true, hasSnapshot: true })
     store.credentials.hasSnapshot = true
     const mounted = await mountVue(AgentsList, { store, api })
@@ -159,8 +254,8 @@ describe('agents list refresh resilience', () => {
     Object.assign(empty.agents, { loaded: true, hasSnapshot: true, error: 'temporarily unavailable' })
     Object.assign(empty.credentials, { loaded: true, hasSnapshot: true })
     const emptyMounted = await mountVue(AgentsList, { store: empty, api })
-    const create = emptyMounted.element.querySelector<HTMLButtonElement>('.agents-new-agent')!
-    expect(create.querySelector('.agents-starter-name')?.textContent).toBe('New agent')
+    const create = emptyMounted.element.querySelector<HTMLButtonElement>('.k-first-run button')!
+    expect(text(create)).toContain('New agent')
     create.click()
     expect(emptyMounted.navigations).toEqual([
       { kind: 'create', resource: 'agent' },
@@ -178,10 +273,23 @@ describe('agents list refresh resilience', () => {
     Object.assign(store.agents, { loaded: true, hasSnapshot: true })
     store.credentials.error = 'credential API unavailable'
     const mounted = await mountVue(AgentsList, { store, api })
-    const action = mounted.element.querySelector<HTMLButtonElement>('.agents-new-agent')!
-    expect(action.querySelector('.agents-starter-name')?.textContent).toBe('New agent')
+    const action = mounted.element.querySelector<HTMLButtonElement>('.k-first-run button')!
+    expect(text(action)).toContain('New agent')
     action.click()
     expect(mounted.navigations).toEqual([{ kind: 'create', resource: 'agent' }])
+  })
+
+  it('keeps the collection after its last agent disappears', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+    const mounted = await mountVue(AgentsList, { store, api })
+    store.agents.data = []
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    expect(mounted.element.querySelector('.k-first-run')).toBeNull()
+    expect(mounted.element.querySelector('.agents-new-agent')).not.toBeNull()
   })
 })
 
@@ -213,7 +321,7 @@ describe('agent templates on the landing page', () => {
     const mounted = await mountVue(AgentsList, { store, api })
     const section = mounted.element.querySelector('.agents-template-starters')!
     expect(text(section)).toContain('Could not load agent templates')
-    expect(mounted.element.querySelector('.agents-new-agent')).not.toBeNull()
+    expect(mounted.element.querySelector('.k-first-run button')).not.toBeNull()
     section.querySelector<HTMLButtonElement>('button')!.click()
     await settleVue()
     expect(agentTemplates).toHaveBeenCalledTimes(2)

@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { Loader2, Plus, X } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
-import { hashFor, type Route } from '../router'
+import { hashFor, type Route, type WebhookReturn } from '../router'
 import type { AppStore } from '../store'
 import {
   CONDITION_VALIDATED,
@@ -20,6 +20,8 @@ import {
 import { confirmDialog } from '../portalkit/confirm'
 import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import FormSelect from '../portalkit/FormSelect.vue'
+import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
+import { useCollectionSession } from '../portalkit/useCollectionSession'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
@@ -126,7 +128,7 @@ const props = withDefaults(defineProps<{
   authorityEpoch?: number
 }>(), { createRoute: false, editName: '', authorityEpoch: 0, workbenchActive: true })
 
-const emit = defineEmits<{ navigate: [route: Route] }>()
+const emit = defineEmits<{ navigate: [route: Route]; 'schedule-created': [detail: { agent: string; name: string; store: AppStore; authorityEpoch: number }] }>()
 const runtime = useAgentsRuntime()
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
@@ -141,8 +143,131 @@ const filterError = ref('')
 const webhookError = ref('')
 const formError = ref('')
 const formBusy = ref(false)
+type AutomationAttempt = { name: string; id: string }
+const uncertainCreate = ref<AutomationAttempt | null>(null)
+const recoveryError = ref('')
+const inspection = ref('')
+const inspected = ref(false)
+const inspecting = ref(false)
+let recordKey: string | null = null
+let recordRaw: string | null = null
+let inspectionSerial = 0
+function attemptPrefix(): string | null {
+  const tenant = props.api.tenant()
+  const user = props.api.contextAuthority().userKey
+  if (!tenant.orgUUID || !tenant.workspaceUUID || !user) return null
+  return `railgrid:agents:automation-attempt:${JSON.stringify([tenant.orgUUID, tenant.workspaceUUID, user, props.agent, props.kind])}:`
+}
+function readRecovery(): void {
+  recordKey = null
+  recordRaw = null
+  uncertainCreate.value = null
+  recoveryError.value = ''
+  inspection.value = ''
+  inspected.value = false
+  const prefix = attemptPrefix()
+  if (!prefix) return
+  try {
+    const keys: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key?.startsWith(prefix)) keys.push(key)
+    }
+    recordKey = keys.sort()[0] || null
+    if (!recordKey) return
+    recordRaw = localStorage.getItem(recordKey)
+    const value = JSON.parse(recordRaw || '')
+    if (typeof value?.name !== 'string' || !value.name || typeof value?.id !== 'string' || !value.id) throw new Error('Invalid recovery record')
+    uncertainCreate.value = value
+  } catch { recoveryError.value = 'Could not read the creation recovery record. Check browser storage before continuing.' }
+}
+function clearRecord(key: string | null, raw: string | null): boolean {
+  if (!key) return true
+  try {
+    if (raw === null || localStorage.getItem(key) !== raw) return false
+    localStorage.removeItem(key)
+    return true
+  } catch { return false }
+}
+watch(() => [props.store, props.authorityEpoch, props.agent, props.kind] as const, () => {
+  inspectionSerial++
+  inspecting.value = false
+  readRecovery()
+}, { immediate: true, flush: 'sync' })
+async function inspectCreate(): Promise<void> {
+  if (!uncertainCreate.value || inspecting.value) return
+  const attempt = uncertainCreate.value
+  const serial = ++inspectionSerial
+  const authority = captureAuthority()
+  const agent = props.agent
+  const kind = props.kind
+  const epoch = props.authorityEpoch
+  inspecting.value = true
+  inspected.value = false
+  inspection.value = ''
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const rows = await Promise.race([
+      kind === 'schedule' ? authority.api.listSchedules() : authority.api.listTriggers(),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Inspection timed out')), 15000) }),
+    ])
+    if (serial !== inspectionSerial || !authorityIsCurrent(authority) || props.authorityEpoch !== epoch || props.agent !== agent || props.kind !== kind || uncertainCreate.value !== attempt) return
+    inspection.value = rows.some(row => row.metadata.name === attempt.name)
+      ? `A ${kind} named “${attempt.name}” exists. Its name alone does not establish which request created it. Review it before continuing.`
+      : `No ${kind} named “${attempt.name}” was found. The original request may still be processing; check again before sending another request.`
+    inspected.value = true
+  } catch {
+    if (serial === inspectionSerial && authorityIsCurrent(authority)) inspection.value = 'Could not check automation. Try again before sending another request.'
+  } finally {
+    if (timer) clearTimeout(timer)
+    if (serial === inspectionSerial) inspecting.value = false
+  }
+}
+function clearUnreadableRecord(): void {
+  if (!recordKey || recordRaw === null || !clearRecord(recordKey, recordRaw)) { readRecovery(); return }
+  readRecovery()
+}
+function allowAnotherCreate(): void {
+  if (!inspected.value || inspecting.value) return
+  if (!clearRecord(recordKey, recordRaw)) {
+    readRecovery()
+    if (!uncertainCreate.value && !recoveryError.value) recoveryError.value = 'The recovery record changed. Check browser storage and try again.'
+    return
+  }
+  readRecovery()
+}
+async function runCreateAttempt<T>(name: string, run: () => Promise<T>): Promise<T> {
+  const prefix = attemptPrefix()
+  if (!prefix) {
+    recoveryError.value = 'Your user or workspace identity is unavailable. Reconnect or select a workspace before creating automation.'
+    throw new Error(recoveryError.value)
+  }
+  const authority = captureAuthority()
+  const epoch = props.authorityEpoch
+  const agent = props.agent
+  const kind = props.kind
+  readRecovery()
+  if (uncertainCreate.value || recoveryError.value) throw new Error('A previous request needs inspection before another request.')
+  const attempt = { name, id: crypto.randomUUID() }
+  const key = prefix + attempt.id
+  const raw = JSON.stringify(attempt)
+  try { localStorage.setItem(key, raw) } catch { recoveryError.value = 'Could not save creation recovery state. Check browser storage before continuing.'; throw new Error(recoveryError.value) }
+  try {
+    const result = await run()
+    if (!clearRecord(key, raw)) throw { reason: 'AutomationCreateUnknown' }
+    return result
+  } catch (error) {
+    const unknown = (error as { reason?: string })?.reason === 'AutomationCreateUnknown'
+    if (!unknown && clearRecord(key, raw)) throw error
+    if (authorityIsCurrent(authority) && props.authorityEpoch === epoch && props.agent === agent && props.kind === kind && prefix === attemptPrefix()) {
+      readRecovery()
+    }
+    throw { reason: 'AutomationCreateUnknown', message: 'This automation may have been created. Check before trying again.' }
+  }
+}
 const actionBusy = ref('')
 const formSurface = ref<HTMLElement | null>(null)
+const editHeading = ref<HTMLElement | null>(null)
 let modalOpener: HTMLElement | null = null
 
 const meta = computed(() => META[props.kind])
@@ -154,6 +279,24 @@ const slice = computed(() => {
   void revision.value
   return { ...(props.kind === 'schedule' ? props.store.schedules : props.store.triggers) }
 })
+function refreshAutomation(): void {
+  if (slice.value.loading && slice.value.refreshMode === 'foreground') return
+  void props.store.load(props.kind === 'schedule' ? 'schedules' : 'triggers')
+}
+async function retryMissingEdit(event: Event): Promise<void> {
+  if (slice.value.loading) return
+  const button = event.currentTarget as HTMLButtonElement
+  let restoreFocus = document.activeElement === button
+  const onFocus = (focusEvent: FocusEvent) => { if (focusEvent.target !== button) restoreFocus = false }
+  document.addEventListener('focusin', onFocus)
+  try {
+    await props.store.load(props.kind === 'schedule' ? 'schedules' : 'triggers')
+    await nextTick()
+    if (restoreFocus && !button.isConnected && document.activeElement === document.body) editHeading.value?.focus()
+  } finally {
+    document.removeEventListener('focusin', onFocus)
+  }
+}
 const rows = computed<Automation[]>(() => {
   void revision.value
   const all = props.kind === 'schedule' ? props.store.schedules.data : props.store.triggers.data
@@ -165,7 +308,43 @@ const webhookSlice = computed(() => {
   return { ...props.store.webhooks }
 })
 const webhooks = computed<Webhook[]>(() => webhookSlice.value.data)
+const collectionShown = useCollectionSession(
+  () => slice.value.hasSnapshot && rows.value.length > 0,
+  () => JSON.stringify([props.authorityEpoch, props.agent, props.kind]),
+)
+const showFirstRun = computed(() => slice.value.hasSnapshot && rows.value.length === 0 && !collectionShown.value)
+const triggerWebhookReady = computed(() => webhookSlice.value.hasSnapshot && webhooks.value.length > 0)
+const firstRunSteps = computed(() => props.kind === 'schedule' ? [
+  { label: 'Create a schedule', description: 'Choose when this agent runs and what it should do.' },
+  { label: 'Follow its runs', description: 'Review background runs in Activity.' },
+] : [
+  { label: 'Set up a webhook', description: 'A workspace webhook receives events from a sender.' },
+  { label: 'Create a trigger', description: 'Choose the webhook and the events that run this agent.' },
+  { label: 'Follow its runs', description: 'Review background runs in Activity.' },
+])
 const selectedWebhook = computed(() => webhooks.value.find(webhook => webhook.metadata.name === draft.webhookRef))
+const webhookRetrying = ref(false)
+const pendingWebhookError = ref('')
+watch(() => [props.store, props.authorityEpoch] as const, () => { webhookRetrying.value = false; pendingWebhookError.value = '' }, { flush: 'sync' })
+async function retryWebhooks(event: MouseEvent): Promise<void> {
+  if (webhookRetrying.value) return
+  const button = event.currentTarget as HTMLButtonElement
+  const scope = button.closest('form')
+  const store = props.store
+  const epoch = props.authorityEpoch
+  pendingWebhookError.value = webhookSlice.value.error || ''
+  webhookRetrying.value = true
+  try { await store.load('webhooks') } finally {
+    if (store !== props.store || epoch !== props.authorityEpoch) return
+    const restoreFocus = document.activeElement === button
+    webhookRetrying.value = false
+    pendingWebhookError.value = ''
+    await nextTick()
+    if (restoreFocus && !button.isConnected && document.activeElement === document.body && scope?.isConnected) {
+      scope.querySelector<HTMLElement>('[role="combobox"][aria-labelledby*="automation-trigger-webhook-label"], input[name="name"]')?.focus()
+    }
+  }
+}
 // wantsGitHub is the flavour the selected webhook asks for. Until the
 // webhooks have loaded it is unknown, and the draft keeps the layout it has.
 const wantsGitHub = computed<boolean | null>(() => selectedWebhook.value ? selectedWebhook.value.spec.source === 'github' : null)
@@ -217,7 +396,8 @@ const webhookOptions = computed(() => {
     label: `${webhook.spec.displayName ? `${webhook.spec.displayName} (${webhook.metadata.name})` : webhook.metadata.name} · ${SOURCE_LABEL[webhook.spec.source] ?? webhook.spec.source}`,
   }))
   if (draft.webhookRef && !options.some(option => option.value === draft.webhookRef)) {
-    options.unshift({ value: draft.webhookRef, label: `${draft.webhookRef} · not found` })
+    const status = !webhookSlice.value.hasSnapshot ? 'availability unknown' : webhookSlice.value.error ? 'not in last loaded list' : 'not found'
+    options.unshift({ value: draft.webhookRef, label: `${draft.webhookRef} · ${status}` })
   }
   return options
 })
@@ -328,6 +508,7 @@ function switchFlavour(github: boolean): void {
   if (github === draft.github) return
   if (github) {
     const parsed = parseFilterText(draft.filter)
+    if (parsed.error) { filterError.value = parsed.error; return }
     if (!parsed.error) {
       const split = splitGitHubFilter(parsed.filter)
       draft.ghEvents = split.events.length || split.otherEvents || editing.value ? split.events : [...DEFAULT_GITHUB_EVENTS]
@@ -339,6 +520,7 @@ function switchFlavour(github: boolean): void {
     }
   } else {
     const built = draftFilter()
+    if (built.error) { filterError.value = built.error; return }
     if (!built.error) {
       draft.filter = filterToText(built.filter)
       filterError.value = ''
@@ -351,6 +533,11 @@ function switchFlavour(github: boolean): void {
 // webhooks arriving after the form hydrated, re-lays the filter fields.
 watch(wantsGitHub, (github) => {
   if (props.kind === 'trigger' && formRoute.value && github !== null) switchFlavour(github)
+})
+// Once invalid filter text is repaired, apply a pending source change without
+// discarding the text that was being edited.
+watch(() => [draft.filter, wantsGitHub.value] as const, () => {
+  if (props.kind === 'trigger' && formRoute.value && wantsGitHub.value !== null && wantsGitHub.value !== draft.github) switchFlavour(wantsGitHub.value)
 })
 
 // filterPatch is the merge-patch fragment that turns `before` into `after`:
@@ -454,11 +641,15 @@ function selectRowAction(row: Automation, action: string): void {
 }
 
 function openWebhook(name: string): void {
-  if (name && !formBusy.value) emit('navigate', { kind: 'edit', resource: 'webhook', name })
+  if (name && !formBusy.value) emit('navigate', { kind: 'edit', resource: 'webhook', name, webhookReturn: webhookReturn.value })
 }
 
+const webhookReturn = computed<WebhookReturn>(() => props.editName
+  ? { agent: props.agent, origin: 'edit', trigger: props.editName }
+  : { agent: props.agent, origin: props.createRoute ? 'create' : 'collection' })
+
 function createWebhook(): void {
-  if (!formBusy.value) emit('navigate', { kind: 'create', resource: 'webhook' })
+  if (!formBusy.value) emit('navigate', { kind: 'create', resource: 'webhook', webhookReturn: webhookReturn.value })
 }
 
 function followWebhookLink(event: MouseEvent, navigate: () => void): void {
@@ -524,6 +715,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  inspectionSerial++
   if (!(formSurface.value instanceof HTMLDialogElement)) return
   formSurface.value.close()
   const collectionHash = hashFor(automationRoute.value)
@@ -538,7 +730,8 @@ onBeforeUnmount(() => {
 function focusInvalidField(): void {
   void nextTick(() => {
     const field = formSurface.value?.querySelector<HTMLElement>('[aria-invalid="true"]')
-      ?? formSurface.value?.querySelector<HTMLElement>('button[aria-describedby="automation-trigger-webhook-empty"]')
+      ?? formSurface.value?.querySelector<HTMLElement>('button[aria-describedby~="automation-trigger-webhook-empty"]')
+      ?? formSurface.value?.querySelector<HTMLElement>('#automation-trigger-webhook-error')
     field?.focus()
   })
 }
@@ -570,7 +763,7 @@ function patch(kind: AutomationKind): SchedulePatch | TriggerPatch {
 }
 
 async function save(): Promise<void> {
-  if (formBusy.value) return
+  if (formBusy.value || (!editing.value && (uncertainCreate.value || recoveryError.value))) return
   formError.value = ''
   const authority = captureAuthority()
   const kind = props.kind
@@ -624,12 +817,13 @@ async function save(): Promise<void> {
           reload: [kind === 'schedule' ? 'schedules' : 'triggers'],
         })
       : await mutate(authority.store, {
-          run: (): Promise<Automation> => kind === 'schedule'
+          run: (): Promise<Automation> => runCreateAttempt<Automation>(name, () => kind === 'schedule'
             ? authority.api.createSchedule({ name, agentRef: agent, ...bodyPatch } as ScheduleCreate)
-            : authority.api.createTrigger({ name, agentRef: agent, ...bodyPatch } as TriggerCreate),
+            : authority.api.createTrigger({ name, agentRef: agent, ...bodyPatch } as TriggerCreate)),
           success: `${cap(one)} “${name}” created.`,
           failure: 'Create failed',
           onFailure: error => {
+            if ((error as { reason?: string })?.reason === 'AutomationCreateUnknown') return true
             if (showCreateModal.value && authorityIsCurrent(authority) && kind === props.kind && agent === props.agent) {
               formError.value = error instanceof Error && error.message ? error.message : 'Try again.'
             }
@@ -637,6 +831,7 @@ async function save(): Promise<void> {
           reload: [kind === 'schedule' ? 'schedules' : 'triggers'],
         })
     if (result && authorityIsCurrent(authority) && kind === props.kind && agent === props.agent) {
+      if (!editingName && kind === 'schedule') emit('schedule-created', { agent, name, store: authority.store, authorityEpoch: props.authorityEpoch })
       emit('navigate', automationRoute.value)
     }
   } finally {
@@ -796,6 +991,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
     :description="meta.blurb"
   >
     <template #actions>
+      <button class="k-btn k-btn--ghost secondary" type="button" :aria-label="`Refresh ${meta.title.toLowerCase()}`" :aria-busy="slice.loading && slice.refreshMode === 'foreground'" :aria-disabled="slice.loading && slice.refreshMode === 'foreground'" @click="refreshAutomation"><RefreshCw :class="{ 'k-spin': slice.loading && slice.refreshMode === 'foreground' }" :stroke-width="1.75" aria-hidden="true" /> {{ slice.loading && slice.refreshMode === 'foreground' ? 'Refreshing…' : 'Refresh' }}</button>
       <button
         class="k-btn k-btn--ghost secondary"
         type="button"
@@ -805,7 +1001,19 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
       ><Plus :stroke-width="1.75" aria-hidden="true" /> New {{ meta.one }}</button>
     </template>
 
-    <div :class="{ 'agents-tablewrap': !workbench }">
+    <div v-if="showFirstRun">
+      <div v-if="slice.error" class="k-stale" role="status">
+        Could not refresh {{ meta.title.toLowerCase() }}. Showing the last loaded data. {{ slice.error }}
+        <button class="k-dashboard-action" type="button" :aria-disabled="slice.loading || undefined" @click="refreshAutomation">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
+      </div>
+      <template v-if="kind === 'trigger'">
+        <p v-if="webhookSlice.error" class="agents-hint" role="status">Could not refresh webhooks. {{ webhookSlice.hasSnapshot ? 'Showing the last loaded data. ' : '' }}{{ webhookSlice.error }} <button class="k-dashboard-action" type="button" :aria-disabled="webhookSlice.loading || undefined" @click="!webhookSlice.loading && store.load('webhooks')">{{ webhookSlice.loading ? 'Retrying…' : 'Retry' }}</button></p>
+        <p v-else-if="!webhookSlice.hasSnapshot" class="agents-hint" role="status">Checking webhooks…</p>
+        <p v-else-if="!webhooks.length" class="agents-hint">This workspace needs a webhook before you can create a trigger. <button class="k-dashboard-action" type="button" @click="createWebhook">Create a webhook</button></p>
+      </template>
+      <FirstRunGuide embedded :steps="firstRunSteps" :current-step="kind === 'trigger' && triggerWebhookReady ? 1 : 0" :journey-label="`${meta.title} setup`" />
+    </div>
+    <div v-else :class="{ 'agents-tablewrap': !workbench }">
       <ResourceTable
         :columns="columns"
         :rows="tableRows"
@@ -816,9 +1024,10 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         row-key="name"
         :loaded="slice.hasSnapshot"
         :loading="slice.loading"
+        :refresh-mode="slice.refreshMode"
         :error="slice.error"
         :stale="slice.hasSnapshot && !!slice.error"
-        retryable
+        retryable focus-scope="collection"
         :empty-text="meta.empty"
         @retry="store.load(kind === 'schedule' ? 'schedules' : 'triggers')"
       >
@@ -906,7 +1115,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
       </button>
     </header>
     <header v-else class="k-create-header">
-      <h1 class="k-create-title">{{ createRoute ? `New ${meta.one}` : `Edit ${meta.one} ${editName}` }}</h1>
+      <h1 ref="editHeading" class="k-create-title" tabindex="-1">{{ createRoute ? `New ${meta.one}` : `Edit ${meta.one} ${editName}` }}</h1>
       <p class="k-create-description">{{ meta.blurb }}</p>
     </header>
 
@@ -915,9 +1124,14 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
       <button class="k-dashboard-action" type="button" :disabled="slice.loading" @click="store.load(kind === 'schedule' ? 'schedules' : 'triggers')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
     </div>
 
-    <div v-if="!createRoute && !editing" class="k-card agents-state" :class="slice.error ? 'agents-state-error' : slice.loading || !slice.hasSnapshot ? 'k-loading-reveal' : 'agents-state-empty'" :role="slice.error ? 'alert' : 'status'">
-      <p class="muted">{{ slice.error ? `Could not load this ${meta.one}. ${slice.error}` : slice.loading || !slice.hasSnapshot ? `Loading ${meta.one}…` : `No ${meta.one} named “${editName}” belongs to this agent.` }}</p>
-      <button v-if="slice.error" class="k-btn k-btn--ghost secondary" type="button" :disabled="slice.loading" @click="store.load(kind === 'schedule' ? 'schedules' : 'triggers')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
+    <div v-if="!createRoute && !editing" class="k-card agents-state" :class="slice.error && (!slice.hasSnapshot || currentEdit) ? 'agents-state-error' : !slice.hasSnapshot || currentEdit ? 'k-loading-reveal' : 'agents-state-empty'" :role="slice.error && (!slice.hasSnapshot || currentEdit) ? 'alert' : 'status'">
+      <template v-if="slice.hasSnapshot && !currentEdit">
+        <p class="muted">No {{ meta.one }} named “{{ editName }}” belongs to this agent.</p>
+        <p v-if="slice.error" class="muted">Could not refresh {{ meta.title.toLowerCase() }}. Showing the last loaded data. {{ slice.error }}</p>
+        <span v-else-if="slice.loading" class="sr-only">Checking {{ meta.title.toLowerCase() }}…</span>
+      </template>
+      <p v-else class="muted">{{ slice.error ? `Could not load this ${meta.one}. ${slice.error}` : `Loading ${meta.one}…` }}</p>
+      <button v-if="slice.error" class="k-btn k-btn--ghost secondary" type="button" :aria-disabled="slice.loading || undefined" @click="retryMissingEdit">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
     </div>
 
     <!-- The trigger form carries the GitHub event grid and the filter tester
@@ -945,6 +1159,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
           <label v-else>Cron *<input v-model="draft.schedule" class="k-input mono" name="schedule" aria-label="Cron" required aria-required="true" :aria-invalid="cronError ? 'true' : undefined" :aria-describedby="cronError ? `automation-${kind}-cron-hint automation-${kind}-cron-error` : `automation-${kind}-cron-hint`" placeholder="0 9 * * *" :disabled="formBusy" @input="cronError = ''" /><span v-if="cronError" :id="`automation-${kind}-cron-error`" class="agents-fielderr" role="alert">{{ cronError }}</span><span :id="`automation-${kind}-cron-hint`" class="agents-hint">5-field cron · crontab.guru. Daylight saving changes can skip or repeat a local time.</span></label>
         </template>
         <template v-else>
+          <p v-if="(webhookSlice.error || pendingWebhookError) && (webhookSlice.hasSnapshot || draft.webhookRef)" class="agents-hint" role="status">{{ webhookSlice.hasSnapshot ? 'Could not refresh webhooks. The last loaded list may be out of date.' : 'Could not load webhooks. The selected webhook’s availability is unknown.' }} {{ webhookSlice.error || pendingWebhookError }} <button class="k-dashboard-action" type="button" :aria-disabled="webhookRetrying || undefined" :aria-busy="webhookRetrying || undefined" @click="retryWebhooks">{{ webhookRetrying ? 'Retrying…' : 'Retry' }}</button></p>
           <label v-if="webhooks.length || draft.webhookRef"><span :id="`automation-${kind}-webhook-label`">Webhook *</span><FormSelect v-model="draft.webhookRef" :options="webhookOptions" placeholder="Choose a webhook" :disabled="formBusy" required :invalid="!!webhookError" :labelledby="`automation-${kind}-webhook-label`" :describedby="webhookError ? `automation-${kind}-webhook-error` : `automation-${kind}-webhook-hint`" name="webhookRef" @update:model-value="webhookError = ''" /><span v-if="webhookError" :id="`automation-${kind}-webhook-error`" class="agents-fielderr" role="alert">{{ webhookError }}</span><span v-else :id="`automation-${kind}-webhook-hint`" class="agents-hint">{{ draft.github ? 'A GitHub webhook. Pick the events below; GitHub’s ping on setup is acknowledged and ignored.' : 'Deliveries to this webhook’s URL are offered to every trigger routing from it; this trigger fires on the ones its filter matches.' }}</span></label>
           <p v-if="webhooks.length || draft.webhookRef" class="agents-webhook-links">
             <span v-if="selectedWebhook" class="agents-hint">The URL to give the sender and the delivery log live on the webhook.</span>
@@ -952,10 +1167,11 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
             <a class="k-dashboard-action" :href="formBusy ? undefined : hashFor({ kind: 'create', resource: 'webhook' })" :aria-disabled="formBusy || undefined" :tabindex="formBusy ? -1 : undefined" @click="followWebhookLink($event, createWebhook)">New webhook</a>
           </p>
           <div v-else class="agents-webhook-empty" role="status">
-            <span id="automation-trigger-webhook-empty" class="agents-hint">{{ webhookSlice.hasSnapshot ? 'A trigger routes from a webhook, and this workspace has none yet. Create one — it gives you the URL to paste into GitHub or any sender — then come back.' : webhookSlice.error ? `Could not load webhooks. ${webhookSlice.error}` : 'Loading webhooks…' }}</span>
-            <span v-if="webhookError" :id="`automation-${kind}-webhook-error`" class="agents-fielderr" role="alert">{{ webhookError }}</span>
-            <button v-if="webhookSlice.hasSnapshot" type="button" class="k-btn k-btn--ghost secondary" :disabled="formBusy" aria-describedby="automation-trigger-webhook-empty" @click="createWebhook"><Plus :stroke-width="1.75" aria-hidden="true" /> Create a webhook</button>
-            <button v-else-if="webhookSlice.error" type="button" class="k-btn k-btn--ghost secondary" :disabled="webhookSlice.loading" @click="store.load('webhooks')">{{ webhookSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+            <span id="automation-trigger-webhook-empty" class="agents-hint">{{ webhookSlice.hasSnapshot ? (webhookSlice.error ? 'The last loaded list had no webhooks. Retry to check for changes, or create one.' : 'A trigger routes from a webhook, and this workspace has none yet. Create one — it gives you the URL to paste into GitHub or any sender — then come back.') : webhookSlice.error ? `Could not load webhooks. ${webhookSlice.error}` : 'Loading webhooks…' }}</span>
+            <span v-if="webhookError" :id="`automation-${kind}-webhook-error`" class="agents-fielderr" role="alert" tabindex="-1">{{ webhookError }}</span>
+            <span v-if="webhookSlice.hasSnapshot" class="agents-hint">Opening webhook setup discards this trigger draft.</span>
+            <button v-if="webhookSlice.hasSnapshot" type="button" class="k-btn k-btn--ghost secondary" :disabled="formBusy" :aria-describedby="webhookError ? 'automation-trigger-webhook-empty automation-trigger-webhook-error' : 'automation-trigger-webhook-empty'" @click="createWebhook"><Plus :stroke-width="1.75" aria-hidden="true" /> Create a webhook</button>
+            <button v-else-if="webhookSlice.error || pendingWebhookError" type="button" class="k-btn k-btn--ghost secondary" :aria-describedby="webhookError ? 'automation-trigger-webhook-empty automation-trigger-webhook-error' : 'automation-trigger-webhook-empty'" :aria-disabled="webhookRetrying || undefined" :aria-busy="webhookRetrying || undefined" @click="retryWebhooks">{{ webhookRetrying ? 'Retrying…' : 'Retry' }}</button>
           </div>
           <template v-if="draft.github">
             <fieldset class="agents-fieldset" :aria-describedby="`automation-${kind}-events-hint`">
@@ -979,6 +1195,13 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         <label><span :id="`automation-${kind}-channel-label`">Channel</span><FormSelect v-model="draft.channelRef" :options="channelOptions" :disabled="formBusy" :labelledby="`automation-${kind}-channel-label`" :describedby="`automation-${kind}-channel-hint`" /><span :id="`automation-${kind}-channel-hint`" class="agents-hint">Where output is delivered</span></label>
         <label class="agents-check k-checkbox-hit"><input class="k-checkbox" v-model="draft.suspend" type="checkbox" name="suspend" :disabled="formBusy" /> Paused</label>
       </div>
+      <div v-if="!editing && uncertainCreate" class="k-inline-notification k-inline-notification--error" role="alert">
+        <p>The {{ meta.one }} “{{ uncertainCreate.name }}” may have been created and may run. Check before starting another request.</p>
+        <button type="button" class="k-btn k-btn--ghost secondary" :disabled="inspecting" @click="inspectCreate">{{ inspecting ? 'Checking…' : `Check ${meta.title}` }}</button>
+        <p v-if="inspection" role="status">{{ inspection }}</p>
+        <button v-if="inspected" type="button" class="k-btn k-btn--ghost secondary" @click="allowAnotherCreate">Allow another request</button>
+      </div>
+      <div v-if="!editing && recoveryError" class="k-inline-notification k-inline-notification--error" role="alert">{{ recoveryError }} <button type="button" @click="readRecovery">Retry</button> <button v-if="recordKey && recordRaw !== null" type="button" @click="clearUnreadableRecord">Clear unreadable record</button></div>
       <div class="k-create-actions" :class="{ 'agents-automation-dialog__actions': showCreateModal }">
         <div v-if="showCreateModal && formError" class="k-inline-notification k-inline-notification--error agents-automation-dialog__error" role="alert">
           Could not create this {{ meta.one }}. {{ formError }}

@@ -165,9 +165,21 @@ railgrid-provider-infrastructure .dynform {
   min-width: 0;
 }
 
+railgrid-provider-infrastructure .provision-fields {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 railgrid-provider-infrastructure .provision-identity {
   width: 100%;
   max-width: 42rem;
+}
+
+railgrid-provider-infrastructure .provision-submit[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
 }
 
 railgrid-provider-infrastructure .provision-generated-fields {

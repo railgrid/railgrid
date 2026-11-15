@@ -19,6 +19,7 @@ import {
   listWorkloads,
   listWorkloadsPage,
   probeEdge,
+  setHostFetch,
   setTenant,
   setToken,
   updateEdgeHarness,
@@ -129,6 +130,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  setHostFetch(null)
   setTenant(null)
   setToken(null)
 })
@@ -456,7 +458,7 @@ describe('unchanged edge fleet and CRUD contracts', () => {
   it('probes a freshly created edge and treats a not-yet-visible one as null', async () => {
     const calls = route((call) => call.path.endsWith('/pending')
       ? failure(404, 'NotFound', 'linuxservers.edges.railgrid.ai "pending" not found', 'pending')
-      : response({ metadata: { name: 'server-a' }, status: { joinToken: 'join-me', connected: true, agentVersion: 'v2' } }))
+      : response({ apiVersion: 'edges.railgrid.ai/v1alpha1', kind: call.path.endsWith('/mac-mini') ? 'MacOSServer' : 'LinuxServer', metadata: { name: call.path.endsWith('/mac-mini') ? 'mac-mini' : 'server-a' }, status: { joinToken: 'join-me', connected: true, agentVersion: 'v2' } }))
 
     await expect(probeEdge('server-a', 'server')).resolves.toEqual({ joinToken: 'join-me', connected: true, agentVersion: 'v2' })
     await expect(probeEdge('pending', 'server')).resolves.toBeNull()
@@ -466,6 +468,42 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       `${SERVERS}/pending`,
       `${MACOS}/mac-mini`,
     ])
+  })
+
+  it.each([
+    { apiVersion: 'wrong/v1', kind: 'LinuxServer', metadata: { name: 'server-a' } },
+    { apiVersion: 'edges.railgrid.ai/v1alpha1', kind: 'MacOSServer', metadata: { name: 'server-a' } },
+    { apiVersion: 'edges.railgrid.ai/v1alpha1', kind: 'LinuxServer', metadata: { name: 'other' } },
+  ])('rejects a probe response with an unexpected identity', async identity => {
+    route(() => response({ ...identity, status: { joinToken: 'wrong-secret', connected: true } }))
+    await expect(probeEdge('server-a', 'server')).rejects.toMatchObject({ reason: 'ProtocolError' })
+  })
+
+  it.each([null, 'invalid', { connected: 'false' }, { joinToken: 123 }, { agentVersion: {} }])(
+    'rejects malformed probe status %#', async status => {
+      route(() => response({ apiVersion: 'edges.railgrid.ai/v1alpha1', kind: 'LinuxServer', metadata: { name: 'server-a' }, status }))
+      await expect(probeEdge('server-a', 'server')).rejects.toMatchObject({ reason: 'ProtocolError' })
+    },
+  )
+
+  it('accepts absent probe status and optional fields', async () => {
+    route(() => response({ apiVersion: 'edges.railgrid.ai/v1alpha1', kind: 'LinuxServer', metadata: { name: 'server-a' } }))
+    await expect(probeEdge('server-a', 'server')).resolves.toEqual({ joinToken: undefined, connected: false, agentVersion: undefined })
+  })
+
+  it('forwards probe cancellation to the host transport', async () => {
+    const controller = new AbortController()
+    let receivedSignal: AbortSignal | null | undefined
+    setHostFetch((_input, init) => new Promise<Response>((_resolve, reject) => {
+      receivedSignal = init?.signal
+      receivedSignal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+
+    const pending = probeEdge('server-a', 'server', controller.signal)
+    expect(receivedSignal).toBe(controller.signal)
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(receivedSignal?.aborted).toBe(true)
   })
 
   it('creates a host-local service against a MacOSServer without a Kubernetes target', async () => {
@@ -489,6 +527,18 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       spec: { edgeRef: { kind: 'MacOSServer', name: 'mac-mini' }, host: '127.0.0.1', port: 17873 },
     })
     expect((calls[0]?.body as { spec: Record<string, unknown> }).spec.targetRef).toBeUndefined()
+  })
+
+  it('preserves an explicit duplicate name reason on service creation', async () => {
+    route(() => failure(409, 'AlreadyExists', 'service already exists'))
+    await expect(createKubeEdgeService({ name: 'svc', edgeName: 'edge-a', serviceType: 'generic', targetNamespace: '', targetName: '', scheme: 'http', port: 80 }))
+      .rejects.toMatchObject({ reason: 'AlreadyExists', message: 'service already exists' })
+  })
+
+  it('treats a successful response without the submitted service identity as uncertain', async () => {
+    route(() => response({}, 201))
+    await expect(createKubeEdgeService({ name: 'svc', edgeName: 'edge-a', serviceType: 'generic', targetNamespace: '', targetName: '', scheme: 'http', port: 80 }))
+      .rejects.toMatchObject({ reason: 'ServiceCreateUnknown' })
   })
 
   it('keeps service and workload mutations on their REST collections with kube wire shapes', async () => {
@@ -521,6 +571,18 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       spec: { simple: { image: 'nginx:latest' }, replicas: 2, placement: { strategy: 'Spread', edgeSelector: { matchLabels: { env: 'dev' } } } },
     })
     expect(calls[3]?.body).toMatchObject({ kind: 'DeleteOptions' })
+  })
+
+  it('distinguishes a rejected workload create from an uncertain response', async () => {
+    const draft = { name: 'workload', image: 'nginx', replicas: 1, strategy: 'Spread' as const, selector: {} }
+    route(() => failure(409, 'AlreadyExists', 'workload already exists'))
+    await expect(createWorkload(draft)).rejects.toMatchObject({ reason: 'AlreadyExists' })
+    route(() => failure(503, 'ServiceUnavailable', 'unavailable'))
+    await expect(createWorkload(draft)).rejects.toMatchObject({ reason: 'CreateOutcomeUnknown' })
+    route(() => response({ apiVersion: 'edges.railgrid.ai/v1alpha1', kind: 'Workload', metadata: { name: 'other', namespace: 'default' } }, 201))
+    await expect(createWorkload(draft)).rejects.toMatchObject({ reason: 'CreateOutcomeUnknown' })
+    route(() => response({}, 201))
+    await expect(createWorkload(draft)).rejects.toMatchObject({ reason: 'CreateOutcomeUnknown' })
   })
 
   it('carries the edge target namespace and pull-secret references on workload creates', async () => {
@@ -624,6 +686,18 @@ describe('unchanged edge fleet and CRUD contracts', () => {
     ])
   })
 
+  it('rejects a workload inspection response for another name', async () => {
+    route(() => response(workload('other')))
+    await expect(getWorkload('demo')).rejects.toMatchObject({ reason: 'ProtocolError' })
+  })
+
+  it('rejects service reads without the requested identity', async () => {
+    for (const body of [null, {}, { metadata: { name: 'other' } }]) {
+      route(() => response(body))
+      await expect(getService('ha')).rejects.toMatchObject({ reason: 'ProtocolError' })
+    }
+  })
+
   it('deploys a marketplace app as a Helm workload with embedded values plus a Service', async () => {
     const calls = route((call) => response(call.body, 201))
 
@@ -646,6 +720,51 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       },
     })
     expect(calls[1]?.body).toMatchObject({ kind: 'Service', metadata: { name: 'ha' }, spec: { targetRef: { namespace: 'default', name: 'ha' }, port: 8123 } })
+  })
+
+  it('distinguishes rejected and uncertain edge creation without adopting an existing edge', async () => {
+    const calls = route(() => failure(409, 'AlreadyExists', 'already exists'))
+    await expect(createEdge('edge-a', 'server')).rejects.toMatchObject({ reason: 'EdgeCreateRejected', message: expect.stringContaining('did not create edge') })
+    expect(calls).toHaveLength(1)
+    route(() => failure(503, 'Unavailable', 'unavailable'))
+    await expect(createEdge('edge-a', 'server')).rejects.toMatchObject({ reason: 'EdgeCreateUnknown', message: expect.stringContaining('Check Edges before retrying') })
+    route(() => { throw new TypeError('connection lost') })
+    await expect(createEdge('edge-a', 'server')).rejects.toMatchObject({ reason: 'EdgeCreateUnknown', message: expect.stringContaining('open its details') })
+    route(() => response({ apiVersion: 'edges.railgrid.ai/v1alpha1', kind: 'LinuxServer', metadata: { name: 'other' } }, 201))
+    await expect(createEdge('edge-a', 'server')).rejects.toMatchObject({ reason: 'EdgeCreateUnknown' })
+    await expect(getEdge('edge-a', 'server')).rejects.toMatchObject({ reason: 'ProtocolError' })
+  })
+
+  it('reports uncertain marketplace outcomes without retrying or adopting resources', async () => {
+    const options = { name: 'ha', edgeName: 'edge-a', chart: { repoURL: 'https://charts.example', chart: 'ha', version: '1' }, serviceType: 'homeassistant', port: 8123 }
+    const firstCalls = route(() => failure(409, 'AlreadyExists', 'already exists'))
+    await expect(deployMarketplaceApp(options)).rejects.toMatchObject({ reason: 'MarketplaceWorkloadRejected', message: expect.stringContaining('did not create workload') })
+    expect(firstCalls.map(call => call.path)).toEqual([WORKLOADS])
+
+    const malformedWorkload = route(() => response({ kind: 'Workload', metadata: { name: 'wrong', namespace: 'default' } }, 201))
+    await expect(deployMarketplaceApp(options)).rejects.toMatchObject({ reason: 'MarketplaceWorkloadUnknown' })
+    expect(malformedWorkload).toHaveLength(1)
+    route(call => call.path === WORKLOADS ? response(call.body, 201) : response({ kind: 'Service', metadata: { name: 'wrong' } }, 201))
+    await expect(deployMarketplaceApp(options)).rejects.toMatchObject({ reason: 'MarketplaceServiceUnknown' })
+
+    route(() => failure(503, 'Unavailable', 'unavailable'))
+    await expect(deployMarketplaceApp(options)).rejects.toMatchObject({ reason: 'MarketplaceWorkloadUnknown', message: expect.stringContaining('Check Workloads') })
+
+    const secondCalls = route(call => call.path === WORKLOADS ? response(call.body, 201) : failure(500, 'InternalError', 'failed'))
+    await expect(deployMarketplaceApp(options)).rejects.toMatchObject({ reason: 'MarketplaceServiceUnknown', message: expect.stringContaining('target default/ha, and port 8123') })
+    expect(secondCalls.map(call => call.path)).toEqual([WORKLOADS, SERVICES])
+
+    route(call => call.path === WORKLOADS ? response(call.body, 201) : failure(409, 'AlreadyExists', 'already exists'))
+    await expect(deployMarketplaceApp(options)).rejects.toMatchObject({ reason: 'MarketplaceServiceRejected', message: expect.stringContaining('did not create the Service') })
+  })
+
+  it('does not create a marketplace Service after the workspace changes', async () => {
+    const calls = route(call => {
+      setTenant('other-workspace')
+      return response(call.body, 201)
+    })
+    await expect(deployMarketplaceApp({ name: 'ha', edgeName: 'edge-a', chart: { repoURL: 'https://charts.example', chart: 'ha', version: '1' }, serviceType: 'homeassistant', port: 8123 })).rejects.toMatchObject({ reason: 'ContextChanged' })
+    expect(calls.map(call => call.path)).toEqual([WORKLOADS])
   })
 
   it('refuses to send anything without a selected workspace', async () => {

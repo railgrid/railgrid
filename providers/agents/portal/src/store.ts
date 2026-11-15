@@ -14,10 +14,12 @@ import type { ApiClient } from './api'
 import { isChatProvider, isHarnessProvider } from './types'
 import type { Agent, Capabilities, Connection, Credential, Edge, InboxItem, Schedule, Toolset, Trigger, Webhook } from './types'
 import { CONN_CATEGORY, familiesForConns } from './conn-defs'
+import type { ResourceRefreshMode } from './portalkit/page-state'
 
 export interface Slice<T> {
   data: T
   loading: boolean
+  refreshMode: ResourceRefreshMode
   error: string | null
   errorStatus?: number
   // loaded flips true after the first settled load, including a failure.
@@ -29,7 +31,7 @@ export interface Slice<T> {
 }
 
 function slice<T>(initial: T): Slice<T> {
-  return { data: initial, loading: false, error: null, loaded: false, hasSnapshot: false }
+  return { data: initial, loading: false, refreshMode: 'foreground', error: null, loaded: false, hasSnapshot: false }
 }
 
 export type SliceKey = 'agents' | 'connections' | 'toolsets' | 'schedules' | 'triggers' | 'webhooks' | 'credentials' | 'inbox' | 'edges'
@@ -54,6 +56,16 @@ interface AdoptedItem {
   // response does not contain it.
   generation: number
   item: unknown
+}
+
+interface ReadWaiter {
+  mode: ResourceRefreshMode
+  resolve: () => void
+}
+
+interface QueuedRead {
+  waiters: Set<ReadWaiter>
+  controller?: AbortController
 }
 
 const CREATE_COLLECTION_KEYS: CreateCollectionKey[] = ['agents', 'connections', 'toolsets', 'webhooks', 'credentials']
@@ -168,6 +180,10 @@ export class AppStore extends EventTarget {
   private deletedAgentUIDs = new Map<string, string>()
   private latestLoadID: Partial<Record<SliceKey, number>> = {}
   private pendingLoads: Partial<Record<CreateCollectionKey, Map<number, number>>> = {}
+  private activeReads: Partial<Record<SliceKey, Promise<void>>> = {}
+  private queuedReads: Partial<Record<SliceKey, QueuedRead>> = {}
+  private readWaiters = new Set<ReadWaiter>()
+  private activeReadModes: Partial<Record<SliceKey, ResourceRefreshMode>> = {}
 
   constructor(api: ApiClient) {
     super()
@@ -290,11 +306,11 @@ export class AppStore extends EventTarget {
     }
   }
 
-  async deleteAgent(name: string): Promise<void> {
-    const uid = this.agent(name)?.metadata.uid
+  async deleteAgent(name: string, uid?: string): Promise<void> {
     try {
-      await this.api.deleteAgent(name)
-      if (this.retired || !uid) return
+      if (!uid) throw new Error('Agent identity is unavailable. Refresh and try again.')
+      await this.api.deleteAgent(name, uid)
+      if (this.retired) return
 
       // The DELETE can succeed while the Agent still has a cleanup finalizer.
       // Keep that identity out of the list until a refresh observes its removal.
@@ -314,7 +330,7 @@ export class AppStore extends EventTarget {
   // while a previous read is still in flight.
   refreshCollections(keys: readonly SliceKey[] = Object.keys(LOADERS) as SliceKey[]): void {
     for (const key of keys) {
-      if (!this[key].loading) void this.load(key)
+      void this.load(key, { mode: 'background' })
     }
   }
 
@@ -361,20 +377,86 @@ export class AppStore extends EventTarget {
 
   // load refreshes one slice. Errors land on the slice (never swallowed) and
   // the previous data stays visible so a transient failure doesn't blank the UI.
-  async load(key: SliceKey, options: { signal?: AbortSignal } = {}): Promise<void> {
+  async load(key: SliceKey, options: { signal?: AbortSignal; mode?: ResourceRefreshMode } = {}): Promise<void> {
     if (this.retired) return
     if (!this.api.hasWorkspace()) return
     if (options.signal?.aborted) return
+    const mode = options.mode ?? 'foreground'
+    if (this.activeReads[key]) {
+      let queued = this.queuedReads[key]
+      if (!queued) {
+        queued = this.queuedReads[key] = { waiters: new Set() }
+      }
+      const pendingQueue = queued
+      const completion = new Promise<void>(resolve => {
+        const waiter: ReadWaiter = { mode, resolve: () => {
+          options.signal?.removeEventListener('abort', onAbort)
+          pendingQueue.waiters.delete(waiter)
+          this.readWaiters.delete(waiter)
+          if (!pendingQueue.waiters.size) pendingQueue.controller?.abort()
+          resolve()
+        } }
+        const onAbort = () => {
+          waiter.resolve()
+          if (this.queuedReads[key] === pendingQueue) {
+            if (!pendingQueue.waiters.size) delete this.queuedReads[key]
+            const hasForeground = [...pendingQueue.waiters].some(item => item.mode === 'foreground')
+            this[key].refreshMode = hasForeground ? 'foreground' : this.activeReadModes[key] ?? 'background'
+          } else if (pendingQueue.waiters.size) {
+            const promotedMode = [...pendingQueue.waiters].some(item => item.mode === 'foreground') ? 'foreground' : 'background'
+            this.activeReadModes[key] = promotedMode
+            const queuedForeground = [...(this.queuedReads[key]?.waiters ?? [])].some(item => item.mode === 'foreground')
+            this[key].refreshMode = queuedForeground ? 'foreground' : promotedMode
+          }
+          const reason = options.signal?.reason
+          if (!this.retired && reason instanceof Error && reason.name === 'TimeoutError') this[key].error = reason.message
+          this.changed()
+        }
+        pendingQueue.waiters.add(waiter)
+        this.readWaiters.add(waiter)
+        options.signal?.addEventListener('abort', onAbort, { once: true })
+      })
+      if (mode === 'foreground') {
+        this[key].refreshMode = 'foreground'
+        this.changed()
+      }
+      await completion
+      return
+    }
+    const read = this.readSlice(key, options.signal)
+    this.activeReads[key] = read
+    this.activeReadModes[key] = mode
+    const s = this[key]
+    s.refreshMode = mode
+    s.loading = true
+    this.changed()
+    try { await read } finally {
+      delete this.activeReads[key]
+      delete this.activeReadModes[key]
+      const queued = this.queuedReads[key]
+      delete this.queuedReads[key]
+      if (queued && !this.retired) {
+        const queuedMode = [...queued.waiters].some(waiter => waiter.mode === 'foreground') ? 'foreground' : 'background'
+        queued.controller = new AbortController()
+        void this.load(key, { mode: queuedMode, signal: queued.controller.signal }).finally(() => {
+          for (const waiter of queued.waiters) waiter.resolve()
+        })
+      } else {
+        if (queued) for (const waiter of queued.waiters) waiter.resolve()
+        if (!this.retired) { s.loading = false; this.changed() }
+      }
+    }
+  }
+
+  private async readSlice(key: SliceKey, signal?: AbortSignal): Promise<void> {
     const s = this[key] as Slice<unknown[]>
     const loadID = ++this.nextLoadID
     const requestGeneration = this.collectionGeneration(key)
     this.latestLoadID[key] = loadID
     this.pendingLoads[key as CreateCollectionKey]?.set(loadID, requestGeneration)
-    s.loading = true
-    this.changed()
     try {
-      const rows = await waitForRequest(LOADERS[key](this.api, options.signal), options.signal)
-      if (this.retired || options.signal?.aborted) return
+      const rows = await waitForRequest(LOADERS[key](this.api, signal), signal)
+      if (this.retired || signal?.aborted) return
       // A refresh started before a successful create may return a snapshot
       // that cannot contain the newly-created item yet. Only the latest load
       // may replace the slice; when that load predates an adoption, merge the
@@ -396,7 +478,7 @@ export class AppStore extends EventTarget {
         s.hasSnapshot = true
       }
     } catch (e) {
-      if (this.retired) return
+      if (this.retired || (signal?.aborted && (e as Error).name !== 'TimeoutError')) return
       // Preserve the error from the most recent request. An older failed
       // request must not hide a newer successful refresh (or vice versa).
       if (this.latestLoadID[key] === loadID) {
@@ -408,7 +490,6 @@ export class AppStore extends EventTarget {
       this.pendingLoads[key as CreateCollectionKey]?.delete(loadID)
       this.pruneAdoptedItems(key)
       if (this.latestLoadID[key] === loadID) {
-        s.loading = false
         s.loaded = true
       }
       this.changed()
@@ -585,6 +666,8 @@ export class AppStore extends EventTarget {
   retire(): void {
     if (this.retired) return
     this.retired = true
+    for (const waiter of this.readWaiters) waiter.resolve()
+    this.queuedReads = {}
     this.chatSetupDraft = null
     this.disconnect()
   }
@@ -619,12 +702,12 @@ export class AppStore extends EventTarget {
   // without each holding their own subscription.
   applyServerEvent(ev: ServerEvent): void {
     if (this.retired) return
-    if (ev.type === 'inbox') void this.load('inbox')
+    if (ev.type === 'inbox') void this.load('inbox', { mode: 'background' })
     // A background fire moves the source's status (nextRun / lastFired /
     // lastRunID), so refresh the owning collection rather than letting the row
     // sit stale until the fallback poll.
-    if (ev.type === 'schedule') void this.load('schedules')
-    if (ev.type === 'trigger') void this.load('triggers')
+    if (ev.type === 'schedule') void this.load('schedules', { mode: 'background' })
+    if (ev.type === 'trigger') void this.load('triggers', { mode: 'background' })
     this.dispatchEvent(new CustomEvent<ServerEvent>('server', { detail: ev }))
     this.changed()
   }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { api, setAPIContext } from './api'
+import { api, isPreDispatchError, isRejectedConnectionWrite, normalizeResourceName, setAPIContext } from './api'
 
 const GROUP = 'code.railgrid.ai'
 const API_ROOT = `/apis/${GROUP}/v1alpha1`
@@ -64,7 +64,69 @@ function stubFetch(handler: (call: FetchCall) => Response | Promise<Response>): 
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
+})
+
+describe('connection write timeouts', () => {
+  const connection = {
+    apiVersion: 'code.railgrid.ai/v1alpha1', kind: 'Connection',
+    metadata: { name: 'demo', uid: 'uid-1' },
+    spec: { provider: 'github', type: 'pat', owner: 'octocat', secretRef: { name: 'demo-token' } },
+  }
+
+  it('does not start the Secret write when a timed-out Connection response arrives late', async () => {
+    vi.useFakeTimers()
+    setAPIContext({ tenant: 'timeout-first', token: 'test-token' })
+    let resolve!: (value: Response) => void
+    const calls = stubFetch(() => new Promise<Response>(done => { resolve = done }))
+    const result = api.connect({ name: 'demo', owner: 'octocat', token: 'test' })
+    const rejected = expect(result).rejects.toThrow('outcome is unknown')
+    await vi.advanceTimersByTimeAsync(15_000)
+    await rejected
+    resolve(response(connection))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls).toHaveLength(1)
+  })
+
+  it.each([403, 409, 422])('brands a first-write HTTP %s rejection', async status => {
+    setAPIContext({ tenant: 'rejected', token: 'test-token' })
+    const calls = stubFetch(() => kubeStatus(status, 'Rejected', 'Permission or validation failed'))
+    const error = await api.connect({ name: 'demo', owner: 'octocat', token: 'test' }).catch(value => value)
+    expect(isRejectedConnectionWrite(error)).toBe(true)
+    expect(error.message).toContain('Permission or validation failed')
+    expect(calls).toHaveLength(1)
+  })
+
+  it('does not brand a second-write rejection or a forged transport error', async () => {
+    setAPIContext({ tenant: 'second-rejected', token: 'test-token' })
+    stubFetch(call => {
+      if (call.path.endsWith('/secrets')) return kubeStatus(403, 'Forbidden', 'Secret denied')
+      const body = call.body as { metadata: object }
+      return response({ ...body, metadata: { ...body.metadata, uid: 'uid-1' } })
+    })
+    const second = await api.connect({ name: 'demo', owner: 'octocat', token: 'test' }).catch(value => value)
+    expect(isRejectedConnectionWrite(second)).toBe(false)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw { reason: 'ConnectionRejected', message: '403: forged' } }))
+    const forged = await api.connect({ name: 'demo', owner: 'octocat', token: 'test' }).catch(value => value)
+    expect(isRejectedConnectionWrite(forged)).toBe(false)
+  })
+
+  it('returns an unknown outcome when the Secret write stalls', async () => {
+    vi.useFakeTimers()
+    setAPIContext({ tenant: 'timeout-second', token: 'test-token' })
+    let resolve!: (value: Response) => void
+    const calls = stubFetch(call => call.path.endsWith('/secrets')
+      ? new Promise<Response>(done => { resolve = done })
+      : response({ ...call.body as object, metadata: connection.metadata }))
+    const result = api.connect({ name: 'demo', owner: 'octocat', token: 'test' })
+    const rejected = expect(result).rejects.toThrow('outcome is unknown')
+    await vi.advanceTimersByTimeAsync(15_000)
+    await rejected
+    resolve(response({ apiVersion: 'v1', kind: 'Secret', metadata: { name: 'demo-token', uid: 'secret-uid' } }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls).toHaveLength(2)
+  })
 })
 
 describe('deleteConnection', () => {
@@ -117,7 +179,7 @@ describe('deleteConnection', () => {
 })
 
 describe.each([
-  ['Repository', 'repositories', api.deleteRepository],
+  ['Repository', 'repositories', (name: string) => api.deleteRepository(name, { uid: 'uid-1', resourceVersion: '12' })],
   ['DeployKey', 'deploykeys', api.deleteDeployKey],
   ['Collaborator', 'collaborators', api.deleteCollaborator],
 ] as const)('delete%s', (kind, resource, remove) => {
@@ -128,6 +190,7 @@ describe.each([
     await expect(remove('demo')).resolves.toBeUndefined()
     expect(calls).toHaveLength(1)
     expect(calls[0].method).toBe('DELETE')
+    if (kind === 'Repository') expect(calls[0].body).toMatchObject({ preconditions: { uid: 'uid-1', resourceVersion: '12' } })
     expect(calls[0].path).toBe(`/clusters/delete-${kind.toLowerCase()}-missing${API_ROOT}/${resource}/demo`)
   })
 
@@ -146,6 +209,16 @@ describe.each([
     await expect(remove('demo')).rejects.toMatchObject({ reason: 'HTTPError', message: '500: etcd unavailable' })
     expect(calls).toHaveLength(1)
   })
+})
+
+it('rejects a repository delete without identity and surfaces a precondition conflict', async () => {
+  setAPIContext({ tenant: 'delete-conflict', token: 'test-token' })
+  const calls = stubFetch(() => kubeStatus(409, 'Conflict', 'repository changed'))
+  await expect(api.deleteRepository('demo', { uid: '', resourceVersion: '12' })).rejects.toThrow('identity is unavailable')
+  await expect(api.deleteRepository('demo', { uid: 'uid-1', resourceVersion: 12 as unknown as string })).rejects.toThrow('identity is unavailable')
+  expect(calls).toHaveLength(0)
+  await expect(api.deleteRepository('demo', { uid: 'uid-1', resourceVersion: '12' })).rejects.toMatchObject({ reason: 'HTTPError' })
+  expect(calls[0].body).toMatchObject({ preconditions: { uid: 'uid-1', resourceVersion: '12' } })
 })
 
 describe.each([
@@ -187,6 +260,18 @@ describe.each([
 })
 
 describe('getRepository health snapshot', () => {
+  it.each([
+    [undefined, false],
+    [null, undefined],
+    [{ 'code.railgrid.ai/existing-only': 'true' }, true],
+    [{ 'code.railgrid.ai/existing-only': 'false' }, false],
+    [{ 'code.railgrid.ai/existing-only': true }, undefined],
+    ['invalid', undefined],
+  ])('maps repository deletion policy from annotations %j', async (annotations, expected) => {
+    setAPIContext({ tenant: 'policy', token: 'token' })
+    stubFetch(() => response({ kind: 'Repository', apiVersion: 'code.railgrid.ai/v1alpha1', metadata: { name: 'orders', uid: 'uid', annotations }, spec: { name: 'orders', connectionRef: 'github' } }))
+    expect((await api.getRepository('orders')).existingOnly).toBe(expected)
+  })
   it('retains conditions and provider health facts from one successful read', async () => {
     setAPIContext({ tenant: 'repository-snapshot', token: 'repository-snapshot-token' })
     const calls = stubFetch(() => response({
@@ -610,78 +695,112 @@ describe('oauthConfig', () => {
 })
 
 describe('connect', () => {
-  it('keeps explicit reconnect semantics: adopts the Connection and replaces its owned Secret', async () => {
-    setAPIContext({ tenant: 'connect-reconnect', token: 'connect-reconnect-token' })
-    const connection = {
-      apiVersion: 'code.railgrid.ai/v1alpha1',
-      kind: 'Connection',
-      metadata: { name: 'github-prod', uid: 'existing-connection-uid' },
-      spec: {
-        provider: 'github',
-        type: 'oauth',
-        owner: 'octocat',
-        secretRef: { name: 'github-prod-token', namespace: 'default', key: 'token' },
-      },
-      status: {},
-    }
-    const secret = {
-      apiVersion: 'v1',
-      kind: 'Secret',
-      metadata: { name: 'github-prod-token', namespace: 'default', uid: 'replacement-secret-uid' },
-      type: 'Opaque',
-      stringData: { token: 'replacement-token' },
-    }
-    const calls = stubFetch(call => response(call.path.includes('/secrets/') ? secret : connection))
-
-    await expect(api.connect({
-      name: ' GitHub-Prod ',
-      owner: 'octocat',
-      token: 'replacement-token',
-      refreshToken: 'replacement-refresh',
-      expiry: '2026-09-17T15:00:00Z',
-      type: 'oauth',
-      baseURL: 'https://github.example.com/api/v3',
-    })).resolves.toMatchObject({ name: 'github-prod', uid: 'existing-connection-uid' })
-
+  it('creates the connection and a unique owned credential without adopting existing objects', async () => {
+    setAPIContext({ tenant: 'connect-new', token: 'connect-token' })
+    const calls = stubFetch(call => {
+      const body = call.body as { metadata: Record<string, unknown> }
+      return response({ ...body, metadata: { ...body.metadata, uid: call.path.endsWith('/secrets') ? 'secret-uid' : 'connection-uid' } })
+    })
+    await expect(api.connect({ name: ' GitHub-Prod ', owner: 'octocat', token: 'replacement-token', refreshToken: 'refresh', expiry: 'expiry', type: 'oauth' })).resolves.toMatchObject({ name: 'github-prod' })
     expect(calls).toHaveLength(2)
-    // Both writes are server-side apply (PATCH apply-patch) under the portal's
-    // field manager, so a leftover object is adopted rather than conflicting.
-    expect(calls[0].method).toBe('PATCH')
-    expect(calls[0].path).toBe(`/clusters/connect-reconnect${API_ROOT}/connections/github-prod`)
-    expect(calls[0].query).toEqual({ fieldManager: 'provider-code', force: 'true' })
-    expect(calls[0].body).toMatchObject({
-      apiVersion: 'code.railgrid.ai/v1alpha1',
-      kind: 'Connection',
-      metadata: { name: 'github-prod' },
-      spec: {
-        provider: 'github',
-        type: 'oauth',
-        owner: 'octocat',
-        baseURL: 'https://github.example.com/api/v3',
-        secretRef: { name: 'github-prod-token', namespace: 'default', key: 'token' },
-      },
-    })
-    expect(calls[1].method).toBe('PATCH')
-    expect(calls[1].path).toBe('/clusters/connect-reconnect/api/v1/namespaces/default/secrets/github-prod-token')
-    expect(calls[1].query).toEqual({ fieldManager: 'provider-code', force: 'true' })
-    expect(calls[1].body).toMatchObject({
-      apiVersion: 'v1',
-      kind: 'Secret',
-      metadata: {
-        name: 'github-prod-token',
-        namespace: 'default',
-        ownerReferences: [{
-          apiVersion: 'code.railgrid.ai/v1alpha1',
-          kind: 'Connection',
-          name: 'github-prod',
-          uid: 'existing-connection-uid',
-        }],
-      },
-      stringData: { token: 'replacement-token', refreshToken: 'replacement-refresh', expiry: '2026-09-17T15:00:00Z' },
-    })
+    expect(calls[0].method).toBe('POST')
+    expect(calls[0].path).toBe(`/clusters/connect-new${API_ROOT}/connections`)
+    expect(calls[1].method).toBe('POST')
+    expect(calls[1].path).toBe('/clusters/connect-new/api/v1/namespaces/default/secrets')
+    const connection = calls[0].body as { spec: { secretRef: { name: string } } }
+    expect(connection.spec.secretRef.name).toMatch(/^code-token-[a-f0-9-]+$/)
+    expect(calls[1].body).toMatchObject({ metadata: { name: connection.spec.secretRef.name, labels: { 'railgrid.ai/owner': 'code' }, ownerReferences: [{ name: 'github-prod', uid: 'connection-uid' }] }, stringData: { token: 'replacement-token', refreshToken: 'refresh', expiry: 'expiry' } })
   })
 
-  it('rejects an apply response for a different object than requested', async () => {
+  it('allows only one concurrent creator to write a credential', async () => {
+    setAPIContext({ tenant: 'connect-race', token: 'test-token' })
+    let created = false
+    const calls = stubFetch(call => {
+      const body = call.body as { metadata: Record<string, unknown> }
+      if (call.path.endsWith('/connections')) {
+        if (created) return kubeStatus(409, 'AlreadyExists', 'connection already exists')
+        created = true
+      }
+      return response({ ...body, metadata: { ...body.metadata, uid: 'uid-1' } })
+    })
+    const results = await Promise.allSettled([
+      api.connect({ name: 'demo', owner: 'first', token: 'first-token' }),
+      api.connect({ name: 'demo', owner: 'second', token: 'second-token' }),
+    ])
+    expect(results.map(result => result.status).sort()).toEqual(['fulfilled', 'rejected'])
+    const secrets = calls.filter(call => call.path.endsWith('/secrets'))
+    expect(secrets).toHaveLength(1)
+    expect(secrets[0].body).toMatchObject({ stringData: { token: 'first-token' } })
+    expect(calls.every(call => call.method === 'POST')).toBe(true)
+  })
+
+  it('does not overwrite a colliding Secret and leaves the Connection for inspection', async () => {
+    setAPIContext({ tenant: 'secret-collision', token: 'test-token' })
+    const calls = stubFetch(call => {
+      if (call.path.endsWith('/secrets')) return kubeStatus(409, 'AlreadyExists', 'secret already exists')
+      const body = call.body as { metadata: Record<string, unknown> }
+      return response({ ...body, metadata: { ...body.metadata, uid: 'connection-uid' } })
+    })
+    await expect(api.connect({ name: 'demo', owner: 'owner', token: 'token' })).rejects.toBeDefined()
+    expect(calls).toHaveLength(2)
+    expect(calls.every(call => call.method === 'POST')).toBe(true)
+  })
+
+  it.each(['owner', 'type', 'secretRef', 'baseURL'])('rejects a changed Connection %s before writing the Secret', async field => {
+    setAPIContext({ tenant: 'connection-admission', token: 'test-token' })
+    const calls = stubFetch(call => {
+      const body = call.body as { metadata: object; spec: Record<string, unknown> }
+      return response({ ...body, metadata: { ...body.metadata, uid: 'conn-uid' }, spec: { ...body.spec, [field]: field === 'secretRef' ? { name: 'other', namespace: 'default', key: 'token' } : 'changed' } })
+    })
+    await expect(api.connect({ name: 'demo', owner: 'owner', token: 'token' })).rejects.toMatchObject({ reason: 'ProtocolError' })
+    expect(calls).toHaveLength(1)
+  })
+
+  it.each(['namespace', 'labels', 'ownerReferences'])('rejects a Secret whose %s was changed', async field => {
+    setAPIContext({ tenant: 'secret-admission', token: 'test-token' })
+    const calls = stubFetch(call => {
+      const body = call.body as { metadata: Record<string, unknown> }
+      const changed = call.path.endsWith('/secrets') ? { [field]: field === 'namespace' ? 'other' : field === 'labels' ? {} : [] } : {}
+      return response({ ...body, metadata: { ...body.metadata, uid: 'uid-1', ...changed } })
+    })
+    await expect(api.connect({ name: 'demo', owner: 'owner', token: 'token' })).rejects.toMatchObject({ reason: 'ProtocolError' })
+    expect(calls).toHaveLength(2)
+  })
+
+  it.each(['missing', 'throwing'])('does not dispatch when secure random is %s', async mode => {
+    setAPIContext({ tenant: 'no-random', token: 'test-token' })
+    vi.stubGlobal('crypto', mode === 'missing' ? undefined : { getRandomValues: () => { throw new Error('unavailable') } })
+    const calls = stubFetch(() => response({}))
+    const error = await api.connect({ name: 'demo', owner: 'owner', token: 'sensitive-token' }).catch(value => value)
+    expect(isPreDispatchError(error)).toBe(true)
+    expect(calls).toHaveLength(0)
+  })
+
+  it.each(['connection', 'secret'])('does not trust a forged pre-dispatch error during the %s write', async stage => {
+    setAPIContext({ tenant: 'forged-error', token: 'test-token' })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const call = request(input, init)
+      if (stage === 'connection' || call.path.endsWith('/secrets')) throw { reason: 'PreDispatch', message: 'forged' }
+      const body = call.body as { metadata: Record<string, unknown> }
+      return response({ ...body, metadata: { ...body.metadata, uid: 'uid-1' } })
+    }))
+    const error = await api.connect({ name: 'demo', owner: 'owner', token: 'token' }).catch(value => value)
+    expect(isPreDispatchError(error)).toBe(false)
+  })
+
+  it('generates secret names without randomUUID', async () => {
+    setAPIContext({ tenant: 'random-values', token: 'test-token' })
+    const originalCrypto = globalThis.crypto
+    vi.stubGlobal('crypto', { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) })
+    const calls = stubFetch(call => {
+      const body = call.body as { metadata: Record<string, unknown> }
+      return response({ ...body, metadata: { ...body.metadata, uid: 'uid-1' } })
+    })
+    await expect(api.connect({ name: 'demo', owner: 'owner', token: 'token' })).resolves.toBeDefined()
+    expect(calls).toHaveLength(2)
+  })
+
+  it('rejects a create response for a different object than requested', async () => {
     setAPIContext({ tenant: 'connect-mismatch', token: 'connect-mismatch-token' })
     stubFetch(() => response({
       apiVersion: 'code.railgrid.ai/v1alpha1',
@@ -692,7 +811,7 @@ describe('connect', () => {
 
     await expect(api.connect({ name: 'github-prod', owner: 'octocat', token: 't' })).rejects.toMatchObject({
       reason: 'ProtocolError',
-      message: 'apply returned a different resource than requested',
+      message: 'create returned a different resource than requested',
     })
   })
 })
@@ -733,6 +852,17 @@ describe('repository registration', () => {
     expect(calls).toHaveLength(2)
   })
 
+  it('sends a valid truncated name at the hyphen boundary', async () => {
+    setAPIContext({ tenant: 'create-repo', token: 'test-token' })
+    const calls = stubFetch(call => { const body = call.body as { metadata: object }; return response({ ...body, metadata: { ...body.metadata, uid: 'repo-uid' } }) })
+    const prefix = 'a'.repeat(252)
+    expect(normalizeResourceName(`${prefix}-b`)).toBe(prefix)
+    expect(normalizeResourceName(`${prefix}bc`)).toBe(`${prefix}b`)
+    expect(normalizeResourceName(' Example Name! ')).toBe('example-name')
+    await api.createRepository({ name: `${prefix}-b`, repo: 'valid-repo', connectionRef: 'pat' })
+    expect(calls[0].body).toMatchObject({ metadata: { name: prefix }, spec: { name: 'valid-repo' } })
+  })
+
   it('marks new repositories create-only so a collision cannot adopt or delete an existing remote', async () => {
     setAPIContext({ tenant: 'create-repo', token: 'test-token' })
     const calls = stubFetch(call => { const body = call.body as { metadata: object }; return response({ ...body, metadata: { ...body.metadata, uid: 'repo-uid' } }) })
@@ -741,5 +871,89 @@ describe('repository registration', () => {
       metadata: { annotations: { 'code.railgrid.ai/create-only': 'true' } },
       spec: { name: 'new-repo', autoInit: true },
     })
+  })
+})
+
+
+describe('exclusive resource creation', () => {
+  const cases = [
+    { resource: 'repositories', create: () => api.createRepository({ name: 'demo', connectionRef: 'pat' }) },
+    { resource: 'deploykeys', create: () => api.createDeployKey({ repositoryRef: 'demo', title: 'key' }) },
+  ]
+
+  for (const { resource, create } of cases) {
+    it(`posts a new ${resource} object to the collection`, async () => {
+      setAPIContext({ tenant: 'exclusive-create', token: 'test-token' })
+      const calls = stubFetch(call => {
+        const body = call.body as { metadata: object }
+        return response({ ...body, metadata: { ...body.metadata, uid: 'created-uid' } }, 201)
+      })
+      await create()
+      expect(calls).toHaveLength(1)
+      expect(calls[0]).toMatchObject({ method: 'POST', path: `/clusters/exclusive-create${API_ROOT}/${resource}`, query: {} })
+    })
+
+    it(`surfaces a ${resource} name collision without changing the existing object`, async () => {
+      setAPIContext({ tenant: 'exclusive-create', token: 'test-token' })
+      const calls = stubFetch(() => kubeStatus(409, 'AlreadyExists', 'already exists'))
+      await expect(create()).rejects.toMatchObject({ reason: 'HTTPError', message: expect.stringContaining('409') })
+      expect(calls).toHaveLength(1)
+      expect(calls[0].method).toBe('POST')
+    })
+
+    it(`rejects a ${resource} response for a different object`, async () => {
+      setAPIContext({ tenant: 'exclusive-create', token: 'test-token' })
+      stubFetch(call => {
+        const body = call.body as { metadata: object }
+        return response({ ...body, metadata: { ...body.metadata, name: 'different', uid: 'created-uid' } }, 201)
+      })
+      await expect(create()).rejects.toMatchObject({ reason: 'ProtocolError', message: 'create returned a different resource than requested' })
+    })
+  }
+})
+
+describe('collaborator creation and updates', () => {
+  const input = { repositoryRef: 'demo', username: 'alice', permission: 'push' }
+  const existing = { apiVersion: `${GROUP}/v1alpha1`, kind: 'Collaborator', metadata: { name: 'demo-alice', uid: 'uid-1', resourceVersion: '12' }, spec: { repositoryRef: 'demo', username: 'alice', permission: 'pull' } }
+
+  it('creates atomically and updates the same identity with concurrency preconditions', async () => {
+    setAPIContext({ tenant: 'collab-update', token: 'test-token' })
+    const calls = stubFetch(call => {
+      if (call.method === 'POST') return kubeStatus(409, 'AlreadyExists', 'already exists')
+      if (call.method === 'GET') return response(existing)
+      return response({ ...existing, spec: { ...existing.spec, permission: 'push' } })
+    })
+    await expect(api.createCollaborator(input)).resolves.toMatchObject({ username: 'alice', permission: 'push' })
+    expect(calls.map(call => call.method)).toEqual(['POST', 'GET', 'PATCH'])
+    expect(calls[2].body).toEqual([
+      { op: 'test', path: '/metadata/uid', value: 'uid-1' },
+      { op: 'test', path: '/metadata/resourceVersion', value: '12' },
+      { op: 'add', path: '/spec/permission', value: 'push' },
+    ])
+  })
+
+  it('does not update a different identity that normalizes to the same name', async () => {
+    setAPIContext({ tenant: 'collab-collision', token: 'test-token' })
+    const calls = stubFetch(call => call.method === 'POST'
+      ? kubeStatus(409, 'AlreadyExists', 'already exists')
+      : response({ ...existing, spec: { ...existing.spec, repositoryRef: 'demo-alice', username: 'other' } }))
+    await expect(api.createCollaborator(input)).rejects.toMatchObject({ reason: 'NameCollision' })
+    expect(calls.map(call => call.method)).toEqual(['POST', 'GET'])
+  })
+
+  it('surfaces a concurrent modification without retrying the update', async () => {
+    setAPIContext({ tenant: 'collab-race', token: 'test-token' })
+    const calls = stubFetch(call => call.method === 'POST' ? kubeStatus(409, 'AlreadyExists', 'already exists')
+      : call.method === 'GET' ? response(existing) : kubeStatus(409, 'Conflict', 'test failed'))
+    await expect(api.createCollaborator(input)).rejects.toMatchObject({ reason: 'HTTPError' })
+    expect(calls.map(call => call.method)).toEqual(['POST', 'GET', 'PATCH'])
+  })
+
+  it('surfaces a failed JSON Patch precondition without retrying', async () => {
+    setAPIContext({ tenant: 'collab-precondition', token: 'test-token' })
+    const calls = stubFetch(call => call.method === 'POST' ? kubeStatus(409, 'AlreadyExists', 'already exists')
+      : call.method === 'GET' ? response(existing) : kubeStatus(422, 'Invalid', 'JSON Patch test failed'))
+    await expect(api.createCollaborator(input)).rejects.toMatchObject({ reason: 'HTTPError', message: expect.stringContaining('422') })
+    expect(calls.map(call => call.method)).toEqual(['POST', 'GET', 'PATCH'])
   })
 })

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import AITranscriptActivity from '../agentkit/AITranscriptActivity.vue'
 import { activitySummaryTitle, commandActivityPresentation, type AIActivityRow } from '../agentkit/activity'
-import { mountVue, settleVue, text } from './vue-helper'
+import { mountVue, settleVue, text, waitForNextClockTick } from './vue-helper'
 
 const row = (id: string, iconKey = 'run'): AIActivityRow => ({ id, title: `Ran ${id}`, iconKey, status: 'succeeded', expandable: true })
 const groupButton = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('.k-ai-transcript-activity__toggle')!
@@ -80,6 +80,9 @@ describe('transcript activity', () => {
     groupButton(view.element).click()
     await settleVue()
     expect(view.element.querySelector('.k-ai-transcript-activity__list')?.classList.contains('is-bounded')).toBe(true)
+    // Vue's capture listener timestamps the click; let the newly mounted
+    // target listener's attachment millisecond pass before clicking it.
+    await waitForNextClockTick()
     view.element.querySelector<HTMLButtonElement>('.k-ai-transcript-activity__more')!.click()
     await settleVue()
     expect(view.element.querySelector('.k-ai-transcript-activity__list')?.classList.contains('is-bounded')).toBe(false)

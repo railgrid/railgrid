@@ -8,7 +8,7 @@
     "build": "vite build && npm run vendor-codemirror",
     "vendor-codemirror": "node vendor-codemirror.cjs",
     "dev": "vite",
-    "test": "node --test --test-concurrency=1 *.test.mjs",
+    "test": "node --test --test-concurrency=1 *.test.mjs && vitest run src/inventoryView.behavior.test.ts src/topologyView.behavior.test.ts src/impactView.behavior.test.ts src/appDiscovery.behavior.test.ts src/playgroundView.behavior.test.ts src/resourceTableRetry.behavior.test.ts",
     "test:browser": "npm run build && playwright test",
     "typecheck": "vue-tsc --noEmit"
   },
@@ -22,6 +22,7 @@
     "@types/cytoscape": "^3.21.9",
     "@vitejs/plugin-vue": "^5.2.1",
     "codemirror": "^5.65.16",
+    "happy-dom": "^20.14.6",
     "typescript": "^5.6.3",
     "vite": "^6.4.1",
     "vitest": "^3.2.7",

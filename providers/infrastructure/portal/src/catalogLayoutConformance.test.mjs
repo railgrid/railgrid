@@ -11,7 +11,7 @@ describe('Infrastructure template catalog layouts', () => {
     expect(source).toContain("'railgrid:portal:infrastructure:templates-layout'")
     expect(source).toContain('ref<LayoutMode>(readLayoutPreference(layoutPreferenceKey))')
     expect(source).toContain('watch(layout, mode => writeLayoutPreference(layoutPreferenceKey, mode))')
-    expect(source).toMatch(/<div class="filters">[\s\S]*All categories[\s\S]*<LayoutSelector v-model="layout" aria-label="Template layout"[\s\S]*<\/div>/)
+    expect(source).toMatch(/<div v-if="controlsShown" class="filters">[\s\S]*All categories[\s\S]*<LayoutSelector v-model="layout" aria-label="Template layout"[\s\S]*<\/div>/)
     const header = source.match(/<header class="page-head">([\s\S]*?)<\/header>/)?.[1] ?? ''
     expect(header).not.toContain('LayoutSelector')
   })
@@ -46,9 +46,9 @@ describe('Infrastructure template catalog layouts', () => {
   })
 
   it('retains true-empty refresh and filter-empty clearing in both layouts', () => {
-    expect(source.match(/Refresh catalog/g)).toHaveLength(2)
+    expect(source.match(/Refresh catalog/g)).toHaveLength(1)
     expect(source.match(/Clear filters/g)).toHaveLength(2)
-    expect(source).toContain("'No infrastructure templates are available in this workspace.'")
+    expect(source).toContain("'No infrastructure templates are available in this workspace. Ask your platform administrator to make templates available, then refresh the catalog.'")
     expect(source).toContain("'No templates match the current filters.'")
 })
     expect(styles).toMatch(/\.grid \{[\s\S]*grid-template-columns: repeat\(auto-fill, minmax\(min\(100%, 280px\), 480px\)\)[\s\S]*justify-content: start/)

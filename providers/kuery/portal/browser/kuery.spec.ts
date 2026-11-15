@@ -46,8 +46,15 @@ const savedViewList = {
 async function mountKuery(page: Page, theme: 'dark' | 'light'): Promise<void> {
   await page.route('**/*', async route => {
     const path = new URL(route.request().url()).pathname
+    if (path === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html>' })
     if (path.endsWith('/kubernetesclusters')) return route.fulfill({ json: edgeList })
-    if (path.endsWith('/savedviews')) return route.fulfill({ json: savedViewList })
+    if (path.endsWith('/savedviews')) {
+      if (route.request().method() === 'POST') {
+        const view = route.request().postDataJSON() as { apiVersion: string; kind: string; metadata: { name: string }; spec: unknown }
+        return route.fulfill({ status: 201, json: { ...view, metadata: { ...view.metadata, resourceVersion: '1' } } })
+      }
+      return route.fulfill({ json: savedViewList })
+    }
     // The scratch view: absent, then created by the shell.
     if (/\/savedviews\/playground-[0-9a-f]+$/.test(path)) {
       return route.fulfill({ status: 404, json: { kind: 'Status', status: 'Failure', reason: 'NotFound', code: 404 } })
@@ -64,6 +71,7 @@ async function mountKuery(page: Page, theme: 'dark' | 'light'): Promise<void> {
     return route.abort()
   })
 
+  await page.goto('https://kuery.test/')
   await page.setContent(`<!doctype html><html class="${theme}"><head><base href="https://kuery.test/"><style>
     :root {
       --color-surface: ${theme === 'dark' ? '#0a0b12' : '#f1f1f6'};
@@ -87,15 +95,15 @@ async function mountKuery(page: Page, theme: 'dark' | 'light'): Promise<void> {
     body { padding: 32px; }
   </style></head><body><railgrid-provider-kuery id="kuery"></railgrid-provider-kuery></body></html>`)
   await page.addScriptTag({ path: asset('main.js') })
-  await page.locator('#kuery').evaluate((element, resolvedTheme) => {
+  await page.locator('#kuery').evaluate((element, { resolvedTheme, cluster }) => {
     ;(element as HTMLElement & { railgridContext: unknown }).railgridContext = {
-      basePath: '/ui/providers/kuery/', token: 'test-token', tenant: testCluster,
+      basePath: '/ui/providers/kuery/', token: 'test-token', tenant: cluster,
       user: { email: 'tester@railgrid.test' },
       orgUUID: 'org', workspaceUUID: 'workspace', theme: resolvedTheme,
     }
-  }, theme)
+  }, { resolvedTheme: theme, cluster: testCluster })
   await expect(page.getByRole('heading', { name: 'Fleet topology', exact: true })).toBeVisible()
-  await expect(page.getByText('1 edge connected')).toBeVisible()
+  await expect(page.getByText('1 connected Kubernetes edge')).toBeVisible()
 }
 
 test('4K topology and playground use the available vertical workspace', async ({ page }, testInfo) => {
@@ -123,6 +131,8 @@ test('narrow inventory filters reflow without clipping', async ({ page }, testIn
   await mountKuery(page, 'light')
   await page.getByRole('button', { name: 'Inventory', exact: true }).click()
 
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+
   const panel = page.getByRole('region', { name: 'Fleet inventory scroll area' }).locator('xpath=ancestor::section')
   const form = page.getByRole('form', { name: 'Filter fleet inventory' })
   const labels = form.locator('label')
@@ -135,10 +145,33 @@ test('narrow inventory filters reflow without clipping', async ({ page }, testIn
     expect(box!.width).toBeGreaterThan(280)
   }
   await page.screenshot({ path: testInfo.outputPath('kuery-mobile-light.png'), fullPage: true })
+  const scrollArea = page.getByRole('region', { name: 'Fleet inventory scroll area' })
+  expect(await scrollArea.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true)
+  await scrollArea.evaluate(element => { element.scrollLeft = element.scrollWidth })
+  const scrollBox = await scrollArea.boundingBox()
+  const nameBox = await page.getByRole('cell', { name: 'web' }).boundingBox()
+  expect(nameBox!.x).toBeGreaterThanOrEqual(scrollBox!.x)
+  expect(nameBox!.x + nameBox!.width).toBeLessThanOrEqual(scrollBox!.x + scrollBox!.width + 1)
   await page.getByRole('button', { name: 'Playground', exact: true }).click()
   await expect(page.locator('.CodeMirror')).toBeVisible()
   expect(await page.locator('.CodeMirror').evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgb(241, 241, 246)')
 })
+
+for (const viewport of [
+  { name: 'mobile', width: 390, height: 844 },
+  { name: 'desktop', width: 1440, height: 900 },
+] as const) {
+  for (const theme of ['light', 'dark'] as const) {
+    test(`${viewport.name} ${theme} inventory stays within the viewport`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height })
+      await mountKuery(page, theme)
+      await page.getByRole('button', { name: 'Inventory', exact: true }).click()
+      await expect(page.getByText('web', { exact: true })).toBeVisible()
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      await page.screenshot({ path: testInfo.outputPath(`inventory-${viewport.name}-${theme}.png`), fullPage: true })
+    })
+  }
+}
 
 for (const viewport of [
   { name: 'mobile', width: 390, height: 844 },
@@ -162,8 +195,9 @@ test('dashboard tile uses shared semantics while preserving escaping and navigat
   await page.setViewportSize({ width: 1440, height: 900 })
   // The tile lists SavedViews, so the escaping case lives on a view's display
   // name rather than an edge name.
-  await page.route('**/kubernetesclusters', route => route.fulfill({ json: edgeList }))
-  await page.route('**/savedviews', route => route.fulfill({
+  await page.route('https://kuery.test/', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html>' }))
+  await page.route('**/kubernetesclusters?*', route => route.fulfill({ json: edgeList }))
+  await page.route('**/savedviews?*', route => route.fulfill({
     json: {
       apiVersion: 'kuery.providers.railgrid.ai/v1alpha1',
       kind: 'SavedViewList',
@@ -176,6 +210,7 @@ test('dashboard tile uses shared semantics while preserving escaping and navigat
       }],
     },
   }))
+  await page.goto('https://kuery.test/')
   await page.setContent(`<!doctype html><html class="light"><head><base href="https://kuery.test/"></head><body>
     <railgrid-dashboard-tile-kuery id="tile"></railgrid-dashboard-tile-kuery>
   </body></html>`)

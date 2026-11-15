@@ -24,6 +24,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
@@ -31,6 +32,38 @@ import (
 
 	"github.com/railgrid/provider-sdk/dataplane/conformance"
 )
+
+func TestDiscoverKubernetesServiceTargets(t *testing.T) {
+	s := testServer()
+	objects := []*unstructured.Unstructured{}
+	for _, tc := range []struct {
+		name string
+		host string
+		ref  map[string]any
+	}{
+		{"host-only", "::1", nil},
+		{"missing", "", nil},
+		{"incomplete", "", map[string]any{"name": "svc"}},
+	} {
+		spec := map[string]any{"type": "home-assistant", "edgeRef": map[string]any{"kind": "KubernetesCluster", "name": "edge"}, "port": int64(8123)}
+		if tc.host != "" {
+			spec["host"] = tc.host
+		}
+		if tc.ref != nil {
+			spec["targetRef"] = tc.ref
+		}
+		objects = append(objects, &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": s.group + "/" + s.version, "kind": "Service", "metadata": map[string]any{"name": tc.name},
+			"spec": spec, "status": map[string]any{"phase": "Ready"},
+		}})
+	}
+	s.callers = &conformance.FakeCallers{Cluster: testCluster, Token: "token", Objects: objects,
+		ListKinds: map[schema.GroupVersionResource]string{{Group: s.group, Version: s.version, Resource: serviceResource}: "ServiceList"}}
+	services := s.listReadyServices(t.Context(), testCluster, "token")
+	if len(services) != 1 || services[0].name != "host-only" || services[0].view.target() != "http://[::1]:8123" {
+		t.Fatalf("discovered services = %+v, want host-only IPv6 service", services)
+	}
+}
 
 func TestRootMCPListEdges(t *testing.T) {
 	const token = "caller-token"

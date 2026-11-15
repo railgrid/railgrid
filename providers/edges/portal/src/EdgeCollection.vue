@@ -18,6 +18,7 @@ const props = defineProps<{
   loading: boolean
   refreshMode: ResourceRefreshMode
   error: string | null
+  deleteError?: string | null
   foregroundLoading: boolean
 }>()
 
@@ -26,6 +27,7 @@ const emit = defineEmits<{
   refresh: []
   open: [row: Record<string, unknown>]
   delete: [edge: Edge]
+  dismissDeleteError: []
   connect: []
 }>()
 
@@ -129,6 +131,7 @@ onActivated(() => emit('activated'))
       </div>
     </header>
 
+    <InlineNotification v-if="props.deleteError" tone="error" :message="props.deleteError" dismissible dismiss-label="Dismiss deletion error" @dismiss="emit('dismissDeleteError')" />
     <div v-if="showFirstRun && props.error" ref="firstRunWarning">
       <InlineNotification tone="warning" message="Edges could not be refreshed. Showing the last successful empty result." action-label="Retry" action-busy-label="Retrying…" :action-busy="props.loading" @action="emit('refresh')" />
     </div>

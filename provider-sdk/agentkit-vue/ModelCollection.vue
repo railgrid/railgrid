@@ -11,8 +11,14 @@ import { ensureAgentUIStyles } from '../agentkit/styles'
 const props = defineProps<{ rows: T[]; preferenceKey: string; tableOnly?: boolean; showProviderConnection?: boolean }>()
 ensureAgentUIStyles()
 const layout = ref(readLayoutPreference(props.preferenceKey))
-const query = ref('')
-watch(layout, value => writeLayoutPreference(props.preferenceKey, value))
+const query = defineModel<string>('query', { default: '' })
+const filterValues = defineModel<Record<string, string>>('filterValues', { default: () => ({}) })
+watch(layout, value => {
+  writeLayoutPreference(props.preferenceKey, value)
+  // Grid has no facet controls; switching to it previously unmounted the
+  // table and cleared its local filters.
+  if (value === 'grid' && !props.tableOnly) filterValues.value = {}
+})
 const filtered = computed(() => {
   const needle = query.value.trim().toLowerCase()
   return props.rows.filter(row => [row.name, row.model, row.endpoint, row.status].some(value => value.toLowerCase().includes(needle)))
@@ -44,9 +50,9 @@ const searchKeys = computed(() => ['name', 'model', connectionColumn.value.key, 
     </div>
     <template v-if="!tableOnly && layout === 'grid'">
       <div v-if="filtered.length" class="k-model-grid"><slot name="cards" :rows="filtered" /></div>
-      <p v-else class="k-model-collection__empty">No models match your search.</p>
+      <p v-else class="k-model-collection__empty">{{ query.trim() ? 'No models match your search.' : 'No models configured.' }}</p>
     </template>
-    <ResourceTable v-else v-model:query="query" :rows="tableRows" searchable search-placeholder="Search models…" :search-keys="searchKeys" :filters="tableFilters" search-empty-text="No models match your search." :columns="columns" row-key="id" aria-label="Models" :loaded="true" empty-text="No models match your search.">
+    <ResourceTable v-else v-model:query="query" v-model:filter-values="filterValues" :rows="tableRows" searchable search-placeholder="Search models…" :search-keys="searchKeys" :filters="tableFilters" search-empty-text="No models match your search." :columns="columns" row-key="id" aria-label="Models" :loaded="true" empty-text="No models configured.">
       <template #name="{ row }">
         <slot name="name-prefix" :row="row as T" />
         {{ row.name }}

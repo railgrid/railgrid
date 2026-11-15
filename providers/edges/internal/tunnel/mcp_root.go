@@ -261,10 +261,9 @@ func (p *Server) listReadyServices(ctx context.Context, cluster, token string) [
 			logger.Info("service discovery: skip (missing edgeRef.name or port)", "service", name, "type", view.Spec.Type, "edgeRef", view.Spec.EdgeRef.Name, "port", view.Spec.Port)
 			continue
 		}
-		// A kube Service with no targetRef has no cluster-DNS name to dial;
-		// skip rather than fall back to the agent pod's loopback.
-		if view.isKube() && (view.Spec.TargetRef == nil || view.Spec.TargetRef.Name == "" || view.Spec.TargetRef.Namespace == "") {
-			logger.Info("service discovery: skip (kube service without spec.targetRef name+namespace)", "service", name, "type", view.Spec.Type)
+		// Never fall back to the agent pod's loopback for an absent target.
+		if view.missingKubeTarget() {
+			logger.Info("service discovery: skip (kube service without host or complete targetRef)", "service", name, "type", view.Spec.Type)
 			continue
 		}
 		if !serviceReady(item.Object) {

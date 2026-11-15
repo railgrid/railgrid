@@ -39,7 +39,10 @@ const items = ref<WebhookDelivery[]>([])
 const retention = ref(0)
 const loading = ref(false)
 const loaded = ref(false)
+const foreground = ref(false)
 const error = ref('')
+const errorMode = ref<RefreshMode>('foreground')
+const snapshotFilter = ref('')
 const filter = ref<OutcomeFilter>('all')
 // routeFilter narrows the page server-side to deliveries routed to one
 // trigger, so a quiet trigger behind a busy webhook still gets a full page.
@@ -48,6 +51,10 @@ const expanded = ref(new Set<string>())
 const fullBodies = ref(new Map<string, string>())
 const busy = ref('')
 let generation = 0
+let scopeGeneration = 0
+type RefreshMode = 'foreground' | 'background'
+let active: { generation: number; pending: RefreshMode | null } | null = null
+let stopped = false
 let refreshTimer = 0
 let pollTimer = 0
 let boundStore: AppStore | null = null
@@ -79,23 +86,41 @@ const routeOptions = computed(() => {
   ]
 })
 
-async function load(): Promise<void> {
-  const requested = ++generation
+async function load(mode: RefreshMode = 'foreground'): Promise<void> {
+  if (stopped) return
+  if (mode === 'foreground') foreground.value = true
+  if (active?.generation === generation) {
+    if (mode === 'foreground' || !active.pending) active.pending = mode
+    return
+  }
+  const request = { generation, pending: null as RefreshMode | null }
+  active = request
+  const requested = generation
   const target = name.value
+  const requestedFilter = routeFilter.value
   loading.value = true
   try {
-    const page = await props.api.listWebhookDeliveries(target, { limit: props.limit, trigger: routeFilter.value || undefined })
-    if (requested !== generation) return
+    const page = await props.api.listWebhookDeliveries(target, { limit: props.limit, trigger: requestedFilter || undefined })
+    if (requested !== generation || requestedFilter !== routeFilter.value) return
     items.value = page.items
+    snapshotFilter.value = requestedFilter
     retention.value = page.retention
     error.value = ''
     loaded.value = true
   } catch (e) {
-    if (requested !== generation) return
+    if (requested !== generation || requestedFilter !== routeFilter.value) return
+    errorMode.value = mode
     error.value = (e as Error).message
-    loaded.value = true
   } finally {
-    if (requested === generation) loading.value = false
+    if (stopped || active !== request) return
+    active = null
+    const next = request.pending
+    if (mode === 'foreground' && next !== 'foreground') foreground.value = false
+    if (next) void load(next)
+    else if (requested === generation) {
+      loading.value = false
+      foreground.value = false
+    }
   }
 }
 
@@ -106,7 +131,7 @@ function onServerEvent(event: Event): void {
   if (detail.type !== 'webhook-delivery' || detail.data?.webhook !== name.value || refreshTimer) return
   refreshTimer = window.setTimeout(() => {
     refreshTimer = 0
-    void load()
+    void load('background')
   }, 500)
 }
 
@@ -126,16 +151,18 @@ function toggle(id: string): void {
 
 async function loadFullBody(d: WebhookDelivery): Promise<void> {
   if (fullBodies.value.has(d.id) || busy.value) return
+  const requested = scopeGeneration
   busy.value = `body:${d.id}`
   try {
     const whole = await props.api.getWebhookDelivery(name.value, d.id)
+    if (requested !== scopeGeneration || stopped) return
     const next = new Map(fullBodies.value)
     next.set(d.id, whole.body ?? '')
     fullBodies.value = next
   } catch (e) {
-    toast('error', `Could not load the payload: ${(e as Error).message}`)
+    if (requested === scopeGeneration && !stopped) toast('error', `Could not load the payload: ${(e as Error).message}`)
   } finally {
-    busy.value = ''
+    if (requested === scopeGeneration && !stopped) busy.value = ''
   }
 }
 
@@ -156,15 +183,17 @@ function runToast(prefix: string, res: WebhookRunResult): void {
 
 async function replay(d: WebhookDelivery): Promise<void> {
   if (busy.value) return
+  const requested = scopeGeneration
   busy.value = `replay:${d.id}`
   try {
     const res = await props.api.runWebhook(name.value, { deliveryID: d.id })
+    if (requested !== scopeGeneration || stopped) return
     runToast('Delivery replayed', res)
     void load()
   } catch (e) {
-    toast('error', `Replay failed: ${(e as Error).message}`)
+    if (requested === scopeGeneration && !stopped) toast('error', `Replay failed: ${(e as Error).message}`)
   } finally {
-    busy.value = ''
+    if (requested === scopeGeneration && !stopped) busy.value = ''
   }
 }
 
@@ -186,22 +215,36 @@ onMounted(() => {
   bindStore(props.store)
   void load()
   pollTimer = window.setInterval(() => {
-    if (document.visibilityState === 'hidden' || loading.value || refreshTimer) return
-    void load()
+    if (document.visibilityState === 'hidden' || refreshTimer || active?.generation === generation) return
+    void load('background')
   }, POLL_MS)
 })
 watch(() => [props.store, props.api, name.value] as const, () => {
+  generation += 1
+  scopeGeneration += 1
   bindStore(props.store)
   items.value = []
+  retention.value = 0
+  busy.value = ''
   expanded.value = new Set()
   fullBodies.value = new Map()
   loaded.value = false
+  snapshotFilter.value = ''
   error.value = ''
-  routeFilter.value = ''
+  if (routeFilter.value) {
+    // The filter watcher starts the read after clearing the old scope's filter.
+    routeFilter.value = ''
+  } else {
+    void load()
+  }
+}, { flush: 'sync' })
+watch(routeFilter, () => {
+  error.value = ''
   void load()
-})
-watch(routeFilter, () => { void load() })
+}, { flush: 'sync' })
 onBeforeUnmount(() => {
+  stopped = true
+  active = null
   boundStore?.removeEventListener('server', onServerEvent as EventListener)
   boundStore = null
   if (refreshTimer) window.clearTimeout(refreshTimer)
@@ -224,20 +267,22 @@ onBeforeUnmount(() => {
       </div>
       <div class="agents-deliveries-actions">
         <div class="agents-seg" role="group" aria-label="Filter deliveries by outcome">
-          <button v-for="f in FILTERS" :key="f.id" type="button" :class="{ on: filter === f.id }" :aria-pressed="filter === f.id" @click="filter = f.id">{{ f.label }} <span class="muted">{{ counts[f.id] }}</span></button>
+          <button v-for="f in FILTERS" :key="f.id" type="button" :class="{ on: filter === f.id }" :aria-pressed="filter === f.id" @click="filter = f.id">{{ f.label }} <span v-if="loaded" class="muted">{{ counts[f.id] }}</span></button>
         </div>
         <div v-if="routeOptions.length > 1" class="agents-deliveries-route">
           <span id="agents-deliveries-route-label" class="sr-only">Trigger</span>
           <FormSelect v-model="routeFilter" :options="routeOptions" labelledby="agents-deliveries-route-label" name="deliveriesTrigger" />
         </div>
-        <button class="k-btn k-btn--ghost secondary" type="button" :disabled="loading" aria-label="Refresh deliveries" @click="load()"><RefreshCw :stroke-width="1.75" aria-hidden="true" /> {{ loading ? 'Refreshing…' : 'Refresh' }}</button>
+        <button class="k-btn k-btn--ghost secondary" type="button" :aria-disabled="foreground || undefined" :aria-busy="foreground || undefined" aria-label="Refresh deliveries" @click="!foreground && load()"><RefreshCw :stroke-width="1.75" aria-hidden="true" /> {{ foreground ? 'Refreshing…' : 'Refresh' }}</button>
       </div>
     </header>
 
-    <p v-if="error" class="agents-fielderr" role="alert">Could not load deliveries. {{ error }}</p>
-    <p v-else-if="!loaded" class="muted" role="status">Loading deliveries…</p>
+    <p v-if="loaded && snapshotFilter !== routeFilter" class="agents-fielderr" role="status">Showing deliveries for {{ snapshotFilter || 'all triggers' }} until results for the selected trigger are available.</p>
+    <p v-if="error" class="agents-fielderr" :role="errorMode === 'background' ? 'status' : 'alert'" :aria-live="errorMode === 'background' ? 'polite' : 'assertive'">{{ loaded ? 'Showing the last loaded deliveries.' : 'Could not load deliveries.' }} {{ error }}</p>
+    <template v-if="loaded || !error">
+    <p v-if="!loaded" class="muted" role="status">Loading deliveries…</p>
     <p v-else-if="items.length === 0" class="muted agents-deliveries-empty" role="status">
-      <template v-if="routeFilter">Nothing among the recorded deliveries was routed to {{ routeFilter }}.</template>
+      <template v-if="snapshotFilter">Nothing among the recorded deliveries was routed to {{ snapshotFilter }}.</template>
       <template v-else>Nothing has reached this webhook URL yet. Once the sender POSTs, every delivery shows here — fired or not.</template>
     </p>
     <p v-else-if="visible.length === 0" class="muted agents-deliveries-empty" role="status">No {{ FILTERS.find(f => f.id === filter)?.label.toLowerCase() }} deliveries among the last {{ items.length }}.</p>
@@ -300,5 +345,6 @@ onBeforeUnmount(() => {
         </div>
       </li>
     </ul>
+    </template>
   </section>
 </template>

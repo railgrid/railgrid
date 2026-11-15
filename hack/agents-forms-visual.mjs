@@ -19,9 +19,14 @@ try {
         path: join(outputDirectory, `agents-${name}-${theme}-${width}.png`),
         fullPage: true,
       })
-      const openRoute = route => page.goto(
-        `${base}?provider=agents&theme=${theme}&route=${encodeURIComponent(route)}`,
-      )
+      const checkNoWrites = () => page.evaluate(() => {
+        const fixture = globalThis.__railgridModelFixture
+        return fixture ? fixture.calls.filter(call => call.method !== 'GET') : []
+      }).then(calls => assert.deepEqual(calls, [], 'fixture made no writes'))
+      const openRoute = async route => {
+        await checkNoWrites()
+        await page.goto(`${base}?provider=agents&theme=${theme}&route=${encodeURIComponent(route)}`)
+      }
       const checkOverflow = async () => {
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no horizontal overflow')
       }
@@ -31,13 +36,10 @@ try {
       await name.fill('my-github')
       await page.locator('input[type=password]').first().fill('secret-do-not-display')
       await screenshot('connection-configure')
-      await page.getByRole('button', { name: 'Continue', exact: true }).click()
-      await page.getByRole('heading', { name: 'Review connection', exact: true }).waitFor()
-      await screenshot('connection-review')
-      const review = await page.locator('.agents-connection-review').innerText()
-      assert.equal(review.includes('secret-do-not-display'), false)
-      await page.getByRole('button', { name: 'Back', exact: true }).click()
-      assert.equal(await name.inputValue(), 'my-github')
+      const create = page.getByRole('button', { name: 'Create connection', exact: true })
+      assert.equal(await create.isEnabled(), true)
+      const guidanceText = await page.locator('.agents-connection-guidance').innerText()
+      assert.equal(guidanceText.includes('secret-do-not-display'), false)
 
       const steps = page.locator('.k-wizard-steps')
       assert.equal(await steps.evaluate(el => getComputedStyle(el).display), width >= 1920 ? 'flex' : 'grid')
@@ -62,6 +64,14 @@ try {
         await page.evaluate(resource => {
           const element = document.querySelector('railgrid-provider-agents')
           const key = resource === 'connection' ? 'connections' : 'toolsets'
+          const path = `${key}/example/edit`
+          location.hash = `#/${path}`
+          element.railgridContext = { ...globalThis.__railgridModelFixture.context, subPath: path }
+        }, resource)
+        await page.getByText(/was not found in this workspace/).waitFor()
+        await page.evaluate(resource => {
+          const element = document.querySelector('railgrid-provider-agents')
+          const key = resource === 'connection' ? 'connections' : 'toolsets'
           element.store[key].data = [{
             metadata: { name: 'example' },
             spec: resource === 'connection'
@@ -70,12 +80,12 @@ try {
           }]
           element.store[key].loaded = element.store[key].hasSnapshot = true
           element.store.dispatchEvent(new Event('change'))
-          location.hash = `#/${key}/example/edit`
         }, resource)
         await page.getByRole('button', { name: 'Save changes', exact: true }).waitFor()
         await checkOverflow()
         await screenshot(`${resource}-edit`)
       }
+      await checkNoWrites()
       console.log(`${theme}/${width}: passed`)
       await page.close()
     }

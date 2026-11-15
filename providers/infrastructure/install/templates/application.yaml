@@ -151,7 +151,7 @@ spec:
       set those. All except name, railgridMode, and database.version can be
       changed later with update_instance; flipping access is an in-place update.
     prerequisites:
-      - "oidc.mode=byo only: a Secret named 'cloud-credentials' in the tenant's default namespace, key 'oidc_client_secret' = the OAuth2 client secret for your oidc.clientID."
+      - "oidc.mode=byo only: A Secret in the provider's credentials namespace (normally default), labeled railgrid.ai/owner=infrastructure, with key oidc_client_secret. Set spec.oidcBridgeSecretRef.name to its name."
     outputs:
       - "status.url is the public HTTPS URL (status.host = bare hostname) in every mode; requests enter through the platform access gate."
       - "Development BYO only: status.redirectURL is the OIDC redirect/callback URL to register with your IdP."
@@ -355,7 +355,7 @@ spec:
             type: string
             enum: ["none", "byo"]
             default: "none"
-            description: "Development preview auth only. none (default) adds no preview gate. byo uses your IdP; set issuerURL + clientID and put the client secret in cloud-credentials key oidc_client_secret. Platform-managed access control is the spec.access field instead — it never provisions an OIDC client per app."
+            description: "Development preview auth only. none (default) adds no preview gate. byo uses your IdP; set issuerURL + clientID and reference a labeled Secret containing key oidc_client_secret. Platform-managed access control is the spec.access field instead — it never provisions an OIDC client per app."
           issuerURL:
             type: string
             description: "BYO mode: your IdP's OIDC issuer URL (required)."

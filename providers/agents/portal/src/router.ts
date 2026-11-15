@@ -37,9 +37,10 @@ export const MODELS_TABS: { id: ModelsTab; label: string }[] = [
 ]
 export type ActivityTab = 'runs' | 'inbox' | 'usage'
 export type AgentTab = 'chat' | 'config' | 'tools' | 'automation' | 'runs' | 'skills'
-export type CreateResource = 'agent' | 'connection' | 'toolset' | 'webhook' | 'model'
+export type CreateResource = 'agent' | 'connection' | 'toolset' | 'webhook' | 'model' | 'skill'
 export type EditResource = 'connection' | 'toolset' | 'webhook'
 export type AutomationResource = 'schedule' | 'trigger'
+export type WebhookReturn = { agent: string; origin: 'collection' | 'create' } | { agent: string; origin: 'edit'; trigger: string }
 
 export const MENUS: MenuKey[] = ['agents', 'activity', 'connections', 'skills', 'webhooks', 'models']
 const AGENT_TABS: AgentTab[] = ['chat', 'config', 'tools', 'automation', 'runs', 'skills']
@@ -48,8 +49,8 @@ export type Route =
   | { kind: 'menu'; menu: MenuKey; modelsTab?: ModelsTab; activityTab?: ActivityTab; assistantSettings?: true; returnAgent?: string }
   | { kind: 'agent'; name: string; tab: AgentTab; runID?: string }
   | { kind: 'run'; id: string }
-  | { kind: 'edit'; resource: EditResource; name: string }
-  | { kind: 'create'; resource: CreateResource; type?: string }
+  | { kind: 'edit'; resource: EditResource; name: string; webhookReturn?: WebhookReturn }
+  | { kind: 'create'; resource: CreateResource; type?: string; returnAgent?: string; webhookReturn?: WebhookReturn }
   | { kind: 'automation'; resource: AutomationResource; agent: string; action: 'create' }
   | { kind: 'automation'; resource: AutomationResource; agent: string; action: 'edit'; name: string }
 
@@ -80,7 +81,7 @@ export function resourceSlicesForRoute(route: Route): SliceKey[] {
   if (route.kind === 'create') {
     switch (route.resource) {
       case 'agent': return ['credentials', 'connections', 'toolsets', 'edges']
-      case 'connection': return ['credentials']
+      case 'connection': return route.type === 'assisted-search' ? ['credentials', 'agents', 'connections'] : ['credentials']
       case 'toolset': return ['connections']
       case 'model': return ['credentials', 'connections']
       case 'webhook': return []
@@ -96,6 +97,7 @@ export interface CreateSuccessDetail {
   resource: CreateResource
   name?: string
   item?: unknown
+  warnings?: Array<{ schedule: string; outcome: 'rejected' | 'unknown' }>
   destination?: Route
   store?: unknown
   authorityEpoch?: number
@@ -117,6 +119,26 @@ export type EditCancelDetail = Pick<
 >
 
 export const DEFAULT_ROUTE: Route = { kind: 'menu', menu: 'agents' }
+
+function parseWebhookReturn(query: string): WebhookReturn | undefined {
+  const params = new URLSearchParams(query)
+  const agent = params.get('agent') || ''
+  const origin = params.get('origin')
+  const trigger = params.get('trigger') || ''
+  if (agent && origin === 'edit' && trigger) return { agent, origin, trigger }
+  return agent && (origin === 'collection' || origin === 'create') ? { agent, origin } : undefined
+}
+
+function webhookReturnQuery(context?: WebhookReturn): string {
+  return context ? `?${new URLSearchParams({ agent: context.agent, origin: context.origin, ...(context.origin === 'edit' ? { trigger: context.trigger } : {}) })}` : ''
+}
+
+export function webhookReturnRoute(context: WebhookReturn): Route {
+  if (context.origin === 'edit') return { kind: 'automation', resource: 'trigger', agent: context.agent, action: 'edit', name: context.trigger }
+  return context.origin === 'create'
+    ? { kind: 'automation', resource: 'trigger', agent: context.agent, action: 'create' }
+    : { kind: 'agent', name: context.agent, tab: 'automation' }
+}
 
 // parseHash turns the current location.hash into a Route. Routes from the old
 // 7-tab scheme (inbox / schedules / triggers / toolsets, agent flow+settings
@@ -146,8 +168,15 @@ export function parseHash(hash = location.hash): Route {
         ...(['harness', 'from-connection'].includes(third) ? { type: third } : {}),
       }
     }
+    if (second === 'skill' && parts.length === 2) {
+      const returnAgent = new URLSearchParams(query).get('agent') || ''
+      return { kind: 'create', resource: 'skill', ...(returnAgent ? { returnAgent } : {}) }
+    }
     if (second === 'toolset') return { kind: 'create', resource: 'toolset' }
-    if (second === 'webhook') return { kind: 'create', resource: 'webhook' }
+    if (second === 'webhook') {
+      const webhookReturn = parseWebhookReturn(query)
+      return { kind: 'create', resource: 'webhook', ...(webhookReturn ? { webhookReturn } : {}) }
+    }
     if (second === 'connection') {
       return { kind: 'create', resource: 'connection', ...(third ? { type: decodePart(third) } : {}) }
     }
@@ -176,7 +205,8 @@ export function parseHash(hash = location.hash): Route {
   // A bare #/webhooks/<name> is what someone types or shares for "that
   // webhook"; it opens the same detail page the edit route does.
   if (head === 'webhooks' && second && ((third === 'edit' && parts.length === 3) || parts.length === 2)) {
-    return { kind: 'edit', resource: 'webhook', name: decodePart(second) }
+    const webhookReturn = parseWebhookReturn(query)
+    return { kind: 'edit', resource: 'webhook', name: decodePart(second), ...(webhookReturn ? { webhookReturn } : {}) }
   }
   if (head === 'activity' && second) return { kind: 'run', id: decodePart(second) }
   if (head === 'runs' && second) return { kind: 'run', id: decodePart(second) }
@@ -205,9 +235,9 @@ export function hashFor(route: Route): string {
     case 'run':
       return `#/activity/${encodeURIComponent(route.id)}`
     case 'edit':
-      return `#/${route.resource}s/${encodeURIComponent(route.name)}/edit`
+      return `#/${route.resource}s/${encodeURIComponent(route.name)}/edit${route.resource === 'webhook' ? webhookReturnQuery(route.webhookReturn) : ''}`
     case 'create':
-      return `#/create/${route.resource}${route.type ? `/${encodeURIComponent(route.type)}` : ''}`
+      return `#/create/${route.resource}${route.type ? `/${encodeURIComponent(route.type)}` : ''}${route.resource === 'skill' && route.returnAgent ? `?${new URLSearchParams({ agent: route.returnAgent })}` : route.resource === 'webhook' ? webhookReturnQuery(route.webhookReturn) : ''}`
     case 'automation': {
       const collection = `${route.resource}s`
       return route.action === 'create'
@@ -283,6 +313,7 @@ export function activeMenu(route: Route): MenuKey {
   if (route.kind === 'edit') return route.resource === 'webhook' ? 'webhooks' : 'connections'
   if (route.kind === 'automation') return 'agents'
   if (route.kind === 'create') {
+    if (route.resource === 'skill') return 'skills'
     if (route.resource === 'model') return 'models'
     if (route.resource === 'webhook') return 'webhooks'
     if (route.resource === 'connection' || route.resource === 'toolset') return 'connections'

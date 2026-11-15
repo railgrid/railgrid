@@ -12,12 +12,15 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic/fake"
+	ktesting "k8s.io/client-go/testing"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -380,5 +383,45 @@ func TestEnsureStudioCreatesWithBothReferencesAndRetriesUnresolved(t *testing.T)
 	}
 	if _, done := studioEnsured.Load(id.clusterID); !done {
 		t.Fatal("workspace not marked ensured once search resolved")
+	}
+}
+
+// A Studio created between GET and POST must be retrofitted before caching.
+func TestEnsureStudioRetrofitsConcurrentCreate(t *testing.T) {
+	dynamicClient := fake.NewSimpleDynamicClient(runtime.NewScheme(), studioSharedServiceTemplate("searxng"), studioSharedServiceTemplate("browser"))
+	dynamicClient.PrependReactor("create", "studios", func(action ktesting.Action) (bool, runtime.Object, error) {
+		if err := dynamicClient.Tracker().Add(studioMissingSearchRef()); err != nil {
+			t.Fatal(err)
+		}
+		return true, nil, apierrors.NewAlreadyExists(studioResource.GVR.GroupResource(), aiv1alpha1.StudioName)
+	})
+	c := asclient.NewFromDynamic(dynamicClient)
+	id := identity{clusterID: "ensure-studio-race-" + t.Name()}
+	t.Cleanup(func() { studioEnsured.Delete(id.clusterID) })
+	(&Server{}).ensureStudio(context.Background(), c, id)
+	if ref := studioServiceRef(t, c, "search"); ref["name"] != studioSearchInstanceName {
+		t.Fatalf("winning Studio search ref = %#v", ref)
+	}
+	if _, done := studioEnsured.Load(id.clusterID); !done {
+		t.Fatal("retrofitted Studio not marked ensured")
+	}
+}
+
+func TestEnsureStudioDoesNotCacheFailedRaceRetrofit(t *testing.T) {
+	dyn := fake.NewSimpleDynamicClient(runtime.NewScheme(), studioSharedServiceTemplate("searxng"), studioSharedServiceTemplate("browser"))
+	dyn.PrependReactor("create", "studios", func(action ktesting.Action) (bool, runtime.Object, error) {
+		if err := dyn.Tracker().Add(studioMissingSearchRef()); err != nil {
+			t.Fatal(err)
+		}
+		return true, nil, apierrors.NewAlreadyExists(studioResource.GVR.GroupResource(), aiv1alpha1.StudioName)
+	})
+	dyn.PrependReactor("update", "studios", func(action ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewConflict(studioResource.GVR.GroupResource(), aiv1alpha1.StudioName, fmt.Errorf("concurrent update"))
+	})
+	id := identity{clusterID: "ensure-studio-failed-race-" + t.Name()}
+	t.Cleanup(func() { studioEnsured.Delete(id.clusterID) })
+	(&Server{}).ensureStudio(context.Background(), asclient.NewFromDynamic(dyn), id)
+	if _, done := studioEnsured.Load(id.clusterID); done {
+		t.Fatal("failed retrofit was marked ensured")
 	}
 }

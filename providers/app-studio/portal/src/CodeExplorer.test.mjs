@@ -38,6 +38,7 @@ function uploadHarness({ uploadProjectFiles, readProjectFile, confirm = async ()
   const writeBusy = { value: false }
   const writeStatus = { value: '' }
   const dependencies = {
+    treeScope: 0,
     props: { projectName: 'shop', ctx: projectContext },
     writeBusy,
     writeStatus,
@@ -101,7 +102,7 @@ test('keeps a cached tree visible and reports refresh failure separately from in
   assert.equal(codeExplorerTreeState(true, true, null), 'refreshing')
   assert.equal(codeExplorerTreeState(false, true, 'Could not refresh files.'), 'refresh-error')
   assert.equal(codeExplorerTreeState(false, true, null), 'ready')
-  assert.match(source, /class="app-studio-touch-target[^\"]*focus-visible:ring-2[^\"]*" @click="refreshWorkspaceSnapshot">Retry refresh<\/button>/)
+  assert.match(source, /ref="treeRetryRef"[^\n]*focus-visible:ring-2[^\n]*Retry refresh/)
 })
 
 test('adapts the explorer to one pane when the workbench is narrow and keeps the keyboard tree', () => {
@@ -200,6 +201,7 @@ test('reveals a written file and moves focus only when leaving the narrow tree',
   const opened = []
   let focusCount = 0
   const dependencies = {
+    treeScope: 0,
     treeOpen,
     activeTreePath,
     rootRef: { value: { ownerDocument, contains: (element) => element === viewerControl } },
@@ -218,19 +220,19 @@ test('reveals a written file and moves focus only when leaving the narrow tree',
     ${transpileFunction('refreshAndSelect')}
     return refreshAndSelect;
   `)(...Object.values(dependencies))
-  await refreshAndSelect(path, 'shop', null)
+  await refreshAndSelect(path, 'shop', null, 0)
   assert.equal(treeOpen.value, false)
   assert.equal(activeTreePath.value, path)
   assert.deepEqual(opened, [path])
   assert.equal(focusCount, 1)
 
   ownerDocument.activeElement = viewerControl
-  await refreshAndSelect(path, 'shop', null)
+  await refreshAndSelect(path, 'shop', null, 0)
   assert.equal(focusCount, 1, 'keep focus in the already-open viewer')
 
   treeOpen.value = true
   ownerDocument.activeElement = {}
-  await refreshAndSelect(path, 'shop', null)
+  await refreshAndSelect(path, 'shop', null, 0)
   assert.equal(focusCount, 1, 'do not take focus from outside Code')
 })
 
@@ -238,7 +240,7 @@ test('refreshes the tree and selected file after a workspace revision changes', 
   assert.match(source, /refreshRevision: number/)
   assert.match(source, /async function refreshWorkspaceSnapshot\(\)[\s\S]*const path = selectedPath\.value[\s\S]*await loadTree\(\)[\s\S]*await openFile\(path, projectName, requestContext\)/)
   assert.match(source, /\(\) => props\.refreshRevision[\s\S]*void refreshWorkspaceSnapshot\(\)/)
-  assert.match(source, /@click="refreshWorkspaceSnapshot"/)
+  assert.match(source, /@click="!loadingTree && refreshWorkspaceSnapshot\(\)"/)
 })
 
 test('only enables deletion for the loaded version of the selected file', () => {

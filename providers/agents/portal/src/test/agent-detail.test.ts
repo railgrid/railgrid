@@ -507,7 +507,7 @@ describe('agent resource detail conformance', () => {
     const deleteAgent = vi.fn().mockImplementation(() => deletion)
     const api = stubApi({ deleteAgent })
     const store = makeStore(api)
-    store.agents.data = [agentFixture('scout')]
+    store.agents.data = [{ ...agentFixture('scout'), metadata: { name: 'scout', uid: 'old-uid' } }]
     Object.assign(store.agents, { loaded: true, hasSnapshot: true })
     const mounted = await mountVue(AgentDetail, { store, api, name: 'scout', tab: 'config', authorityEpoch: 1 })
     const header = mounted.element.querySelector('.agents-chat-head')!

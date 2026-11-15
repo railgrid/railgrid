@@ -26,3 +26,8 @@ export function parseServiceHost(value: string | undefined, fixedScheme?: string
     return { host: raw, error: 'Enter a valid URL or host name.' }
   }
 }
+
+// Bracket IPv6 literals when appending a port; preserve already bracketed hosts.
+export function displayServiceHost(host: string): string {
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+}

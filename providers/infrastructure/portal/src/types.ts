@@ -8,6 +8,8 @@ import type { ProviderFetch } from './portalkit/tenant'
 
 export interface Template {
   name: string
+  uid?: string
+  generation?: number
   // Platform-owned templates remain addressable through getTemplate(name) for
   // product flows, but are omitted from the tenant-facing catalog list.
   platformOwned?: boolean
@@ -92,6 +94,8 @@ export interface JSONSchema {
 
 export interface Instance {
   uid?: string
+  resourceVersion?: string
+  oidcSecretName?: string
   name: string
   namespace: string
   template: string

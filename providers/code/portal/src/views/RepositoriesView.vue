@@ -291,6 +291,20 @@ function handleRepositoryChange(change: ResourceTableChange): void {
 async function remove(row: Record<string, unknown>) {
   const repository = row as unknown as Repository
   if (isDeleting(repository)) return
+  let uid: string
+  let resourceVersion: string
+  try {
+    const current = await api.getRepository(repository.name)
+    if (!mounted || (repository.uid && current.uid !== repository.uid) || isDeleting(current)) return
+    if (!current.uid?.trim() || !current.resourceVersion?.trim()) {
+      throw new Error('Repository identity is unavailable. Refresh and try again.')
+    }
+    uid = current.uid
+    resourceVersion = current.resourceVersion
+  } catch (error) {
+    if (mounted) mutationError.value = errMessage(error)
+    return
+  }
   const ok = await confirmDialog({
     title: `Delete repository "${repository.repo}"?`,
     message: 'This removes the repository on the git host. This cannot be undone.',
@@ -302,9 +316,9 @@ async function remove(row: Record<string, unknown>) {
   if (!operations.acquire(lock, 'deleting')) return
   mutationError.value = null
   try {
-    await api.deleteRepository(repository.name)
+    await api.deleteRepository(repository.name, { uid, resourceVersion })
     if (!mounted) return
-    props.deletions.acknowledge(deletionScope, repository.name, repository.uid)
+    props.deletions.acknowledge(deletionScope, repository.name, uid)
     toast('info', `Repository deletion requested for ${repository.name}.`)
     loadRepositories()
   } catch (e) {

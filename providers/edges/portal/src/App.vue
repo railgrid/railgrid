@@ -121,6 +121,7 @@ function openDetail(row: Record<string, unknown>): void {
 const edges = ref<Edge[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
+const deleteError = ref<string | null>(null)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
 // Nested list views keep their own cursor/cache authority. Remount them when
@@ -139,7 +140,7 @@ const poller = createAdaptiveRefreshTimer(() => {
 const edgeRefresh = createLatestRefreshController(async (requestID, mode) => {
   refreshMode.value = mode
   loading.value = true
-  if (mode === 'foreground') error.value = null
+  if (mode === 'foreground' && !(firstLoadDone.value && edges.value.length === 0)) error.value = null
   try {
     const nextEdges = await listEdges()
     if (!edgeRefresh.isCurrent(requestID)) return
@@ -173,15 +174,18 @@ function onEdgeCollectionActivated(): void {
 
 async function onDelete(edge: Edge) {
   const label = edgeTypeLabel(edge.type)
-  if (!(await confirmDialog({ title: `Delete ${label} edge "${edge.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
   const expectedContextGeneration = contextGeneration.value
+  if (!(await confirmDialog({ title: `Delete ${label} edge "${edge.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
+  if (contextGeneration.value !== expectedContextGeneration) return
   try {
     await deleteEdge(edge)
     if (contextGeneration.value !== expectedContextGeneration) return
     toast('info', `${label} edge deletion requested for ${edge.name}.`)
     await refresh()
   } catch (e) {
-    error.value = (e as ErrorResponse)?.message ?? 'Delete failed'
+    if (contextGeneration.value !== expectedContextGeneration) return
+    const message = `Could not delete ${label} edge ${edge.name}: ${(e as ErrorResponse)?.message ?? 'Delete failed'}`
+    deleteError.value = [deleteError.value, message].filter(Boolean).join(' ')
   }
 }
 
@@ -201,6 +205,7 @@ watch(
       workloadResult.value = null
       loading.value = Boolean(tenant)
       error.value = null
+      deleteError.value = null
       if (tenant) void refresh('foreground')
       return
     }
@@ -213,6 +218,7 @@ watch(
 )
 
 onUnmounted(() => {
+  contextGeneration.value += 1
   edgeRefresh.stop()
   poller.stop()
 })
@@ -249,6 +255,7 @@ onUnmounted(() => {
     />
     <Wizard
       v-if="route.connect?.resource === 'edge'"
+      :key="`connect-edge:${contextGeneration}:${props.ctx?.subPath ?? ''}`"
       :cluster="props.ctx?.tenant ?? null"
       :required-type="route.connect.requiredType"
       :cancel-label="edgeConnectionCancelLabel"
@@ -304,11 +311,13 @@ onUnmounted(() => {
         :loading="loading"
         :refresh-mode="refreshMode"
         :error="error"
+        :delete-error="deleteError"
         :foreground-loading="foregroundLoading"
         @activated="onEdgeCollectionActivated"
         @refresh="refresh"
         @open="openDetail"
         @delete="onDelete"
+        @dismiss-delete-error="deleteError = null"
         @connect="navigate(edgeConnectPath())"
       />
     </KeepAlive>

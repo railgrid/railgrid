@@ -32,6 +32,18 @@ const cases: EditCase[] = [
 ]
 
 for (const test of cases) describe(`${test.name} initial edit refresh`, () => {
+  if (['connection', 'toolset', 'webhook'].includes(test.name)) it('does not restore retry focus across an authority change', async () => {
+    const api = stubApi({ [test.loader]: async () => { throw new Error('Offline') } })
+    const store = makeStore(api)
+    await store.load(test.slice)
+    const view = await mountVue(test.component, { store, api, authorityEpoch: 1, ...test.props })
+    const retry = view.element.querySelector<HTMLButtonElement>('.k-resource-page__retry')!
+    retry.focus()
+    Object.assign(store[test.slice], { error: null })
+    await view.setProps({ authorityEpoch: 2 })
+    expect(document.activeElement).not.toBe(view.element.querySelector('.k-resource-page__title'))
+    view.unmount()
+  })
   it('waits for fresh data before hydration, then preserves edits across later refreshes', async () => {
     let finish!: (rows: unknown[]) => void
     const api = stubApi({
@@ -41,7 +53,7 @@ for (const test of cases) describe(`${test.name} initial edit refresh`, () => {
     const store = makeStore(api)
     Object.assign(store[test.slice], { data: [test.row('Cached value')], loaded: true, hasSnapshot: true })
     const load = store.load(test.slice)
-    const view = await mountVue(test.component, { store, api, ...test.props })
+    const view = await mountVue(test.component, { store, api, authorityEpoch: 1, ...test.props })
     expect(view.element.querySelector(test.field)).toBeNull()
 
     finish([test.row('Changed by agent')])
@@ -75,15 +87,19 @@ for (const test of cases) describe(`${test.name} initial edit refresh`, () => {
     const store = makeStore(api)
     Object.assign(store[test.slice], { data: [test.row('Cached value')], loaded: true, hasSnapshot: true })
     await store.load(test.slice)
-    const view = await mountVue(test.component, { store, api, ...test.props })
+    const view = await mountVue(test.component, { store, api, authorityEpoch: 1, ...test.props })
     expect(text(view.element)).toContain('Refresh unavailable')
     expect(view.element.querySelector(test.field)).toBeNull()
 
     fail = false
     const retry = [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button).includes('Retry'))!
+    retry.focus()
     retry.click()
     await settleVue()
     expect(view.element.querySelector<HTMLInputElement | HTMLTextAreaElement>(test.field)?.value).toBe('Fresh after retry')
+    if (['connection', 'toolset', 'webhook'].includes(test.name)) {
+      expect(document.activeElement).toBe(view.element.querySelector('.k-resource-page__title'))
+    }
     view.unmount()
   })
 })

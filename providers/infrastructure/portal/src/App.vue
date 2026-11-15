@@ -20,7 +20,7 @@ import { useDelayedLoading } from './portalkit/useDelayedLoading'
 //   'templates/<name>'          → provision form for that template
 //   'instances'                 → my instances
 //   'instances/<name>'          → instance detail
-//   'missing-credentials'       → onboarding error (provision side-effect)
+//   'missing-credentials'       → legacy recovery link
 //
 // The shell's vue-router parses /providers/infrastructure/<rest>
 // and pushes <rest> to us via railgridContext.subPath. Internal nav
@@ -38,6 +38,13 @@ const contextInitialized = computed(() => props.ctx !== null)
 const contextPending = computed(() => !contextInitialized.value)
 const showContextLoading = useDelayedLoading(contextPending)
 const contextVersion = ref(0)
+const callerIdentity = computed(() => {
+  const user = props.ctx?.user
+  return [user?.userId, user?.sub, user?.email].find(value => value?.trim()) ?? null
+})
+const recoveryScope = computed(() => props.ctx?.tenant && callerIdentity.value
+  ? JSON.stringify([props.ctx.basePath || '', props.ctx.tenant, callerIdentity.value])
+  : null)
 // Route-local pages remount during detail/list navigation, but acknowledged
 // deletions must remain marked Deleting until a successful list proves the old
 // UID is gone. Keep that state at the active authority boundary instead.
@@ -54,7 +61,7 @@ watch(
     () => props.ctx?.basePath,
     () => props.ctx?.fetch,
     () => props.ctx?.tenant,
-    () => props.ctx?.user?.userId ?? props.ctx?.user?.sub ?? props.ctx?.user?.email,
+    () => callerIdentity.value,
   ],
   ([basePath, hostFetch, tenant]) => {
     // Keep the existing API setters as the public context boundary. Each
@@ -158,6 +165,8 @@ function provisioned(name: string) {
       <ProvisionPage
         :key="`provision:${contextVersion}:${route.id}`"
         :template-name="route.id"
+        :recovery-scope="recoveryScope"
+        :navigation-base-path="ctx?.navigationBasePath"
         @navigate="legacyNavigate"
         @provisioned="provisioned"
       />
@@ -173,6 +182,7 @@ function provisioned(name: string) {
     <template v-else-if="route.page === 'instances' && route.id">
       <InstanceDetailPage
         :key="`instance:${contextVersion}:${route.id}`"
+        :authority-generation="contextVersion"
         :instance-name="route.id"
         :publish-page-resource="ctx?.publishPageResource"
         :tombstones="instanceTombstones"
@@ -180,7 +190,7 @@ function provisioned(name: string) {
       />
     </template>
     <template v-else-if="route.page === 'missing-credentials'">
-      <MissingCredentialsPage :key="`credentials:${contextVersion}`" :tenant-path="tenantPath" @navigate="legacyNavigate" />
+      <MissingCredentialsPage :key="`credentials:${contextVersion}`" @navigate="legacyNavigate" />
     </template>
     <ConfirmDialog />
   </div>

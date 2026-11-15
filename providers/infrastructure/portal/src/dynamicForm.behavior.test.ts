@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import DynamicForm from './components/DynamicForm.vue'
 import type { JSONSchema } from './types'
+import { validateSchemaValue } from './schemaValidation'
 
 const mounted: Array<() => void> = []
 
@@ -12,6 +13,7 @@ afterEach(() => {
 })
 
 function mountForm(schema: JSONSchema, initial: Record<string, unknown>) {
+  const currentSchema = ref(schema)
   const values = ref({ ...initial })
   const form = ref<{ validate: () => Promise<{ valid: boolean, values: Record<string, unknown>, error?: string }> } | null>(null)
   const host = document.createElement('div')
@@ -19,7 +21,7 @@ function mountForm(schema: JSONSchema, initial: Record<string, unknown>) {
   const app = createApp(defineComponent({
     setup: () => () => h(DynamicForm, {
       ref: form,
-      schema,
+      schema: currentSchema.value,
       values: values.value,
       'onUpdate:values': (next: Record<string, unknown>) => { values.value = next },
     }),
@@ -29,7 +31,7 @@ function mountForm(schema: JSONSchema, initial: Record<string, unknown>) {
     app.unmount()
     host.remove()
   })
-  return { host, values, form }
+  return { host, values, form, currentSchema }
 }
 
 describe('DynamicForm collection editors', () => {
@@ -347,6 +349,175 @@ describe('DynamicForm collection editors', () => {
     const result = await form.value!.validate()
     expect(result.valid).toBe(true)
     expect(result.values).toEqual({ enabled: false, retries: 0, mode: 'safe' })
-    expect(values.value).toEqual({ enabled: false, retries: 0, mode: 'safe' })
+    expect(values.value).toEqual({ enabled: false, retries: 0 })
+  })
+
+  it('submits typed scalar and map enum choices', async () => {
+    const { host, form } = mountForm({ type: 'object', required: ['replicas', 'enabled'], properties: {
+      replicas: { type: 'integer', enum: [1, 2] },
+      enabled: { type: 'boolean', enum: [true, false] },
+      limits: { type: 'object', additionalProperties: { type: 'number', enum: [1, 2] } },
+    } }, { limits: { cpu: 1 } })
+    const selects = [...host.querySelectorAll<HTMLSelectElement>('select')]
+    for (const select of selects) {
+      select.value = '1'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+    }
+    expect(await form.value!.validate()).toEqual({ valid: true, values: { replicas: 2, enabled: false, limits: { cpu: 2 } } })
+  })
+
+  it('requires an explicit answer for a required boolean without a default', async () => {
+    const { host, form } = mountForm({ type: 'object', required: ['enabled'], properties: {
+      enabled: { type: 'boolean' },
+    } }, {})
+    const select = host.querySelector<HTMLSelectElement>('select')!
+    expect(select.value).toBe('')
+    expect((await form.value!.validate()).valid).toBe(false)
+    select.value = 'false'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(await form.value!.validate()).toEqual({ valid: true, values: { enabled: false } })
+  })
+
+  it('allows an optional enum choice to be cleared', async () => {
+    const { host, form } = mountForm({ type: 'object', properties: { mode: { type: 'string', enum: ['on', 'off'] } } }, {})
+    const select = host.querySelector<HTMLSelectElement>('select')!
+    select.value = '0'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    select.value = ''
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(await form.value!.validate()).toEqual({ valid: true, values: {} })
+  })
+
+  it('keeps a cleared optional enum unset even when it has a default', async () => {
+    const { host, form } = mountForm({ type: 'object', properties: { mode: { type: 'string', enum: ['on', 'off'], default: 'on' } } }, {})
+    const select = host.querySelector<HTMLSelectElement>('select')!
+    expect(select.value).toBe('0')
+    select.value = ''
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(select.value).toBe('')
+    expect(await form.value!.validate()).toEqual({ valid: true, values: {} })
+    await nextTick()
+    expect(select.value).toBe('')
+  })
+
+  it('accepts a selected empty enum value unless its schema disallows it', async () => {
+    const { host, form } = mountForm({ type: 'object', required: ['mode'], properties: { mode: { type: 'string', enum: ['', 'on'] } } }, {})
+    const select = host.querySelector<HTMLSelectElement>('select')!
+    expect((await form.value!.validate()).valid).toBe(false)
+    select.value = '0'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(await form.value!.validate()).toEqual({ valid: true, values: { mode: '' } })
+
+    const constrained = mountForm({ type: 'object', required: ['mode'], properties: { mode: { type: 'string', enum: ['', 'on'], minLength: 1 } } }, {})
+    const constrainedSelect = constrained.host.querySelector<HTMLSelectElement>('select')!
+    constrainedSelect.value = '0'
+    constrainedSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect((await constrained.form.value!.validate()).valid).toBe(false)
+  })
+
+  it('validates empty enum values in required properties of complex array items', async () => {
+    const schema: JSONSchema = { type: 'object', properties: {
+      entries: { type: 'array', items: { type: 'object', required: ['mode'], properties: { mode: { type: 'string', enum: ['', 'on'] } } } },
+    } }
+    const allowed = mountForm(schema, { entries: [{ mode: '' }] })
+    expect(await allowed.form.value!.validate()).toEqual({ valid: true, values: { entries: [{ mode: '' }] } })
+    const constrained = mountForm({ type: 'object', properties: {
+      entries: { type: 'array', items: { type: 'object', required: ['mode'], properties: { mode: { type: 'string', enum: ['', 'on'], minLength: 1 } } } },
+    } }, { entries: [{ mode: '' }] })
+    expect((await constrained.form.value!.validate()).valid).toBe(false)
+    const missing = mountForm(schema, { entries: [{}] })
+    expect((await missing.form.value!.validate()).valid).toBe(false)
+  })
+
+  it('distinguishes unset, empty and mixed-type map enum choices', async () => {
+    const { host, form } = mountForm({ type: 'object', properties: {
+      options: { type: 'object', additionalProperties: { enum: [1, '1', ''] } },
+    } }, { options: {} })
+    host.querySelector<HTMLButtonElement>('.dynform-map-add')!.click()
+    await nextTick()
+    const key = host.querySelector<HTMLInputElement>('input')!
+    const select = host.querySelector<HTMLSelectElement>('select')!
+    key.value = 'choice'
+    key.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(select.value).toBe('')
+    expect((await form.value!.validate()).valid).toBe(false)
+    for (const [index, expected] of [['0', 1], ['1', '1'], ['2', '']] as const) {
+      select.value = index
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+      expect(await form.value!.validate()).toEqual({ valid: true, values: { options: { choice: expected } } })
+    }
+  })
+
+  it('preserves typed map selections across schema changes and rejects removed choices', async () => {
+    const mapSchema = (options: unknown[]): JSONSchema => ({ type: 'object', properties: {
+      options: { type: 'object', additionalProperties: { enum: options } },
+    } })
+    const { host, form, currentSchema } = mountForm(mapSchema([1, '1', 'other']), { options: { size: 1 } })
+    currentSchema.value = mapSchema(['1', 'other', 1])
+    await nextTick()
+    expect(host.querySelector<HTMLSelectElement>('select')!.value).toBe('2')
+    expect(await form.value!.validate()).toEqual({ valid: true, values: { options: { size: 1 } } })
+    currentSchema.value = mapSchema(['1', 'other'])
+    await nextTick()
+    expect(host.querySelector<HTMLSelectElement>('select')!.value).toBe('')
+    expect((await form.value!.validate()).valid).toBe(false)
+    const select = host.querySelector<HTMLSelectElement>('select')!
+    select.value = '0'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(await form.value!.validate()).toEqual({ valid: true, values: { options: { size: '1' } } })
+    currentSchema.value = { type: 'object', properties: { options: { type: 'object', additionalProperties: { type: 'string' } } } }
+    await nextTick()
+    expect(await form.value!.validate()).toEqual({ valid: true, values: { options: { size: '1' } } })
+  })
+
+  it('validates enums for object and array schemas with structural JSON equality', () => {
+    expect(validateSchemaValue({ type: 'object', enum: [{ a: 1, b: [2] }] }, { b: [2], a: 1 })).toBeNull()
+    expect(validateSchemaValue({ type: 'object', enum: [{ a: 1 }] }, { a: 2 })).toContain('allowed values')
+    expect(validateSchemaValue({ type: 'array', enum: [[1, '1']] }, [1, '1'])).toBeNull()
+    expect(validateSchemaValue({ type: 'array', enum: [[1, '1']] }, ['1', 1])).toContain('allowed values')
+  })
+
+  it('matches structured map enum values as JSON across refreshed schemas', async () => {
+    const mapSchema = (options: unknown[]): JSONSchema => ({ type: 'object', properties: {
+      options: { type: 'object', additionalProperties: { enum: options } },
+    } })
+    const { host, form, currentSchema } = mountForm(mapSchema([{ a: 1, b: [2] }, ['other']]), { options: { item: { b: [2], a: 1 } } })
+    expect(host.querySelector<HTMLSelectElement>('select')!.value).toBe('0')
+    currentSchema.value = mapSchema([['other'], { b: [2], a: 1 }])
+    await nextTick()
+    expect(host.querySelector<HTMLSelectElement>('select')!.value).toBe('1')
+    expect(await form.value!.validate()).toEqual({ valid: true, values: { options: { item: { a: 1, b: [2] } } } })
+    currentSchema.value = mapSchema([['other'], { b: [3], a: 1 }])
+    await nextTick()
+    expect((await form.value!.validate()).valid).toBe(false)
+  })
+
+  it('requires an explicit value for a new boolean map entry', async () => {
+    const { host, form } = mountForm({ type: 'object', properties: {
+      flags: { type: 'object', additionalProperties: { type: 'boolean' } },
+    } }, { flags: {} })
+    host.querySelector<HTMLButtonElement>('.dynform-map-add')!.click()
+    await nextTick()
+    const key = host.querySelector<HTMLInputElement>('input')!
+    const select = host.querySelector<HTMLSelectElement>('select')!
+    key.value = 'enabled'
+    key.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(select.value).toBe('')
+    expect((await form.value!.validate()).valid).toBe(false)
+    select.value = 'false'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(await form.value!.validate()).toEqual({ valid: true, values: { flags: { enabled: false } } })
   })
 })
