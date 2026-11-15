@@ -1755,7 +1755,7 @@ describe('chat streaming', () => {
     const retry = stale.querySelector<HTMLButtonElement>('button')!
     retry.click()
     await settle(2)
-    expect(retry.disabled).toBe(true)
+    expect(retry.getAttribute('aria-disabled')).toBe('true')
     expect(text(retry)).toContain('Retrying')
 
     const oldChat = [...el.querySelectorAll<HTMLElement>('.k-ai-conversation-rail__item')]
@@ -1767,7 +1767,7 @@ describe('chat streaming', () => {
 
     expect(text(retry)).toContain('Retry')
     expect(text(retry)).toBe('Retry')
-    expect(retry.disabled).toBe(false)
+    expect(retry.getAttribute('aria-disabled')).not.toBe('true')
 
     pendingRefresh.resolve([session('s1', 'Active chat'), session('s2', 'Old chat')])
     await settle(4)
@@ -1918,7 +1918,7 @@ describe('chat read ownership', () => {
     const retry = notice.querySelector<HTMLButtonElement>('button')!
     retry.click()
     await settle(4)
-    expect(retry.disabled).toBe(true)
+    expect(retry.getAttribute('aria-disabled')).toBe('true')
     expect(text(retry)).toBe('Retrying…')
     expect(text(messageFailure.element)).not.toContain('Loading conversation…')
     pendingRetry.resolve({ items: [] })
@@ -1969,7 +1969,7 @@ describe('chat read ownership', () => {
     const retry = el.querySelector<HTMLButtonElement>('.agents-chat-transcript-notice button')!
     retry.click()
     await settle()
-    expect(retry.disabled).toBe(true)
+    expect(retry.getAttribute('aria-disabled')).toBe('true')
 
     if (destination === 'switch') {
       await chooseSession(el, 'Second chat')
