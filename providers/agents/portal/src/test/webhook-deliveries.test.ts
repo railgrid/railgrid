@@ -204,7 +204,7 @@ describe('WebhookDeliveryLog.vue', () => {
 })
 
 describe('Webhooks.vue', () => {
-  it('shows loading and refresh errors instead of presenting a stale empty snapshot as first run', async () => {
+  it('keeps the confirmed empty snapshot alongside refresh errors', async () => {
     let reject!: (error: Error) => void
     const listWebhooks = vi.fn(() => new Promise<Webhook[]>((_resolve, fail) => { reject = fail }))
     const api = stubApi({ listWebhooks })
@@ -214,12 +214,12 @@ describe('Webhooks.vue', () => {
     void store.load('webhooks')
     const view = await mount(Webhooks, { store, api })
     expect(store.webhooks.loading).toBe(true)
-    expect(text(view.element)).not.toContain('Create your first webhook')
+    expect(text(view.element)).toContain('Create your first webhook')
 
     reject(new Error('Webhooks temporarily unavailable'))
     await settleVue()
-    expect(text(view.element)).toContain('Webhooks temporarily unavailable')
-    expect(text(view.element)).not.toContain('Create your first webhook')
+    expect(text(view.element)).toContain('Showing the last successful empty result')
+    expect(text(view.element)).toContain('Create your first webhook')
   })
 
   it('lists webhooks with sender, routed trigger count, last delivery and a URL copy action', async () => {
@@ -273,7 +273,7 @@ describe('Webhooks.vue', () => {
     await settleVue()
 
     expect(view.element.querySelector('.k-create-body--guided .k-create-fields')).not.toBeNull()
-    expect(text(view.element.querySelector('.k-create-guidance'))).toContain('Available after creation')
+    expect(text(view.element.querySelector('.k-create-guidance'))).toContain('After creation, add an agent trigger')
     const form = view.element.querySelector<HTMLFormElement>('form')!
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settleVue()
@@ -292,8 +292,8 @@ describe('Webhooks.vue', () => {
 
     setValue(retention, '50')
     await settleVue()
-    expect(text(view.element.querySelector('.k-create-guidance'))).toContain('GitHub webhook')
-    expect(text(view.element.querySelector('.k-create-guidance'))).toContain('Last 50 deliveries')
+    expect(text(view.element.querySelector('.k-create-guidance'))).toContain('GitHub’s webhook settings')
+    expect(retention.value).toBe('50')
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settleVue()
     expect(createWebhook).toHaveBeenCalledWith({ name: 'gh', source: 'github', displayName: 'GitHub', deliveryRetention: 50 })

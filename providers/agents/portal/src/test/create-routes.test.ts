@@ -504,7 +504,11 @@ describe('route-owned creation surfaces', () => {
       day(label).click()
       await settleVue()
     }
-    expect(day('Sunday').disabled).toBe(true)
+    expect(day('Sunday').disabled).toBe(false)
+    expect(day('Sunday').getAttribute('aria-disabled')).toBe('true')
+    day('Sunday').focus()
+    day('Sunday').click()
+    expect(document.activeElement).toBe(day('Sunday'))
     expect(day('Sunday').getAttribute('aria-pressed')).toBe('true')
     await expectCron('15 9 * * 0')
   })
