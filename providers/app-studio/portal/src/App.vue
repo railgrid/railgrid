@@ -8064,9 +8064,23 @@ function handleDevelopmentPreviewFrameLoad() {
 	}
 }
 
+// The control that started annotation. Escape in the picker ends it inside
+// the preview frame, so focus goes back here rather than staying in the page.
+let developmentPreviewAnnotationReturnFocus: HTMLElement | null = null
+
 function handleDevelopmentPreviewAnnotationMode(active: boolean) {
   developmentPreviewAnnotationMode.value = active && developmentPreviewCanAnnotate.value
-  if (!active) developmentPreviewAnnotationDraft.value = null
+  if (!active) {
+    developmentPreviewAnnotationDraft.value = null
+    restoreDevelopmentPreviewAnnotationFocus()
+  }
+}
+
+function restoreDevelopmentPreviewAnnotationFocus() {
+  const trigger = developmentPreviewAnnotationReturnFocus
+  developmentPreviewAnnotationReturnFocus = null
+  // Only reclaim focus the preview still holds; never take it from elsewhere.
+  if (trigger?.isConnected && document.activeElement === developmentPreviewFrameRef.value) trigger.focus()
 }
 
 function clearDevelopmentPreviewAnnotationHover(id?: string) {
@@ -8101,7 +8115,12 @@ function toggleDevelopmentPreviewAnnotation() {
     previewBridgeController.stopAnnotationMode()
     return
   }
-  previewBridgeController.startAnnotationMode()
+  const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  if (!previewBridgeController.startAnnotationMode()) return
+  developmentPreviewAnnotationReturnFocus = trigger
+  // The picker is driven by keys sent to the preview frame. A cross-origin
+  // frame cannot reliably take focus itself, so the user's action moves it.
+  developmentPreviewFrameRef.value?.focus()
 }
 
 function handleDevelopmentPreviewDocument(documentID: string, pagePath: string) {
@@ -12005,7 +12024,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 					v-model="developmentPreviewAnnotationDraft.comment"
 					maxlength="2048"
 					rows="3"
-						class="app-studio-touch-target min-h-20 w-full resize-none border-0 bg-transparent px-1 py-1 text-[14px] leading-5 text-text-primary outline-none placeholder:text-text-muted"
+						class="app-studio-touch-target min-h-20 w-full resize-none rounded-md border-0 bg-transparent px-1 py-1 text-[14px] leading-5 text-text-primary outline-none placeholder:text-text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
 					placeholder="What should change?"
 					@keydown.meta.enter.prevent="commitDevelopmentPreviewAnnotation"
 					@keydown.ctrl.enter.prevent="commitDevelopmentPreviewAnnotation"
