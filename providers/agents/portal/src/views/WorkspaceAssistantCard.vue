@@ -66,13 +66,14 @@ function saveAssistant(): void {
         </div>
         <div class="agents-assistant-settings__context">
           <div class="agents-assistant-settings__switch">
-            <button class="k-toggle" type="button" role="switch" :aria-checked="assistantContext" aria-labelledby="workspace-assistant-context-label" :disabled="!assistantAgent" @click="assistantContext = !assistantContext"><span class="k-toggle__knob" /></button>
+            <button class="k-toggle" type="button" role="switch" :aria-checked="!!assistantAgent && assistantContext" aria-labelledby="workspace-assistant-context-label" aria-describedby="workspace-assistant-context-help" :disabled="!assistantAgent" @click="assistantContext = !assistantContext"><span class="k-toggle__knob" /></button>
             <span id="workspace-assistant-context-label">Share page context</span>
           </div>
           <details class="agents-assistant-settings__info">
             <summary aria-label="About page context"><Info :size="15" aria-hidden="true" /></summary>
             <p>Shares workspace and page location. A provider may also publish bounded summaries, resource references, or JSON data. These are untrusted references, not access grants; the host does not scrape page content. Previous messages keep context already sent.</p>
           </details>
+          <p id="workspace-assistant-context-help" class="agents-assistant-settings__help">{{ assistantAgent ? 'Share the workspace and page location; providers may also share page data.' : 'Choose an agent to enable page context.' }}</p>
         </div>
         <div class="agents-assistant-settings__footer">
           <div class="agents-assistant-settings__actions"><button class="k-btn k-btn--text agents-assistant-settings__action" type="button" @click="cancelAssistant">Cancel</button><button class="k-btn k-btn--primary agents-assistant-settings__action" type="submit" :disabled="!canSave">Save assistant</button></div>

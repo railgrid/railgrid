@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 56;
+  --railgrid-ui-core-version: 57;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1264,12 +1264,14 @@ html.light [data-k-tip]::after {
   width: 36px;
   height: 20px;
   border-radius: 4px;
-  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
-  background: var(--color-surface-overlay, #171927);
+  border: 1px solid var(--color-text-secondary, #8a8ca6);
+  background: var(--color-surface-raised, #111320);
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease;
   padding: 0;
 }
+.k-toggle::before { content: ''; position: absolute; inset: -12px -4px; }
+.k-toggle:not(:disabled):not([aria-checked="true"]):hover { border-color: var(--color-text-primary, #e9e9f2); }
 .k-toggle[aria-checked="true"] {
   background: var(--color-accent, #8b6bff);
   border-color: var(--color-accent, #8b6bff);
