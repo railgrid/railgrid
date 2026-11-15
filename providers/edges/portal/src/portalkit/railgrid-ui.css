@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 52;
+  --railgrid-ui-core-version: 53;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -758,6 +758,34 @@ html.light .k-create-surface {
   box-shadow:
     0 0 0 3px var(--color-accent-subtle, rgba(139, 107, 255, 0.14)),
     0 0 14px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
+}
+
+/* Text fields stay quiet until focused. Select triggers retain their own recipe. */
+:is(input, textarea).k-input {
+  background: transparent;
+}
+:is(input, textarea).k-input:focus {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+:is(input, textarea).k-input[aria-invalid="true"] {
+  border-color: var(--color-danger, #ff5d5d);
+}
+:is(input, textarea).k-input[aria-invalid="true"]:focus {
+  border-color: var(--color-danger, #ff5d5d);
+  box-shadow: none;
+}
+:is(input, textarea).k-input:disabled {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: not-allowed;
+}
+
+/* Resizing grows multiline fields without widening the form on narrow screens. */
+textarea.k-input {
+  max-inline-size: 100%;
+  resize: vertical;
 }
 
 /* Native checkbox reset for dense controls. Keep the browser's native glyph
@@ -3521,6 +3549,7 @@ railgrid-resource-table-filter { display: contents; }
     min-height: 44px;
     min-width: 44px;
   }
+  :is(input, textarea).k-input { min-height: 44px; }
   .k-checkbox-hit {
     min-height: 44px;
     min-width: 44px;
