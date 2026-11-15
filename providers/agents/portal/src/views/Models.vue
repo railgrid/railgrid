@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import snapshotSuffixPattern from '../model-snapshot-suffix.json'
 
-import { Play, ArrowLeft, Cpu, Loader2, Plus, Trash2 } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight, Cpu, Loader2, Play, Plus, Trash2 } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUpdate, onUpdated, ref, useId, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
@@ -500,7 +500,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           <p class="k-resource-page__subtitle">{{ setupNavigation ? 'Manage the models and provider access your agents use.' : 'Connect and manage models for your agents.' }}</p>
         </div>
         <div v-if="setupNavigation" class="k-resource-page__actions">
-          <ActionMenu label="Create" :primary-menu="!(credentials.hasSnapshot && !modelRows.length)" :show-label="credentials.hasSnapshot && !modelRows.length" :items="createActions" @select="selectCreateAction" />
+          <ActionMenu label="Create" primary-menu :items="createActions" @select="selectCreateAction" />
         </div>
       </header>
       <nav v-if="!setupNavigation" class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
@@ -518,7 +518,13 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           </div>
         </div>
       </header>
-      <FirstRunGuide v-if="modelView && showFirstRun" title="Connect a provider to add models" description="Bring an API key to connect a provider once, then reuse it across models for your agents." primary-label="Connect provider" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @primary="openProvider" />
+      <FirstRunGuide v-if="modelView && showFirstRun" title="Connect a provider to add models" description="Bring an API key to connect a provider once, then reuse it across models for your agents." :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path">
+        <template #actions>
+          <button type="button" class="k-btn" :class="setupNavigation ? 'k-btn--ghost' : 'k-btn--primary'" @click="openProvider">
+            Connect provider <ArrowRight :stroke-width="1.75" aria-hidden="true" />
+          </button>
+        </template>
+      </FirstRunGuide>
       <div v-else-if="!setupNavigation && !credentials.loaded && !credentials.error" class="k-loading-reveal muted" role="status">Loading credentials…</div>
       <div v-if="credentials.error" ref="credentialsWarning">
         <InlineNotification :tone="credentials.hasSnapshot ? 'warning' : 'error'" :message="credentials.hasSnapshot ? `Showing the last successful results. ${credentials.error}` : credentials.error" action-label="Retry" action-busy-label="Retrying…" :action-busy="credentials.loading" @action="store.load('credentials')" />
@@ -582,7 +588,14 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           </tr>
         </template>
       </ModelCollection>
-      <FirstRunGuide v-if="modelView && showFirstModel" title="Add a model" description="Use a saved provider connection to add a model your agents can use." primary-label="Add model" :steps="[]" @primary="beginModel"><template #icon><Cpu :stroke-width="1.75" /></template></FirstRunGuide>
+      <FirstRunGuide v-if="modelView && showFirstModel" title="Add a model" description="Use a saved provider connection to add a model your agents can use." :steps="[]">
+        <template #icon><Cpu :stroke-width="1.75" /></template>
+        <template #actions>
+          <button type="button" class="k-btn" :class="setupNavigation ? 'k-btn--ghost' : 'k-btn--primary'" @click="beginModel">
+            Add model <ArrowRight :stroke-width="1.75" aria-hidden="true" />
+          </button>
+        </template>
+      </FirstRunGuide>
       <div v-else-if="modelView && credentials.hasSnapshot && !showFirstRun && !modelRows.length" class="k-card agents-models-empty"><h3>No models configured</h3><p>Connect a provider to add a model your agents can use.</p></div>
       <section v-if="connectionView" class="k-resource-page k-resource-page--collection" :class="{ 'agents-model-providers': setupNavigation }" aria-labelledby="provider-connections-title">
         <header class="k-resource-page__header">
