@@ -309,17 +309,17 @@ describe('edge dashboard read state', () => {
       await flush()
       const state = mounted.instance.setupState
       expect(state.loaded).toBe(true)
-      api.listEdges.mockRejectedValueOnce(new Error('Hub is unavailable'))
+      api.listEdges.mockRejectedValueOnce({ status: 503, message: 'raw upstream response' })
       await state.refresh.request('background')
       await flush()
       expect(state.loaded).toBe(true)
       expect(state.edges).toEqual(snapshot)
-      expect(state.error).toBe('Try again.')
+      expect(state.error).toBe('The service is unavailable.')
       expect(state.loading).toBe(false)
     } finally { mounted.unmount() }
   })
 
-  it('fences token renewal without a host transport and subsequent caller changes', async () => {
+  it('keeps rows through token renewal and fences a different caller', async () => {
     const mounted = await mount(DashboardTile, { context: { tenant: 'tenant-a', token: 'old-token', user: { userId: 'user-a' } } })
     try {
       await flush()
@@ -328,8 +328,8 @@ describe('edge dashboard read state', () => {
       api.listEdges.mockReturnValueOnce(renewed.promise)
       mounted.instance.props.context = { tenant: 'tenant-a', token: 'new-token', user: { userId: 'user-a' } }
       await flush()
-      expect(state.loaded).toBe(false)
-      expect(state.edges).toEqual([])
+      expect(state.loaded).toBe(true)
+      expect(state.edges).toEqual([edge])
 
       api.listEdges.mockResolvedValueOnce([{ ...edge, name: 'caller-b-edge' }])
       mounted.instance.props.context = { tenant: 'tenant-a', token: 'caller-b-token', user: { userId: 'user-b' } }

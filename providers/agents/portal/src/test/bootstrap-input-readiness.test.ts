@@ -155,7 +155,7 @@ describe('chat bootstrap input readiness', () => {
     pendingRetry.reject(new Error('retry failed again'))
     await settle()
     expect(el.querySelector('[role="alert"]')?.textContent).toContain('retry failed again')
-    expect(retry.getAttribute('aria-disabled')).not.toBe('true')
+    expect(retry.getAttribute('aria-disabled')).toBeNull()
     expect(document.activeElement).toBe(retry)
 
     retry.click()

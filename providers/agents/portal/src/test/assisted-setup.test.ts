@@ -82,7 +82,8 @@ describe('connections route layout', () => {
     expect(toolsets.closest('.k-resource-page')?.classList.contains('k-resource-page--collection')).toBe(true)
     const actions = [...el.querySelectorAll<HTMLElement>('.k-resource-page__actions :is(a, button)')]
     expect(actions.map(button => text(button))).toEqual(['New connection', 'New toolset'])
-    actions.forEach(button => button.click())
+    expect(actions[0]?.getAttribute('href')).toBe('#/create/connection')
+    actions.forEach(control => control.click())
     expect(mounted.navigations).toEqual([
       { kind: 'create', resource: 'connection' },
       { kind: 'create', resource: 'toolset' },

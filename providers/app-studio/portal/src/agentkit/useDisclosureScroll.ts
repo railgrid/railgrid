@@ -56,11 +56,12 @@ export function useDisclosureScroll(): (event: MouseEvent) => void {
         if (stopped) return
         const panel = button.ownerDocument.getElementById(panelID)
         if (!button.isConnected || !panel || button.getAttribute('aria-expanded') !== 'true') { stop(); return }
-        // A stable aria-controls target can wrap the animation, while other
-        // disclosures put their target inside it. Measure the animated edge
-        // and ignore enclosing disclosures that also contain the trigger.
-        const disclosure = panel.querySelector<HTMLElement>(':scope > .k-ai-disclosure')
-          ?? panel.closest<HTMLElement>('.k-ai-disclosure')
+        // The controlled region can be inside a clipped grid transition. Its
+        // contents already have their final height; follow the wrapper's
+        // visible edge instead. An ancestor containing the trigger is not
+        // this disclosure's animation boundary.
+        const disclosure = panel.querySelector<HTMLElement>(':scope > .k-ai-disclosure') ??
+          panel.closest<HTMLElement>('.k-ai-disclosure')
         const revealed = disclosure && !disclosure.contains(button) ? disclosure : panel
         const viewport = scroller.getBoundingClientRect()
         const viewportTop = viewport.top + scroller.clientTop + 8
