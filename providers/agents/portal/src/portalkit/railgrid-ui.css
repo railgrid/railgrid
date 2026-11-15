@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 63;
+  --railgrid-ui-core-version: 64;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -3368,9 +3368,8 @@ railgrid-resource-table-filter { display: contents; }
  * disclosure, definition-list, and read-only object geometry. */
 .k-resource-technical {
   min-width: 0;
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  border-radius: 6px;
-  background: var(--color-surface, #0a0b12);
+  border-block: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  background: transparent;
 }
 .k-resource-technical__summary {
   display: flex;
@@ -3379,26 +3378,28 @@ railgrid-resource-table-filter { display: contents; }
   justify-content: space-between;
   gap: 10px;
   padding: 9px 12px;
-  color: var(--color-text-muted, #8587a1);
+  color: var(--color-text-primary, #e9e9f2);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   list-style: none;
   user-select: none;
 }
 .k-resource-technical__summary::-webkit-details-marker { display: none; }
-.k-resource-technical__summary:hover { color: var(--color-text-secondary, #8a8ca6); background: var(--color-surface-hover, #1e2033); }
+.k-resource-technical__summary:hover { color: var(--color-text-primary, #e9e9f2); background: var(--color-surface-hover, #1e2033); }
 .k-resource-technical__summary:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: -2px; }
 .k-resource-technical__summary-label { display: inline-flex; min-width: 0; align-items: center; gap: 7px; }
-.k-resource-technical__chevron { flex: none; transition: transform .15s ease; }
+.k-resource-technical__summary-copy { display: grid; min-width: 0; gap: 4px; }
+.k-resource-technical__summary-context { color: var(--color-text-secondary, #8a8ca6); font-size: 12px; font-weight: 400; line-height: 1.4; overflow-wrap: anywhere; }
+.k-resource-technical__chevron { flex: none; width: 16px; height: 16px; color: var(--color-text-secondary, #8a8ca6); transition: transform .15s ease; }
 .k-resource-technical[open] .k-resource-technical__chevron { transform: rotate(180deg); }
 .k-resource-technical__body {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 18px;
-  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  padding: 16px 12px;
+  border: 0;
+  padding: 4px 12px 16px;
 }
 .k-resource-technical__section { min-width: 0; }
 .k-resource-technical__section-title {
