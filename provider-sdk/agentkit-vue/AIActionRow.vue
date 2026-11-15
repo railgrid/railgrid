@@ -86,7 +86,7 @@ function stateLabel(): string {
         type="button"
         class="k-ai-action-row__toggle"
         :aria-expanded="expanded"
-        :aria-controls="detailsId || undefined"
+        :aria-controls="$slots.details && detailsId ? detailsId : undefined"
         @click="emit('toggle')"
       >
         <span class="k-ai-action-row__title">{{ title }}</span>
@@ -97,14 +97,16 @@ function stateLabel(): string {
       <span v-if="outcome" class="k-ai-action-row__outcome">{{ outcome }}</span>
     </div>
 
-    <Transition name="k-ai-disclosure">
-      <div v-if="expandable && expanded && $slots.details" class="k-ai-disclosure">
-        <div class="k-ai-disclosure__inner">
-          <div :id="detailsId || undefined" class="k-ai-action-row__details">
-            <slot name="details" />
+    <div v-if="expandable && $slots.details" :id="detailsId || undefined">
+      <Transition name="k-ai-disclosure">
+        <div v-if="expanded" class="k-ai-disclosure">
+          <div class="k-ai-disclosure__inner">
+            <div class="k-ai-action-row__details">
+              <slot name="details" />
+            </div>
           </div>
         </div>
-      </div>
-    </Transition>
+      </Transition>
+    </div>
   </div>
 </template>

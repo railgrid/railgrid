@@ -25,6 +25,7 @@ export const reviews = {
   'foundations.provider-integration': lens('integration', 'Style handoff and distribution', 'Compare canonical and host version markers, try the isolated style handoff, and open the mapped source asset. Read the mounting and scoping rules in Contract.', [[core('styles.ts'), 'export function ensureRailgridUIStyles'], [portal('pages/ProviderFrame.vue'), 'railgridContext']]),
 
   'components.relationship-graph': { ...lens('oddities', 'Relationship graph', 'Compare the palette, then switch between Graph and List in the Kuery Impact fixture.', [['providers/kuery/portal/src/graph.ts', 'export const RELATION_METADATA']]), product: { label: 'Kuery Impact product fixture', href: './kuery-impact.html?scenario=all-relations' } },
+  'components.ai-action-row': review('ai-action-row', 'Action states and evidence', 'Open and close the failed health check with the keyboard.', [['provider-sdk/agentkit-vue/AIActionRow.vue']]),
   'components.button': review('button', 'Button states', 'Compare button priority, disabled and busy feedback.', [[css]]),
   'components.textarea': review('textarea', 'Textarea states', 'Edit and vertically resize the instructions field. Compare the disabled, read-only and invalid states.', [[css]]),
   'components.text-input': review('text-input', 'Text input states', 'Compare a labeled field, its error and the disabled state.', [[css]]),
