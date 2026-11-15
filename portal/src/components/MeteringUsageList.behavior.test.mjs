@@ -87,6 +87,16 @@ test('Meter mode does not present an exceeded numeric reference as enforcement',
   assert.equal(fixture.usedClass(row), 'text-text-primary')
 })
 
+test('threshold labels distinguish approaching, reached, and exceeded limits', () => {
+  for (const [used, state, text] of [['7', 'ok', 'Within limit'], ['8', 'near', 'Approaching limit'], ['10', 'at', 'Limit reached'], ['11', 'over', 'Over limit']]) {
+    const fixture = usageFixture({ limits: [limit('10')], usage: { workspaces: used } })
+    assert.equal(fixture.rows[0].state, state)
+    assert.equal(fixture.stateLabel(fixture.rows[0]), text)
+  }
+  assert.equal(meterLabel('agents'), 'Agents')
+  assert.equal(meterLabel('provider_custom_metric'), 'provider_custom_metric')
+})
+
 test('an unlimited meter and a usage-only meter have no utilization percentage', () => {
   const fixture = usageFixture({ usage: { extra: '27' } })
   const unlimited = usageFixture({ limits: [{ meter: 'workspaces', enforce: 'Meter' }], usage: { workspaces: '15' } })
@@ -122,7 +132,7 @@ test('a plan summary counts enforcement modes and an account summary names its f
   assert.deepEqual(plain(plan.summarize(plan.rows, false, true)), { count: '3 limits', headline: null, detail: '2 hard, 1 metered' })
 
   const account = usageFixture({ limits: [], usage: { services: 3, agents: 1, edges: 2 } })
-  assert.deepEqual(plain(account.summarize(account.rows, true, false)), { count: '3 meters', headline: null, detail: 'agents 1, edges 2, +1 more' })
+  assert.deepEqual(plain(account.summarize(account.rows, true, false)), { count: '3 meters', headline: null, detail: 'Agents 1, Edges 2, +1 more' })
   const one = usageFixture({ limits: [], usage: { workspaces: 2 } })
   assert.deepEqual(plain(one.summarize(one.rows, true, false)), { count: '1 meter', headline: null, detail: 'Workspaces 2' })
 })

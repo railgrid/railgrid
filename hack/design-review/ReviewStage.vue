@@ -24,6 +24,7 @@ const ConfirmReviewStage = defineAsyncComponent(() => import('./ConfirmReviewSta
 const ResourcePageStage = defineAsyncComponent(() => import('./ResourcePageStage.vue'))
 const EmptyStatesStage = defineAsyncComponent(() => import('./EmptyStatesStage.vue'))
 const TooltipReviewStage = defineAsyncComponent(() => import('./TooltipReviewStage.vue'))
+const ProgressReviewStage = defineAsyncComponent(() => import('./ProgressReviewStage.vue'))
 const TimestampStage = defineAsyncComponent(() => import('./TimestampStage.vue'))
 const DisclosureReviewStage = defineAsyncComponent(() => import('./DisclosureReviewStage.vue'))
 const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
@@ -49,6 +50,7 @@ const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
   <ResourcePageStage v-else-if="stage === 'resource-page-loading'" :entry="entry" />
   <EmptyStatesStage v-else-if="stage === 'first-run-guide'" />
   <TooltipReviewStage v-else-if="stage === 'tooltip'" />
+  <ProgressReviewStage v-else-if="stage === 'progress'" />
   <TimestampStage v-else-if="stage === 'timestamp'" />
   <DisclosureReviewStage v-else-if="stage === 'disclosure'" />
   <Lens v-else :stage="stage" :entry="entry" :catalog="catalog" />
