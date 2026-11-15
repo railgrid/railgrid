@@ -22,6 +22,9 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/railgrid/provider-sdk/modelcatalog"
@@ -218,5 +221,48 @@ func TestCommittedSnapshotSuffixMatchesBackend(t *testing.T) {
 	}
 	if pattern != modelcatalog.SnapshotSuffixPattern {
 		t.Fatal("stale model suffix pattern; run make generate-model-catalog")
+	}
+}
+
+// The portal casts the imported JSON to its own types, and TypeScript does
+// not check data against a cast: a field the portal reads but the projection
+// drops is silently undefined. The lookup type must match the projection
+// exactly, and the settings view of it may only use projected fields.
+func TestPortalModelMatchesThePortalCatalogTypes(t *testing.T) {
+	projected := map[string]bool{}
+	fields := reflect.TypeOf(portalModel{})
+	for i := 0; i < fields.NumField(); i++ {
+		projected[strings.Split(fields.Field(i).Tag.Get("json"), ",")[0]] = true
+	}
+	field := regexp.MustCompile(`(\w+)\??\s*:`)
+	for _, view := range []struct {
+		path    string
+		pattern *regexp.Regexp
+		exact   bool
+	}{
+		{"../../portal/src/llmRegistryRead.ts", regexp.MustCompile(`(?s)interface CatalogEntry \{(.*?)\n\}`), true},
+		{"../../portal/src/types.ts", regexp.MustCompile(`\n\s*catalog\?: \{([^}]*)\}`), false},
+	} {
+		source, err := os.ReadFile(view.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		block := view.pattern.FindSubmatch(source)
+		if block == nil {
+			t.Fatalf("%s: portal catalog type not found", view.path)
+		}
+		declared := map[string]bool{}
+		for _, match := range field.FindAllSubmatch(block[1], -1) {
+			name := string(match[1])
+			declared[name] = true
+			if !projected[name] {
+				t.Errorf("%s reads catalog field %q, which the generated projection drops", filepath.Clean(view.path), name)
+			}
+		}
+		for name := range projected {
+			if view.exact && !declared[name] {
+				t.Errorf("%s does not declare projected field %q; drop it from portalModel or use it", filepath.Clean(view.path), name)
+			}
+		}
 	}
 }
