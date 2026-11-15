@@ -17,7 +17,9 @@ const LayoutSelectorStage = defineAsyncComponent(() => import('./LayoutSelectorS
 const ChoiceStage = defineAsyncComponent(() => import('./ChoiceStage.vue'))
 const ToggleStage = defineAsyncComponent(() => import('./ToggleStage.vue'))
 const CopyProductStage = defineAsyncComponent(() => import('./CopyProductStage.vue'))
+const UploadStage = defineAsyncComponent(() => import('./UploadStage.vue'))
 const FieldGroupStage = defineAsyncComponent(() => import('./FieldGroupStage.vue'))
+const SearchStage = defineAsyncComponent(() => import('./SearchStage.vue'))
 const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
 </script>
 <template>
@@ -34,7 +36,9 @@ const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
   <ChoiceStage v-else-if="stage === 'checkbox' || stage === 'radio'" :radio="stage === 'radio'" />
   <ToggleStage v-else-if="stage === 'toggle'" />
   <CopyProductStage v-else-if="stage === 'copy-control'" />
+  <UploadStage v-else-if="stage === 'file-upload'" />
   <FieldGroupStage v-else-if="stage === 'field-group'" />
+  <SearchStage v-else-if="stage === 'search-input'" />
   <Lens v-else :stage="stage" :entry="entry" :catalog="catalog" />
   <section v-if="entry.id === 'design.foundations.colors'" class="spec-stack" aria-labelledby="materials-heading">
     <h2 id="materials-heading">Materials and surfaces</h2>
