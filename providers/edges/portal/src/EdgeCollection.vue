@@ -3,6 +3,7 @@ import { computed, onActivated, ref } from 'vue'
 import { Boxes, Laptop, Plus, RefreshCw, Server } from 'lucide-vue-next'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import ResourceTable from './portalkit/ResourceTable.vue'
+import ResourceTimestamp from './portalkit/ResourceTimestamp.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import type { ResourceRefreshMode } from './refresh'
@@ -40,7 +41,7 @@ const edgeRows = computed(() => props.edges.map(edge => ({
   typeLabel: edgeTypeLabel(edge.type),
   status: edge.connected ? 'Connected' : (edge.phase || 'Disconnected'),
   agentVersion: edge.agentVersion || '—',
-  lastHeartbeat: relativeTime(edge.lastHeartbeatTime),
+  lastHeartbeat: edge.lastHeartbeatTime || null,
   actions: '',
 })))
 const tableQuery = ref('')
@@ -56,17 +57,6 @@ const edgeJourney = [
 function edgeRowAriaLabel(row: Record<string, unknown>): string {
   const type = String(row.typeLabel)
   return `Open ${type} edge ${String(row.name)}`
-}
-
-function relativeTime(timestamp?: string): string {
-  if (!timestamp) return '—'
-  const date = new Date(timestamp).getTime()
-  if (Number.isNaN(date)) return '—'
-  const seconds = Math.max(0, Math.floor((Date.now() - date) / 1000))
-  if (seconds < 60) return `${seconds}s ago`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
-  return `${Math.floor(seconds / 86400)}d ago`
 }
 
 // App keeps this component alive while detail/connect routes are active. The
@@ -131,7 +121,7 @@ onActivated(() => emit('activated'))
       <template #typeLabel="{ value, row }"><span class="k-badge k-badge--muted"><component :is="row.type === 'server' ? Server : row.type === 'macos' ? Laptop : Boxes" :size="12" aria-hidden="true" />{{ value }}</span></template>
       <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
       <template #agentVersion="{ value }"><span class="mono muted">{{ value }}</span></template>
-      <template #lastHeartbeat="{ value }"><span class="muted">{{ value }}</span></template>
+      <template #lastHeartbeat="{ value }"><ResourceTimestamp :value="value ? String(value) : null" label="Last heartbeat" /></template>
       <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete edge ${String(row.name)}`" @click="emit('delete', row as unknown as Edge)" /></div></template>
     </ResourceTable>
   </div>

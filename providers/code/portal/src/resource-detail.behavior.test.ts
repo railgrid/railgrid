@@ -332,6 +332,35 @@ afterEach(() => {
 })
 
 describe('mounted resource deletion state', () => {
+  it.each([
+    { component: RepoDetailView, label: 'Refresh repository', read: mocks.api.getRepository, data: repository },
+    { component: ConnectionDetailView, label: 'Refresh connection', read: mocks.api.getConnection, data: connection },
+  ])('keeps $label focusable and ignores duplicate requests', async ({ component, label, read, data }) => {
+    mocks.api.listConnections.mockResolvedValue([])
+    mocks.api.listDeployKeys.mockResolvedValue([])
+    mocks.api.listCollaborators.mockResolvedValue([])
+    mocks.api.listPackagesPage.mockResolvedValue({ items: [], continue: '', resourceVersion: '' })
+    const { app, root } = mount(component, { name: data.name, deletions: createResourceDeletions() })
+    try {
+      await settle()
+      const pending = deferred<typeof data>()
+      read.mockReturnValueOnce(pending.promise)
+      const before = read.mock.calls.length
+      const button = findNode(root, node => node.type === 'button' && node.props['aria-label'] === label)!
+      click(button); click(button)
+      await settle()
+      expect(read.mock.calls.length).toBe(before + 1)
+      expect(button.props.disabled).toBe(false)
+      expect(button.props['aria-disabled']).toBe(true)
+      expect(button.props['aria-busy']).toBe(true)
+      expect(findNode(button, node => node.type === 'svg' && String(node.props.class).includes('k-spin'))).toBeDefined()
+      pending.resolve(data)
+      await settle()
+      expect(button.props['aria-disabled']).toBeUndefined()
+      expect(findNode(button, node => node.type === 'svg' && String(node.props.class).includes('k-spin'))).toBeUndefined()
+    } finally { app.unmount() }
+  })
+
   it('shows a current-generation repository controller failure as failed', async () => {
     mocks.api.getRepository.mockResolvedValue({ ...repository, ready: false, failed: true, message: 'GitHub rejected the request.' })
     mocks.api.listConnections.mockResolvedValue([])
@@ -517,7 +546,45 @@ describe('mounted resource deletion state', () => {
 })
 
 describe('Code dashboard read state', () => {
-  it('keeps the repository visible through credential renewal and fences a caller change', async () => {
+  it('retains the snapshot when a deprecated token changes under the same host fetch', async () => {
+    mocks.api.listRepositories.mockResolvedValue([repository])
+    mocks.api.listConnections.mockResolvedValue([connection])
+    const hostFetch = vi.fn()
+    const { app, instance } = mount(DashboardTile, { context: { tenant: 'tenant-a', fetch: hostFetch, token: 'old' } })
+    try {
+      await settle()
+      expect(instance.setupState.repositories).toEqual([repository])
+      const reads = mocks.api.listRepositories.mock.calls.length
+      instance.props.context = { tenant: 'tenant-a', fetch: hostFetch, token: 'new' }
+      await settle()
+      expect(instance.setupState.loaded).toBe(true)
+      expect(instance.setupState.repositories).toEqual([repository])
+      expect(mocks.api.listRepositories).toHaveBeenCalledTimes(reads)
+    } finally { app.unmount() }
+  })
+
+  it('clears the snapshot when the host fetch changes', async () => {
+    mocks.api.listRepositories.mockResolvedValue([repository])
+    mocks.api.listConnections.mockResolvedValue([connection])
+    const { app, root, instance } = mount(DashboardTile, { context: { tenant: 'tenant-a', fetch: vi.fn() } })
+    try {
+      await settle()
+      expect(instance.setupState.repositories).toEqual([repository])
+      const replacement = deferred<typeof repository[]>()
+      mocks.api.listRepositories.mockReturnValueOnce(replacement.promise)
+      instance.props.context = { tenant: 'tenant-a', fetch: vi.fn() }
+      await settle()
+      expect(instance.setupState.loaded).toBe(false)
+      expect(instance.setupState.repositories).toEqual([])
+      expect(textContent(root)).toContain('Loading repositories')
+      replacement.resolve([])
+      await settle()
+      expect(instance.setupState.loaded).toBe(true)
+      expect(instance.setupState.repositories).toEqual([])
+    } finally { app.unmount() }
+  })
+
+  it('clears the repository on credential replacement and fences a caller change', async () => {
     mocks.api.listRepositories.mockResolvedValue([repository])
     mocks.api.listConnections.mockResolvedValue([connection])
     const { app, root, instance } = mount(DashboardTile, { context: { tenant: 'tenant-a', token: 'old-token', user: { userId: 'user-a' } } })
@@ -531,8 +598,9 @@ describe('Code dashboard read state', () => {
       mocks.api.listRepositories.mockReturnValueOnce(renewal.promise)
       instance.props.context = { tenant: 'tenant-a', token: 'new-token', user: { userId: 'user-a' } }
       await settle()
-      expect(state.loaded).toBe(true)
-      expect(state.repositories).toEqual([repository])
+      expect(state.loaded).toBe(false)
+      expect(state.repositories).toEqual([])
+      expect(findNode(root, node => node.type === 'button' && String(node.props['aria-label']).includes('Open repository'))).toBeUndefined()
 
       mocks.api.listRepositories.mockResolvedValueOnce([{ ...repository, name: 'caller-b-repository' }])
       instance.props.context = { tenant: 'tenant-a', token: 'caller-b-token', user: { userId: 'user-b' } }

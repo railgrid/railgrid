@@ -13,7 +13,7 @@
 // Read-only, and silent about a workspace that has not been bootstrapped: see
 // portalkit/dashboardtile.
 
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { AlertTriangle, ChevronRight, Clock, Link2, Package } from 'lucide-vue-next'
 import { api } from './api'
 import type { Connection, Repository } from './types'
@@ -42,6 +42,10 @@ const connections = ref<Connection[]>([])
 const loading = ref(true)
 const loaded = ref(false)
 const error = ref<string | null>(null)
+const retryPending = ref(false)
+const retryError = ref<string | null>(null)
+const displayError = computed(() => retryPending.value ? retryError.value : error.value)
+let retryGeneration = 0
 let refresh!: LatestRefreshController
 const poller = createAdaptiveRefreshTimer(() => load('background'), () => {
   if (!loaded.value || error.value) return FAST_REFRESH_MS
@@ -62,7 +66,20 @@ const stats = computed(() => {
 const rows = computed(() => mostRecent(repositories.value, (r) => r.name))
 
 function load(mode: 'foreground' | 'background' = 'foreground') {
-  refresh.request(mode)
+  void refresh.request(mode)
+}
+
+async function retry(): Promise<void> {
+  if (retryPending.value) return
+  const generation = ++retryGeneration
+  const focused = document.activeElement
+  retryError.value = error.value
+  retryPending.value = true
+  await refresh.request('foreground')
+  if (generation !== retryGeneration) return
+  retryPending.value = false
+  await nextTick()
+  if (focused && !focused.isConnected && document.activeElement === document.body) rootRef.value?.focus()
 }
 
 refresh = createLatestRefreshController(async (requestID, _mode) => {
@@ -90,7 +107,8 @@ refresh = createLatestRefreshController(async (requestID, _mode) => {
     loaded.value = true
   } catch (e) {
     if (!refresh.isCurrent(requestID)) return
-    error.value = isBenignTileError(e) ? null : tileErrorText(e)
+    error.value = !loaded.value && isBenignTileError(e) ? null : tileErrorText(e)
+    if (!error.value && !loaded.value) loaded.value = true
   } finally {
     if (refresh.isCurrent(requestID)) {
       loading.value = false
@@ -104,13 +122,19 @@ onMounted(() => {
   poller.schedule()
 })
 onUnmounted(() => {
+  retryGeneration += 1
   poller.stop()
   refresh.stop()
 })
 watch(
   [() => props.context?.tenant, () => props.context?.orgUUID, () => props.context?.workspaceUUID,
-    () => props.context?.user?.userId || props.context?.user?.sub || props.context?.user?.email],
+    () => props.context?.user?.userId || props.context?.user?.sub || props.context?.user?.email,
+    () => props.context?.fetch,
+    () => typeof props.context?.fetch === 'function' ? null : props.context?.token],
   () => {
+    retryGeneration += 1
+    retryPending.value = false
+    retryError.value = null
     repositories.value = []
     connections.value = []
     error.value = null
@@ -120,20 +144,15 @@ watch(
     load()
   },
 )
-watch([() => props.context?.token, () => props.context?.fetch], () => {
-  refresh.invalidate()
-  load('background')
-})
 </script>
 
 <template>
-  <div ref="rootRef" :class="tileClass.root" :aria-busy="loading">
-    <div v-if="loading && !loaded" :class="tileClass.message" role="status" aria-live="polite">Loading repositories&hellip;</div>
-      <div v-else-if="error && !loaded" :class="tileClass.error" role="alert" aria-live="assertive">Failed to load: {{ error }} <button type="button" class="k-dashboard-action" @click="load()">Retry</button></div>
+  <div ref="rootRef" :class="tileClass.root" :aria-busy="loading || retryPending" tabindex="-1">
+    <div v-if="displayError" :class="tileClass.error" :role="loaded ? 'status' : 'alert'" aria-live="polite">{{ loaded ? 'Could not refresh. Showing cached data.' : 'Could not load repositories.' }} {{ displayError }} <button type="button" class="k-dashboard-action" :aria-disabled="retryPending || undefined" :aria-busy="retryPending || undefined" @click="retry">{{ retryPending ? 'Retrying…' : 'Retry' }}</button></div>
+    <div v-if="loading && !loaded && !displayError" :class="tileClass.message" role="status" aria-live="polite">Loading repositories&hellip;</div>
 
-    <template v-else>
-      <div v-if="error" :class="tileClass.error" role="status" aria-live="polite">Showing cached data. {{ error }} <button type="button" class="k-dashboard-action" @click="load()">Retry</button></div>
-      <span v-else-if="loading" class="sr-only" role="status" aria-live="polite">Updating repositories…</span>
+    <template v-if="loaded">
+      <span v-if="loading && !displayError" class="sr-only" role="status" aria-live="polite">Updating repositories…</span>
       <div :class="tileClass.stats">
         <span :class="[tileClass.stat, tileClass.statTotal]">
           <Package :class="tileClass.statIcon" :stroke-width="1.75" aria-hidden="true" />

@@ -38,6 +38,7 @@ export const reviews = {
   'components.field-group': review('field-group', 'Grouped choices', 'Compare a single group explanation with descriptions beside each choice.', [[css]]),
   'components.search-input': review('search-input', 'Collection search', 'Review search states in an Edge Services table.', [[css]]),
   'components.confirm-dialog': review('confirm-review', 'Confirmation dialogs', 'Compare plain and typed destructive confirmations, then test Escape and focus return.', [[css]]),
+  'components.timestamp': review('timestamp', 'Relative and exact timestamps', 'Reveal the exact date and timezone for run and conversation events.', [[css]]),
   'components.disclosure': review('disclosure', 'Disclosure summaries and context', 'Open the run details and compare the activity states while collapsed.', [[css]]),
   'components.action-menu': review('navigation', 'Row, labeled, and split menus', 'Open the action menu with the keyboard. Compare primary, split, busy, and disabled variants; press Escape and check that focus returns to the trigger.', [[vue('ActionMenu'), 'primaryLabel?:']]),
   'components.menu': review('navigation', 'Menu geometry and keyboard path', 'Open a menu at the right edge in the narrow frame. Try Arrow keys, Home, End, Escape, and an unavailable item.', [[css, '.k-menu-item'], [vue('ActionMenu'), 'role="menu"']]),

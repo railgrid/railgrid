@@ -122,7 +122,7 @@ sync_agentkit_vue_file() {
   local dst="$2"
   local name="$3"
   case "$name" in
-    ModelConnectionCard.vue|ModelCollection.vue|AIModelReasoningPicker.vue|AICommandPalette.vue|AIConversationComposer.vue)
+    ModelConnectionCard.vue|ModelCollection.vue|AIModelReasoningPicker.vue|AICommandPalette.vue|AIConversationComposer.vue|AITimestamp.vue|timestamp.ts)
       # Canonical AgentKit resolves core components from the sibling Vue kit.
       # The self-contained portal copy resolves those dependencies from its
       # vendored portalkit directory.
@@ -231,7 +231,7 @@ verify_agentkit_vue_file() {
   local expected
   expected="$(mktemp)"
   case "$name" in
-    ModelConnectionCard.vue|ModelCollection.vue|AIModelReasoningPicker.vue|AICommandPalette.vue|AIConversationComposer.vue)
+    ModelConnectionCard.vue|ModelCollection.vue|AIModelReasoningPicker.vue|AICommandPalette.vue|AIConversationComposer.vue|AITimestamp.vue|timestamp.ts)
       sed 's#\.\./portalkit-vue/#../portalkit/#g' "$src/$name" > "$expected"
       ;;
     *)
