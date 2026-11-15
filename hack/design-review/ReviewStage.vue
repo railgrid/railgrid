@@ -16,6 +16,7 @@ const AppStudioClarificationStage = defineAsyncComponent(() => import('./AppStud
 const LayoutSelectorStage = defineAsyncComponent(() => import('./LayoutSelectorStage.vue'))
 const ChoiceStage = defineAsyncComponent(() => import('./ChoiceStage.vue'))
 const ToggleStage = defineAsyncComponent(() => import('./ToggleStage.vue'))
+const UploadStage = defineAsyncComponent(() => import('./UploadStage.vue'))
 const FieldGroupStage = defineAsyncComponent(() => import('./FieldGroupStage.vue'))
 const SearchStage = defineAsyncComponent(() => import('./SearchStage.vue'))
 const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
@@ -33,6 +34,7 @@ const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
   <LayoutSelectorStage v-else-if="stage === 'layout-selector'" />
   <ChoiceStage v-else-if="stage === 'checkbox' || stage === 'radio'" :radio="stage === 'radio'" />
   <ToggleStage v-else-if="stage === 'toggle'" />
+  <UploadStage v-else-if="stage === 'file-upload'" />
   <FieldGroupStage v-else-if="stage === 'field-group'" />
   <SearchStage v-else-if="stage === 'search-input'" />
   <Lens v-else :stage="stage" :entry="entry" :catalog="catalog" />
