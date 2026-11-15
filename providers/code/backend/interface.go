@@ -38,8 +38,12 @@ import (
 // For type=pat this carries the token; future credential types (github-app,
 // oauth) add fields without breaking existing backends.
 type Credential struct {
-	// Token is the PAT (or, later, a minted installation/oauth token).
+	// Token is the PAT, OAuth token or minted installation token.
 	Token string
+	// ActorLogin and ActorType are trusted metadata resolved from the credential
+	// source, used to verify recovery markers against the publishing identity.
+	ActorLogin string
+	ActorType  string
 }
 
 // ErrInvalidRepositoryName is a permanent input error; retry only after a spec change.

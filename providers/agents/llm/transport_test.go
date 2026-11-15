@@ -18,12 +18,40 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
+
+func TestChatCompletionsMapsEinoMaxTokensToWireRequest(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("request path = %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`)
+	}))
+	defer server.Close()
+	model, err := BuildModel(t.Context(), Profile{
+		Provider: ProviderOpenAICompatible, BaseURL: server.URL + "/v1", Model: "gpt-4o", APIKey: "test-key", Transport: TransportChatCompletions,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.Generate(t.Context(), []*schema.Message{schema.UserMessage("go")}, einomodel.WithMaxTokens(6)); err != nil {
+		t.Fatal(err)
+	}
+	if payload["max_tokens"] != float64(6) {
+		t.Fatalf("Chat Completions wire max_tokens = %#v, want 6", payload["max_tokens"])
+	}
+}
 
 func TestBuildModelLunaReasoningWithToolsUsesResponses(t *testing.T) {
 	previous := http.DefaultTransport

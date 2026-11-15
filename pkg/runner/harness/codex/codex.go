@@ -129,6 +129,14 @@ func New(cfg Config) harness.Adapter {
 	return &Adapter{cfg: cfg}
 }
 
+// RecoverProcessCleanup retries cleanup of a previously saved systemd scope.
+func (a *Adapter) RecoverProcessCleanup(ctx context.Context, reference string) (bool, error) {
+	if a.cfg.Environment.ProcessScope != "systemd-user" {
+		return false, errors.New("codex systemd scope recovery is not enabled")
+	}
+	return recoverUserSystemdScope(ctx, reference)
+}
+
 // Probe checks the binary version and that the app-server answers the
 // handshake. It deliberately reports nothing about authentication: the harness
 // credential arrives with each launch, so a host with no Codex login is still a
@@ -155,7 +163,7 @@ func (a *Adapter) Probe(ctx context.Context) (harness.Info, error) {
 		info.Reasons = append(info.Reasons, fmt.Sprintf("expected Codex %s, found %s", a.cfg.ExpectedVersion, version))
 	}
 
-	proc, err := a.startServer(ctx, "", nil, nil, nil)
+	proc, err := a.startServer(ctx, "", nil, nil, nil, nil)
 	if err != nil {
 		return info, err
 	}
@@ -175,6 +183,9 @@ func (a *Adapter) Probe(ctx context.Context) (harness.Info, error) {
 			return infoWithReady(info), nil
 		}
 		return info, err
+	}
+	if proc.scope != nil {
+		proc.scope.started = true
 	}
 	if err := conn.notify("initialized", map[string]any{}); err != nil {
 		return info, err
@@ -287,7 +298,7 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 			err = errors.Join(err, removeErr)
 		}
 	}()
-	proc, err := a.startServer(ctx, launch.Workdir, mcpArgs, mcpEnv, githubEnv)
+	proc, err := a.startServer(ctx, launch.Workdir, mcpArgs, mcpEnv, githubEnv, launch.RegisterProcessScope)
 	if err != nil {
 		return result, err
 	}
@@ -316,6 +327,9 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 	}
 	if _, callErr := conn.call(ctx, "initialize", initializeParams(), state.handle); callErr != nil {
 		return resultForError(callErr, state), normalizeContextError(ctx, callErr)
+	}
+	if proc.scope != nil {
+		proc.scope.started = true
 	}
 	if callErr := conn.notify("initialized", map[string]any{}); callErr != nil {
 		return result, callErr
@@ -621,11 +635,12 @@ type serverProcess struct {
 	done    chan error
 	stopMu  sync.Mutex
 	stopped bool
+	scope   *userSystemdScope
 }
 
 // startServer starts one app-server. mcpArgs and mcpEnv attach the launch's
 // remote MCP servers (see mcp.go). githubEnv is scoped to the turn.
-func (a *Adapter) startServer(ctx context.Context, workdir string, mcpArgs, mcpEnv, githubEnv []string) (*serverProcess, error) {
+func (a *Adapter) startServer(ctx context.Context, workdir string, mcpArgs, mcpEnv, githubEnv []string, registerScope func(string) error) (*serverProcess, error) {
 	// The -c overrides are root-level options of the codex CLI, so they come
 	// before the subcommand.
 	launchEnv := a.launchEnv()
@@ -639,8 +654,25 @@ func (a *Adapter) startServer(ctx context.Context, workdir string, mcpArgs, mcpE
 		// resumed ones.
 		"--enable", "default_mode_request_user_input",
 		"--disable", "apps", "--disable", "plugins", "--disable", "hooks")
-	cmd := exec.Command(a.cfg.Binary, args...)
-	cmd.Env = append(append(launchEnv, githubEnv...), mcpEnv...)
+	cmdEnv := append(append(append([]string(nil), launchEnv...), githubEnv...), mcpEnv...)
+	var scope *userSystemdScope
+	var cmd *exec.Cmd
+	if a.cfg.Environment.ProcessScope == "systemd-user" {
+		var err error
+		scope, err = newUserSystemdScope(launchEnv)
+		if err != nil {
+			return nil, err
+		}
+		if registerScope != nil {
+			if err := registerScope(scope.unit); err != nil {
+				return nil, err
+			}
+		}
+		cmd = scope.command(a.cfg.Binary, args, cmdEnv)
+	} else {
+		cmd = exec.Command(a.cfg.Binary, args...)
+		cmd.Env = cmdEnv
+	}
 	if workdir != "" {
 		cmd.Dir = workdir
 	}
@@ -658,7 +690,7 @@ func (a *Adapter) startServer(ctx context.Context, workdir string, mcpArgs, mcpE
 		_ = stdin.Close()
 		return nil, fmt.Errorf("starting codex app-server: %w", err)
 	}
-	proc := &serverProcess{cmd: cmd, stdin: stdin, done: make(chan error, 1)}
+	proc := &serverProcess{cmd: cmd, stdin: stdin, done: make(chan error, 1), scope: scope}
 	proc.conn = newRPCConn(stdin, stdout)
 	go func() { proc.done <- cmd.Wait() }()
 	if ctx.Err() != nil {
@@ -711,22 +743,50 @@ func (p *serverProcess) stop() error {
 	}
 	select {
 	case waitErr := <-p.done:
-		return errors.Join(closeErr, waitErr)
+		if p.scope != nil {
+			scopeErr := p.scope.stop()
+			if scopeErr != nil {
+				return errors.Join(closeErr, waitErr, scopeErr, p.killLocalGroup())
+			}
+			return errors.Join(closeErr, waitErr)
+		}
+		// A clean app-server exit does not imply its command descendants exited.
+		// Sweep the original group on this early path too; an empty group returns
+		// ESRCH and is treated as successful cleanup by KillGroup.
+		return errors.Join(closeErr, waitErr, p.killLocalGroup())
 	case <-time.After(processStopGrace):
 	}
-	killErr := killProcessGroup(p.cmd)
+	var killErr, scopeErr error
+	if p.scope != nil {
+		scopeErr = p.scope.stop()
+		if scopeErr != nil {
+			killErr = p.killLocalGroup()
+		}
+	} else {
+		killErr = p.killLocalGroup()
+	}
 	select {
 	case waitErr := <-p.done:
 		// A process-group kill is expected to report an interrupted wait. The
 		// cleanup itself succeeded when the group was signalled and the child
 		// exited within the bounded wait below.
-		if killErr == nil {
+		if killErr == nil && scopeErr == nil {
 			return closeErr
 		}
-		return errors.Join(closeErr, killErr, waitErr)
+		return errors.Join(closeErr, scopeErr, killErr, waitErr)
 	case <-time.After(processStopTimeout):
-		return errors.Join(closeErr, killErr, errors.New("timed out stopping codex app-server process"))
+		if p.scope != nil && killErr == nil {
+			killErr = p.killLocalGroup()
+		}
+		return errors.Join(closeErr, scopeErr, killErr, errors.New("timed out stopping codex app-server process"))
 	}
+}
+
+func (p *serverProcess) killLocalGroup() error {
+	if p.cmd == nil || p.cmd.Process == nil {
+		return nil
+	}
+	return killProcessGroup(p.cmd)
 }
 
 type limitedBuffer struct {

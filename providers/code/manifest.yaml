@@ -800,6 +800,79 @@ spec:
               maxResultItems: 50
             consent:
               required: false
+      - name: pullrequests
+        apiVersion: code.railgrid.ai/v1alpha1
+        kind: PullRequest
+        actions:
+          - name: submit-review
+            version: v1
+            displayName: Submit review
+            description: Submit a COMMENT-only review pinned to the expected head. Retries use an idempotency key.
+            inputSchema:
+              type: object
+              required: [expectedHead, idempotencyKey, body]
+              properties:
+                expectedHead: *id003
+                idempotencyKey: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$'}
+                body: {type: string, maxLength: 32768}
+                comments:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [path, line, body]
+                    properties:
+                      path: {type: string, minLength: 1, maxLength: 1024}
+                      line: {type: integer, minimum: 1}
+                      side: {type: string, enum: [LEFT, RIGHT]}
+                      body: {type: string, minLength: 1, maxLength: 8192}
+                    additionalProperties: false
+              additionalProperties: false
+            outputSchema: {type: object, additionalProperties: true}
+            schemaDigest: sha256:1a6ab1258486fe037ccbd0460b1bd9e28ff0b7b9e538c9c31eb386603cf5fb75
+            executionMode: sync
+            readOnly: false
+            risk: medium
+            idempotency: inherent
+            limits: {timeoutSeconds: 180, maxInputBytes: 65536, maxOutputBytes: 524288, maxResultItems: 50}
+            consent: {required: false}
+          - name: upsert-comment
+            version: v1
+            displayName: Upsert managed comment
+            description: Create or update a provider-owned comment marked by a stable caller key.
+            inputSchema:
+              type: object
+              required: [commentKey, body]
+              properties:
+                commentKey: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$'}
+                body: *id005
+              additionalProperties: false
+            outputSchema: {type: object, additionalProperties: true}
+            schemaDigest: sha256:457bc9d23fff346f4e97ce3df146621a397c3a1bf00804cb4021840f6cd5188a
+            executionMode: sync
+            readOnly: false
+            risk: medium
+            idempotency: inherent
+            limits: {timeoutSeconds: 180, maxInputBytes: 65536, maxOutputBytes: 524288, maxResultItems: 50}
+            consent: {required: false}
+          - name: ready
+            version: v1
+            displayName: Mark ready
+            description: Mark a draft pull request ready after checking its expected head. The forge does not provide an atomic head precondition.
+            inputSchema:
+              type: object
+              required: [expectedHead]
+              properties:
+                expectedHead: *id003
+              additionalProperties: false
+            outputSchema: {type: object, additionalProperties: true}
+            schemaDigest: sha256:e169cc5d9669c8bfb9d9dbb85516ce9eeea0606252ad58ca652aa39f3df6980e
+            executionMode: sync
+            readOnly: false
+            risk: medium
+            idempotency: inherent
+            limits: {timeoutSeconds: 180, maxInputBytes: 65536, maxOutputBytes: 524288, maxResultItems: 50}
+            consent: {required: false}
   # What this provider needs that it does not own. Everything here is
   # tenant-scoped by definition and becomes one permission claim on the
   # generated APIExport; nothing is granted until a workspace or org admin

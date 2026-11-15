@@ -14,3 +14,4 @@ import "k8s.io/apimachinery/pkg/runtime/schema"
 // "authority" lookup any more, because that read IS the provider's own view.
 var repositories = schema.GroupVersionResource{Group: "code.railgrid.ai", Version: "v1alpha1", Resource: "repositories"}
 var connections = schema.GroupVersionResource{Group: "code.railgrid.ai", Version: "v1alpha1", Resource: "connections"}
+var pullRequests = schema.GroupVersionResource{Group: "code.railgrid.ai", Version: "v1alpha1", Resource: "pullrequests"}

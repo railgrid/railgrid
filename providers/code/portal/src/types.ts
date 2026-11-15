@@ -98,6 +98,8 @@ export interface Repository {
   htmlURL?: string
   cloneURL?: string
   sshURL?: string
+  /** Hub-relative URL of the GitHub Issue comments webhook for /railgrid commands. */
+  commandsWebhookPath?: string
   ready: boolean
   // True only when the controller observed the current generation and set
   // Ready=False. An Unknown condition remains pending even if it has a message.

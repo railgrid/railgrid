@@ -174,15 +174,16 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return chatRefused(errBadRequest("conversation attachment history could not be verified"))
 		}
+		// The Hub user ID in id.user is not the KCP username attached to the
+		// caller's bearer, so attachment ownership resolves that subject.
 		attachmentOwner := ""
 		if len(attachmentRefs) > 0 || len(historicalAttachmentOwners) > 0 {
-			attachmentOwner, err = s.resolveAgentAttachmentOwner(ctx, id)
+			attachmentOwner, err = s.resolveAuthenticatedKCPSubject(ctx, id)
 			if err != nil && len(attachmentRefs) > 0 {
 				return chatRefused(errBadRequest("the current caller identity could not be verified for conversation attachments"))
 			}
 			// History from another uploader (or an unverified caller) is rendered
 			// as metadata by the hydrator, never a reason to lock a shared session.
-
 		}
 		if len(attachmentRefs) > 0 {
 			if err := s.verifyAgentAttachmentReceipts(ctx, id.scope(agent.Name), string(agent.UID), sessionID, attachmentOwner, attachmentRefs); err != nil {

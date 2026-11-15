@@ -49,6 +49,7 @@ import (
 	"github.com/railgrid/provider-code/controller/deploykey"
 	"github.com/railgrid/provider-code/controller/packages"
 	"github.com/railgrid/provider-code/controller/pullrequest"
+	"github.com/railgrid/provider-code/controller/pullrequestcommand"
 	"github.com/railgrid/provider-code/controller/repository"
 	"github.com/railgrid/provider-code/controller/repositorybuildstatus"
 	"github.com/railgrid/provider-code/controller/repositorycheckout"
@@ -171,6 +172,9 @@ func runControllerManager(ctx context.Context, config *rest.Config, registry *ba
 	}
 	if err := (&pullrequest.Reconciler{Backends: registry, Snapshots: stores.snapshots}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("pullrequest controller: %w", err)
+	}
+	if err := (&pullrequestcommand.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("pullrequestcommand controller: %w", err)
 	}
 
 	if err := setupUsage(mgr, config); err != nil {

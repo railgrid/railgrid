@@ -604,6 +604,36 @@ operator-owned state directory.
 }
 ```
 
+On Linux, Codex operators may set `processScope` to `systemd-user` to place each
+app-server in its own transient systemd user scope. Cancellation stops that
+exact scope to clean up ordinary command descendants, including those that
+create a new session. Code with access to the same user manager can move work
+into another scope. Use separate OS identities for isolation.
+The runner requires an active user systemd manager and a private
+`/run/user/<runner-uid>` directory. The default is unset and keeps the existing
+process-group cleanup. This setting applies only to the Codex runner. Add this
+field inside the existing `environment` object to opt in:
+
+```json
+"processScope": "systemd-user"
+```
+
+The runner persists the exact unit name before starting the scoped process.
+After a restart, it checks saved scopes from interrupted turns and retries
+unconfirmed cleanup on retention ticks. An attempt already flagged with unconfirmed cleanup keeps its worktree and
+reusable environment reserved until systemd confirms the unit is gone. Attempts
+from older state without a saved unit are not quarantined automatically; they
+may have crashed before recording a reference. Attempts whose saved-scope recovery
+probe remains inconclusive stay reserved for operator recovery. Drain the
+affected runner. As the runner user, inspect its active
+`railgrid-codex-*.scope` units with `systemctl --user list-units --type=scope`
+and stop the affected scope once you have identified it. If you cannot identify
+the scope, stop all work owned by the dedicated runner account before reusing
+its checkout. Resume work in a fresh environment with a new environment ID and
+preserve the old attempt's journal and worktree for inspection. Reusing the
+quarantined environment requires reprovisioning the runner with fresh state
+after verifying that its old processes and workloads have stopped.
+
 Restart the runner (or its supervising Edge agent) after editing. Paths must be
 existing, clean absolute real directories owned by the runner account or root,
 with no group/world write bits and outside the managed worktree root (including

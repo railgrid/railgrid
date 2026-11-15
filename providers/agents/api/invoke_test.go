@@ -23,6 +23,8 @@ import (
 
 	"github.com/railgrid/provider-sdk/dataplane/conformance"
 
+	"github.com/railgrid/railgrid/pkg/runner"
+
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
@@ -157,6 +159,118 @@ func TestFindRunByIdempotencyKey(t *testing.T) {
 	}
 	if _, found, _ := s.store.FindRunByIdempotencyKey(ctx, scope, ""); found {
 		t.Fatal("an empty key must never match")
+	}
+}
+
+func TestInvocationFingerprintIgnoresWaitAndRotatingCloneToken(t *testing.T) {
+	a := invokeRunRequest{Task: "fix issue", Wait: 0, Repository: &invokeRepository{RepositoryID: "repo", BaseCommit: validBase, CloneSource: &invokeCloneSource{RemoteURL: validRemot, Token: "short-lived-one"}, ResultSchema: json.RawMessage(`{"type":"object", "properties":{"ok":{"type":"boolean"}}}`)}}
+	b := a
+	b.Wait = 30
+	b.Repository = &invokeRepository{RepositoryID: "repo", BaseCommit: validBase, CloneSource: &invokeCloneSource{RemoteURL: validRemot, Token: "short-lived-two"}, ResultSchema: json.RawMessage(`{"properties":{"ok":{"type":"boolean"}},"type":"object"}`)}
+	if invocationFingerprint("agent-uid", &a) != invocationFingerprint("agent-uid", &b) {
+		t.Fatal("wait, rotating clone token, or JSON key order changed the fingerprint")
+	}
+	b.Task = "different task"
+	if invocationFingerprint("agent-uid", &a) == invocationFingerprint("agent-uid", &b) {
+		t.Fatal("execution input change did not change fingerprint")
+	}
+	b = a
+	if invocationFingerprint("recreated-agent-uid", &a) == invocationFingerprint("agent-uid", &b) {
+		t.Fatal("Agent recreation did not change fingerprint")
+	}
+}
+
+func TestPreventStartLostResponseReplayIsExplicitAndAgentBound(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "agent"}
+	now := time.Now().UTC()
+	first, found, err := st.PreventStartRun(ctx, scope, "opaque-key", "uid-current", "fingerprint", now)
+	if err != nil || found || !first.InvocationPrevented {
+		t.Fatalf("first fence = %+v, found=%v, err=%v", first, found, err)
+	}
+	// Simulate a lost response: the exact request is retried and must resolve to
+	// the already durable tombstone, including the explicit prevented bit.
+	replayed, found, err := st.PreventStartRun(ctx, scope, "opaque-key", "uid-current", "fingerprint", now.Add(time.Second))
+	if err != nil || !found || replayed.ID != first.ID {
+		t.Fatalf("replayed fence = %+v, found=%v, err=%v", replayed, found, err)
+	}
+	response, err := reusedInvocationResponse(replayed, "uid-current")
+	if err != nil || !response.Reused || !response.Prevented || response.RunID != first.ID {
+		t.Fatalf("replay response = %+v, err=%v", response, err)
+	}
+	if _, err := reusedInvocationResponse(replayed, "uid-replaced"); err == nil {
+		t.Fatal("recreated Agent received the prior UID's idempotency result")
+	}
+}
+
+func TestIdempotencyKeyLengthIsBounded(t *testing.T) {
+	if err := validateIdempotencyKey(strings.Repeat("k", maxIdempotencyKeyBytes)); err != nil {
+		t.Fatalf("key at limit rejected: %v", err)
+	}
+	if err := validateIdempotencyKey(strings.Repeat("k", maxIdempotencyKeyBytes+1)); err == nil {
+		t.Fatal("oversized key was accepted")
+	}
+}
+
+func TestRunLimitsValidationAndFingerprint(t *testing.T) {
+	tests := []struct {
+		name  string
+		input invokeRunLimits
+		valid bool
+	}{
+		{name: "positive output cap", input: invokeRunLimits{MaxOutputTokens: int64Ptr(500)}, valid: true},
+		{name: "zero cap", input: invokeRunLimits{MaxOutputTokens: int64Ptr(0)}},
+		{name: "oversized cap", input: invokeRunLimits{MaxOutputTokens: int64Ptr(10_000_001)}},
+		{name: "USD cap unsupported", input: invokeRunLimits{MaxOutputTokens: int64Ptr(500), MaxUSD: int64Ptr(100)}},
+		{name: "empty limits", input: invokeRunLimits{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := (&test.input).validate()
+			if test.valid && (err != nil || got == nil || got.MaxOutputTokens != 500) {
+				t.Fatalf("validate = %+v, %v", got, err)
+			}
+			if !test.valid && err == nil {
+				t.Fatalf("validate accepted %+v", test.input)
+			}
+		})
+	}
+	cap := int64(500)
+	first := invokeRunRequest{Task: "review", Limits: &invokeRunLimits{MaxOutputTokens: &cap}}
+	changed := invokeRunRequest{Task: "review", Limits: &invokeRunLimits{MaxOutputTokens: int64Ptr(501)}}
+	if invocationFingerprint("agent", &first) == invocationFingerprint("agent", &changed) {
+		t.Fatal("changing the hard output allowance did not change the invocation fingerprint")
+	}
+}
+
+func int64Ptr(value int64) *int64 { return &value }
+
+func TestRepositoryArtifactAllowlistIsValidatedAndPersisted(t *testing.T) {
+	base := invokeRepository{
+		RepositoryID: "repo", BaseCommit: validBase,
+		CloneSource: &invokeCloneSource{RemoteURL: validRemot, Token: "short-lived"},
+		Artifacts:   []runner.ArtifactSpec{{Name: "verification-log", Path: "artifacts/verification.log", MediaType: "text/plain"}},
+	}
+	attempt, err := base.validate()
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(attempt.Artifacts) != 1 || !attempt.Artifacts[0].CollectOnCompletion {
+		t.Fatalf("artifacts = %+v, want opted-in collection", attempt.Artifacts)
+	}
+	stored := attempt.persisted()
+	recovered := repositoryAttemptFromStored(stored)
+	if len(recovered.Artifacts) != 1 || recovered.Artifacts[0].Path != "artifacts/verification.log" || !recovered.Artifacts[0].CollectOnCompletion {
+		t.Fatalf("recovered artifacts = %+v", recovered.Artifacts)
+	}
+
+	for _, badPath := range []string{"artifacts/../secret", "artifacts/.git/config", "artifacts/link\\outside", "other/log.txt"} {
+		bad := base
+		bad.Artifacts = []runner.ArtifactSpec{{Name: "log", Path: badPath}}
+		if _, err := bad.validate(); err == nil {
+			t.Errorf("accepted unsafe path %q", badPath)
+		}
 	}
 }
 

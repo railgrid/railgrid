@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 	"unicode"
@@ -61,6 +62,12 @@ type invokeRepository struct {
 	// MaxDurationSeconds bounds the attempt on the runner and the run's own
 	// clock. 0 is the agent's spec.limits.timeoutSeconds; the cap is a day.
 	MaxDurationSeconds int `json:"maxDurationSeconds,omitempty"`
+	// ResultSchema asks the harness to return a bounded JSON document as its
+	// final response. It is caller-owned and persisted with the run.
+	ResultSchema json.RawMessage `json:"resultSchema,omitempty"`
+	// Artifacts names bounded files the runner collects from artifacts/ after
+	// a successful repository attempt. Missing files remain absent from the run.
+	Artifacts []runner.ArtifactSpec `json:"artifacts,omitempty"`
 }
 
 type invokeCloneSource struct {
@@ -80,24 +87,31 @@ type invokeVerification struct {
 type repositoryAttempt struct {
 	backendharness.Repository
 	MaxDurationSeconds int
+	ResultSchema       json.RawMessage
+	Artifacts          []runner.ArtifactSpec
 }
 
 // Bounds on the block. The identifier and commit grammars are the runner's
 // (pkg/runner/config.go, pkg/runner/workspace.go).
 const (
-	maxRepositoryListEntries  = 32
-	maxRepositoryListEntry    = 128
-	maxVerificationCommand    = 4096
-	maxCloneUsernameBytes     = 256
-	maxCloneTokenBytes        = 4096
-	maxRepositoryCommitBytes  = 200
-	maxApprovedInputBytes     = 64 << 10
-	maxRepositoryDurationSecs = 86400
+	maxRepositoryListEntries       = 32
+	maxRepositoryListEntry         = 128
+	maxVerificationCommand         = 4096
+	maxCloneUsernameBytes          = 256
+	maxCloneTokenBytes             = 4096
+	maxRepositoryCommitBytes       = 200
+	maxApprovedInputBytes          = 64 << 10
+	maxRepositoryDurationSecs      = 86400
+	maxResultSchemaBytes           = 16 << 10
+	maxStructuredResultBytes       = 64 << 10
+	maxRepositoryArtifacts         = 8
+	maxRepositoryArtifactPathBytes = 1024
 )
 
 var (
 	runnerIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 	fullCommit       = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	artifactDigest   = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 )
 
 // validate checks the block and renders it for the lifecycle. Every refusal
@@ -107,6 +121,46 @@ func (r *invokeRepository) validate() (*repositoryAttempt, error) {
 		return nil, nil
 	}
 	out := &repositoryAttempt{}
+	if len(r.ResultSchema) > 0 {
+		if err := validateResultSchema(r.ResultSchema); err != nil {
+			return nil, fmt.Errorf("repository.resultSchema %w", err)
+		}
+		out.ResultSchema = append(json.RawMessage(nil), r.ResultSchema...)
+	}
+	if len(r.Artifacts) > maxRepositoryArtifacts {
+		return nil, fmt.Errorf("repository.artifacts must have at most %d entries", maxRepositoryArtifacts)
+	}
+	artifactNames, artifactPaths := map[string]struct{}{}, map[string]struct{}{}
+	for _, spec := range r.Artifacts {
+		name, artifactPath := strings.TrimSpace(spec.Name), strings.TrimSpace(spec.Path)
+		if !runnerIdentifier.MatchString(name) {
+			return nil, errors.New("repository.artifacts names must be runner identifiers")
+		}
+		if name == runner.ScreenshotsName || name == backendharness.GitResultJSONName || name == backendharness.GitResultBundleName || name == StructuredResultArtifactName {
+			return nil, fmt.Errorf("repository.artifacts name %q is reserved", name)
+		}
+		if _, exists := artifactNames[name]; exists {
+			return nil, fmt.Errorf("repository.artifacts repeats name %q", name)
+		}
+		artifactNames[name] = struct{}{}
+		if len(artifactPath) == 0 || len(artifactPath) > maxRepositoryArtifactPathBytes || !strings.HasPrefix(artifactPath, "artifacts/") || strings.ContainsAny(artifactPath, `\\:`) || path.Clean(artifactPath) != artifactPath {
+			return nil, fmt.Errorf("repository.artifacts[%q].path must be a clean relative path under artifacts/", name)
+		}
+		for _, segment := range strings.Split(artifactPath, "/") {
+			if segment == "" || segment == "." || segment == ".." || strings.HasPrefix(segment, ".") {
+				return nil, fmt.Errorf("repository.artifacts[%q].path contains a hidden or unsafe path segment", name)
+			}
+		}
+		if _, exists := artifactPaths[artifactPath]; exists {
+			return nil, fmt.Errorf("repository.artifacts repeats path %q", artifactPath)
+		}
+		artifactPaths[artifactPath] = struct{}{}
+		if spec.Digest != "" && !artifactDigest.MatchString(spec.Digest) {
+			return nil, fmt.Errorf("repository.artifacts[%q].digest must be a sha256 digest", name)
+		}
+		spec.Name, spec.Path, spec.CollectOnCompletion = name, artifactPath, true
+		out.Artifacts = append(out.Artifacts, spec)
+	}
 	out.EnvironmentID = strings.TrimSpace(r.EnvironmentID)
 	if out.EnvironmentID != "" && !runnerIdentifier.MatchString(out.EnvironmentID) {
 		return nil, errors.New("repository.environmentID must be a runner identifier")
@@ -164,6 +218,7 @@ func (r *invokeRepository) validate() (*repositoryAttempt, error) {
 		return nil, fmt.Errorf("repository.maxDurationSeconds must be at most %d", maxRepositoryDurationSecs)
 	}
 	out.MaxDurationSeconds = r.MaxDurationSeconds
+	out.Repository.Artifacts = append([]runner.ArtifactSpec(nil), out.Artifacts...)
 	return out, nil
 }
 
@@ -320,7 +375,7 @@ func (r *repositoryAttempt) persisted() *store.RunRepository {
 	if r == nil {
 		return nil
 	}
-	return &store.RunRepository{EnvironmentID: r.EnvironmentID, RepositoryID: r.RepositoryID, BaseCommit: r.BaseCommit, CommitMessage: r.CommitMessage}
+	return &store.RunRepository{EnvironmentID: r.EnvironmentID, RepositoryID: r.RepositoryID, BaseCommit: r.BaseCommit, CommitMessage: r.CommitMessage, ResultSchema: append(json.RawMessage(nil), r.ResultSchema...), Artifacts: append([]runner.ArtifactSpec(nil), r.Artifacts...)}
 }
 
 // repositoryAttemptFromStored rebuilds the attempt for a run picked up after
@@ -331,7 +386,8 @@ func repositoryAttemptFromStored(stored *store.RunRepository) *repositoryAttempt
 	if stored == nil {
 		return nil
 	}
-	return &repositoryAttempt{Repository: backendharness.Repository{
+	return &repositoryAttempt{ResultSchema: append(json.RawMessage(nil), stored.ResultSchema...), Artifacts: append([]runner.ArtifactSpec(nil), stored.Artifacts...), Repository: backendharness.Repository{
 		EnvironmentID: stored.EnvironmentID, RepositoryID: stored.RepositoryID, BaseCommit: stored.BaseCommit, CommitMessage: stored.CommitMessage,
+		Artifacts: append([]runner.ArtifactSpec(nil), stored.Artifacts...),
 	}}
 }

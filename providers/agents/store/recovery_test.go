@@ -29,7 +29,7 @@ func testClaimRecovery(t *testing.T, st Store, scope Scope) {
 	t.Helper()
 	ctx := context.Background()
 	at := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Minute)
-	seed := Run{ID: "recover", AgentName: scope.AgentName, Phase: RunPhaseRunning, CreatedAt: at, UpdatedAt: at, Checkpoint: []byte(`{"cursor":42}`)}
+	seed := Run{ID: "recover", AgentName: scope.AgentName, Phase: RunPhaseRunning, RecoveryIdentity: RecoveryIdentityAgent, CreatedAt: at, UpdatedAt: at, Checkpoint: []byte(`{"cursor":42}`)}
 	if err := st.SaveRun(ctx, scope, seed); err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func testClaimRecovery(t *testing.T, st Store, scope Scope) {
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
-			if got, err := st.ClaimRecovery(ctx, scope, seed.ID, at, at.Add(time.Second)); err == nil {
+			if got, err := st.ClaimRecovery(ctx, scope, seed.ID, at, "owner", at.Add(time.Second)); err == nil {
 				winners.Add(1)
 				var checkpoint struct{ Cursor int }
 				_ = json.Unmarshal(got.Checkpoint, &checkpoint)
@@ -60,7 +60,7 @@ func testClaimRecovery(t *testing.T, st Store, scope Scope) {
 		if err := st.SaveRun(ctx, scope, r); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.ClaimRecovery(ctx, scope, r.ID, at, at.Add(time.Second)); err == nil {
+		if _, err := st.ClaimRecovery(ctx, scope, r.ID, at, "owner", at.Add(time.Second)); err == nil {
 			t.Errorf("recovered %s run", phase)
 		}
 	}
@@ -75,8 +75,55 @@ func testClaimRecovery(t *testing.T, st Store, scope Scope) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimRecovery(ctx, scope, seed.ID, cancelled.UpdatedAt, at.Add(2*time.Second)); !errors.Is(err, ErrRecoveryClaimStale) {
+	if _, err := st.ClaimRecovery(ctx, scope, seed.ID, cancelled.UpdatedAt, "owner", at.Add(2*time.Second)); !errors.Is(err, ErrRecoveryClaimStale) {
 		t.Fatal("recovered cancelled run")
+	}
+}
+
+func TestMemoryLegacyAndCallerRunRecovery(t *testing.T) {
+	testLegacyAndCallerRunRecovery(t, NewMemoryStore(), Scope{OrgUUID: "legacy-org", WorkspaceUUID: "legacy-ws", AgentName: "agent"})
+}
+
+func TestPostgresLegacyAndCallerRunRecovery(t *testing.T) {
+	st := openTestPostgres(t)
+	testLegacyAndCallerRunRecovery(t, st, pgScope(t, st))
+}
+
+func testLegacyAndCallerRunRecovery(t *testing.T, st Store, scope Scope) {
+	t.Helper()
+	ctx := t.Context()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	run := Run{ID: "legacy", AgentName: scope.AgentName, Phase: RunPhaseRunning, Trigger: "schedule", CreatedAt: now, UpdatedAt: now}
+	if err := st.SaveRun(ctx, scope, run); err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := st.ClaimRecovery(ctx, scope, run.ID, now, "worker", now); err != nil || claimed.RecoveryIdentity != RecoveryIdentityAgent {
+		t.Fatalf("legacy schedule recovery = %+v, %v", claimed, err)
+	}
+	run.ID, run.Trigger = "caller", "chat"
+	run.RecoveryIdentity = RecoveryIdentityCaller
+	if err := st.SaveRun(ctx, scope, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimRecovery(ctx, scope, run.ID, now, "worker", now); !errors.Is(err, ErrRunRecoveryUnrecoverable) {
+		t.Fatalf("caller recovery = %v", err)
+	}
+	first, err := st.ClaimRunClosure(ctx, scope, run.ID, now, "closer-1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimRunClosure(ctx, scope, run.ID, first.UpdatedAt, "closer-2", now.Add(time.Second)); !errors.Is(err, ErrRecoveryClaimStale) {
+		t.Fatalf("takeover during live lease = %v", err)
+	}
+	agePostgresLease(t, st, scope, run.ID)
+	later := now.Add(RunLeaseDuration + time.Second)
+	second, err := st.ClaimRunClosure(ctx, scope, run.ID, first.UpdatedAt, "closer-2", later)
+	if err != nil || second.ExecutionEpoch <= first.ExecutionEpoch || second.Attempt != first.Attempt {
+		t.Fatalf("expired close claim = %+v, %v", second, err)
+	}
+	second.Phase = RunPhaseFailed
+	if ok, err := st.SaveRunOwned(ctx, scope, second, second.ExecutionOwner, second.ExecutionEpoch, later); !ok || err != nil {
+		t.Fatalf("fenced close = %t, %v", ok, err)
 	}
 }
 
@@ -93,12 +140,12 @@ func testClaimRecoveryClockSkew(t *testing.T, st Store, scope Scope) {
 	observed := time.Now().UTC().Truncate(time.Microsecond)
 	for _, offset := range []time.Duration{-time.Hour, 0, time.Hour} {
 		t.Run(offset.String(), func(t *testing.T) {
-			seed := Run{ID: offset.String(), AgentName: scope.AgentName, Phase: RunPhaseRunning, CreatedAt: observed, UpdatedAt: observed}
+			seed := Run{ID: offset.String(), AgentName: scope.AgentName, Phase: RunPhaseRunning, RecoveryIdentity: RecoveryIdentityAgent, CreatedAt: observed, UpdatedAt: observed}
 			if err := st.SaveRun(ctx, scope, seed); err != nil {
 				t.Fatal(err)
 			}
 			now := observed.Add(offset)
-			got, err := st.ClaimRecovery(ctx, scope, seed.ID, observed, now)
+			got, err := st.ClaimRecovery(ctx, scope, seed.ID, observed, "owner", now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,7 +156,7 @@ func testClaimRecoveryClockSkew(t *testing.T, st Store, scope Scope) {
 			if !got.UpdatedAt.Equal(want) || got.Attempt != 1 {
 				t.Fatalf("claim revision=%v attempt=%d; want %v and 1", got.UpdatedAt, got.Attempt, want)
 			}
-			if _, err := st.ClaimRecovery(ctx, scope, seed.ID, observed, now); !errors.Is(err, ErrRecoveryClaimStale) {
+			if _, err := st.ClaimRecovery(ctx, scope, seed.ID, observed, "owner", now); !errors.Is(err, ErrRecoveryClaimStale) {
 				t.Fatalf("duplicate claim: %v", err)
 			}
 		})

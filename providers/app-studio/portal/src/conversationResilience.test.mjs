@@ -1575,7 +1575,7 @@ test('App keeps central loading surfaces honest while project state hydrates', a
   assert.match(appSource, /v-if="initializing && !loading && !selectedNameFromPath"/)
   assert.doesNotMatch(appSource, /v-else-if="projectRouteLoading"/)
   assert.match(appSource, /function enterProject\(project: Project\)[\s\S]*selected\.value = project[\s\S]*beginProjectOpenLatch\(\)[\s\S]*beginThreadHistoryLatch\(\)[\s\S]*props\.navigate\(encodeURIComponent\(project\.name\)\)/)
-  assert.match(appSource, /@click="enterProject\(project\)"/)
+  assert.match(appSource, /:href="isProjectDeleting\(project\) \? undefined : projectHref\(project\.name\)"\s+@click="followProjectLink\(\$event, project\)"/)
   assert.match(appSource, /<template v-if="projectRouteLoading">[\s\S]*Loading project workspace…/)
   assert.match(appSource, /<template v-else>[\s\S]*activeWorkbenchTab\?\.kind === 'launcher'/)
   const providersStart = appSource.indexOf('<AIWorkbenchPane title="Providers"')

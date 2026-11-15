@@ -92,8 +92,8 @@ const (
 	// ClassAgentTunnel is class (f): /agent/clusters/{id}/{resource}/{name}/proxy,
 	// authorized by a join token or an edge ServiceAccount plus a SAR.
 	ClassAgentTunnel Class = "agent-tunnel"
-	// ClassWebhook is class (g): /webhooks/{kind}/{clusterID}/{name}/{token},
-	// authorized by an HMAC token and acting as the provider ServiceAccount.
+	// ClassWebhook is class (g): a route under /webhooks/ with provider-specific
+	// signature verification, acting as the provider ServiceAccount.
 	ClassWebhook Class = "webhook"
 )
 

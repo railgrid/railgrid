@@ -115,6 +115,7 @@ func runServe() {
 		log.Fatalf("invalid RAILGRID_MCP_APP_APPROVED_DIGESTS: %v", err)
 	}
 	srv, err := api.New(ctx, api.Config{
+		ProcessID:             processID(),
 		HubURL:                os.Getenv("RAILGRID_HUB_URL"),
 		HubInsecure:           os.Getenv("RAILGRID_HUB_INSECURE") == "true",
 		HubPublicURL:          os.Getenv("RAILGRID_HUB_PUBLIC_URL"),

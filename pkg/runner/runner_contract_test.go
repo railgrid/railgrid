@@ -333,6 +333,36 @@ func TestArtifactContainmentRejectsTraversalAndSymlink(t *testing.T) {
 	}
 }
 
+func TestDeclaredArtifactCollectionRejectsSymlinks(t *testing.T) {
+	root := t.TempDir()
+	artifactDir := filepath.Join(root, "artifacts")
+	if err := os.Mkdir(artifactDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sibling := filepath.Join(root, "sibling.txt")
+	if err := os.WriteFile(sibling, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sibling, filepath.Join(artifactDir, "sibling.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openDeclaredArtifact(root, "artifacts/sibling.txt"); err == nil {
+		t.Fatal("expected sibling symlink to be rejected")
+	}
+
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(artifactDir, "outside.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openDeclaredArtifact(root, "artifacts/outside.txt"); err == nil {
+		t.Fatal("expected outside-root symlink to be rejected")
+	}
+}
+
 func TestSourceCheckoutLeavesInteractiveSourceUnchanged(t *testing.T) {
 	source, commit := testGitSource(t)
 	readme := filepath.Join(source, "README.md")

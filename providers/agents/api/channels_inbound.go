@@ -24,6 +24,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -367,6 +368,10 @@ func (s *Server) channelCommand(ctx context.Context, scope store.Scope, dyn dyna
 		}
 		resolved, err := s.resolveInboxDecision(ctx, wsScope, item.ID, state, "via channel", time.Now().UTC())
 		if err != nil {
+			var requestErr *requestError
+			if errors.As(err, &requestErr) && requestErr.reason == "RunEnded" {
+				return "⚠️ Run ended; this approval can no longer be applied. The item remains pending for dismissal with /deny.", true
+			}
 			return "Failed: " + err.Error(), true
 		}
 		s.events.publish(wsScope, "inbox", map[string]any{

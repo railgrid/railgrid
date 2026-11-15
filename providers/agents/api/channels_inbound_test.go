@@ -26,6 +26,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -33,6 +34,7 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/executor"
 	"github.com/railgrid/provider-agents/llm"
@@ -54,6 +56,28 @@ func TestParseTelegramUpdate(t *testing.T) {
 	}
 	if ev := parseTelegramUpdate([]byte(`garbage`)); ev.Text != "" {
 		t.Fatal("garbage must be ignored")
+	}
+}
+
+func TestChannelApprovalReportsEndedRunWithoutApproving(t *testing.T) {
+	ctx := t.Context()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", AgentName: "coder"}
+	st := store.NewMemoryStore()
+	now := time.Now().UTC()
+	if err := st.SaveRun(ctx, scope, store.Run{ID: "ended", AgentName: "coder", Phase: store.RunPhaseFailed, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddInboxItem(ctx, scope, store.InboxItem{ID: "approval", AgentName: "coder", RunID: "ended", Kind: store.InboxKindApproval, State: store.InboxStatePending, Payload: map[string]any{"tool": "shell", "args": "{}"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+	reply, handled := s.channelCommand(ctx, scope, nil, &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "coder"}}, "", "/approve 1")
+	if !handled || !strings.Contains(reply, "Run ended") || !strings.Contains(reply, "/deny") || strings.Contains(reply, "✅ Approved") {
+		t.Fatalf("channel reply = %q, handled=%t", reply, handled)
+	}
+	item, err := st.GetInboxItem(ctx, scope, "approval")
+	if err != nil || item.State != store.InboxStatePending {
+		t.Fatalf("channel changed item: %+v, %v", item, err)
 	}
 }
 

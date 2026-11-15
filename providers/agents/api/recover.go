@@ -11,6 +11,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"strconv"
 	"strings"
@@ -214,9 +215,20 @@ func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume reco
 		}
 		persistCtx, cancelPersist := boundedPersistContext(ctx)
 		defer cancelPersist()
+		if run.Phase == store.RunPhaseRunning && s.cfg.ProcessID != "" {
+			owner := newExecutionOwner(s.cfg.ProcessID)
+			claimed, err := s.store.ClaimRunClosure(persistCtx, scope, run.ID, run.UpdatedAt, owner, now)
+			if err != nil {
+				return false
+			}
+			defer func() { _, _ = s.store.ReleaseRunLease(persistCtx, scope, run.ID, owner, claimed.ExecutionEpoch) }()
+			persistCtx = context.WithValue(persistCtx, runLeaseContextKey{}, runLeaseIdentity{runID: run.ID, owner: owner, epoch: claimed.ExecutionEpoch})
+		}
 		tracker := trackerForStored(run)
+		if !s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: reason, WorkedDurationMS: tracker.workedDurationMS()}, now) {
+			return false
+		}
 		s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), effectiveSessionID(run.SessionID, run.Trigger), startedAt, now, tracker, turnStatusForRunPhase(phase), "", reason)
-		s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: reason, WorkedDurationMS: tracker.workedDurationMS()}, now)
 		s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 		if tell {
 			s.reportStrandedRun(ctx, sr, notify, reason)
@@ -256,6 +268,12 @@ func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume reco
 		return fail("the provider restarted while this run was in progress, and its workspace mapping is missing, so it could not be resumed")
 	}
 	if err := resume(ctx, sr, clusterID); err != nil {
+		if errors.Is(err, store.ErrRecoveryClaimStale) {
+			return false
+		}
+		if errors.Is(err, store.ErrRunRecoveryUnrecoverable) {
+			return fail("the provider restarted while this run was in progress, and its original execution identity cannot be safely restored")
+		}
 		log.Printf("recovery: resuming run %s (agent %s): %v", run.ID, run.AgentName, err)
 		return fail("the provider restarted while this run was in progress, and resuming it failed: " + err.Error())
 	}

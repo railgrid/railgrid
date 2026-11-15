@@ -75,7 +75,7 @@ test('workspace discovery reads kube objects and fences late responses', () => {
   assert.doesNotMatch(app, /listSavedViews/u)
   assert.match(app, /if \(!isCurrent\(\)\) return[\s\S]*edges\.value = discovered/u)
   assert.match(app, /if \(isCurrent\(\)\) loading\.value = false/u)
-  assert.match(app, /watch\(\[identity, token\],[\s\S]*currentIdentity === previousIdentity && currentToken !== previousToken/u)
+  assert.match(app, /watch\(\[identity, token, \(\) => context\.value\?\.fetch\],[\s\S]*currentIdentity !== previousIdentity \|\| hostFetch !== previousFetch \|\|\s*\(!hostFetch && currentToken !== previousToken\)/u)
   // The gate is the host transport and a workspace, never the deprecated token.
   assert.doesNotMatch(app, /request\.token &&/u)
   // No /api/ route survives anywhere in the shell.

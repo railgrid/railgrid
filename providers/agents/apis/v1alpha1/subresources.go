@@ -267,6 +267,25 @@ type InboxResolveRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
+// InboxAnswerRequest is the payload of the "inbox-answer" custom subresource on agents.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=inbox-answer,scope=Cluster
+type InboxAnswerRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
 // MessagesRequest is the payload of the "messages" custom subresource on agents.
 //
 // +kubebuilder:object:root=true
@@ -452,6 +471,7 @@ func init() {
 			&EventsRequest{},
 			&InboxRequest{},
 			&InboxResolveRequest{},
+			&InboxAnswerRequest{},
 			&MessagesRequest{},
 			&RunRequest{},
 			&SessionRequest{},

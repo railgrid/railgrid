@@ -1027,15 +1027,14 @@ func shortDigest(raw string) string {
 // something nobody can see is a run nobody can finish. The item is a QUESTION,
 // not an approval — what resolves it is an answer, and answering it is what
 // resumes the run (see resolveInboxItem).
-func (s *Server) postRunQuestion(ctx context.Context, run taskRun, question string, questions []runnerharness.Question) (string, error) {
+func (s *Server) postRunQuestion(ctx context.Context, run taskRun, id, question string, questions []runnerharness.Question) (string, error) {
 	question = strings.TrimSpace(question)
 	if question == "" {
 		question = "the agent is waiting for input"
 	}
 	now := time.Now().UTC()
 	wsScope := store.Scope{OrgUUID: run.Scope.OrgUUID, WorkspaceUUID: run.Scope.WorkspaceUUID}
-	id := uuid.NewString()
-	if err := s.store.AddInboxItem(ctx, wsScope, store.InboxItem{
+	created, err := s.addInboxItemOnce(ctx, wsScope, store.InboxItem{
 		ID: id, AgentName: run.Agent.Name, RunID: run.RunID, Kind: store.InboxKindQuestion,
 		State:  store.InboxStatePending,
 		Prompt: safeTruncate(question, maxHarnessQuestion),
@@ -1043,13 +1042,16 @@ func (s *Server) postRunQuestion(ctx context.Context, run taskRun, question stri
 			"harness": run.Agent.Spec.HarnessBacked(), "trigger": run.Trigger, "questions": questions,
 		},
 		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
+	})
+	if err != nil {
 		return "", fmt.Errorf("filing the run's question: %w", err)
 	}
-	s.events.publish(wsScope, "inbox", map[string]any{
-		"id": id, "state": "pending", "agent": run.Agent.Name, "runID": run.RunID, "kind": "question",
-	})
-	s.notifyInboxQuestion(ctx, run, question)
+	if created {
+		s.events.publish(wsScope, "inbox", map[string]any{
+			"id": id, "state": "pending", "agent": run.Agent.Name, "runID": run.RunID, "kind": "question",
+		})
+		s.notifyInboxQuestion(ctx, run, question)
+	}
 	return id, nil
 }
 
@@ -1060,15 +1062,14 @@ func (s *Server) postRunQuestion(ctx context.Context, run taskRun, question stri
 // It is the sibling of postRunQuestion and exists for the same reason — the
 // backend cannot reach the store — but it files the other kind, because what
 // resolves it is a verdict on a named call rather than an answer in words.
-func (s *Server) postHarnessApproval(ctx context.Context, run taskRun, tool, args string) (string, error) {
+func (s *Server) postHarnessApproval(ctx context.Context, run taskRun, id, tool, args string) (string, error) {
 	tool = strings.TrimSpace(tool)
 	if tool == "" {
 		tool = "a tool"
 	}
 	now := time.Now().UTC()
 	wsScope := store.Scope{OrgUUID: run.Scope.OrgUUID, WorkspaceUUID: run.Scope.WorkspaceUUID}
-	id := uuid.NewString()
-	if err := s.store.AddInboxItem(ctx, wsScope, store.InboxItem{
+	created, err := s.addInboxItemOnce(ctx, wsScope, store.InboxItem{
 		ID: id, AgentName: run.Agent.Name, RunID: run.RunID, Kind: store.InboxKindApproval,
 		State:  store.InboxStatePending,
 		Prompt: "Allow " + run.Agent.Name + " to run " + tool + "?",
@@ -1077,14 +1078,17 @@ func (s *Server) postHarnessApproval(ctx context.Context, run taskRun, tool, arg
 			"harness": true,
 		},
 		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
+	})
+	if err != nil {
 		return "", fmt.Errorf("filing the harness's permission request: %w", err)
 	}
-	s.events.publish(wsScope, "inbox", map[string]any{
-		"id": id, "state": "pending", "agent": run.Agent.Name, "runID": run.RunID,
-		"kind": "approval", "tool": tool,
-	})
-	s.notifyInboxApproval(ctx, run, tool)
+	if created {
+		s.events.publish(wsScope, "inbox", map[string]any{
+			"id": id, "state": "pending", "agent": run.Agent.Name, "runID": run.RunID,
+			"kind": "approval", "tool": tool,
+		})
+		s.notifyInboxApproval(ctx, run, tool)
+	}
 	return id, nil
 }
 

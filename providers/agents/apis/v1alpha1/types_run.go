@@ -18,6 +18,8 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/railgrid/railgrid/pkg/runner"
 )
 
 // Run triggers.
@@ -104,6 +106,9 @@ type Run struct {
 // RunSpec is what the run was asked to do. It is written once, when the run is
 // created, and never edited: a run's request cannot change after the fact.
 type RunSpec struct {
+	// Limits are the hard allowances requested for this run, frozen at admission.
+	// +optional
+	Limits *RunLimits `json:"limits,omitempty"`
 	// HarnessSettings freezes the selected model and effort for this run.
 	// +optional
 	HarnessSettings *RunHarnessSettings `json:"harnessSettings,omitempty"`
@@ -166,6 +171,14 @@ type RunSpec struct {
 	Repository *RunRepository `json:"repository,omitempty"`
 }
 
+// RunLimits contains limits the selected runtime can enforce.
+type RunLimits struct {
+	// MaxOutputTokens caps aggregate model completion tokens across the run.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10000000
+	MaxOutputTokens int64 `json:"maxOutputTokens"`
+}
+
 // RunHarnessSettings records choices resolved before execution.
 type RunHarnessSettings struct {
 	// +optional
@@ -198,6 +211,12 @@ type RunRepository struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=200
 	CommitMessage string `json:"commitMessage,omitempty"`
+
+	// Artifacts lists fixed files collected from artifacts/ on completion.
+	// Missing files are omitted from the Run's artifact set.
+	// +optional
+	// +kubebuilder:validation:MaxItems=8
+	Artifacts []runner.ArtifactSpec `json:"artifacts,omitempty"`
 }
 
 // RunDelivery is where a run's answer goes: what asked for it, the exact chat
@@ -323,6 +342,16 @@ type RunStatus struct {
 	// store with the rest of the trace.
 	// +optional
 	Usage *RunUsage `json:"usage,omitempty"`
+	// UsageCompleteness reports whether all, some, or none of the runtime's
+	// usage reports were observed.
+	// +optional
+	// +kubebuilder:validation:Enum=complete;partial;unavailable
+	UsageCompleteness string `json:"usageCompleteness,omitempty"`
+	// CostBasis identifies provider-reported charges, local catalog estimates,
+	// or unavailable cost evidence.
+	// +optional
+	// +kubebuilder:validation:Enum=provider_reported;catalog_estimate;unavailable
+	CostBasis string `json:"costBasis,omitempty"`
 
 	// Result is a repository run's verified Git result, present once the run
 	// Succeeded. The artifacts it describes — git-result.json and, unless
@@ -330,6 +359,9 @@ type RunStatus struct {
 	// re-checked against the digests here.
 	// +optional
 	Result *RunResult `json:"result,omitempty"`
+	// StructuredResult is independent caller-requested JSON output metadata.
+	// +optional
+	StructuredResult *StructuredResult `json:"structuredResult,omitempty"`
 
 	// ObservedGeneration mirrors metadata.generation last reconciled.
 	// +optional
@@ -377,6 +409,17 @@ type RunResult struct {
 	// BundleSize is the bundle's length in bytes; absent when NoChanges.
 	// +optional
 	BundleSize int64 `json:"bundleSize,omitempty"`
+}
+
+// StructuredResult reports the validation and artifact coordinates of optional caller-requested output.
+type StructuredResult struct {
+	// +kubebuilder:validation:Enum=valid;invalid;missing
+	State string `json:"state"`
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	Digest string `json:"digest,omitempty"`
+	// +optional
+	Size int64 `json:"size,omitempty"`
 }
 
 // RunTranscriptRef points at the store-side half of a run.

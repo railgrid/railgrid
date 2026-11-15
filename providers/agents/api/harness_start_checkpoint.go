@@ -94,6 +94,34 @@ func initialHarnessCheckpoint(run taskRun, turn *harnessTurn) (json.RawMessage, 
 	return encoded, nil
 }
 
+// runnerCleanupBindingFromCheckpoint extracts the bounded, non-secret runner
+// and attempt coordinates needed to observe cleanup after terminal checkpoint
+// deletion. The resume snapshot itself is deliberately not retained.
+func runnerCleanupBindingFromCheckpoint(raw []byte) (*store.RunnerCleanupBinding, error) {
+	var checkpoint runCheckpoint
+	if err := json.Unmarshal(raw, &checkpoint); err != nil {
+		return nil, err
+	}
+	if checkpoint.Backend != agentsv1alpha1.AgentBackendHarness || len(checkpoint.Harness) == 0 || checkpoint.HarnessRunner == nil {
+		return nil, errors.New("harness checkpoint is missing its runner binding")
+	}
+	var state backendharness.State
+	if err := json.Unmarshal(checkpoint.Harness, &state); err != nil {
+		return nil, err
+	}
+	target := checkpoint.HarnessRunner
+	if target.ClusterID == "" || target.EdgeKind == "" || target.EdgeName == "" || target.Service == "" || target.RunnerID == "" ||
+		state.TaskID == "" || state.AttemptID == "" || state.Epoch == 0 || state.BackendKey == "" {
+		return nil, errors.New("harness checkpoint is missing durable cleanup coordinates")
+	}
+	return &store.RunnerCleanupBinding{
+		ClusterID: target.ClusterID, EdgeKind: target.EdgeKind, EdgeName: target.EdgeName,
+		Service: target.Service, RunnerID: target.RunnerID,
+		TaskID: state.TaskID, AttemptID: state.AttemptID, AttemptEpoch: state.Epoch,
+		AgentUID: state.AgentUID, BackendKey: state.BackendKey,
+	}, nil
+}
+
 // stopHarnessFromRun reaches a run's saved target after the process that held
 // its executor is gone. The provider's scoped identity is minted from the
 // current Agent; no model credential or runner URL is loaded from storage.

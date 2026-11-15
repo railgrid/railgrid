@@ -305,6 +305,51 @@ type PullRequestRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
+// ReadyRequest is the payload of the "ready" custom subresource on pullrequests.
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=ready,scope=Cluster
+type ReadyRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
+// SubmitReviewRequest is the payload of the "submit-review" custom subresource on pullrequests.
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=submit-review,scope=Cluster
+type SubmitReviewRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
+// UpsertCommentRequest is the payload of the "upsert-comment" custom subresource on pullrequests.
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=upsert-comment,scope=Cluster
+type UpsertCommentRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
 // ReplyToReviewRequest is the payload of the "reply-to-review" custom subresource on repositories.
 //
 // +kubebuilder:object:root=true
@@ -397,10 +442,13 @@ func init() {
 			&PrepareSnapshotRequest{},
 			&PublishSnapshotRequest{},
 			&PullRequestRequest{},
+			&ReadyRequest{},
 			&ReplyToReviewRequest{},
 			&StageCommitBundleRequest{},
 			&StageSnapshotRequest{},
 			&UpdatePullRequestRequest{},
+			&SubmitReviewRequest{},
+			&UpsertCommentRequest{},
 		)
 		return nil
 	})

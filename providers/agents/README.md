@@ -405,6 +405,21 @@ Missing results are explicitly unavailable rather than evidence that a tool
 succeeded. Internal tool-call records without assistant prose are kept for
 model replay without creating empty chat bubbles.
 
+## Invocation allowances and usage evidence
+
+API run requests may set `runLimits.maxOutputTokens` (1 through 10,000,000).
+The hard aggregate limit is supported for in-process model runs; the remaining
+allowance is sent on each model request and retained in the durable checkpoint.
+Harness-backed and repository runs reject this limit before a Run is admitted.
+`maxUSD` is also rejected because the provider cannot enforce a hard cost cap.
+
+Run usage includes `usageCompleteness` (`complete`, `partial`, or
+`unavailable`) and `costBasis` (`provider_reported`, `catalog_estimate`, or
+`unavailable`). A missing usage report stays distinguishable from a reported
+zero. The provider does not estimate a cost when there is no measured usage.
+If a model response asks for tool execution but omits usage under a hard token
+limit, the run stops before executing that tool or making another model call.
+
 ## Optional visualization tools
 
 Enable **Visualize data** in an agent's built-in capabilities, or create a
@@ -430,3 +445,10 @@ that would lose decimal precision in the browser are rejected; round them
 explicitly upstream or keep exact identifiers as strings. Prepare larger
 datasets upstream. The portal also provides the underlying data table so
 the values remain inspectable.
+
+
+### Execution leases
+
+When upgrading from a release that predates execution leases, drain the old
+replicas before starting the new replicas. Older executors do not honor the
+lease and can continue writing while a new executor recovers the same run.

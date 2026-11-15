@@ -37,7 +37,7 @@ test('uses host catalog chrome on landing routes and keeps project workbenches f
 
 test('keeps dashboard tile snapshots visible across background refresh failures', () => {
   assert.match(dashboardTile, /const hasSnapshot = ref\(false\)/)
-  assert.match(dashboardTile, /if \(!hasSnapshot\.value\) \{[\s\S]*projects\.value = \[\][\s\S]*hasSnapshot\.value = true/)
+  assert.match(dashboardTile, /if \(hasSnapshot\.value\) error\.value = tileErrorText\(e\)\s*else \{\s*error\.value = null\s*projects\.value = \[\]\s*hasSnapshot\.value = true/)
   assert.doesNotMatch(dashboardTile, /catch \(e\) \{\s*projects\.value = \[\]/)
   assert.match(dashboardTile, /Could not refresh\. Showing the last loaded data\./)
   assert.match(dashboardTile, /generation !== contextGeneration/)
@@ -121,10 +121,10 @@ test('replaces the stable project-card fallback with authenticated commit screen
 })
 
 test('uses the canonical status badge recipe without a provider-local restatement', () => {
-  assert.match(statusBadge, /class="k-badge"/)
+  assert.match(statusBadge, /class="k-badge k-status-badge"/)
   assert.match(statusBadge, /class="k-badge__dot"/)
   assert.doesNotMatch(statusBadge, /k-badge__dot-wrap|k-badge__pulse/)
-  assert.match(statusBadge, /status === 'ready'/)
+  assert.match(statusBadge, /case 'ready':[\s\S]*return \{ \.\.\.toneConfig\.success, icon: CheckCircle \}/)
   assert.doesNotMatch(styles, /railgrid-provider-app-studio \.status-badge/)
   assert.doesNotMatch(styles, /railgrid-provider-app-studio \.k-badge/)
 })

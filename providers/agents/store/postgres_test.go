@@ -10,8 +10,12 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -299,7 +303,12 @@ func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	runID := uuid.NewString()
 	if err := ps.SaveRun(ctx, sc, Run{
 		ID: runID, AgentName: sc.AgentName, Trigger: "schedule", Phase: RunPhasePending,
-		Input: "task", CreatedAt: now, UpdatedAt: now,
+		Limits: &RunLimits{MaxOutputTokens: 4096},
+		Input:  "task", CreatedAt: now, UpdatedAt: now,
+		RunnerCleanupBinding: &RunnerCleanupBinding{
+			ClusterID: "cluster", EdgeKind: "LinuxServer", EdgeName: "edge", Service: "edge-codex", RunnerID: "edge-codex",
+			TaskID: runID, AttemptID: runID, AttemptEpoch: 2, AgentUID: "agent-uid", BackendKey: "sha256:backend",
+		},
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -327,8 +336,12 @@ func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	// contract a programmatic caller (or a worker's parent) depends on.
 	stored := runs[0]
 	stored.Phase = RunPhaseSucceeded
+	stored.UsageCompleteness = "partial"
+	stored.CostBasis = "catalog_estimate"
 	stored.Output = "the answer"
 	stored.Sources = []string{"https://a.example/x", "https://b.example/y"}
+	stored.Repository = &RunRepository{RepositoryID: "repo", BaseCommit: strings.Repeat("a", 40), ResultSchema: json.RawMessage(`{"type":"object"}`)}
+	stored.StructuredResult = &StructuredResult{State: "valid", Digest: strings.Repeat("b", 64), Size: 17}
 	stored.UpdatedAt = now
 	if err := ps.SaveRun(ctx, sc, stored); err != nil {
 		t.Fatalf("save with output: %v", err)
@@ -340,8 +353,22 @@ func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	if got.Output != "the answer" {
 		t.Fatalf("output = %q, want it persisted on the run", got.Output)
 	}
+	if got.RunnerCleanupBinding == nil || got.RunnerCleanupBinding.AttemptID != runID || got.RunnerCleanupBinding.AttemptEpoch != 2 || got.RunnerCleanupBinding.AgentUID != "agent-uid" {
+		t.Fatalf("runner cleanup binding round-trip = %+v", got.RunnerCleanupBinding)
+	}
+	if got.Limits == nil || got.Limits.MaxOutputTokens != 4096 || got.UsageCompleteness != "partial" || got.CostBasis != "catalog_estimate" {
+		t.Fatalf("limits and usage evidence = limits %+v, completeness %q, cost basis %q", got.Limits, got.UsageCompleteness, got.CostBasis)
+	}
 	if !slices.Equal(got.Sources, []string{"https://a.example/x", "https://b.example/y"}) {
 		t.Fatalf("sources = %v", got.Sources)
+	}
+	var gotSchema, wantSchema any
+	if got.Repository != nil {
+		_ = json.Unmarshal(got.Repository.ResultSchema, &gotSchema)
+	}
+	_ = json.Unmarshal(stored.Repository.ResultSchema, &wantSchema)
+	if got.Repository == nil || !reflect.DeepEqual(gotSchema, wantSchema) || got.StructuredResult == nil || *got.StructuredResult != *stored.StructuredResult {
+		t.Fatalf("repository schema or structured result did not survive Postgres round trip: repository=%+v structured=%+v", got.Repository, got.StructuredResult)
 	}
 	// A run with no sources must round-trip as nil, not as a JSON null that
 	// later fails to decode.
@@ -351,6 +378,65 @@ func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	}
 	if got, err = ps.GetRun(ctx, sc, runID); err != nil || got.Sources != nil {
 		t.Fatalf("sources should clear to nil: %v %v", err, got.Sources)
+	}
+}
+
+func TestPostgres_SaveRunOwnedPersistsHarnessIdentityAndCleanupBinding(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	sc := pgScope(t, ps)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	runID := uuid.NewString()
+	seed := Run{ID: runID, AgentName: sc.AgentName, Trigger: "repository", Phase: RunPhasePending, CreatedAt: now, UpdatedAt: now}
+	if err := ps.SaveRun(ctx, sc, seed); err != nil {
+		t.Fatalf("save pending run: %v", err)
+	}
+	claimed, err := ps.ClaimFreshRun(ctx, sc, runID, seed.UpdatedAt, "worker-1", "agent-uid", RecoveryIdentityAgent, now.Add(time.Millisecond))
+	if err != nil {
+		t.Fatalf("claim run: %v", err)
+	}
+	claimed.Backend = "harness"
+	claimed.AttemptID = runID
+	claimed.Repository = &RunRepository{RepositoryID: "repo", BaseCommit: strings.Repeat("a", 40)}
+	claimed.RunnerCleanupBinding = &RunnerCleanupBinding{
+		ClusterID: "cluster-1", EdgeKind: "LinuxServer", EdgeName: "edge-1", Service: "codex", RunnerID: "codex",
+		TaskID: runID, AttemptID: runID, AttemptEpoch: 1, AgentUID: claimed.AgentUID, BackendKey: "sha256:backend",
+	}
+	claimed.UpdatedAt = now.Add(2 * time.Millisecond)
+	if ok, err := ps.SaveRunOwned(ctx, sc, claimed, claimed.ExecutionOwner, claimed.ExecutionEpoch, now.Add(2*time.Millisecond)); err != nil || !ok {
+		t.Fatalf("leased save = (%t, %v), want success", ok, err)
+	}
+	got, err := ps.GetRun(ctx, sc, runID)
+	if err != nil {
+		t.Fatalf("get saved run: %v", err)
+	}
+	if got.Backend != "harness" || got.AttemptID != runID {
+		t.Fatalf("harness identity = backend %q attempt %q, want harness/%q", got.Backend, got.AttemptID, runID)
+	}
+	if got.RunnerCleanupBinding == nil || got.RunnerCleanupBinding.AttemptID != runID || got.RunnerCleanupBinding.AttemptEpoch != claimed.ExecutionEpoch || got.RunnerCleanupBinding.AgentUID != "agent-uid" {
+		t.Fatalf("cleanup binding = %+v", got.RunnerCleanupBinding)
+	}
+}
+
+func TestPostgresPreventStartRunTombstonesOnlyAbsentKeys(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	sc := pgScope(t, ps)
+	now := time.Now().UTC()
+	created, found, err := ps.PreventStartRun(ctx, sc, "prevent-key", "uid", "fingerprint", now)
+	if err != nil || found || created.Phase != RunPhaseAborted {
+		t.Fatalf("tombstone=%+v found=%v err=%v", created, found, err)
+	}
+	got, found, err := ps.PreventStartRun(ctx, sc, "prevent-key", "uid", "changed", now.Add(time.Second))
+	if err != nil || !found || got.ID != created.ID {
+		t.Fatalf("existing=%+v found=%v err=%v", got, found, err)
+	}
+	replayed, err := ps.GetRun(ctx, sc, created.ID)
+	if err != nil || replayed.InvocationFingerprint != "fingerprint" {
+		t.Fatalf("persisted tombstone=%+v err=%v", replayed, err)
+	}
+	if _, _, err := ps.PreventStartRun(ctx, sc, "prevent-key", "new-uid", "fingerprint", now); !errors.Is(err, ErrInvocationAgentChanged) {
+		t.Fatalf("recreated Agent error = %v", err)
 	}
 }
 

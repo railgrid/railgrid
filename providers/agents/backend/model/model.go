@@ -140,6 +140,12 @@ func (b *Backend) Cancel(context.Context, *backend.Run) error { return nil }
 // before this turn began — zero for a fresh turn, the checkpoint's accumulator
 // for a resumed one.
 func (b *Backend) outcome(ctx context.Context, res engine.Result, err error, prior backend.Tokens) (backend.Outcome, error) {
+	usage := backend.Usage{
+		Total:        b.cost(res.Usage),
+		Billed:       b.cost(billable(res.Usage, prior)),
+		Completeness: usageCompleteness(res.UsageEvidence),
+		CostBasis:    costBasis(b.modelName, res.UsageEvidence.ReportedResponses > 0),
+	}
 	if err != nil {
 		// A turn stopped on purpose is not a fault. The provider records it as
 		// aborted rather than failed, and the classification belongs here because
@@ -149,12 +155,7 @@ func (b *Backend) outcome(ctx context.Context, res engine.Result, err error, pri
 		if ctx.Err() != nil {
 			status = backend.StatusCancelled
 		}
-		return backend.Outcome{Status: status}, err
-	}
-
-	usage := backend.Usage{
-		Total:  b.cost(res.Usage),
-		Billed: b.cost(billable(res.Usage, prior)),
+		return backend.Outcome{Status: status, Usage: usage}, err
 	}
 	if res.Interrupt != nil {
 		state, merr := json.Marshal(res.Interrupt.Checkpoint)
@@ -208,7 +209,28 @@ func (b *Backend) turnConfig(l backend.Limits) engine.TurnConfig {
 		ContextBudgetTokens: l.ContextBudgetTokens,
 		ContextCompactor:    b.compact,
 		CheckpointEvery:     l.CheckpointEvery,
+		MaxOutputTokens:     l.MaxOutputTokens,
 	}
+}
+
+func usageCompleteness(e engine.UsageEvidence) backend.UsageCompleteness {
+	if e.Responses == 0 || e.ReportedResponses == 0 {
+		return backend.UsageUnavailable
+	}
+	if e.ReportedResponses < e.Responses {
+		return backend.UsagePartial
+	}
+	return backend.UsageComplete
+}
+
+func costBasis(model string, hasReportedUsage bool) backend.CostBasis {
+	if !hasReportedUsage {
+		return backend.CostBasisUnavailable
+	}
+	if _, ok := llm.LookupModel(model); !ok {
+		return backend.CostBasisUnavailable
+	}
+	return backend.CostBasisCatalogEstimate
 }
 
 // callbacks wires the engine's progress hooks onto the sink. No field is

@@ -20,6 +20,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 )
@@ -128,6 +129,9 @@ type Launch struct {
 	// uses their paths in the user prompt so both supported harnesses can read
 	// images and documents through their normal file tools.
 	InputFiles []InputFile `json:"inputFiles,omitempty"`
+	// RegisterProcessScope durably records an adapter-owned process scope
+	// before the adapter starts the scoped process. It is never serialized.
+	RegisterProcessScope func(string) error `json:"-"`
 	// Permissions, when set, is how this launch reaches a human for a tool call
 	// the permission mode does not pre-approve. nil means there is nobody to
 	// ask, and an adapter must then keep its harness from prompting at all —
@@ -193,6 +197,27 @@ type Question struct {
 type QuestionOption struct {
 	Label       string `json:"label"`
 	Description string `json:"description,omitempty"`
+}
+
+// ErrProcessCleanupUnconfirmed means a launched adapter could not prove its
+// isolated process scope stopped. The runner retains the worktree and exposes
+// failed cleanup rather than handing it to another attempt.
+var ErrProcessCleanupUnconfirmed = errors.New("harness process cleanup could not be confirmed")
+
+// ProcessCleanupError carries the adapter-owned reference needed to retry a
+// process-scope cleanup after a runner restart. References are private durable
+// state; they are never returned through the runner API.
+type ProcessCleanupError struct {
+	Reference string
+}
+
+func (e *ProcessCleanupError) Error() string        { return ErrProcessCleanupUnconfirmed.Error() }
+func (e *ProcessCleanupError) Is(target error) bool { return target == ErrProcessCleanupUnconfirmed }
+
+// ProcessCleanupRecovery is implemented by adapters that can safely retry a
+// previously unconfirmed isolated-process cleanup using its saved reference.
+type ProcessCleanupRecovery interface {
+	RecoverProcessCleanup(context.Context, string) (bool, error)
 }
 
 // Result is the terminal state of one adapter launch.

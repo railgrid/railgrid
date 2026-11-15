@@ -1035,6 +1035,7 @@ export interface SessionMeta {
   lastActivity: string
 }
 
+/** Durable session feed item; it is separate from transcript/model context. */
 export const sessionLabel = (s: SessionMeta): string =>
   s.title?.trim() || s.preview?.trim() || 'New chat'
 

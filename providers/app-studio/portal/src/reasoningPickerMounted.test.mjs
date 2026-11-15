@@ -138,7 +138,7 @@ function installBrowserMocks() {
   const documentMock = {
     activeElement: null,
     body,
-    documentElement: { style: { getPropertyValue: () => '' } },
+    documentElement: { style: { getPropertyValue: () => '' }, classList: new Set() },
     head: { appendChild() {} },
     createElement(type) { return makeHostNode(type) },
     getElementById() { return null },

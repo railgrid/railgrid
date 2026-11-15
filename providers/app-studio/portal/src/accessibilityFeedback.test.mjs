@@ -44,7 +44,7 @@ test('announces asynchronous conversation and settings feedback', () => {
   assert.match(app, /v-if="error && !projectDeletionError"[^>]*role="alert"[^>]*aria-live="assertive"[^>]*aria-atomic="true"/)
   assert.match(app, /<InlineNotification v-if="llmSettingsError"[^>]*tone="error"/)
   assert.match(app, /v-if="error"[^>]*max-w-\[860px\][^>]*role="alert"[^>]*aria-live="assertive"[^>]*aria-atomic="true"/)
-  assert.match(dashboardTile, /v-else-if="error && !hasSnapshot"[^>]*role="alert"[^>]*aria-live="assertive"/)
+  assert.match(dashboardTile, /v-if="displayError"[^>]*:role="hasSnapshot \? 'status' : 'alert'"[^>]*:aria-live="hasSnapshot \? 'polite' : 'assertive'"/)
 })
 
 test('makes the mobile workspace and destructive card action operable', () => {
@@ -85,9 +85,8 @@ test('uses semantic overlay layers for tooltips and annotation editing', () => {
   assert.match(app, /import AITimestamp from '\.\/agentkit\/AITimestamp\.vue'/)
   assert.match(app, /<AITimestamp[\s\S]*:value="message\.createdAt"/)
   assert.match(timestamp, /<time class="k-ai-timestamp__time" :datetime="value \|\| undefined"/)
-  assert.match(timestamp, /<button[\s\S]*:title="full"[\s\S]*:aria-label="accessibleLabel"/)
-  assert.match(timestamp, /<span v-if="!expanded" class="k-ai-timestamp__tooltip" role="tooltip" aria-hidden="true">/)
-  assert.match(canonicalAgentKitConversation, /\.k-ai-timestamp:hover \.k-ai-timestamp__tooltip,\s*\.k-ai-timestamp:focus-within \.k-ai-timestamp__tooltip/)
+  assert.match(timestamp, /<button[\s\S]*:aria-label="accessibleLabel"[^>]*:aria-pressed="expanded"/)
+  assert.match(timestamp, /<ResourceTableActionTooltip :anchor="button" :label="expanded \? '' : full"/)
   assert.match(canonicalAgentKitConversation, /z-index: var\(--k-ai-tooltip-layer, 70\)/)
   assert.match(studioStyles, /--k-ai-tooltip-layer: var\(--app-studio-z-tooltip\)/)
   assert.match(app, /\[z-index:var\(--app-studio-z-menu\)\][^>]*developmentPreviewAnnotationEditorStyle/)

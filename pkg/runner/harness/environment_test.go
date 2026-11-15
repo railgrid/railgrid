@@ -50,6 +50,12 @@ func TestOperatorEnvironmentIsExplicitAndPreservesIsolation(t *testing.T) {
 }
 
 func TestOperatorEnvironmentRejectsUnsafeOrMalformedConfig(t *testing.T) {
+	if err := (EnvironmentConfig{ProcessScope: "unknown"}).Validate(); err == nil {
+		t.Fatal("unknown process scope was accepted")
+	}
+	if err := (EnvironmentConfig{ProcessScope: "systemd-user"}).Validate(); err != nil {
+		t.Fatalf("systemd-user process scope: %v", err)
+	}
 	for _, key := range []string{"HOME", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "GOCACHE", "XDG_CONFIG_HOME", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "LD_PRELOAD", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GOENV", "GOFLAGS", "GOROOT", "GOTOOLCHAIN", "NODE_OPTIONS", "NODE_PATH", "BASH_ENV", "ENV", "PROMPT_COMMAND", "PYTHONPATH", "PYTHONSTARTUP", "npm_config_userconfig", "NPM_CONFIG_PREFIX"} {
 		t.Run(key, func(t *testing.T) {
 			err := (EnvironmentConfig{Variables: map[string]string{key: "private-value"}}).Validate()

@@ -67,6 +67,108 @@ func TestRunAdmissionPersistsDefaultSessionBeforeExecution(t *testing.T) {
 	})
 }
 
+func TestRepositoryRunAdmissionPersistsSeparateTranscripts(t *testing.T) {
+	st := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "agent"}
+	if _, err := st.AddUsage(t.Context(), scope, scope.AgentName, 2, 0, 0, time.Now(), 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, events: newEventBus()}
+	agent := &agentsv1alpha1.Agent{}
+	agent.Name = scope.AgentName
+	agent.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "day", TokenLimit: 1}
+
+	start := func(key string) runAdmission {
+		t.Helper()
+		run, err := s.startRun(t.Context(), scope, agent, taskRun{
+			Trigger: agentsv1alpha1.RunTriggerAPI, Task: "repository work",
+			IdempotencyKey: key, Repository: &repositoryAttempt{},
+		}, runAccess{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return run
+	}
+	first := start("first")
+	second := start("second")
+	retry := start("first")
+	if first.ID == second.ID || !retry.Reused || retry.ID != first.ID {
+		t.Fatalf("expected two runs and one replay: first=%+v second=%+v retry=%+v", first, second, retry)
+	}
+
+	for _, admission := range []runAdmission{first, second} {
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			run, err := st.GetRun(t.Context(), scope, admission.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.SessionID != run.ID {
+				t.Fatalf("repository Run %q used transcript %q", run.ID, run.SessionID)
+			}
+			if run.Phase == store.RunPhaseFailed {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("admitted run did not settle: %+v", run)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func TestProcessIDStillClaimsPreAdmittedRun(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "agent"}
+	if _, err := st.AddUsage(ctx, scope, scope.AgentName, 2, 0, 0, time.Now(), 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, events: newEventBus(), cfg: Config{ProcessID: "agents-worker-lease-test"}}
+	agent := &agentsv1alpha1.Agent{}
+	agent.Name = scope.AgentName
+	agent.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "day", TokenLimit: 1}
+	admission, err := s.startRun(ctx, scope, agent, taskRun{Trigger: "api", Task: "budget refusal after lease claim"}, runAccess{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		run, err := st.GetRun(ctx, scope, admission.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.Phase == store.RunPhaseFailed {
+			if run.ExecutionEpoch != 1 {
+				t.Fatalf("pre-admitted run execution epoch = %d, want lease claim epoch 1", run.ExecutionEpoch)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pre-admitted run did not settle after lease claim: %+v", run)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestProcessIDDoesNotReopenMissingPreAdmittedRun(t *testing.T) {
+	st := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "agent"}
+	s := &Server{store: st, events: newEventBus(), cfg: Config{ProcessID: "agents-worker-lease-test"}}
+	agent := &agentsv1alpha1.Agent{}
+	agent.Name = scope.AgentName
+	result, err := s.executeTask(t.Context(), taskRun{
+		RunID: "deleted-before-dispatch", Scope: scope, Agent: agent,
+		Trigger: "api", Task: "must remain closed", PreAdmitted: true,
+	})
+	if err == nil || result.RunID != "" {
+		t.Fatalf("missing pre-admitted Run was reopened: result=%+v err=%v", result, err)
+	}
+	if _, err := st.GetRun(t.Context(), scope, "deleted-before-dispatch"); err == nil {
+		t.Fatal("execution recreated a Run whose durable admission row had disappeared")
+	}
+}
+
 func TestPostgresRunAdmissionPersistsDefaultSessionBeforeExecution(t *testing.T) {
 	dsn := os.Getenv("AGENTS_TEST_POSTGRES_DSN")
 	if dsn == "" {
