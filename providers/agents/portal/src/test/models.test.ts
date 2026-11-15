@@ -455,9 +455,9 @@ describe('models view on an empty workspace', () => {
 
     expect(deleteCredential).toHaveBeenCalledExactlyOnceWith('main')
     const deleting = el.querySelector<HTMLButtonElement>('[aria-label="Deleting main…"]')!
-    expect(deleting.disabled).toBe(true)
+    expect(deleting.getAttribute('aria-disabled')).toBe('true')
     expect(deleting.getAttribute('aria-busy')).toBe('true')
-    expect([...el.querySelectorAll<HTMLButtonElement>('.k-model-connection__actions button')].every(button => button.disabled)).toBe(true)
+    expect([...el.querySelectorAll<HTMLButtonElement>('.k-model-connection__actions button')].every(button => button.disabled || button.getAttribute('aria-disabled') === 'true')).toBe(true)
 
     request.resolve()
     await settleVue(8)
@@ -887,8 +887,8 @@ describe('provider connection table', () => {
     const connectionA = rows.find(row => row.textContent?.includes('Connection A'))!
     const connectionB = rows.find(row => row.textContent?.includes('Connection B'))!
 
-    expect(connectionA.querySelectorAll('td')[3]?.textContent?.trim()).toBe('0')
-    expect(connectionB.querySelectorAll('td')[3]?.textContent?.trim()).toBe('1')
+    expect(connectionA.querySelectorAll('td')[3]?.textContent?.trim()).toBe('0 models')
+    expect(connectionB.querySelectorAll('td')[3]?.textContent?.trim()).toBe('1 model')
   })
 
   it('does not count a same-name direct model without a connection reference', async () => {
@@ -903,7 +903,7 @@ describe('provider connection table', () => {
     const connectionA = [...view.element.querySelectorAll('table[aria-label="Provider connections and harness identities"] tbody tr')]
       .find(row => row.textContent?.includes('Connection A'))!
 
-    expect(connectionA.querySelectorAll('td')[3]?.textContent?.trim()).toBe('0')
+    expect(connectionA.querySelectorAll('td')[3]?.textContent?.trim()).toBe('0 models')
   })
 
   it('sorts numeric model counts while keeping harness identities last in both directions', async () => {
