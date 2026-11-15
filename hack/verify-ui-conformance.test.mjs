@@ -743,7 +743,8 @@ test('keeps dense checkboxes compact without decorative focus glow', () => {
   assert.match(checkbox, /padding:\s*0/)
   assert.match(checkbox, /accent-color:\s*var\(--color-accent/)
   assert.match(focus, /box-shadow:\s*none/)
-  assert.match(focusVisible, /0 0 0 3px var\(--color-accent-subtle/)
+  assert.match(focusVisible, /outline:\s*2px solid var\(--color-accent/)
+  assert.match(focusVisible, /box-shadow:\s*none/)
   assert.doesNotMatch(`${checkbox}\n${focus}\n${focusVisible}`, /accent-glow/)
 })
 

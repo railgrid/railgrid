@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 55;
+  --railgrid-ui-core-version: 56;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -828,8 +828,9 @@ textarea.k-input {
   box-shadow: none;
 }
 .k-checkbox:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+  box-shadow: none;
 }
 
 /* Use the associated label as the touch target while keeping the native
