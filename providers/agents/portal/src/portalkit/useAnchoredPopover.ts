@@ -2,7 +2,41 @@
 // under providers/*/portal/src/portalkit/; edit here and run
 // `make sync-portalkit`.
 
-import { nextTick, onBeforeUnmount, onDeactivated, ref, watch, type Ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onDeactivated, ref, watch, type Ref } from 'vue'
+
+// Select the host before mounting so focusable descendants never move after
+// receiving focus. A rejected promotion falls back to the existing visible
+// body (or enclosing native dialog) host before the caller moves focus.
+export function usePopupHosting(trigger: Ref<HTMLElement | null>) {
+  const fallback = ref(false)
+  const hostRevision = ref(0)
+  const nativeHost = () => trigger.value?.closest('dialog[open]') ?? 'body'
+  const host = computed(() => {
+    void hostRevision.value
+    if (fallback.value) return nativeHost()
+    const modal = trigger.value?.closest('dialog[open], [role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')
+    if (!modal) return 'body'
+    if (modal.matches('dialog[open]')) return modal
+    return typeof HTMLElement !== 'undefined' && typeof HTMLElement.prototype.showPopover === 'function' ? modal : nativeHost()
+  })
+  const modalPopover = computed(() => host.value !== 'body' && !host.value.matches('dialog[open]'))
+
+  function reset(): void {
+    fallback.value = false
+    hostRevision.value += 1
+  }
+  function promote(panel: HTMLElement | null): boolean {
+    if (!modalPopover.value || !panel) return true
+    try {
+      panel.showPopover()
+      return true
+    } catch {
+      fallback.value = true
+      return false
+    }
+  }
+  return { host, modalPopover, reset, promote }
+}
 
 export interface AnchoredPopoverOptions {
   /** Fallback width used before the teleported panel has been measured. */

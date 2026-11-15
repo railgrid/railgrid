@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 53;
+  --railgrid-ui-core-version: 54;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -782,6 +782,21 @@ html.light .k-create-surface {
   cursor: not-allowed;
 }
 
+/* Native selects keep their platform popup but match the shared select's
+ * closed surface and focus treatment. */
+select.k-input { background: var(--color-surface-raised, #111320); }
+select.k-input:focus {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+select.k-input[aria-invalid="true"] { border-color: var(--color-danger, #ff5d5d); }
+select.k-input:disabled {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: not-allowed;
+}
+
 /* Resizing grows multiline fields without widening the form on narrow screens. */
 textarea.k-input {
   max-inline-size: 100%;
@@ -1019,6 +1034,14 @@ railgrid-form-select {
   justify-content: space-between;
   min-width: 0;
   text-align: start;
+  background: var(--color-surface-raised, #111320);
+}
+.k-form-select__trigger:focus {
+  box-shadow: none;
+}
+.k-form-select__trigger:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
 }
 /* Invalid controls retain a distinct focus ring and do not glow red. */
 .k-form-select.is-invalid .k-form-select__trigger {
@@ -1030,18 +1053,10 @@ railgrid-form-select {
   box-shadow: none;
 }
 .k-form-select__error {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  margin: 5px 0 0;
+  margin: 6px 0 0;
   color: var(--color-danger, #ff5d5d);
   font-size: 12px;
   font-weight: 400;
-}
-.k-form-select__error svg {
-  flex: none;
-  width: 15px;
-  height: 15px;
 }
 
 .k-form-select__trigger:disabled {
@@ -1072,6 +1087,10 @@ railgrid-form-select {
   overscroll-behavior: contain;
   position: fixed;
   z-index: var(--k-layer-menu, 1000);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--color-surface, #0a0b12) 24%, transparent);
+}
+html.light .k-form-select__panel.k-form-select__portal {
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--color-text-primary, #e9e9f2) 12%, transparent);
 }
 .k-form-select__portal .k-form-select__option {
   justify-content: space-between;
@@ -1081,12 +1100,16 @@ railgrid-form-select {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-primary, #e9e9f2);
 }
+.k-form-select__portal .k-form-select__option.is-selected {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-primary, #e9e9f2);
+}
 .k-form-select__portal .k-form-select__option-label {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 .k-form-select__portal .k-form-select__check {
-  color: var(--color-accent, #8b6bff);
+  color: var(--color-text-primary, #e9e9f2);
   flex: none;
 }
 .k-form-select__portal .k-form-select__empty {
