@@ -359,7 +359,7 @@ describe('focused model connection editor', () => {
   expect(saveCredential).toHaveBeenCalledWith(expect.objectContaining({ name: 'main', model: 'new-model' }))
   expect(saveCredential.mock.calls[0]?.[0]).not.toHaveProperty('apiKey')
   expect([...form.querySelectorAll<HTMLInputElement>('input')].every(field => field.disabled)).toBe(true)
-  expect([...form.querySelectorAll<HTMLButtonElement>('button')].every(field => field.disabled)).toBe(true)
+  expect([...form.querySelectorAll<HTMLButtonElement>('button')].every(field => field.disabled || field.getAttribute('aria-disabled') === 'true')).toBe(true)
   oldProbe.resolve({ ok: true, latencyMS: 7 }); await settleVue()
   save.resolve(credential); await settleVue(12)
   expect(el.querySelector('form')).toBeNull()

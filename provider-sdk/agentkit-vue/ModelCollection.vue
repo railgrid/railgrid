@@ -52,6 +52,7 @@ const searchKeys = computed(() => ['name', 'model', connectionColumn.value.key, 
         {{ row.name }}
         <StatusBadge v-if="row.default" status="Default" tone="muted" />
       </template>
+      <template #providerConnection="{ row }"><slot name="provider-connection" :row="row as T">{{ row.providerConnection }}</slot></template>
       <template #status="{ row }">
         <StatusBadge :status="row.configured ? String(row.status) : 'Needs credential'" :tone="row.configured ? (row as T).tone || 'muted' : 'warning'" />
         <slot name="details" :row="row as T" />
