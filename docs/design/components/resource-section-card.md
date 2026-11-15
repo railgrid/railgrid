@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.resource-section-card","title":"ResourceSectionCard","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The shared card owns border-box containment and optional headerless content while providers retain content ownership."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/resource-section-card.md#resourcesectioncard","role":"design"},{"path":"provider-sdk/portalkit-vue/ResourceSectionCard.vue","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.patterns.resource-reads","relation":"see-also","path":"docs/design/patterns/resource-reads.md"},{"id":"design.foundations.geometry","relation":"prerequisite","path":"docs/design/foundations/geometry.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.content.ui-copy","relation":"see-also","path":"docs/design/content/ui-copy.md"}]}
+{"schema":1,"id":"design.components.resource-section-card","title":"ResourceSectionCard","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The shared card owns border-box containment and optional headerless content while providers retain content ownership."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/resource-section-card.md#resourcesectioncard","role":"design"},{"path":"provider-sdk/portalkit-vue/ResourceSectionCard.vue","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"Deployment fixture section composition","status":"passing","evidence":"At 390px, the sample deployment sections fit a 354px content area without document overflow in light and dark. A simulated failed refresh retained the visible sections and showed a warning. This does not cover all providers, assistive technology, or a live backend."},{"kind":"review","ref":"Cross-product rendered and assistive-technology audit","status":"pending"}]},"relatedDocuments":[{"id":"design.patterns.resource-reads","relation":"see-also","path":"docs/design/patterns/resource-reads.md"},{"id":"design.foundations.geometry","relation":"prerequisite","path":"docs/design/foundations/geometry.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.content.ui-copy","relation":"see-also","path":"docs/design/content/ui-copy.md"}]}
 ---
 
 # ResourceSectionCard
@@ -26,11 +26,21 @@ reference or edit workflow.
 
 ## Anatomy and variants
 
-The card has a product-facing content region, optional provider-owned section
-actions, and an optional technical-details region. Section action buttons may
-use a leading Lucide icon with a visible label; icon-only actions are not the
-default. The headerless body is the supported variant for groups that do not
-need a card header.
+1. **Section heading:** an optional title, description, and eyebrow establish
+   what the content covers. The caller supplies an `id` or `headingId` to
+   associate the title with the section.
+2. **Actions:** an optional caller-owned slot holds relevant section actions.
+3. **Body:** the default slot contains the product content; the component does
+   not create a technical-details disclosure by itself.
+
+Section action buttons may use a leading Lucide icon with a visible label;
+icon-only actions are not the default. A headerless body is supported when a
+group does not need a card header. The `document` variant provides a separate
+compact document surface; use it only where that composition fits.
+
+Use the `divided` variant for supporting sections that do not need their own
+boxed surface, such as a resource list with its own table boundary. It keeps
+the same heading, action, and semantic section structure with a quiet top rule.
 
 ## Behavior
 
@@ -48,7 +58,9 @@ visible label when possible.
 ## Layout and responsive behavior
 
 The card owns `width: 100%` and `min-width: 0`, so wide tables keep controls and
-card geometry stable while their canvas scrolls internally.
+card geometry stable while their canvas scrolls internally. On narrow resource
+containers the heading and actions stack; keep action labels and body content
+readable without widening the page.
 
 ## Accessibility
 
@@ -60,8 +72,10 @@ See the [accessible interaction policy](../accessibility/interaction.md).
 ## Code and evidence
 
 The canonical implementation is
-`provider-sdk/portalkit-vue/ResourceSectionCard.vue`. Verify the shared
-implementation with `make verify-portalkit`.
+`provider-sdk/portalkit-vue/ResourceSectionCard.vue`. Compare a boxed card and
+divided section in the [section review](http://127.0.0.1:5197/?entry=design.components.resource-section-card),
+then see the [deployment fixture](http://127.0.0.1:5201/) for page composition.
+Both use synthetic data. Verify distribution with `make verify-portalkit`.
 
 ## Related guidance
 

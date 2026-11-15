@@ -143,6 +143,9 @@ const copyExamples = [
           <p class="spec-note">Verify health before switching production traffic to the new pool.</p>
         </ResourceSectionCard>
       </div>
+      <ResourceSectionCard variant="divided" id="edge-events" title="Recent events">
+        <p class="spec-note">The edge reconnected after its scheduled maintenance.</p>
+      </ResourceSectionCard>
     </ResourcePage>
   </div>
 

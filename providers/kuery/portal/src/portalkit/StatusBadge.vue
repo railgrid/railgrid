@@ -40,6 +40,8 @@ const config = computed(() => {
     case 'loaded':
       return { ...toneConfig.success, icon: CheckCircle }
     case 'scheduling':
+    case 'queued':
+    case 'building':
     case 'pending':
     case 'provisioning':
     case 'running':
@@ -63,22 +65,22 @@ const config = computed(() => {
   }
 })
 
-const isLive = computed(() => {
+const isInProgress = computed(() => {
   const status = props.status?.toLowerCase()
-  return status === 'ready' &&
-    props.connected !== false &&
-    config.value.toneClass === toneConfig.success.toneClass
+  return props.connected !== false && config.value.toneClass !== toneConfig.danger.toneClass &&
+    ['scheduling', 'queued', 'building', 'pending', 'provisioning', 'running', 'retrying', 'loading', 'starting'].includes(status)
 })
 </script>
 
 <template>
   <span
-    class="k-badge"
+    class="k-badge k-status-badge"
     :class="config.toneClass"
   >
     <span
       class="k-badge__dot"
-      :class="isLive ? 'live-dot' : config.dotClass"
+      :class="[config.dotClass, { 'live-dot': isInProgress }]"
+      aria-hidden="true"
     />
     {{ status }}
   </span>
