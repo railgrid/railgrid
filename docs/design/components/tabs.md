@@ -6,7 +6,7 @@
 
 ## Purpose
 
-This labeled icon-plus-label navigation is the provider-level route/section bar.
+This labeled navigation is the provider-level route/section bar.
 The vanilla helper and Vue component share the canonical `k-tabs` recipe;
 callers own routing and selected state.
 
@@ -23,30 +23,63 @@ route tabs to imply that a detail/workbench tabset follows this contract.
 
 ## Anatomy and variants
 
-Markup is a labeled `nav` with optional count tags. Each tab is
-`type="button"`; the active tab exposes `aria-current="page"`. `Tabs.vue`
-emits `select` and exposes each id as `data-k-tab-id`; the vanilla `tabs.ts`
-helper adds the same class vocabulary.
+1. **Navigation container:** a labeled `nav` groups related sections.
+2. **Section control:** each `type="button"` has a visible label and may
+   include an icon or count.
+3. **Active treatment:** primary navigation uses accent text and an underline;
+   secondary navigation uses accent text on a subtle accent surface.
+
+The active control exposes `aria-current="page"`. `Tabs.vue` emits `select`
+and exposes each id as `data-k-tab-id`; the vanilla `tabs.ts` helper adds the
+same class vocabulary. These are navigation buttons, not an ARIA tablist.
 
 ## Behavior
 
-Routing and selected state remain caller-owned. Idle tabs use muted text on
-transparent; hover uses `surface-hover`; active tabs use accent text on
-`accent-subtle`. Tabs have no glow or shadow.
+Routing and selected state remain caller-owned. Primary navigation uses an
+accent underline and text for the active section. Secondary navigation uses
+accent text on a subtle accent surface, with slightly smaller type. Idle tabs
+use muted text on transparent. Primary tabs stay transparent on hover, with a
+text-color change; inactive secondary tabs use `surface-hover` on hover, while
+the selected secondary tab keeps its accent surface. Tabs have no glow or shadow. Use `variant="secondary"`
+for the Vue component or `.k-tabs--secondary` for framework-neutral markup;
+the existing `.k-tabs--compact` class retains the secondary treatment.
+
+In `Tabs.vue`, each item's `active` value takes precedence over the component's
+`active` ID, including when the item explicitly sets `active: false`. Prefer
+one source of selection state: either pass the selected ID to the component
+and omit `active` on every item, or set item flags and omit the component ID.
+The component does not enforce a single selection. If inputs conflict, it can
+render multiple `aria-current="page"` controls or none, so callers must keep
+the state consistent with the current route. A disabled item is a native
+disabled button and does not emit `select`, but it can still be marked active;
+callers must avoid leaving an unavailable route as the selected item.
+
+For a real route, callers may supply an item `href` using the host's scoped
+navigation URL. The component renders a native link: an ordinary activation
+emits `select` for the caller's router, while modified or middle clicks retain
+browser link behavior. Items without an `href` remain buttons for local state;
+disabled items remain disabled buttons. Edges uses this link mode when the host
+provides its navigation base and falls back to buttons in a standalone context.
+
+The framework-neutral helpers only return classes. Their callers must provide
+the navigation label, button semantics, disabled behavior, `aria-current`, and
+single-selection state themselves.
 
 ## Content
 
-Use labeled icon-plus-label tabs. Counts are optional and use square 3px mono
-tags; the label remains the route/section name rather than an icon-only cue.
+Use a concise route or section label. Icons and counts are optional; an icon
+does not replace the label. Counts use square 3px mono tags.
 
 ## Layout and responsive behavior
 
-Tabs use 4px controls, `padding: 7px 13px`, 4px gap, and a 1px bottom hairline.
-Narrow hosts keep the row horizontal and allow overflow.
+Primary tabs use an underline and a 1px bottom hairline; secondary tabs use a
+compact filled selection without a bottom rule. Narrow hosts keep the row
+horizontal and allow overflow; coarse pointers get 44px targets.
 
 ## Accessibility
 
-Use labeled `nav` markup, `type="button"` tabs, and
+Use labeled `nav` markup, native links for route destinations or `type="button"`
+for local choices, and
 `aria-current="page"` on the active tab. The 2px focus-visible outline is
 required; the [accessible interaction policy](../accessibility/interaction.md)
 supplies the broader keyboard, focus, and naming contract.
@@ -55,7 +88,10 @@ supplies the broader keyboard, focus, and naming contract.
 
 Canonical implementations are `provider-sdk/portalkit/tabs.ts`,
 `provider-sdk/portalkit-vue/Tabs.vue`, and
-`provider-sdk/portalkit/railgrid-ui.css`. Verify with `make verify-portalkit`.
+`provider-sdk/portalkit/railgrid-ui.css`. Compare both levels in the
+[design book review](http://127.0.0.1:5197/?entry=design.components.tabs)
+and the [App Studio models fixture](http://127.0.0.1:5198/?provider=app).
+The fixture uses sample data. Verify distribution with `make verify-portalkit`.
 
 ## Related guidance
 

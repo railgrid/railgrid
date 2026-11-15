@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 49;
+  --railgrid-ui-core-version: 50;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1353,13 +1353,13 @@ html.light [data-k-tip]::after {
 .k-tabs {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   min-width: 0;
   max-width: 100%;
   flex-wrap: nowrap;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
-  padding-bottom: 10px;
+  padding-bottom: 0;
   border-bottom: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
   scrollbar-width: thin;
 }
@@ -1368,7 +1368,7 @@ html.light [data-k-tip]::after {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 7px 13px;
+  padding: 10px 12px;
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -1379,12 +1379,17 @@ html.light [data-k-tip]::after {
   font-weight: 500;
   line-height: 1.5;
   white-space: nowrap;
+  text-decoration: none;
   box-shadow: none;
+  position: relative;
 }
 .k-tab:hover:not(:disabled) {
   background: var(--color-surface-hover, #1e2033);
   color: var(--color-text-primary, #e9e9f2);
   box-shadow: none;
+}
+.k-tabs:not(.k-tabs--secondary):not(.k-tabs--compact) .k-tab:hover:not(:disabled) {
+  background: transparent;
 }
 .k-tab:focus-visible {
   outline: 2px solid var(--color-accent, #8b6bff);
@@ -1393,16 +1398,24 @@ html.light [data-k-tip]::after {
 .k-tab--active,
 .k-tab[aria-current="page"] {
   border: 0;
-  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  background: transparent;
   color: var(--color-accent-hover, #a18aff);
   font-weight: 600;
   box-shadow: none;
 }
 .k-tab--active:hover:not(:disabled),
 .k-tab[aria-current="page"]:hover:not(:disabled) {
-  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  background: transparent;
   color: var(--color-accent-hover, #a18aff);
   box-shadow: none;
+}
+.k-tabs:not(.k-tabs--secondary):not(.k-tabs--compact) .k-tab[aria-current="page"]::after,
+.k-tabs:not(.k-tabs--secondary):not(.k-tabs--compact) .k-tab--active::after {
+  content: '';
+  position: absolute;
+  inset: auto 10px 0;
+  height: 2px;
+  background: currentColor;
 }
 .k-tab:disabled {
   cursor: default;
@@ -1440,22 +1453,36 @@ html.light [data-k-tip]::after {
 }
 .k-tab--active .k-tab__count,
 .k-tab[aria-current="page"] .k-tab__count {
-  background: var(--color-accent, #8b6bff);
-  color: var(--color-on-accent, #0a0b12);
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-primary, #e9e9f2);
 }
 .k-tab__count--attention {
   background: var(--color-warning, #f0a63a);
   color: var(--color-on-accent, #0a0b12);
 }
-.k-tabs--compact {
+.k-tabs--compact,
+.k-tabs--secondary {
   gap: 4px;
   padding-bottom: 0;
   border-bottom: 0;
 }
-.k-tabs--compact .k-tab {
+.k-tabs--compact .k-tab,
+.k-tabs--secondary .k-tab {
   min-height: 30px;
   padding: 6px 12px;
-  font-size: inherit;
+  font-size: 12.5px;
+}
+.k-tabs--compact .k-tab--active,
+.k-tabs--compact .k-tab[aria-current="page"],
+.k-tabs--secondary .k-tab--active,
+.k-tabs--secondary .k-tab[aria-current="page"] {
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent-hover, #a18aff);
+}
+.k-tabs--compact .k-tab--active:hover:not(:disabled),
+.k-tabs--secondary .k-tab--active:hover:not(:disabled) {
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent-hover, #a18aff);
 }
 
 /* ── Modal / confirmation dialog ──────────────────────────────────────────

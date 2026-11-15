@@ -34,6 +34,7 @@ const zoneLabel = computed(() => !drop.value ? 'Choose or drop a text file' : is
 
 const tabs = [{ id: 'models', label: 'Models', count: 2 }, { id: 'connections', label: 'Connections' }, { id: 'usage', label: 'Usage', disabled: true }]
 const tab = ref('models')
+const secondaryTab = ref('overview')
 const layout = ref('grid')
 const items = [
   { id: 'rename', label: 'Rename edge' },
@@ -190,6 +191,14 @@ const sizes = ['xs', 'sm', 'md', 'lg', '2xl', '3xl']
         <div class="contour-grid-fade spec-tile"><Inbox :size="20" :stroke-width="1.5" aria-hidden="true" /><p>No connections yet</p></div>
       </section>
     </div>
+  </div>
+
+  <div v-else-if="stage === 'route-tabs'" class="spec-stack">
+    <h3>Provider navigation</h3>
+    <Tabs :tabs="tabs.map(item => ({ ...item, href: '#' + item.id }))" :active="tab" aria-label="Sample provider sections" @select="tab = $event" />
+    <h3>Secondary sections</h3>
+    <Tabs variant="secondary" :tabs="[{ id: 'overview', label: 'Overview' }, { id: 'usage', label: 'Usage & cost' }]" :active="secondaryTab" aria-label="Sample detail sections" @select="secondaryTab = $event" />
+    <p class="spec-note" role="status">{{ tab === 'models' ? 'Models' : 'Connections' }} · {{ secondaryTab === 'overview' ? 'Overview' : 'Usage & cost' }}</p>
   </div>
 
   <div v-else-if="stage === 'navigation'" class="spec-stack">
