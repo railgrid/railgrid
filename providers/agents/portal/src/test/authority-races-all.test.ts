@@ -76,7 +76,11 @@ const cases: Case[] = [
       api.deleteSchedule = deletion as ApiClient['deleteSchedule']
       store.schedules.data = [{ metadata: { name: 'daily' }, spec: { agentRef: 'scout', type: 'cron' } }]
       store.schedules.loaded = store.schedules.hasSnapshot = true
-      return { deletion, selector: 'button[aria-label="Delete daily"]' }
+      return {
+        deletion,
+        openSelector: 'button[aria-label="More actions for daily"]',
+        selector: '[role="menuitem"].k-menu-item--danger',
+      }
     },
   },
   {

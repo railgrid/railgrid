@@ -80,7 +80,7 @@ describe('connections route layout', () => {
     expect(toolsets.tagName).toBe('H2')
     expect(connections.closest('.k-resource-page')?.classList.contains('k-resource-page--collection')).toBe(true)
     expect(toolsets.closest('.k-resource-page')?.classList.contains('k-resource-page--collection')).toBe(true)
-    const actions = [...el.querySelectorAll<HTMLButtonElement>('.k-resource-page__actions button')]
+    const actions = [...el.querySelectorAll<HTMLElement>('.k-resource-page__actions :is(a, button)')]
     expect(actions.map(button => text(button))).toEqual(['New connection', 'New toolset'])
     actions.forEach(button => button.click())
     expect(mounted.navigations).toEqual([
