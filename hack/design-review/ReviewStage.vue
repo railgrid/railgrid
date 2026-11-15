@@ -20,6 +20,7 @@ const CopyProductStage = defineAsyncComponent(() => import('./CopyProductStage.v
 const UploadStage = defineAsyncComponent(() => import('./UploadStage.vue'))
 const FieldGroupStage = defineAsyncComponent(() => import('./FieldGroupStage.vue'))
 const SearchStage = defineAsyncComponent(() => import('./SearchStage.vue'))
+const ConfirmReviewStage = defineAsyncComponent(() => import('./ConfirmReviewStage.vue'))
 const ResourcePageStage = defineAsyncComponent(() => import('./ResourcePageStage.vue'))
 const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
 </script>
@@ -40,6 +41,7 @@ const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
   <UploadStage v-else-if="stage === 'file-upload'" />
   <FieldGroupStage v-else-if="stage === 'field-group'" />
   <SearchStage v-else-if="stage === 'search-input'" />
+  <ConfirmReviewStage v-else-if="stage === 'confirm-review'" />
   <ResourcePageStage v-else-if="stage === 'resource-page-loading'" :entry="entry" />
   <Lens v-else :stage="stage" :entry="entry" :catalog="catalog" />
   <section v-if="entry.id === 'design.foundations.colors'" class="spec-stack" aria-labelledby="materials-heading">

@@ -239,10 +239,13 @@ async function executeDelete() {
   const expectedInstance = inst.value
   deleteError.value = null
   const confirmed = await confirmDialog({
-    title: `Delete instance "${props.instanceName}"?`,
-    message: `This permanently deletes "${props.instanceName}" and the resources (and bridged credentials Secret) it provisioned. This cannot be undone.`,
+    title: 'Delete instance',
+    message: `"${props.instanceName}" and the resources it provisioned, including its bridged credentials Secret, will be permanently deleted.`,
+    irreversibleMessage: `Deleting "${props.instanceName}" cannot be undone.`,
     confirmLabel: 'Delete instance',
     danger: true,
+    verificationText: props.instanceName,
+    verificationLabel: 'the instance name',
   })
   if (!confirmed || !active || !sameResourceIdentity(expectedInstance, inst.value) || instanceIsDeleting(inst.value)) return
 
