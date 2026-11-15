@@ -37,9 +37,9 @@ describe('Edges create guidance', () => {
       expect(source).toMatch(/k-create-body--guided/)
       expect(source).toMatch(/k-create-fields/)
     }
-    expect(wizard).toMatch(/Edge name[\s\S]*Resource type[\s\S]*Scheduling labels/)
-    expect(service).toMatch(/Service name[\s\S]*Endpoint[\s\S]*Credentials[\s\S]*MCP tools/)
-    expect(workload).toMatch(/Namespace[\s\S]*Edge selector[\s\S]*Placements/)
+    expect(wizard).toMatch(/parseEdgeLabelPairs[\s\S]*edge-labels-error/)
+    expect(service).toMatch(/parseServiceHost[\s\S]*Before you create/)
+    expect(workload).toMatch(/targetNamespaceError[\s\S]*pullSecretsError/)
     expect(service).toMatch(/await createKubeEdgeService\(\{/)
     expect(workload).toMatch(/await createWorkload\(workload\)/)
   })

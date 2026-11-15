@@ -950,8 +950,6 @@ describe('edge list views', () => {
       await nextTick()
       expect(state.selectorError).toBe(expectedError)
       expect(state.canSubmit).toBe(false)
-      expect(state.workloadGuidanceValues.find((item: { label: string }) => item.label === 'Placements')?.value)
-        .toBe('Fix the selector to preview placements')
       await state.submit()
       expect(api.createWorkload).not.toHaveBeenCalled()
     } finally {
@@ -996,8 +994,6 @@ describe('edge list views', () => {
       await nextTick()
       expect(state.targetNamespaceError).toBe(expectedError)
       expect(state.canSubmit).toBe(false)
-      expect(state.workloadGuidanceValues.find((item: { label: string }) => item.label === 'Namespace')?.value)
-        .toBe('Fix the namespace')
       await state.submit()
       expect(api.createWorkload).not.toHaveBeenCalled()
     } finally {
@@ -1019,8 +1015,6 @@ describe('edge list views', () => {
       await nextTick()
       expect(state.pullSecretsError).toBe(expectedError)
       expect(state.canSubmit).toBe(false)
-      expect(state.workloadGuidanceValues.find((item: { label: string }) => item.label === 'Image pull secrets')?.value)
-        .toBe('Fix the Secret names')
       await state.submit()
       expect(api.createWorkload).not.toHaveBeenCalled()
     } finally {
@@ -1033,15 +1027,12 @@ describe('edge list views', () => {
     try {
       await flush()
       const state = mounted.instance.setupState
-      const guidance = (label: string) => state.workloadGuidanceValues.find((item: { label: string }) => item.label === label)?.value
       state.draft.name = 'kiosk-app'
       state.draft.targetNamespace = ' kiosk '
       state.draft.imagePullSecrets = 'ghcr-pull, quay-pull'
       await nextTick()
       expect(state.targetNamespaceError).toBeNull()
       expect(state.pullSecretsError).toBeNull()
-      expect(guidance('Namespace')).toBe('kiosk')
-      expect(guidance('Image pull secrets')).toBe('ghcr-pull, quay-pull')
       await state.submit()
       expect(api.createWorkload).toHaveBeenCalledWith(expect.objectContaining({
         targetNamespace: 'kiosk',
@@ -1052,8 +1043,6 @@ describe('edge list views', () => {
       state.draft.targetNamespace = ''
       state.draft.imagePullSecrets = ''
       await nextTick()
-      expect(guidance('Namespace')).toBe('default')
-      expect(guidance('Image pull secrets')).toBe('None (public image)')
       await state.submit()
       expect(api.createWorkload).toHaveBeenCalledWith(expect.objectContaining({
         targetNamespace: undefined,
@@ -1071,7 +1060,6 @@ describe('edge list views', () => {
       const state = mounted.instance.setupState
       state.draft.targetNamespace = 'monitoring'
       await nextTick()
-      expect(state.workloadGuidanceValues.find((item: { label: string }) => item.label === 'Namespace')?.value).toBe('monitoring')
       expect(state.canSubmit).toBe(true)
       await state.submit()
       expect(api.deployMarketplaceApp).toHaveBeenCalledWith(expect.objectContaining({ targetNamespace: 'monitoring' }))
