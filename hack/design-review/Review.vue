@@ -6,7 +6,7 @@ import catalog from 'virtual:design-review'
 import ReviewStage from './ReviewStage.vue'
 
 const groups = [
-  ['foundations', 'Foundations'], ['components', 'Components'], ['patterns', 'Patterns'],
+  ['foundations', 'Foundations'], ['components', 'Components'], ['patterns', 'Patterns'], ['journeys', 'Journeys'],
   ['ai', 'AI experience'], ['content', 'Content'], ['accessibility', 'Accessibility'], ['quality', 'Quality'],
 ]
 const theme = useThemeStore()

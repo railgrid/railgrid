@@ -11,6 +11,10 @@ const review = (stage, title, tryThis, sources = [], kind = 'Mounted fixture') =
 const recipe = (title, tryThis, sources = []) => review('primitives', title, tryThis, sources, 'Canonical CSS specimen')
 const lens = (stage, title, tryThis, sources = []) => review(stage, title, tryThis, sources, 'Inspection fixture')
 const reuse = (stage, title, tryThis, sources = []) => review(stage, title, tryThis, sources, 'Mounted fixture with sample data')
+const product = (title, tryThis, href, sources) => ({
+  ...reuse('product', title, tryThis, sources),
+  product: { label: `Open ${title} fixture`, href },
+})
 
 export const reviews = {
   'foundations.system': recipe('Violet Circuit at a glance', 'Switch themes. Compare a primary action, a quiet action, a live indicator, and a failed status in the same surface.', [[host, '@theme {'], [css, '.k-btn--primary']]),
@@ -75,6 +79,18 @@ export const reviews = {
   'patterns.navigation-and-feedback': reuse('shell', 'Shell, scoped navigation, and feedback', 'Compare active shell navigation with flat provider tabs. The real shell fixture supplies example workspace scope, provider navigation, and the workspace picker.', [[shell, 'const slotClass'], [portal('lib/shellNavigation.ts')]]),
   'patterns.resource-creation': reuse('creation', 'Creation surface and setup journey', 'Compare a focused resource form, contextual add, first-run flow, and the actual provider self-hosting wizard. In self-hosting, open the manual fallback and try readiness recovery.', [[vue('CreateGuidance')], [portal('components/SelfHostWizard.vue')], [portal('pages/ProvidersPage.vue')]]),
   'patterns.resource-reads': reuse('resource', 'Read-state transitions and retained snapshots', 'Start with cached rows, trigger background refresh, then fail it. Check that the data and actions stay visible. Repeat after settling to empty.', [[core('page-state.ts'), 'export interface ResourceReadState'], [vue('ResourcePage')], [vue('ResourceTable')]]),
+  'patterns.organization-billing': reuse('usage', 'Plan usage and billing', 'Compare usage states, then use the billing fixture linked from the contract to review permissions and return states.', [[portal('components/OrgBillingCard.vue')]]),
+
+  'journeys.app-studio-sharing': product('App Studio sharing', 'Open Share project and try recovery after a failed member refresh.', './app-studio-sharing.html', [['providers/app-studio/portal/src/ProjectShareDialog.vue']]),
+  'journeys.edge-service-setup': product('Edge service setup', 'Compare the target, address, and port controls for the sample service.', 'http://127.0.0.1:5199/product.html?scenario=targets', [['providers/edges/portal/src/Services.vue']]),
+  'journeys.infrastructure-provisioning': product('Infrastructure provisioning', 'Open the catalog and retry the simulated provisioning read failure.', 'http://127.0.0.1:5201/catalog.html?scenario=provision-error', [['providers/infrastructure/portal/src/views/CatalogPage.vue']]),
+  'journeys.mcp-access': product('MCP access', 'Open a sample endpoint and compare ready, pending, and failed connection details.', './mcp-access.html', [[portal('pages/MCPPage.vue')]]),
+  'journeys.member-access': reuse('table', 'Member access', 'Compare named table actions and read states with the member settings source.', [[portal('pages/TenantSettingsPage.vue')]]),
+  'journeys.organization-and-workspace-entry': lens('shell', 'Organization and workspace entry', 'Use the shell specimen for layout context and read the route guard for scope selection.', [[portal('router/contextGuard.ts')]]),
+  'journeys.provider-workspace-access': reuse('creation', 'Provider access in a workspace', 'Compare provider setup guidance with the catalog and workspace access flow in source.', [[portal('pages/ProvidersPage.vue')], [portal('components/ProviderEnableDialog.vue')]]),
+  'journeys.sign-in-and-session-recovery': product('Dex sign-in', 'Inspect the login specimen and use the contract to follow session recovery.', './dex.html', [[portal('pages/LoginPage.vue')]]),
+  'journeys.workspace-dashboard': lens('shell', 'Workspace dashboard', 'Inspect the shell specimen for context, then read the dashboard source for tile behavior.', [[portal('pages/DashboardPage.vue')]]),
+  'journeys.workspace-service-accounts': reuse('copy-control', 'Workspace service accounts', 'Compare the masked handoff with the service-account fixture linked from the contract.', [[portal('pages/TenantSettingsPage.vue')]]),
 
   'ai.agent-overlay': lens('overlay', 'Assistant bar, side panel, and model recovery', 'Compare the closed bar, panel, and model recovery study. Check the documented context opt-in and scoped thread lifecycle in the contract; the live overlay is a separate integration check.', [[portal('components/AgentOverlay.vue')], [portal('stores/agentOverlay.ts')], [portal('providers/agentOverlayContext.ts')]]),
   'ai.agents-autonomy-and-runs': reuse('conversation', 'Attended run states and interruption', 'Exercise pending approval, tool evidence, and intentional stop in the shared presentation. Compare the mounted samples with the Agents run and integrity sources before judging end-to-end behavior.', [['providers/agents/portal/src/views/RunDetail.vue'], ['providers/agents/portal/src/views/AgentChat.vue'], ['providers/agents/portal/src/artifactIntegrity.ts']]),
