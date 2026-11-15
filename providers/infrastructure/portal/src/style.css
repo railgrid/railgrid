@@ -75,10 +75,10 @@ railgrid-provider-infrastructure .filters {
   gap: 8px;
 }
 
-
-
-railgrid-provider-infrastructure .filters select {
-  width: auto;
+@media (max-width: 640px) {
+  railgrid-provider-infrastructure .catalog-filter {
+    flex-basis: 100%;
+  }
 }
 
 railgrid-provider-infrastructure .template-card {

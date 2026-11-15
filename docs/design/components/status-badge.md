@@ -22,8 +22,9 @@ the label or nearby text.
 
 ## Avoid when
 
-Finite non-status enum values use a muted square `.k-badge`, not
-`StatusBadge`. Put detailed provider feedback in nearby text or an associated
+Finite non-status labels use a muted square `.k-badge.k-badge--label`, not
+`StatusBadge`. This treatment preserves the supplied casing and omits the
+status dot and visible border. Put detailed provider feedback in nearby text or an associated
 details view when it is needed to understand or resolve a state. Badges do not
 glow.
 
@@ -60,7 +61,7 @@ chooses the lifecycle state and may supply a semantic tone.
 Use a concise status value as the visible tag. If connectivity and lifecycle
 phase differ, make both understandable in text rather than signaling
 disconnection only with color. Keep finite non-status enum values as muted
-square `.k-badge` tags.
+square `.k-badge.k-badge--label` tags.
 
 ## Layout and responsive behavior
 
