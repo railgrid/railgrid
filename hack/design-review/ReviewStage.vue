@@ -1,7 +1,7 @@
 <script setup>
 import { defineAsyncComponent } from 'vue'
 defineProps({ stage: String, entry: Object, catalog: Object })
-const core = new Set(['primitives', 'navigation', 'status', 'feedback', 'controls', 'creation'])
+const core = new Set(['primitives', 'navigation', 'route-tabs', 'status', 'feedback', 'controls', 'creation'])
 const resource = new Set(['table', 'resource', 'detail', 'board', 'usage', 'copy'])
 const ai = new Set(['conversation', 'studio', 'models', 'evidence'])
 const Core = defineAsyncComponent(() => import('./CoreStage.vue'))

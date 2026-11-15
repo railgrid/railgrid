@@ -12,7 +12,7 @@ const styles = readSource('style.css')
 describe('Edges portal conformance', () => {
   it('uses PortalKit tabs for route navigation and keeps the route contract', () => {
     expect(app).toMatch(/import Tabs from '\.\/portalkit\/Tabs\.vue'/)
-    expect(app).toMatch(/const edgeRouteTabs = \[[\s\S]*id: 'edges'[\s\S]*Server[\s\S]*id: 'workloads'[\s\S]*Boxes[\s\S]*id: 'services'[\s\S]*Plug/)
+    expect(app).toMatch(/const edgeRouteTabs = computed\([\s\S]*id: 'edges'[\s\S]*Server[\s\S]*id: 'workloads'[\s\S]*Boxes[\s\S]*id: 'services'[\s\S]*Plug/)
 
     const routeTabs = app.match(/<Tabs[\s\S]*?@select="selectView"\s*\/>/)?.[0]
     expect(routeTabs).toBeTruthy()
