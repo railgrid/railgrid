@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ArrowLeft, Globe2, Loader2, Plus, Server } from 'lucide-vue-next'
 import { createKubeEdgeService, fetchServiceCatalog, listEdges } from './api'
 import type { CatalogEntry } from './api'
@@ -7,7 +7,7 @@ import type { Edge, EdgeServiceDraft, EdgeType, ErrorResponse } from './types'
 import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import { toast } from './portalkit/toast'
-import { servicePortError } from './serviceValidation'
+import { parseServiceHost, servicePortError } from './serviceValidation'
 
 const props = withDefaults(defineProps<{
   initialEdgeType?: EdgeType | null
@@ -30,6 +30,8 @@ const error = ref<string | null>(null)
 const readError = ref<string | null>(null)
 const portError = ref<string | null>(null)
 const selectedEdgeKey = ref('')
+const heading = ref<HTMLElement | null>(null)
+let readingInputs = false
 let active = true
 
 function catalogFor(type?: string): CatalogEntry | undefined {
@@ -79,6 +81,11 @@ const selectedEdgeIsHost = computed(() => selectedEdge.value?.type !== 'kubernet
 const selectedCatalogEntry = computed(() => catalogFor(draft.value.serviceType))
 const hostRequired = computed(() => !!selectedCatalogEntry.value?.hostRequired)
 const schemeLocked = computed(() => !!catalogFor(draft.value.serviceType)?.schemeLocked)
+const parsedHost = computed(() => parseServiceHost(draft.value.host, schemeLocked.value ? selectedCatalogEntry.value?.defaultScheme : undefined))
+const hostInputError = computed(() => targetMode.value === 'host' ? parsedHost.value.error || '' : '')
+const targetRestriction = computed(() => !selectedEdge.value ? '' : hostRequired.value
+  ? 'This service type requires a host or IP address.'
+  : selectedEdgeIsHost.value ? 'Kubernetes Service targets require a Kubernetes edge.' : '')
 
 function resetTargetMode(): void {
   targetMode.value = selectedEdgeIsHost.value || hostRequired.value ? 'host' : 'kube'
@@ -117,39 +124,30 @@ function cancel(): void {
 // Accept a pasted URL for convenience, while keeping the API contract's host,
 // scheme, and port fields separate. Service proxies always dial the root path.
 function normalizeHost(value?: string): string {
-  const raw = value?.trim() ?? ''
-  if (!raw || !/^https?:\/\//i.test(raw)) return raw
-  try {
-    return new URL(raw).hostname.trim()
-  } catch {
-    return ''
-  }
+  const parsed = parseServiceHost(value)
+  return parsed.error ? '' : parsed.host
 }
 
 function applyHostUrl(): void {
-  const raw = draft.value.host?.trim()
-  if (!raw || !/^https?:\/\//i.test(raw)) {
-    draft.value.host = raw || ''
-    return
-  }
-  try {
-    const url = new URL(raw)
-    draft.value.scheme = url.protocol.replace(':', '')
-    draft.value.host = url.hostname
-    draft.value.port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80)
-  } catch {
-    // Leave an invalid value visible for the user to correct.
-  }
+  if (hostInputError.value) return
+  const parsed = parsedHost.value
+  draft.value.host = parsed.host
+  if (parsed.scheme) draft.value.scheme = parsed.scheme
+  if (parsed.port) draft.value.port = parsed.port
 }
 
 const normalizedHost = computed(() => normalizeHost(draft.value.host))
-const serviceTypeLabel = computed(() => selectedCatalogEntry.value?.displayName || draft.value.serviceType || 'Not selected')
 const endpointSummary = computed(() => {
+  if (hostInputError.value) return 'Correct the host URL'
+  const port = targetMode.value === 'host' ? parsedHost.value.port ?? draft.value.port : draft.value.port
+  if (servicePortError(port)) return 'Enter a valid port'
   if (targetMode.value === 'host') {
-    return `${draft.value.scheme || 'http'}://${normalizedHost.value || 'agent-loopback'}:${Number(draft.value.port) || 8123}`
+    if (hostRequired.value && !normalizedHost.value) return 'Host required'
+    const scheme = parsedHost.value.scheme || draft.value.scheme || 'http'
+    return `${scheme}://${normalizedHost.value || 'agent-loopback'}:${Number(port)}`
   }
   const namespace = draft.value.targetNamespace.trim() || 'default'
-  return `${namespace}/${draft.value.targetName.trim() || 'not-selected'}:${Number(draft.value.port) || 8123}`
+  return `${namespace}/${draft.value.targetName.trim() || 'not-selected'}:${Number(port)}`
 })
 const credentialSummary = computed(() => {
   const selected = selectedCatalogEntry.value
@@ -157,27 +155,11 @@ const credentialSummary = computed(() => {
   return selected.credential.optional ? 'Optional after creation' : 'Required after creation'
 })
 const serviceGuidanceValues = computed<CreateGuidanceValue[]>(() => [
-  { label: 'Service name', value: draft.value.name.trim() || 'Not entered yet', technical: true },
-  { label: 'Edge', value: selectedEdge.value?.name || 'Not selected', technical: true },
-  { label: 'Service type', value: serviceTypeLabel.value },
   { label: 'Endpoint', value: endpointSummary.value, technical: true },
   { label: 'Credentials', value: credentialSummary.value },
-  { label: 'MCP tools', value: selectedCatalogEntry.value?.tools?.length ? `${selectedCatalogEntry.value.tools.length} declared` : 'None declared' },
 ])
-const servicePrerequisites = [
-  'An edge that can reach this service.',
-  'For a host target, a hostname or IP reachable from the agent; blank uses agent loopback when the type allows it.',
-  'For a Kubernetes target, the Service namespace and name on the selected cluster.',
-  'The protocol and port exposed by the target.',
-]
-const serviceNextSteps = [
-  'Railgrid creates a cluster-scoped Service bound to the selected edge.',
-  'The controller probes the endpoint and reports status separately.',
-  'If authentication is required, add the credential on the Service detail page; Railgrid stores it in a workspace Secret.',
-  'Provider-declared tools become available through the Edges MCP endpoint when the Service is ready.',
-]
 const canCreate = computed(() => {
-  if (!draft.value.name.trim() || !selectedEdge.value) return false
+  if (!draft.value.name.trim() || !selectedEdge.value || hostInputError.value) return false
   if (hostRequired.value) return targetMode.value === 'host' && !!normalizedHost.value
   return targetMode.value === 'host' || !!draft.value.targetName.trim()
 })
@@ -186,7 +168,7 @@ async function onCreate(): Promise<void> {
   if (busy.value || loading.value || !canCreate.value) return
   const edge = selectedEdge.value
   if (!edge) return
-  applyHostUrl()
+  if (targetMode.value === 'host') applyHostUrl()
   portError.value = servicePortError(draft.value.port)
   if (portError.value) {
     document.getElementById('service-create-port')?.focus()
@@ -222,15 +204,26 @@ async function onCreate(): Promise<void> {
 }
 
 async function loadInputs(): Promise<void> {
+  if (readingInputs || busy.value) return
+  readingInputs = true
   loading.value = true
-  readError.value = null
+  const focused = typeof document !== 'undefined' ? document.activeElement : null
+  const firstCatalogLoad = catalog.value.length === 0
   const [catalogResult, edgesResult] = await Promise.allSettled([fetchServiceCatalog(), listEdges()])
   if (!active) return
+  readError.value = null
   if (catalogResult.status === 'fulfilled' && catalogResult.value.length) {
     catalog.value = catalogResult.value
-    if (!catalogFor(draft.value.serviceType)) draft.value.serviceType = catalogResult.value[0].type
+    if (!catalogFor(draft.value.serviceType)) {
+      draft.value.serviceType = catalogResult.value[0].type
+      onTypeChange()
+    } else if (firstCatalogLoad) onTypeChange()
   } else {
-    catalog.value = [genericFallback]
+    if (!catalog.value.length) catalog.value = [genericFallback]
+    if (!catalogFor(draft.value.serviceType)) {
+      draft.value.serviceType = genericFallback.type
+      onTypeChange()
+    }
     if (catalogResult.status === 'rejected') readError.value = (catalogResult.reason as ErrorResponse)?.message ?? 'Failed to load service types'
   }
   if (edgesResult.status === 'fulfilled') {
@@ -240,6 +233,9 @@ async function loadInputs(): Promise<void> {
     readError.value = (edgesResult.reason as ErrorResponse)?.message ?? 'Failed to load edges'
   }
   loading.value = false
+  readingInputs = false
+  await nextTick()
+  if (focused && !focused.isConnected && document.activeElement === document.body) heading.value?.focus()
 }
 onMounted(loadInputs)
 onUnmounted(() => {
@@ -253,14 +249,14 @@ onUnmounted(() => {
       <ArrowLeft :size="14" aria-hidden="true" /> Services
     </button>
     <header class="k-create-header">
-      <h1 class="k-create-title">Create service</h1>
+      <h1 ref="heading" tabindex="-1" class="k-create-title">Create service</h1>
       <p class="k-create-description">Declare a service on an edge and expose its tools through the Edges MCP endpoint.</p>
     </header>
 
     <div v-if="error" class="banner error" role="alert">{{ error }}</div>
     <div v-if="readError" class="banner error service-create-read-error" role="alert">
       <span>{{ readError }}</span>
-      <button type="button" class="k-btn k-btn--ghost" :disabled="loading || busy" @click="loadInputs">Retry service types and edges</button>
+      <button type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || busy || undefined" :aria-busy="loading || undefined" @click="loadInputs">{{ loading ? 'Retrying service types and edges…' : 'Retry service types and edges' }}</button>
     </div>
     <div v-if="loading" class="waiting" role="status" aria-live="polite">
       <Loader2 :size="14" class="spin" aria-hidden="true" /> Loading service types and edges…
@@ -287,17 +283,18 @@ onUnmounted(() => {
       <div class="k-create-fields">
       <div class="service-create-grid service-create-grid--two">
         <label class="fld">
-          <span class="lbl">Name</span>
-          <input v-model="draft.name" class="k-input" placeholder="home-assistant" />
+          <span class="lbl">Name (required)</span>
+          <input v-model="draft.name" class="k-input" required placeholder="home-assistant" />
         </label>
         <label class="fld">
-          <span class="lbl">Edge</span>
-          <select v-model="selectedEdgeKey" class="k-input" @change="onEdgeChange">
+          <span class="lbl">Edge (required)</span>
+          <select v-model="selectedEdgeKey" class="k-input" required aria-describedby="service-create-edge-help" @change="onEdgeChange">
             <option value="" disabled>Select an edge</option>
             <option v-for="edge in edges" :key="edgeKey(edge)" :value="edgeKey(edge)">
               {{ edge.name }} ({{ edge.type === 'server' ? 'LinuxServer' : edge.type === 'macos' ? 'MacOSServer' : 'KubernetesCluster' }})
             </option>
           </select>
+          <span id="service-create-edge-help" class="field-help">Choose an edge that can reach this service.</span>
         </label>
       </div>
 
@@ -310,21 +307,22 @@ onUnmounted(() => {
             </optgroup>
           </select>
         </label>
-        <label class="fld">
-          <span class="lbl">Scheme</span>
-          <select v-model="draft.scheme" class="k-input" :disabled="schemeLocked" :title="schemeLocked ? 'Fixed by the service type' : ''">
+        <div class="fld">
+          <label for="service-create-scheme" class="lbl">Scheme</label>
+          <select id="service-create-scheme" v-model="draft.scheme" class="k-input" :disabled="schemeLocked" :aria-describedby="schemeLocked ? 'service-create-scheme-help' : undefined">
             <option value="http">http</option>
             <option value="https">https</option>
           </select>
-        </label>
+          <span v-if="schemeLocked" id="service-create-scheme-help" class="field-help">Fixed by the selected service type.</span>
+        </div>
         <div class="fld">
-          <label for="service-create-port" class="lbl">Port</label>
-          <input id="service-create-port" v-model="draft.port" type="number" min="1" max="65535" class="k-input" :aria-invalid="portError ? 'true' : undefined" :aria-describedby="portError ? 'service-create-port-error' : undefined" @input="portError = null" />
+          <label for="service-create-port" class="lbl">Port (required)</label>
+          <input id="service-create-port" v-model="draft.port" type="number" min="1" max="65535" class="k-input" required :aria-invalid="portError ? 'true' : undefined" :aria-describedby="portError ? 'service-create-port-error' : undefined" @input="portError = null" />
           <span v-if="portError" id="service-create-port-error" class="error" role="alert">{{ portError }}</span>
         </div>
       </div>
 
-      <fieldset class="fld service-target-fieldset">
+      <fieldset class="fld service-target-fieldset" :aria-describedby="targetRestriction ? 'service-create-target-help' : undefined">
         <legend class="lbl">Target</legend>
         <div class="service-create-target-modes">
           <label class="k-checkbox-hit">
@@ -334,23 +332,25 @@ onUnmounted(() => {
             <input v-model="targetMode" class="k-checkbox" name="service-create-target-mode" type="radio" value="kube" :disabled="selectedEdgeIsHost || hostRequired" /> Kubernetes Service
           </label>
         </div>
+        <p v-if="targetRestriction" id="service-create-target-help" class="field-help">{{ targetRestriction }}</p>
       </fieldset>
 
       <div v-if="targetMode === 'host'" class="service-create-grid">
         <label class="fld">
           <span id="service-create-host-label" class="lbl">Host {{ catalogFor(draft.serviceType)?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span>
-          <input v-model="draft.host" class="k-input" aria-labelledby="service-create-host-label" :aria-describedby="catalogFor(draft.serviceType)?.hostHelp ? 'service-create-host-help' : undefined" @blur="applyHostUrl" placeholder="192.168.1.1, myui.example.com, or paste https://myui.example.com" />
-          <span v-if="catalogFor(draft.serviceType)?.hostHelp" id="service-create-host-help" class="field-help">{{ catalogFor(draft.serviceType)?.hostHelp }}</span>
+          <input v-model="draft.host" class="k-input" :required="hostRequired" aria-labelledby="service-create-host-label" :aria-invalid="hostInputError ? 'true' : undefined" :aria-describedby="hostInputError ? 'service-create-host-help service-create-host-error' : 'service-create-host-help'" @blur="applyHostUrl" placeholder="192.168.1.1, myui.example.com, or paste https://myui.example.com" />
+          <span id="service-create-host-help" class="field-help">{{ catalogFor(draft.serviceType)?.hostHelp || 'Use a host or IP reachable from the agent. Leave blank to use agent loopback when allowed.' }} A pasted root URL sets the scheme and port.</span>
+          <span v-if="hostInputError" id="service-create-host-error" class="error" role="alert">{{ hostInputError }}</span>
         </label>
       </div>
       <div v-else class="service-create-grid service-create-grid--two">
         <label class="fld">
-          <span class="lbl">Target namespace</span>
+          <span class="lbl">Target namespace (optional)</span>
           <input v-model="draft.targetNamespace" class="k-input" placeholder="home" />
         </label>
         <label class="fld">
-          <span class="lbl">Target service name</span>
-          <input v-model="draft.targetName" class="k-input" placeholder="home-assistant" />
+          <span class="lbl">Target service name (required)</span>
+          <input v-model="draft.targetName" class="k-input" required placeholder="home-assistant" />
         </label>
       </div>
 
@@ -361,11 +361,10 @@ onUnmounted(() => {
 
       </div>
       <CreateGuidance
-        title="Describe the service endpoint"
-        description="Choose where the service runs and how Edges reaches it. Credentials are added after creation only when the selected type requires them."
-        :prerequisites="servicePrerequisites"
+        title="Before you create"
+        description="Railgrid will bind this service to the selected edge and check its endpoint. Add any required credentials on the service detail page after creation."
+        values-heading="Connection"
         :values="serviceGuidanceValues"
-        :next-steps="serviceNextSteps"
       />
       </div>
       <div class="k-create-actions">

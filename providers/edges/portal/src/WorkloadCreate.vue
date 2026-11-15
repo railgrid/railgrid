@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ArrowLeft, Loader2, Rocket, Server } from 'lucide-vue-next'
 import { createWorkload, deployMarketplaceApp, listEdges, type WorkloadDraft } from './api'
+import { parseEdgeLabelPairs } from './edgeLabels'
 import { MARKETPLACE, type MarketplaceApp } from './marketplace'
 import type { Edge, ErrorResponse } from './types'
 import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
@@ -69,35 +70,6 @@ const credentialHint: Record<string, string> = {
   optional: 'no token needed',
 }
 
-type SelectorResult = {
-  value: Record<string, string>
-  error: string | null
-}
-
-function parseSelector(value: string): SelectorResult {
-  const selector: Record<string, string> = {}
-  if (!value.trim()) return { value: selector, error: null }
-
-  for (const rawPair of value.split(',')) {
-    const parts = rawPair.split('=')
-    if (parts.length !== 2) {
-      return { value: selector, error: 'Use key=value pairs separated by commas.' }
-    }
-    const [key, val] = parts.map((part) => part.trim())
-    if (!key || !val) {
-      return { value: selector, error: 'Selector keys and values cannot be empty.' }
-    }
-    if (Object.hasOwn(selector, key)) {
-      return { value: selector, error: `Selector key "${key}" is listed more than once.` }
-    }
-    selector[key] = val
-  }
-  return { value: selector, error: null }
-}
-
-// DEFAULT_TARGET_NAMESPACE mirrors the Workload CRD default for
-// spec.targetNamespace (kept local so the api module mock in tests stays flat).
-const DEFAULT_TARGET_NAMESPACE = 'default'
 // Namespace names are RFC 1123 DNS labels — the rule the CRD enforces on
 // spec.targetNamespace. Secret names are DNS subdomains (labels joined by dots).
 const DNS_LABEL_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/
@@ -138,69 +110,33 @@ function parseImagePullSecrets(value: string): PullSecretsResult {
   return { value: names, error: null }
 }
 
-const selectorResult = computed(() => parseSelector(draft.value.selector))
+const selectorResult = computed(() => parseEdgeLabelPairs(draft.value.selector, 'selector'))
 const selectorError = computed(() => selectorResult.value.error)
 const targetNamespaceError = computed(() => validateTargetNamespace(draft.value.targetNamespace))
-const targetNamespace = computed(() => draft.value.targetNamespace.trim() || DEFAULT_TARGET_NAMESPACE)
 const pullSecretsResult = computed(() => parseImagePullSecrets(draft.value.imagePullSecrets))
 const pullSecretsError = computed(() => pullSecretsResult.value.error)
-const pullSecretsSummary = computed(() => pullSecretsError.value
-  ? 'Fix the Secret names'
-  : pullSecretsResult.value.value.join(', ') || 'None (public image)')
+const replicasError = computed(() => Number.isSafeInteger(Number(draft.value.replicas)) && Number(draft.value.replicas) >= 1
+  ? null : 'Enter a whole number of replicas of at least 1.')
 const canSubmit = computed(() => {
   if (!active || loading.value || busy.value || edgeLoadError.value || kubernetesEdges.value.length === 0) return false
   if (targetNamespaceError.value) return false
   if (props.mode === 'marketplace') {
     return !!app.value && !!deployName.value.trim() && kubernetesEdges.value.some((edge) => edge.name === deployEdge.value)
   }
-  return !!draft.value.name.trim() && !!draft.value.image.trim() && !selectorError.value && !pullSecretsError.value
+  return !!draft.value.name.trim() && !!draft.value.image.trim() && !selectorError.value && !pullSecretsError.value && !replicasError.value
 })
 const manualSelector = computed(() => selectorError.value ? {} : selectorResult.value.value)
 const matchingEdges = computed(() => kubernetesEdges.value.filter(edge => {
   return Object.entries(manualSelector.value).every(([key, value]) => edge.labels?.[key] === value)
 }))
-const placementCount = computed(() => draft.value.strategy === 'Singleton'
-  ? Math.min(1, matchingEdges.value.length)
-  : matchingEdges.value.length)
 const placementSummary = computed(() => selectorError.value
   ? 'Fix the selector to preview placements'
-  : `${placementCount.value} current match${placementCount.value === 1 ? '' : 'es'}`)
-const workloadGuidanceValues = computed<CreateGuidanceValue[]>(() => app.value ? [
-  { label: 'Workload name', value: deployName.value.trim() || 'Not entered yet', technical: true },
-  { label: 'Kubernetes edge', value: deployEdge.value || 'Not selected', technical: true },
-  { label: 'Namespace', value: targetNamespaceError.value ? 'Fix the namespace' : targetNamespace.value, technical: true },
-  { label: 'Chart', value: `${app.value.chart.chart}@${app.value.chart.version}`, technical: true },
-  { label: 'Service port', value: String(app.value.port), technical: true },
-  { label: 'Credentials', value: credentialHint[app.value.credential] || 'Review after creation' },
-] : [
-  { label: 'Workload name', value: draft.value.name.trim() || 'Not entered yet', technical: true },
-  { label: 'Namespace', value: targetNamespaceError.value ? 'Fix the namespace' : targetNamespace.value, technical: true },
-  { label: 'Image', value: draft.value.image.trim() || 'Not entered yet', technical: true },
-  { label: 'Image pull secrets', value: pullSecretsSummary.value, technical: true },
-  { label: 'Replicas', value: String(Number(draft.value.replicas) || 1), technical: true },
-  { label: 'Strategy', value: draft.value.strategy },
-  { label: 'Edge selector', value: draft.value.selector.trim() || 'All Kubernetes edges', technical: true },
-  { label: 'Placements', value: placementSummary.value },
-])
-const workloadPrerequisites = computed(() => app.value ? [
-  'A KubernetesCluster edge available for this singleton deployment.',
-  'The pinned marketplace chart and version shown here.',
-  'Any service credential listed below, added after deployment when required.',
-] : [
-  'At least one KubernetesCluster edge.',
-  'A container image the target clusters can pull. For a private registry, a docker-registry Secret in the target namespace on every selected edge.',
-  'Matching labels on target edges. Spread uses every match; Singleton uses one.',
-])
-const workloadNextSteps = computed(() => app.value ? [
-  'Railgrid creates a singleton Helm Workload pinned to the selected edge.',
-  'The edge agent creates the target namespace if it is missing; it is never deleted with the workload.',
-  'Railgrid also declares an Edges Service for the chart endpoint.',
-  'The edge agent applies the chart and reports workload readiness.',
-  'Add the Service credential after deployment when the app requires one.',
-] : [
-  'Railgrid creates the Workload; the edge agent creates the target namespace if it is missing and never deletes it.',
-  'The scheduler creates Placements for matching Kubernetes edges.',
-  'Edge agents apply the derived Deployments and Workload status aggregates their readiness.',
+  : matchingEdges.value.length === 0 ? 'No matching edges'
+  : draft.value.strategy === 'Singleton'
+    ? `Up to 1 placement from ${matchingEdges.value.length} matching edge${matchingEdges.value.length === 1 ? '' : 's'}`
+    : `${matchingEdges.value.length} matching edge${matchingEdges.value.length === 1 ? '' : 's'}`)
+const workloadGuidanceValues = computed<CreateGuidanceValue[]>(() => [
+  { label: 'Estimate', value: placementSummary.value },
 ])
 
 async function submit(): Promise<void> {
@@ -249,7 +185,7 @@ async function submit(): Promise<void> {
     const workload: WorkloadDraft = {
       name: draft.value.name.trim(),
       image: draft.value.image.trim(),
-      replicas: Number(draft.value.replicas) || 1,
+      replicas: Number(draft.value.replicas),
       strategy: draft.value.strategy,
       selector: manualSelector.value,
       targetNamespace: draft.value.targetNamespace.trim() || undefined,
@@ -348,18 +284,18 @@ onUnmounted(() => {
       <div class="k-create-body k-create-body--guided">
       <div class="k-create-fields">
       <label class="fld">
-        <span class="lbl">Workload name</span>
-        <input v-model="deployName" class="k-input" :placeholder="app.type" />
+        <span class="lbl">Workload name (required)</span>
+        <input v-model="deployName" class="k-input" required :placeholder="app.type" />
       </label>
       <label class="fld">
-        <span class="lbl">Edge</span>
-        <select v-model="deployEdge" class="k-input" :disabled="kubernetesEdges.length === 0">
+        <span class="lbl">Edge (required)</span>
+        <select v-model="deployEdge" class="k-input" required :disabled="kubernetesEdges.length === 0">
           <option value="" disabled>Select an edge</option>
           <option v-for="edge in kubernetesEdges" :key="edge.name" :value="edge.name">{{ edge.name }} (KubernetesCluster)</option>
         </select>
       </label>
       <label class="fld">
-        <span id="marketplace-namespace-label" class="lbl">Target namespace</span>
+        <span id="marketplace-namespace-label" class="lbl">Target namespace (optional)</span>
         <input
           v-model="draft.targetNamespace"
           class="k-input"
@@ -374,11 +310,8 @@ onUnmounted(() => {
       <p class="muted">Deploys <span class="mono">{{ app.chart.chart }}@{{ app.chart.version }}</span> onto <b>{{ deployEdge || '—' }}</b> and wires an Edges Service on port {{ app.port }}. Auth: {{ credentialHint[app.credential] }}.</p>
       </div>
       <CreateGuidance
-        title="Deploy this marketplace app"
-        description="Review the pinned chart, target edge, and follow-up Service before starting the deployment."
-        :prerequisites="workloadPrerequisites"
-        :values="workloadGuidanceValues"
-        :next-steps="workloadNextSteps"
+        title="Before you deploy"
+        description="Railgrid creates a singleton workload on the selected edge and declares a Service for its endpoint. Add any required Service credential after deployment."
       />
       </div>
       <div class="k-create-actions">
@@ -395,15 +328,15 @@ onUnmounted(() => {
       <div class="k-create-body k-create-body--guided">
       <div class="k-create-fields">
       <label class="fld">
-        <span class="lbl">Name</span>
-        <input v-model="draft.name" class="k-input" placeholder="nginx-demo" />
+        <span class="lbl">Name (required)</span>
+        <input v-model="draft.name" class="k-input" required placeholder="nginx-demo" />
       </label>
       <label class="fld">
-        <span class="lbl">Image</span>
-        <input v-model="draft.image" class="k-input" placeholder="nginx:latest" />
+        <span class="lbl">Image (required)</span>
+        <input v-model="draft.image" class="k-input" required placeholder="nginx:latest" />
       </label>
       <label class="fld">
-        <span id="workload-pull-secrets-label" class="lbl">Image pull secrets (comma-separated)</span>
+        <span id="workload-pull-secrets-label" class="lbl">Image pull secrets (optional, comma-separated)</span>
         <input
           v-model="draft.imagePullSecrets"
           class="k-input"
@@ -417,8 +350,9 @@ onUnmounted(() => {
       </label>
       <div class="workload-create-grid">
         <label class="fld">
-          <span class="lbl">Replicas</span>
-          <input v-model="draft.replicas" type="number" min="1" class="k-input" />
+          <span id="workload-replicas-label" class="lbl">Replicas (required)</span>
+          <input v-model="draft.replicas" type="number" min="1" step="1" class="k-input" required aria-labelledby="workload-replicas-label" :aria-invalid="replicasError ? 'true' : undefined" :aria-describedby="replicasError ? 'workload-replicas-error' : undefined" />
+          <span v-if="replicasError" id="workload-replicas-error" class="field-error" role="alert">{{ replicasError }}</span>
         </label>
         <label class="fld">
           <span class="lbl">Strategy</span>
@@ -429,7 +363,7 @@ onUnmounted(() => {
         </label>
       </div>
       <label class="fld">
-        <span id="workload-namespace-label" class="lbl">Target namespace</span>
+        <span id="workload-namespace-label" class="lbl">Target namespace (optional)</span>
         <input
           v-model="draft.targetNamespace"
           class="k-input"
@@ -442,7 +376,7 @@ onUnmounted(() => {
         <span v-else id="workload-namespace-help" class="field-help">Namespace on the edge cluster the Deployment and Service land in. It is created on each edge if missing and never deleted with the workload.</span>
       </label>
       <label class="fld">
-        <span id="workload-selector-label" class="lbl">Edge selector (key=value, comma-separated)</span>
+        <span id="workload-selector-label" class="lbl">Edge selector (optional, comma-separated key=value pairs)</span>
         <input
           v-model="draft.selector"
           class="k-input"
@@ -455,11 +389,10 @@ onUnmounted(() => {
       </label>
       </div>
       <CreateGuidance
-        title="Define the workload and placement"
-        description="Choose the image and match labels to the Kubernetes edges that should run it."
-        :prerequisites="workloadPrerequisites"
+        title="Before you create"
+        description="The selector and strategy determine where the workload runs. This preview uses the currently loaded edges; placement may change."
+        values-heading="Placement preview"
         :values="workloadGuidanceValues"
-        :next-steps="workloadNextSteps"
       />
       </div>
       <div class="k-create-actions">
