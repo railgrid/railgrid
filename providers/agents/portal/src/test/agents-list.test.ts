@@ -281,9 +281,9 @@ describe('agents list layouts', () => {
     const search = mounted.element.querySelector<HTMLInputElement>('.k-table__search-input')!
     search.value = 'no matching agent'
     search.dispatchEvent(new Event('input', { bubbles: true }))
-    await new Promise(resolve => setTimeout(resolve, 140))
-    await settleVue()
-    expect(text(mounted.element.querySelector('.k-table'))).toContain('No agents match your search.')
+    await vi.waitFor(() => {
+      expect(text(mounted.element.querySelector('.k-table'))).toContain('No agents match your search.')
+    })
 
     mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout"] [role="radio"][aria-checked="false"]')!.click()
     await settleVue()
@@ -308,9 +308,11 @@ describe('agents list layouts', () => {
     const harnessOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
       .find(option => text(option) === 'Coding harness')!
     harnessOption.click()
-    await new Promise(resolve => setTimeout(resolve, 140))
-    await settleVue()
-    expect(mounted.element.querySelectorAll('.k-table__row')).toHaveLength(1)
+    await vi.waitFor(() => {
+      const rows = mounted.element.querySelectorAll('.k-table__row')
+      expect(rows).toHaveLength(1)
+      expect(text(rows[0])).toContain('codex')
+    })
 
     mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout"] [role="radio"][aria-checked="false"]')!.click()
     await settleVue()
