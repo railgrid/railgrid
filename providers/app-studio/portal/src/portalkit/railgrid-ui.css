@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 66;
+  --railgrid-ui-core-version: 67;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -163,7 +163,8 @@ html.light .k-card {
 .k-badge--warning { background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); color: var(--color-warning, #f0a63a); }
 .k-badge--danger  { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));  color: var(--color-danger, #ff5d5d); }
 .k-badge--muted   { background: var(--color-surface-overlay, #171927); color: var(--color-text-muted, #8587a1); }
-.k-status-badge {
+.k-status-badge,
+.k-badge--label {
   border-color: transparent;
   padding: 2px 6px;
   font-weight: 500;

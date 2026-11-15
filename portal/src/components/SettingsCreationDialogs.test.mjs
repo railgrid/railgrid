@@ -179,3 +179,25 @@ test('Escape dismisses the open member suggestions before the modal', () => {
   api.close()
   assert.deepEqual(state.emitted, ['close'])
 })
+
+test('service account creation returns focus to the collection when refresh removes the first-run trigger', async () => {
+  const { api, props, trigger, dispose } = setup('serviceAccount')
+  let fallbackFocuses = 0
+  props.successFocusFallback = () => ({ focus() { fallbackFocuses++ } })
+  api.draft.value = 'automation'
+  trigger.isConnected = false
+  await api.submit()
+  dispose()
+  assert.equal(trigger.focuses, 0)
+  assert.equal(fallbackFocuses, 1)
+})
+
+test('service account cancellation does not focus a fallback after its trigger disappears', () => {
+  const { api, props, trigger, dispose } = setup('serviceAccount')
+  let fallbackFocuses = 0
+  props.successFocusFallback = () => ({ focus() { fallbackFocuses++ } })
+  trigger.isConnected = false
+  api.close()
+  dispose()
+  assert.equal(fallbackFocuses, 0)
+})
