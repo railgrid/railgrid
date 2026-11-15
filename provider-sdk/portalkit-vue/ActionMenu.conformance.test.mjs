@@ -250,6 +250,54 @@ test('caller busy state closes the menu, blocks repeat actions, and recovers', a
   }
 })
 
+test('ActionMenu typeahead cycles visible labels and skips unavailable actions', async () => {
+  const script = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const executable = ts.transpileModule(script.replace(/^import .*$/gm, '').replace(/^export /gm, ''), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const items = [
+    { id: 'archive', label: 'Archive' },
+    { id: 'blocked', label: 'Add', disabled: true },
+    { id: 'busy', label: 'Approve', busy: true },
+    { id: 'assign', label: 'Assign', description: 'Archive details' },
+    { id: 'delete', label: 'Delete' },
+  ]
+  const focused = []
+  const scope = effectScope()
+  const api = scope.run(() => runInNewContext(`${executable}\n({ activeIndex, handleMenuKeydown })`, {
+    computed, nextTick, ref, watch,
+    defineProps: () => ({ label: 'Actions', items }),
+    withDefaults: (value, defaults) => Object.assign(value, { ...defaults, ...value }),
+    defineEmits: () => () => {}, defineExpose: () => {}, useId: () => 'typeahead',
+    onMounted: () => {}, onBeforeUnmount: () => {}, ensureRailgridUIStyles: () => {},
+    useAnchoredPopover: () => ({ open: ref(true), triggerRef: ref(null), panelRef: ref({ querySelectorAll: () => items.map((_, i) => ({ focus: () => focused.push(i) })) }), panelStyle: ref({}), updatePosition: () => {}, close: () => {} }),
+  }))
+  const key = (value, extra = {}) => {
+    const event = { key: value, prevented: false, preventDefault() { this.prevented = true }, stopPropagation() {}, ...extra }
+    api.handleMenuKeydown(event)
+    return event
+  }
+  try {
+    api.activeIndex.value = 0
+    assert.equal(key('a').prevented, true)
+    await nextTick()
+    assert.equal(focused.at(-1), 3)
+    assert.equal(key('A', { shiftKey: true }).prevented, true)
+    await nextTick()
+    assert.equal(focused.at(-1), 0)
+    assert.equal(key('z').prevented, false)
+    for (const extra of [{ altKey: true }, { ctrlKey: true }, { metaKey: true }, { isComposing: true }, { keyCode: 229 }]) {
+      assert.equal(key('d', extra).prevented, false)
+    }
+    assert.equal(key(' ', { shiftKey: true }).prevented, false)
+    assert.equal(api.activeIndex.value, 0)
+    assert.equal(key('d').prevented, true)
+    await nextTick()
+    assert.equal(focused.at(-1), 4)
+  } finally { scope.stop() }
+})
+
+
 test('busy progress stays visible outside the closed menu and is announced', () => {
   const trigger = templateBlock(component, '<button\n      :id="triggerID"')
   assert.match(trigger, /'k-table-action--busy': busy/)

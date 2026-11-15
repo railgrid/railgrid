@@ -162,6 +162,20 @@ function moveActive(direction: 1 | -1): void {
   }
 }
 
+function matchAction(key: string): boolean {
+  const count = props.items.length
+  const prefix = key.toLocaleLowerCase()
+  for (let offset = 1; offset <= count; offset += 1) {
+    const index = (activeIndex.value + offset) % count
+    if (isSelectable(index) && props.items[index].label.trimStart().toLocaleLowerCase().startsWith(prefix)) {
+      focusItem(index)
+      return true
+    }
+  }
+  return false
+}
+
+
 function handleTriggerKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     if (!open.value) return
@@ -185,6 +199,8 @@ function handleTriggerKeydown(event: KeyboardEvent): void {
 }
 
 function handleMenuKeydown(event: KeyboardEvent): void {
+  if (event.isComposing || event.keyCode === 229 || event.altKey || event.ctrlKey || event.metaKey) return
+  if (event.shiftKey && event.key !== 'Tab' && (event.key.length !== 1 || event.key === ' ')) return
   if (event.key === 'Escape') {
     event.preventDefault()
     closeMenu(true)
@@ -212,6 +228,8 @@ function handleMenuKeydown(event: KeyboardEvent): void {
   } else if (event.key === 'ArrowUp') {
     event.preventDefault()
     moveActive(-1)
+  } else if (event.key.length === 1 && matchAction(event.key)) {
+    event.preventDefault()
   }
 }
 
