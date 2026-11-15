@@ -148,11 +148,6 @@ railgrid-provider-code .repo-detail__provider-mark {
 railgrid-provider-code .repo-detail__resource > section > header {
   padding-inline-start: 52px;
 }
-railgrid-provider-code .repo-detail__actions a[class~="k-btn--primary"],
-railgrid-provider-code .repo-detail__actions a[class~="k-btn--primary"]:hover {
-  color: var(--color-on-accent, #ffffff);
-  text-decoration: none;
-}
 railgrid-provider-code .repo-detail__resource > section > header > div:first-child > div {
   align-items: center;
   gap: 7px;
@@ -639,10 +634,12 @@ railgrid-provider-code .empty {
   padding: 8px 0;
 }
 railgrid-provider-code a {
-  color: var(--color-accent, #8b6bff);
   text-decoration: none;
 }
-railgrid-provider-code a:hover {
+railgrid-provider-code a:where(:not([class~="k-btn"]), [class~="k-table-resource-link"]) {
+  color: var(--color-accent, #8b6bff);
+}
+railgrid-provider-code a:where(:not([class~="k-btn"]), [class~="k-table-resource-link"]):hover {
   text-decoration: underline;
 }
 railgrid-provider-code code {
