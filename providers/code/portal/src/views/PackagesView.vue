@@ -5,6 +5,7 @@ import { api } from '../api'
 import type { ErrorResponse, PackageRow } from '../types'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
+import { portalHref } from '../portalkit/navigation'
 import { isCompleteFirstCursorPage, type ResourceTableChange } from '../portalkit/table'
 import {
   FAST_REFRESH_MS,
@@ -31,10 +32,18 @@ import {
 
 const emit = defineEmits<{ (e: 'open', repositoryRef: string): void }>()
 
+function openRepositoryLink(event: MouseEvent, repositoryRef: string): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  emit('open', repositoryRef)
+}
+
 const packages = ref<PackageRow[]>([])
 const error = ref<string | null>(null)
 const loading = ref(false)
 const loaded = ref(false)
+// A prior read does not establish a snapshot for a newly selected page or query.
+const snapshotCurrent = ref(false)
 const packageMode = ref<PackagePaginationMode>('server')
 const packagePage = ref(1)
 const packagePageSize = ref(PACKAGE_PAGE_SIZE)
@@ -148,6 +157,7 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
   if (request.active && request.mode === 'server') {
     packages.value = []
     pageInfo.value = null
+    snapshotCurrent.value = false
   }
   try {
     if (request.active || request.mode === 'client') {
@@ -164,6 +174,7 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
           packageCursor.value = null
           pageInfo.value = null
           loaded.value = true
+          snapshotCurrent.value = true
           error.value = null
         }
         return
@@ -188,6 +199,7 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
       // terminal page. The metadata is retained for that transition.
     }
     loaded.value = true
+    snapshotCurrent.value = true
     error.value = null
   } catch (e) {
     if (!packageRequestIsCurrent(requestID, request)) return
@@ -231,7 +243,10 @@ function handlePackageChange(change: ResourceTableChange) {
     // A pending active-query walk can still exist while mode is server; clear
     // invalidates it before the queued first server page is allowed to commit.
     packageFullRead.clear()
-    if (transition.clearRows) packages.value = []
+    if (transition.clearRows) {
+      packages.value = []
+      snapshotCurrent.value = false
+    }
     if (transition.reload) load('foreground', false)
     return
   }
@@ -240,6 +255,7 @@ function handlePackageChange(change: ResourceTableChange) {
   // should not trigger an unnecessary workspace walk.
   if (canReuseCurrentServerPage) {
     packageFullRead.seed(packages.value)
+    snapshotCurrent.value = true
     packageMode.value = 'client'
     packagePage.value = 1
     packageCursor.value = null
@@ -252,6 +268,7 @@ function handlePackageChange(change: ResourceTableChange) {
   const cachedFullRows = packageFullRead.peek()
   if (cachedFullRows) {
     packages.value = cachedFullRows
+    snapshotCurrent.value = true
     packageMode.value = 'client'
     packagePage.value = 1
     packageCursor.value = null
@@ -259,7 +276,10 @@ function handlePackageChange(change: ResourceTableChange) {
     return
   }
 
-  if (transition.clearRows) packages.value = []
+  if (transition.clearRows) {
+    packages.value = []
+    snapshotCurrent.value = false
+  }
   if (transition.reload) load()
 }
 
@@ -301,7 +321,8 @@ onUnmounted(() => {
       :loading="loading"
       :refresh-mode="refreshMode"
       :error="error"
-      :stale="loaded && !!error"
+      :stale="loaded && snapshotCurrent && !!error"
+      :results-unavailable="loaded && !snapshotCurrent"
       retryable
       empty-text="No packages published in this workspace yet."
       :interactive="false"
@@ -309,7 +330,7 @@ onUnmounted(() => {
       @change="handlePackageChange"
     >
       <template #repositoryRef="{ row }">
-        <button v-if="row.showRepository && !row.deleting" class="k-btn k-btn--ghost k-table-resource-link" type="button" @click.stop="emit('open', String(row.repositoryRef))">{{ row.repositoryRef }}</button>
+        <a v-if="row.showRepository && !row.deleting" class="k-btn k-btn--ghost k-table-resource-link" :href="portalHref(`/ui/providers/code/repositories/${encodeURIComponent(String(row.repositoryRef))}`)" @click.stop="openRepositoryLink($event, String(row.repositoryRef))">{{ row.repositoryRef }}</a>
         <span v-else-if="row.showRepository">{{ row.repositoryRef }}</span>
         <CornerDownRight v-else class="muted" :size="14" aria-label="Same repository as above" />
       </template>

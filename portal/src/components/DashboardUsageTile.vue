@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import ResourceTimestamp from '@/portalkit/ResourceTimestamp.vue'
 import { ArrowUpRight, RefreshCw } from 'lucide-vue-next'
 import { authSessionRevision } from '@/auth/token'
 import { useAuthStore } from '@/stores/auth'
@@ -26,7 +27,6 @@ const recordedAt = computed(() => {
   const date = new Date(end)
   return Number.isNaN(date.getTime()) ? null : {
     iso: date.toISOString(),
-    label: date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
   }
 })
 
@@ -91,7 +91,7 @@ onBeforeUnmount(() => {
       <template v-else>
         <MeteringUsageList class="mt-4" :limits="billing.limits" :usage="billing.usage" :window="billing.window ?? null" variant="compact" :meter-to="billingPath" />
         <footer class="dashboard-usage__footer mt-3 text-xs text-text-secondary">
-          <span v-if="recordedAt">Usage recorded <time :datetime="recordedAt.iso">{{ recordedAt.label }}</time></span>
+          <span v-if="recordedAt">Usage recorded <ResourceTimestamp :value="recordedAt.iso" label="Usage recorded" /></span>
           <span v-else>Latest reported usage</span>
           <button type="button" class="k-dashboard-action dashboard-usage__refresh" :disabled="loading" @click="load">
             <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" /> {{ loading ? 'Refreshing…' : 'Refresh' }}

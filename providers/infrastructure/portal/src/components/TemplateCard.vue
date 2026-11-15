@@ -3,8 +3,14 @@ import { computed } from 'vue'
 import { Globe2, Lock } from 'lucide-vue-next'
 import type { Template } from '../types'
 
-const props = defineProps<{ template: Template }>()
-defineEmits<{ (e: 'select', name: string): void }>()
+const props = defineProps<{ template: Template; href: string }>()
+const emit = defineEmits<{ (e: 'select', name: string): void }>()
+
+function followLink(event: MouseEvent): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  emit('select', props.template.name)
+}
 
 // Say up front whether this thing will have a URL. Users otherwise provision,
 // wait, and go looking for a link that is never coming — and 'public' is the
@@ -22,11 +28,11 @@ const exposure = computed(() => {
 </script>
 
 <template>
-  <button
-    type="button"
+  <a
+    :href="href"
     class="template-card k-card"
     :aria-label="`Provision ${template.displayName || template.name}`"
-    @click="$emit('select', template.name)"
+    @click="followLink"
   >
     <div class="template-card-head">
       <div class="template-card-title">{{ template.displayName || template.name }}</div>
@@ -42,5 +48,5 @@ const exposure = computed(() => {
       <span class="kind">{{ template.kind }}</span>
       <span v-if="template.version" class="version">v{{ template.version }}</span>
     </div>
-  </button>
+  </a>
 </template>

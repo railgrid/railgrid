@@ -33,6 +33,53 @@ function mountForm(schema: JSONSchema, initial: Record<string, unknown>) {
 }
 
 describe('DynamicForm collection editors', () => {
+  it('asks for an enum selection and preserves the selected value type', async () => {
+    const { host, form } = mountForm({ type: 'object', required: ['size'], properties: {
+      size: { type: 'integer', enum: [1, 2] },
+    } }, {})
+    const select = host.querySelector<HTMLSelectElement>('select')!
+    expect(select.value).toBe('')
+    expect(select.selectedOptions[0].textContent).toBe('Select an option')
+    expect((await form.value!.validate()).valid).toBe(false)
+    expect(document.activeElement).toBe(select)
+    select.value = '1'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(await form.value!.validate()).toEqual({ valid: true, values: { size: 2 } })
+  })
+
+  it('shows an enum default and updates it', async () => {
+    const { host, form } = mountForm({ type: 'object', properties: {
+      mode: { type: 'string', enum: ['safe', 'strict'], default: 'safe' },
+    } }, {})
+    const select = host.querySelector<HTMLSelectElement>('select')!
+    expect(select.selectedOptions[0].textContent).toBe('safe')
+    select.value = '1'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(await form.value!.validate()).toEqual({ valid: true, values: { mode: 'strict' } })
+  })
+
+  it('prompts for a new map enum value and validates its typed selection', async () => {
+    const { host, form } = mountForm({ type: 'object', properties: {
+      limits: { type: 'object', additionalProperties: { type: 'integer', enum: [1, 2] } },
+    } }, {})
+    host.querySelector<HTMLButtonElement>('.dynform-map-add')!.click()
+    await nextTick()
+    const key = host.querySelector<HTMLInputElement>('.dynform-map-row input')!
+    key.value = 'cpu'
+    key.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const select = host.querySelector<HTMLSelectElement>('.dynform-map-row select')!
+    expect(select.selectedOptions[0].textContent).toBe('Select an option')
+    expect((await form.value!.validate()).valid).toBe(false)
+    expect(document.activeElement).toBe(select)
+    select.value = '2'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(await form.value!.validate()).toEqual({ valid: true, values: { limits: { cpu: 2 } } })
+  })
+
   it('keeps labels concise and places described help after scalar and map controls', () => {
     const { host } = mountForm({ type: 'object', properties: {
       image: { type: 'string', description: 'Choose a container image.' },
@@ -150,6 +197,50 @@ describe('DynamicForm collection editors', () => {
 	expect(document.activeElement).toBe(add)
   })
 
+  it('associates map errors with controls and focuses the offending value', async () => {
+    const { host, form } = mountForm({ type: 'object', properties: {
+      limits: { type: 'object', additionalProperties: { type: 'number' } },
+    } }, { limits: { cpu: 1, memory: 2 } })
+    const rows = host.querySelectorAll<HTMLElement>('.dynform-map-row')
+    const value = rows[1].querySelectorAll<HTMLInputElement>('input')[1]
+    value.value = 'invalid'
+    value.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect((await form.value!.validate()).valid).toBe(false)
+    expect(document.activeElement).toBe(value)
+    expect(value.getAttribute('aria-invalid')).toBe('true')
+    const error = host.querySelector<HTMLElement>(`#${value.getAttribute('aria-describedby')}`)!
+    expect(error.textContent).toContain('limits.memory must be a number')
+    for (const control of host.querySelectorAll<HTMLInputElement>('.dynform-map-row input')) {
+      if (control === value) continue
+      expect(control.getAttribute('aria-invalid')).toBeNull()
+      expect(control.getAttribute('aria-describedby')).toBeNull()
+      expect(control.validationMessage).toBe('')
+    }
+    value.value = '4'
+    value.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(value.getAttribute('aria-describedby')).toBeNull()
+    expect((await form.value!.validate()).valid).toBe(true)
+  })
+
+  it('identifies the duplicate key rather than its valid neighbor', async () => {
+    const { host, form } = mountForm({ type: 'object', properties: {
+      limits: { type: 'object', additionalProperties: { type: 'number' } },
+    } }, { limits: { cpu: 1, memory: 2 } })
+    const rows = host.querySelectorAll<HTMLElement>('.dynform-map-row')
+    const firstKey = rows[0].querySelector<HTMLInputElement>('input')!
+    const secondKey = rows[1].querySelector<HTMLInputElement>('input')!
+    secondKey.value = 'cpu'
+    secondKey.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect((await form.value!.validate()).valid).toBe(false)
+    expect(document.activeElement).toBe(secondKey)
+    expect(secondKey.getAttribute('aria-invalid')).toBe('true')
+    expect(firstKey.getAttribute('aria-invalid')).toBeNull()
+    expect(firstKey.validationMessage).toBe('')
+  })
+
   it('omits read-only values from the create form', () => {
     const { host } = mountForm({
       type: 'object',
@@ -249,7 +340,7 @@ describe('DynamicForm collection editors', () => {
     const notes = [...host.querySelectorAll<HTMLInputElement>('input.k-input')].find(input => input.type === 'text')!
     expect(enabled.checked).toBe(false)
     expect(retries.value).toBe('0')
-    expect(mode.value).toBe('safe')
+    expect(mode.selectedOptions[0].textContent).toBe('safe')
     expect(notes.value).toBe('')
     expect(values.value).toEqual({ enabled: false, retries: 0 })
 

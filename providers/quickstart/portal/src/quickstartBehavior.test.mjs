@@ -59,6 +59,24 @@ test('a failed refresh retains the authoritative inventory and can recover', asy
   assert.equal(element._readError, '')
 })
 
+test('retry keeps the previous error and snapshot until the read succeeds', async () => {
+  let pending = null
+  let failure = false
+  const element = harness(() => ({ list: () => pending ? pending.promise : failure ? Promise.reject(new Error('offline')) : Promise.resolve({ items: [] }) }), true)
+  element.railgridContext = context('tenant')
+  await flush()
+  failure = true
+  await element._load()
+  pending = deferred()
+  const retry = element._load()
+  assert.match(element.innerHTML, /Showing the last successful greetings/)
+  assert.match(element.innerHTML, /data-refresh="retry" aria-disabled="true" aria-busy="true">Retrying…/)
+  assert.match(element.innerHTML, /Create your first greeting/)
+  pending.resolve({ items: [] })
+  await retry
+  assert.doesNotMatch(element.innerHTML, /offline/)
+})
+
 test('legacy credential changes fence authority while same-user host fetch replacements preserve drafts', async () => {
   const element = harness(() => ({ list: async () => ({ items: [] }) }))
   element.railgridContext = { tenant: 'tenant', token: 'first-test-credential' }
@@ -176,7 +194,7 @@ test('populated reads label the count and retain it after a failed refresh', asy
   assert.match(element.innerHTML, /k-resource-page__meta[^>]*>\s*<span>2 greetings</)
   assert.match(element.innerHTML, /Showing the last successful greetings/)
   assert.match(element.innerHTML, /offline/)
-  assert.match(element.innerHTML, /data-refresh>Retry/)
+  assert.match(element.innerHTML, /data-refresh="retry"[^>]*>Retry/)
 })
 
 test('successful creation returns to the collection and clears the submitted draft', async () => {
@@ -215,7 +233,7 @@ function tileHarness(client) {
       : {
         createTilePoller: () => ({ start() {}, stop() {}, refresh() {} }),
         dashboardTileSemanticClass: new Proxy({}, { get: (_object, property) => String(property) }),
-        hasWorkspaceContext: ctx => !!ctx?.tenant, isBenignTileError: () => false,
+        hasWorkspaceContext: ctx => !!ctx?.tenant, isBenignTileError: error => error?.reason === 'APIBindingMissing',
         mostRecent: items => items, tileErrorText: error => error.message,
       },
   })
@@ -239,6 +257,20 @@ test('dashboard transient failure retains the successful snapshot with retry and
   assert.equal(element._error, '')
 })
 
+test('dashboard marks an existing greeting snapshot stale when the binding disappears', async () => {
+  let missing = false
+  const element = tileHarness(() => ({ listAll: async () => {
+    if (missing) throw { reason: 'APIBindingMissing', message: 'Binding unavailable' }
+    return [{ metadata: { name: 'kept' } }]
+  } }))
+  element.railgridContext = { tenant: 'tenant', fetch: async () => ({}) }
+  await element._load()
+  missing = true
+  await element._load()
+  assert.equal(element._items[0].metadata.name, 'kept')
+  assert.match(element.innerHTML, /Showing the last successful result/)
+})
+
 test('dashboard late responses cannot cross a workspace, user, or disconnected boundary', async () => {
   const pending = deferred()
   const element = tileHarness(() => ({ listAll: () => pending.promise }))
@@ -256,4 +288,16 @@ test('dashboard late responses cannot cross a workspace, user, or disconnected b
   later.resolve([{ metadata: { name: 'late' } }])
   await removedRead
   assert.equal(removed._items.length, 0)
+})
+
+test('observed timestamps offer exact timezone-aware details without inventing missing values', () => {
+  const element = harness(() => ({ list: async () => ({ items: [] }) }))
+  const valid = element._renderRow({ metadata: { name: 'hello' }, status: { observedAt: '2026-11-01T06:30:00Z' } })
+  assert.match(valid, /data-observed-time=/)
+  assert.match(valid, /data-observed-exact=/)
+  assert.match(valid, /aria-pressed="false"/)
+  assert.match(valid, /datetime="2026-11-01T06:30:00.000Z"/)
+  const missing = element._renderRow({ metadata: { name: 'hello' } })
+  assert.match(missing, /not observed yet/)
+  assert.doesNotMatch(missing, /data-observed-time=/)
 })
