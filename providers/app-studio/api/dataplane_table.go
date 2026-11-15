@@ -103,10 +103,6 @@ var projectVerbs = []verbRoute{
 		http.MethodGet:  func(s *Server) http.HandlerFunc { return s.listProjectPublishingGrants },
 		http.MethodPost: func(s *Server) http.HandlerFunc { return s.projectPublishingGrantWrite },
 	}},
-	{verb: "preview-bridge-sessions", tailVars: []string{"session"}, handlers: map[string]func(*Server) http.HandlerFunc{
-		http.MethodPost:   func(s *Server) http.HandlerFunc { return s.createProjectPreviewBridgeSession },
-		http.MethodDelete: func(s *Server) http.HandlerFunc { return s.deleteProjectPreviewBridgeSession },
-	}},
 
 	// Integrations. `integrations` is the binding list/edit; invoking a bound
 	// provider's action is a SEPARATE verb, so a project may be allowed to

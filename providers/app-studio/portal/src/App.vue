@@ -1127,10 +1127,6 @@ const developmentPreviewRefreshController = new DevelopmentPreviewRefreshControl
   setSelectedProject: (project) => { selected.value = project },
 })
 const previewBridgeController = new PreviewBridgeController({
-  api: {
-    createSession: (project, generation, portalInstanceID) => api.createPreviewBridgeSession(props.ctx, project, generation, portalInstanceID),
-    deleteSession: (project, sessionID) => api.deletePreviewBridgeSession(props.ctx, project, sessionID),
-  },
   getFrame: () => developmentPreviewFrameRef.value,
   onState: handleDevelopmentPreviewBridgeState,
   onAnnotation: handleDevelopmentPreviewAnnotation,

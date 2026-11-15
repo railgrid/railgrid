@@ -14,27 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Synthetic signed iframe fixture; the parent is not the App Studio portal.
+// Synthetic origin-bound iframe fixture; the parent is not the App Studio portal.
 // Set PLAYWRIGHT_MODULE and CHROMIUM_EXECUTABLE to run against local Chromium.
 import assert from 'node:assert/strict'
-import { webcrypto, randomUUID } from 'node:crypto'
 import http from 'node:http'
 import { previewBridgeClientSource } from './preview-bridge-plugin.mjs'
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright')
-const pair = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
-const key = { ...await webcrypto.subtle.exportKey('jwk', pair.publicKey), kid: 'test', alg: 'ES256', use: 'sig' }
-const source = previewBridgeClientSource({ keys: [key] })
-const b64 = v => Buffer.from(JSON.stringify(v)).toString('base64url')
-let origin
+let origin, source
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, origin)
-  if (url.pathname === '/cap') {
-    const now = Math.floor(Date.now() / 1000)
-    const head = b64({alg:'ES256',kid:'test'})
-    const body = b64({iss:'app-studio',aud:'preview-bridge',v:1,sid:'session',gen:url.searchParams.get('generation'),po:origin,ao:origin,iat:now,exp:now+60,jti:randomUUID()})
-    const sig = await webcrypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},pair.privateKey,new TextEncoder().encode(`${head}.${body}`))
-    res.end(`${head}.${body}.${Buffer.from(sig).toString('base64url')}`)
-  } else if (url.pathname === '/child') {
+  if (url.pathname === '/child') {
     res.setHeader('Content-Type','text/html')
     res.end(`<html><head><script>${source}</script></head><body><main id="main"><h1 id="title">Example heading</h1><button id="button" onclick="window.activations=(window.activations||0)+1">Example button</button><div id="transparent" style="opacity:0">Invisible</div><div style="overflow:hidden;width:20px;height:20px"><div id="clipped" style="position:relative;left:100px;width:20px;height:20px">Clipped</div></div><div id="scroller" style="overflow:auto;width:100px;height:30px"><div style="height:100px"></div><button id="offscreen">Offscreen</button></div></main></body></html>`)
   } else {
@@ -44,9 +33,8 @@ const server = http.createServer(async (req, res) => {
       window.addEventListener('message', async e => {
         if (e.data.type !== 'railgrid.preview-bridge.ready' || !e.ports[0] || !window.probed) return;
         generation=e.data.documentID; port=e.ports[0];
-        const capability=await (await fetch('/cap?generation='+generation)).text();
         port.onmessage=e=>{window.messages.push(e.data); if(e.data.type==='railgrid.preview-bridge.annotation.cancelled') document.querySelector('#start').focus()};
-        port.postMessage({type:'railgrid.preview-bridge.start',version:1,sessionID:'session',generation,capability});
+        port.postMessage({type:'railgrid.preview-bridge.start',version:1,sessionID:'session',generation});
       });
       document.querySelector('#preview').onload=()=>{window.probed=true;document.querySelector('#preview').contentWindow.postMessage({type:'railgrid.preview-bridge.probe',version:1},location.origin)};
       document.querySelector('#start').onclick=()=>port.postMessage({type:'railgrid.preview-bridge.annotation.start',version:1,sessionID:'session',generation});
@@ -55,6 +43,8 @@ const server = http.createServer(async (req, res) => {
 })
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
 origin=`http://127.0.0.1:${server.address().port}`
+// The fixture parent and child share one origin; it is the allowed portal origin.
+source=previewBridgeClientSource({ portalOrigins: [origin] })
 let browser
 try {
   browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE})
@@ -133,5 +123,5 @@ try {
   await page.keyboard.press('Escape')
   await waitMessage('railgrid.preview-bridge.annotation.cancelled', emptyCancelled)
   assert.equal(await page.locator('#start').evaluate(el => el === document.activeElement), true)
-  console.log('Signed bridge keyboard selection and cancel passed')
+  console.log('Origin-bound bridge keyboard selection and cancel passed')
 } finally { await browser?.close(); await new Promise(resolve=>server.close(resolve)) }

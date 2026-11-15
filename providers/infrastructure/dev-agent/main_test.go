@@ -349,7 +349,7 @@ func TestMatchReloadRules(t *testing.T) {
 
 func TestInstallSelf(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(previewBridgeJWKSEnv, testPreviewBridgeJWKS())
+	t.Setenv(previewBridgeOriginsEnv, " https://Console.Example.test , https://console.example.test:443,http://localhost:9443 ")
 	if err := installSelf(dir); err != nil {
 		t.Fatalf("installSelf: %v", err)
 	}
@@ -373,14 +373,14 @@ func TestInstallSelf(t *testing.T) {
 	if !bytes.Equal(plugin, previewBridgePlugin) {
 		t.Error("installed preview bridge plugin differs from embedded asset")
 	}
-	rawJWKS, err := os.ReadFile(filepath.Join(dir, previewBridgeJWKSName))
+	rawConfig, err := os.ReadFile(filepath.Join(dir, previewBridgeConfigName))
 	if err != nil {
-		t.Fatalf("read installed JWKS: %v", err)
+		t.Fatalf("read installed preview bridge configuration: %v", err)
 	}
-	if strings.Contains(string(rawJWKS), `"d"`) {
-		t.Errorf("installed JWKS contains private material: %s", rawJWKS)
+	if want := `{"portalOrigins":["https://console.example.test","http://localhost:9443"]}`; string(rawConfig) != want {
+		t.Errorf("installed preview bridge configuration = %s, want %s", rawConfig, want)
 	}
-	for _, name := range []string{previewBridgePluginName, previewBridgeJWKSName} {
+	for _, name := range []string{previewBridgePluginName, previewBridgeConfigName} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatalf("stat %s: %v", name, err)
@@ -400,15 +400,15 @@ func TestInstallSelf(t *testing.T) {
 	}
 }
 
-func TestInstallSelfInvalidJWKSFailsOpenAndRemovesStaleConfig(t *testing.T) {
-	for _, raw := range []string{"", `{"keys":[{"kty":"EC","crv":"P-256","kid":"attacker","x":"x","y":"y","d":"private"}]}`} {
+func TestInstallSelfInvalidOriginsFailOpenAndRemoveStaleConfig(t *testing.T) {
+	for _, raw := range []string{"", "*", "https://console.example.test/path"} {
 		t.Run(raw, func(t *testing.T) {
 			dir := t.TempDir()
-			stale := filepath.Join(dir, previewBridgeJWKSName)
-			if err := os.WriteFile(stale, []byte(testPreviewBridgeJWKS()), 0o644); err != nil {
+			stale := filepath.Join(dir, previewBridgeConfigName)
+			if err := os.WriteFile(stale, []byte(`{"portalOrigins":["https://old.example.test"]}`), 0o644); err != nil {
 				t.Fatalf("write stale config: %v", err)
 			}
-			t.Setenv(previewBridgeJWKSEnv, raw)
+			t.Setenv(previewBridgeOriginsEnv, raw)
 			if err := installSelf(dir); err != nil {
 				t.Fatalf("installSelf should leave app available: %v", err)
 			}
@@ -416,27 +416,27 @@ func TestInstallSelfInvalidJWKSFailsOpenAndRemovesStaleConfig(t *testing.T) {
 				t.Errorf("plugin was not installed: %v", err)
 			}
 			if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("stale JWKS still exists: %v", err)
+				t.Errorf("stale preview bridge configuration still exists: %v", err)
 			}
 		})
 	}
 }
-func TestNormalizePreviewBridgeJWKSRejectsPrivateOrMalformedKeys(t *testing.T) {
+
+func TestPreviewBridgeConfigRejectsNonOrigins(t *testing.T) {
 	for _, raw := range []string{
-		`{"keys":[]}`,
-		`{"keys":[{"kty":"EC","crv":"P-256","kid":"a","x":"x","y":"y","d":"private"}]}`,
-		`{"keys":[{"kty":"RSA","kid":"a","x":"x","y":"y"}]}`,
-		`{"keys":[{"kty":"EC","crv":"P-256","kid":"a","x":"eA","y":"eQ"}]}`,
+		",",
+		"null",
+		"javascript:alert(1)",
+		"https://user@console.example.test",
+		"https://console.example.test?x=1",
+		"https://console.example.test#x",
+		"ftp://console.example.test",
+		strings.Repeat("https://a.example.test,", 1) + "https://b.example.test,https://c.example.test,https://d.example.test,https://e.example.test,https://f.example.test,https://g.example.test,https://h.example.test,https://i.example.test",
 	} {
-		if _, err := normalizePreviewBridgeJWKS([]byte(raw)); err == nil {
-			t.Errorf("normalizePreviewBridgeJWKS(%s) succeeded, want rejection", raw)
+		if _, err := previewBridgeConfig(raw); err == nil {
+			t.Errorf("previewBridgeConfig(%q) succeeded, want rejection", raw)
 		}
 	}
-}
-
-func testPreviewBridgeJWKS() string {
-	coordinate := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
-	return `{"keys":[{"kty":"EC","crv":"P-256","kid":"current","x":"` + coordinate + `","y":"` + coordinate + `","alg":"ES256","use":"sig"}]}`
 }
 
 func newTestAgent(t *testing.T, cfg *agentConfig) *agentServer {

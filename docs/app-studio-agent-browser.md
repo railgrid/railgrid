@@ -538,9 +538,29 @@ directory or Playwright `storageState` by default.
 
 ## User annotations
 
-The development preview now supports DOM annotations through the existing
-signed preview-bridge `MessagePort`. This is not the removed signed preview
-gateway and does not share the user's browser session with the agent.
+The development preview supports DOM annotations through the preview-bridge
+`MessagePort`. It does not share the user's browser session with the agent.
+
+The bridge is trusted by exact origin, enforced by the browser, and holds no
+server-side state or key material:
+
+- Infrastructure installs a portal-origin allowlist into each development
+  preview (the hub's public origin by default; chart
+  `development.previewBridge.*`). The injected script answers only a parent
+  whose `MessageEvent.origin` is on that list and posts its handshake
+  endpoint only with that exact `targetOrigin`.
+- The dev server sends `Content-Security-Policy: frame-ancestors` for the same
+  origins, so no other site can embed the preview at all.
+- The portal accepts READY only from the preview iframe's own window on the
+  preview origin. READY carries a document ID the bridge generates per page
+  load; START must echo it, and the portal mints a fresh session ID per
+  document, so a session never binds to a predecessor document.
+
+App Studio already authorized the caller for the preview itself
+(`authorize-development-preview`), and everything the bridge returns is
+treated as untrusted page content, so a signed capability would add no
+protection: it would only restate the portal's origin, and the tenant app in
+the same document could forge descriptors either way.
 
 - When the bridge is connected, Preview actions exposes `Annotate`. The
   injected Vite bridge highlights hovered elements and capture-clicks a
@@ -561,17 +581,17 @@ gateway and does not share the user's browser session with the agent.
   preview facts are kept separately inside an
   `untrusted_preview_annotation` envelope and are never promoted to authority.
 
-The bridge remains development-preview-only, same-iframe and exact-origin,
-signed-capability, and one-use-session scoped. This feature is not a
-production in-place merge or branch workflow.
+The bridge remains development-preview-only, same-iframe, exact-origin and
+per-document scoped. This feature is not a production in-place merge or
+branch workflow.
 
 Verification covers the deterministic plugin DOM harness, portal
 protocol/composer/recovery/projection tests, focused API durability tests, and
 App Studio typecheck and build. A Chromium acceptance run against the local
-Tilt deployment exercised the signed handshake, parent-owned hover comment,
+Tilt deployment exercised the bridge handshake, parent-owned hover comment,
 capture-click suppression, and numbered pins. With a positioned and transformed
 preview body, the pin-to-element offset had zero drift after scrolling. Reload
-created a new authenticated document generation, marked the comment stale, and
+created a new document generation, marked the comment stale, and
 rendered no stale pin.
 
 ## MVP
@@ -732,7 +752,7 @@ evidence from the current preview revision.
 
 ### Phase 4: annotations (implemented foundation)
 
-- The existing signed, exact-origin preview-bridge now provides DOM
+- The existing exact-origin preview-bridge now provides DOM
   annotation mode and a transparent in-frame overlay.
 - It returns bounded route, viewport, rectangle, accessible-name, role, and
   locator facts rather than DOM dumps, form values, or arbitrary attributes.

@@ -1509,16 +1509,6 @@ local_resource(
 
 
 # --- providers-app-studio ---
-local_resource(
-    'app-studio-preview-bridge-key',
-    cmd='make app-studio-preview-bridge-dev-key',
-    deps=[
-        'Makefile',
-        'providers/app-studio/hack/preview-bridge-dev-keys.mjs',
-    ],
-    labels=['providers-app-studio'],
-)
-
 # App Studio's durable store is the shared in-cluster providers-db Postgres
 # (database "appstudio") — the same store replica claims and project pins live
 # in, so multi-replica behavior is real in dev at REPLICA_COUNT=2.
@@ -1655,10 +1645,7 @@ for _line in str(read_file(app_studio_hash_file, '')).splitlines():
 #
 # The controller manager watches the APIExportEndpointSlice in the PROVIDER
 # workspace, so the synced kubeconfig must be the workspace-scoped one init
-# writes (.kcp/app-studio-provider.kubeconfig). previewBridge is disabled in
-# pod mode for now: the dev signing-key flow generates the key id at runtime,
-# which chart values can't consume at render time — App Studio serves without
-# the signed annotation bridge (its documented degraded mode).
+# writes (.kcp/app-studio-provider.kubeconfig).
 provider_kubeconfig_sync('app-studio', '.kcp/app-studio-provider.kubeconfig', ['providers-app-studio'])
 provider_pod(
     'app-studio', 8085,
@@ -1670,7 +1657,6 @@ provider_pod(
         'hub.actionsExternalURL=https://railgrid-hub.%s.svc:9443' % hub_namespace,
         'hub.actionsCABundleConfigMap.name=app-studio-actions-ca',
         'hub.actionsCABundleConfigMap.key=ca-bundle.pem',
-        'previewBridge.enabled=false',
         'apiExport.infraIdentityHash=%s' % app_studio_infra_hash,
         'apiExport.codeIdentityHash=%s' % app_studio_code_hash,
     ],

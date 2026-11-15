@@ -400,7 +400,7 @@ spec:
   # lands in a Deployment env value — but the shim itself is proven, so it is
   # carried verbatim): it forces server.host + server.allowedHosts so the dev
   # server accepts the proxied preview Host header, and dynamically loads the
-  # platform preview-bridge plugin when trusted keys are installed. Missing
+  # platform preview-bridge plugin when its portal origins are installed. Missing
   # plugin/config fails open and leaves the ordinary preview intact.
   development:
     # CI is scaffold-owned. App Studio observes/dispatches this exact workflow

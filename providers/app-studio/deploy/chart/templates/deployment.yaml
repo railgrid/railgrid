@@ -228,17 +228,6 @@ spec:
             - name: APP_STUDIO_RUN_SANDBOX
               value: {{ .Values.assistant.runSandbox.enabled | quote }}
             {{- end }}
-            - name: APP_STUDIO_PREVIEW_BRIDGE_ENABLED
-              value: {{ .Values.previewBridge.enabled | quote }}
-            {{- if and .Values.previewBridge.enabled (or .Values.previewBridge.signingKeyID .Values.previewBridge.signingKeySecretRef.name) }}
-            - name: APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID
-              value: {{ required "previewBridge.signingKeyID is required when previewBridge.enabled=true" .Values.previewBridge.signingKeyID | quote }}
-            - name: APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ required "previewBridge.signingKeySecretRef.name is required when previewBridge.enabled=true" .Values.previewBridge.signingKeySecretRef.name }}
-                  key: {{ .Values.previewBridge.signingKeySecretRef.key | default "private-key.pem" }}
-            {{- end }}
             {{- if .Values.store.messageRetention }}
             - name: APP_STUDIO_MESSAGE_RETENTION
               value: {{ .Values.store.messageRetention | quote }}

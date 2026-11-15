@@ -96,9 +96,10 @@ func TestEnsureServeRBACAcceptsCreateConflictWithDesiredRoleRef(t *testing.T) {
 	}
 }
 
-func TestEnsureProviderServePropagatesPlatformPreviewBridgeJWKS(t *testing.T) {
-	const jwks = `{"keys":[{"kid":"current"}]}`
-	t.Setenv("RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS", "  "+jwks+"  ")
+func TestEnsureProviderServePropagatesPlatformPreviewBridgeOrigins(t *testing.T) {
+	const origins = "https://console.example.test,https://alt.example.test"
+	t.Setenv("RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS", "  "+origins+"  ")
+	t.Setenv("RAILGRID_PREVIEW_BRIDGE_ENABLED", "")
 	client := fake.NewSimpleClientset()
 	provider := &v1alpha1.InfrastructureProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-infrastructure"},
@@ -120,15 +121,21 @@ func TestEnsureProviderServePropagatesPlatformPreviewBridgeJWKS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get managed provider Deployment: %v", err)
 	}
+	found := false
 	for _, env := range deployment.Spec.Template.Spec.Containers[0].Env {
-		if env.Name == "RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS" {
-			if env.Value != jwks {
-				t.Errorf("verification JWKS = %q, want trimmed platform value %q", env.Value, jwks)
+		switch env.Name {
+		case "RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS":
+			found = true
+			if env.Value != origins {
+				t.Errorf("portal origins = %q, want trimmed platform value %q", env.Value, origins)
 			}
-			return
+		case "RAILGRID_PREVIEW_BRIDGE_ENABLED":
+			t.Errorf("unset RAILGRID_PREVIEW_BRIDGE_ENABLED was propagated as %q", env.Value)
 		}
 	}
-	t.Error("managed provider Deployment lacks RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS")
+	if !found {
+		t.Error("managed provider Deployment lacks RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS")
+	}
 }
 
 // The tenant isolation policy is configured on the operator (chart values),
