@@ -1,3 +1,12 @@
+@import "../../portal/src/assets/main.css";
+@source "../../providers/app-studio/portal/src/ReviewRequest.vue";
+@source "../../providers/app-studio/portal/src/AssistantExecDetails.vue";
+@source "../../providers/app-studio/portal/src/ApprovalModePicker.vue";
+@source "../../providers/app-studio/portal/src/ReleasePipeline.vue";
+@source "../../providers/app-studio/portal/src/SkillsWorkbench.vue";
+@source "../../providers/app-studio/portal/src/agentkit/AISkillCatalogList.vue";
+@source "../../provider-sdk/agentkit-vue/AISkillCatalogList.vue";
+@source "../../portal/src/components/WorkspaceDeletionProgress.vue";
 .review { --review-rail: 254px; }
 .review-top { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 24px; background:var(--color-surface-raised); border-bottom:1px solid var(--color-border-default); }
 .review-brand { display:flex; align-items:center; gap:9px; font-weight:650; line-height:1.15; text-decoration:none; }
@@ -17,6 +26,7 @@
 .review-index-group + .review-index-group { margin-top:14px; }
 .review-index-group h2 { display:flex; justify-content:space-between; font:500 10px var(--font-mono); letter-spacing:.06em; text-transform:uppercase; color:var(--color-text-muted); padding:6px 8px; }
 .review-book-nav a { display:block; font-size:13px; text-decoration:none; padding:6px 8px; border-radius:4px; color:var(--color-text-secondary); }
+.review-book-nav a small { display:block; margin-top:2px; font-size:11px; font-weight:400; color:var(--color-text-muted); }
 .review-book-nav a:hover { background:var(--color-surface-hover); color:var(--color-text-primary); }
 .review-book-nav a[aria-current="page"] { color:var(--color-accent); background:var(--color-accent-subtle); font-weight:650; }
 .review-main { padding:28px clamp(18px,3vw,46px); min-width:0; }
@@ -91,6 +101,8 @@
 .spec-row, .spec-line { display:flex; align-items:center; gap:9px; flex-wrap:wrap; min-width:0; }
 .spec-line { justify-content:space-between; }
 .spec-section { padding:12px; border:1px solid var(--color-border-subtle); border-radius:6px; min-width:0; }
+.spec-section[aria-labelledby="review-checkbox-heading"] .k-checkbox-hit,
+.spec-section[aria-labelledby="review-radio-heading"] .k-checkbox-hit { display:inline-flex; align-items:center; gap:8px; }
 .spec-section h3, .spec-stack > h3 { margin:0 0 8px; font-size:14px; font-weight:650; }
 .spec-note { font-size:12px; color:var(--color-text-secondary); overflow-wrap:anywhere; }
 .spec-tile { padding:10px; font-size:13px; }
@@ -185,3 +197,5 @@ a.spec-token:hover { background:var(--color-surface-hover); }
   border-radius: 4px;
   background: var(--color-danger-subtle);
 }
+.review-product-link { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:0 0 16px; }
+.review-product-link span { color:var(--color-text-secondary); font-size:12px; }
