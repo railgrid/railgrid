@@ -12,6 +12,7 @@ const AIActionRowStage = defineAsyncComponent(() => import('./AIActionRowStage.v
 const ButtonStage = defineAsyncComponent(() => import('./ButtonStage.vue'))
 const TextFieldStage = defineAsyncComponent(() => import('./TextFieldStage.vue'))
 const SelectFieldStage = defineAsyncComponent(() => import('./SelectFieldStage.vue'))
+const AppStudioClarificationStage = defineAsyncComponent(() => import('./AppStudioClarificationStage.vue'))
 const LayoutSelectorStage = defineAsyncComponent(() => import('./LayoutSelectorStage.vue'))
 const ChoiceStage = defineAsyncComponent(() => import('./ChoiceStage.vue'))
 const ToggleStage = defineAsyncComponent(() => import('./ToggleStage.vue'))
@@ -26,6 +27,7 @@ const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
   <ButtonStage v-else-if="stage === 'button'" />
   <TextFieldStage v-else-if="stage === 'text-input' || stage === 'textarea'" :multiline="stage === 'textarea'" />
   <SelectFieldStage v-else-if="stage === 'form-select'" />
+  <AppStudioClarificationStage v-else-if="stage === 'studio-clarification'" />
   <LayoutSelectorStage v-else-if="stage === 'layout-selector'" />
   <ChoiceStage v-else-if="stage === 'checkbox' || stage === 'radio'" :radio="stage === 'radio'" />
   <ToggleStage v-else-if="stage === 'toggle'" />
