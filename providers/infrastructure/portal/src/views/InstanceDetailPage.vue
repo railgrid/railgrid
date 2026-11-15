@@ -308,9 +308,9 @@ onUnmounted(() => {
     >
       <template #meta>
         <span>Infrastructure</span>
-        <span aria-hidden="true">·</span>
-        <span v-if="inst">Template <code>{{ inst.template }}</code></span>
-        <span v-else class="muted">Template metadata unavailable</span>
+        <span v-if="inst" aria-hidden="true">·</span>
+        <span v-if="inst?.template">Template <code>{{ inst.template }}</code></span>
+        <span v-else-if="inst" class="muted">Template metadata unavailable</span>
       </template>
       <template v-if="inst" #status>
         <span class="instance-status-label">Status</span>
