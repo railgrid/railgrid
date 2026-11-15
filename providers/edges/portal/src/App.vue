@@ -23,6 +23,7 @@ import {
 import { edgeTypeLabel, type Edge, type EdgeType, type RailgridContext, type ErrorResponse } from './types'
 import {
   edgeConnectPath,
+  edgeCollectionHref,
   edgeConnectionCancelPath,
   edgeConnectionSuccessPath,
   edgeDetailPath,
@@ -43,11 +44,14 @@ const props = defineProps<{ ctx: RailgridContext | null }>()
 const route = computed<EdgeRoute>(() => parseSubPath(props.ctx?.subPath))
 const view = computed(() => route.value.page)
 
-const edgeRouteTabs = [
+const edgeRouteTabs = computed(() => ([
   { id: 'edges', label: 'Edges', icon: Server },
   { id: 'workloads', label: 'Workloads', icon: Boxes },
   { id: 'services', label: 'Services', icon: Plug },
-] as const
+] as const).map(tab => ({
+  ...tab,
+  href: edgeCollectionHref(props.ctx?.navigationBasePath, tab.id),
+})))
 
 // navigate pushes the shell's router via a bubbling CustomEvent the element's
 // ProviderFrame host listens for. path is relative to /providers/edges/.

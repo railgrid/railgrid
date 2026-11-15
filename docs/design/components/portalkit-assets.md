@@ -17,6 +17,8 @@ not be edited directly.
 | `agent-context.ts` | [provider-published Agents context](provider-agent-context.md) |
 | `dashboardtile.ts` | [dashboard and tile support](portalkit-support.md) |
 | `railgrid-ui.css` | [shared recipes](../implementation/recipes.md) |
+| `document-id.ts` | [form select IDs](form-select.md) |
+| `modal-popup.ts` | [form select popup hosting](form-select.md) |
 | `form-select.ts` | [form select](form-select.md) |
 | `icons.ts` | [iconography](../foundations/iconography.md) |
 | `modal.ts` | [modal and confirmation support](confirm-dialog.md) |
