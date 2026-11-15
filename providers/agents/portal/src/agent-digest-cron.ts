@@ -67,12 +67,17 @@ function validField(field: string, min: number, max: number, names: string[] = [
   })
 }
 
+// Mirrors the bundled Go time-zone database used by digest cron validation.
+export function knownTimeZone(raw: string): boolean {
+  return timeZones.has(raw.trim())
+}
+
 export function validDigestCron(raw: string): boolean {
   let expression = raw.trim()
   if (expression.length > 253) return false
   if (/^(?:CRON_)?TZ=/.test(expression)) {
     const prefix = /^(?:CRON_)?TZ=([^\s]+) +(.+)$/.exec(expression)
-    if (!prefix || !timeZones.has(prefix[1])) return false
+    if (!prefix || !knownTimeZone(prefix[1])) return false
     expression = prefix[2].trim()
   }
   if (descriptors.has(expression)) return true
