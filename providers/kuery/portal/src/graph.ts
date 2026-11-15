@@ -119,7 +119,7 @@ export const RELATION_DIR: Record<string, RelDir> = {
 // orientEdge returns [source, target] for an edge between the anchor and a
 // related node, per the relation's impact direction (see RELATION_DIR).
 function orientEdge(anchorId: string, relatedId: string, rel: string): [string, string] {
-  return (RELATION_DIR[rel] ?? 'down') === 'up' ? [relatedId, anchorId] : [anchorId, relatedId]
+  return RELATION_DIR[rel] === 'up' ? [relatedId, anchorId] : [anchorId, relatedId]
 }
 
 function relationEdgeId(source: string, target: string, rel: string): string {
@@ -354,6 +354,7 @@ function pushNode(
       id,
       label: `${kind}\n${shortName(o)}`,
       anchor: anchor ? 'true' : 'false',
+      impactAnchor: anchor ? 'true' : 'false',
       kind,
       name: shortName(o),
       edge: edgeOf(o.cluster),
@@ -373,6 +374,7 @@ export function themeStyle(host: Element): cytoscape.StylesheetStyle[] {
   const text = v('--color-text-primary', '#e9e9f2')
   const muted = v('--color-text-muted', '#5d5f78')
   const accent = v('--color-accent', '#8b6bff')
+  const canvasSurface = cs.getPropertyValue('background-color').trim() || v('--color-surface', surface)
   const light = typeof document !== 'undefined' && document.documentElement.classList.contains('light')
 
   const style: cytoscape.StylesheetStyle[] = [
@@ -384,11 +386,14 @@ export function themeStyle(host: Element): cytoscape.StylesheetStyle[] {
         'border-width': 1,
         label: 'data(label)',
         color: text,
-        'font-size': 9,
+        'font-size': 11,
         'text-wrap': 'wrap',
         'text-max-width': '110px',
         'text-valign': 'bottom',
         'text-margin-y': 4,
+        'text-background-color': canvasSurface,
+        'text-background-opacity': 1,
+        'text-background-padding': '2px',
         width: 24,
         height: 24,
         shape: 'round-rectangle',
@@ -406,6 +411,13 @@ export function themeStyle(host: Element): cytoscape.StylesheetStyle[] {
         'font-weight': 700,
       },
     },
+    // The Impact page heading already names its anchor. Omitting this one
+    // canvas label leaves room for relation labels converging on the center.
+    // Topology's Edge anchors keep their labels because they have no such heading.
+    {
+      selector: 'node[impactAnchor = "true"]',
+      style: { label: '' },
+    },
     // Topology tiers: the Edge (cluster) anchors as a hexagon; Namespaces are
     // muted diamonds; objects keep the default round-rectangle.
     {
@@ -414,7 +426,7 @@ export function themeStyle(host: Element): cytoscape.StylesheetStyle[] {
     },
     {
       selector: 'node[tier = "namespace"]',
-      style: { shape: 'diamond', 'background-color': muted, 'border-color': border, width: 30, height: 30, 'font-size': 9 },
+      style: { shape: 'diamond', 'background-color': muted, 'border-color': border, width: 30, height: 30, 'font-size': 11 },
     },
     // Drilled nodes get an accent ring so you can see how far the net is
     // already expanded vs. what's still collapsed.
@@ -431,32 +443,41 @@ export function themeStyle(host: Element): cytoscape.StylesheetStyle[] {
       style: {
         width: 1.5,
         'curve-style': 'bezier',
-        'target-arrow-shape': 'triangle',
+        'target-arrow-shape': 'none',
         'arrow-scale': 0.8,
         'line-color': muted,
         'target-arrow-color': muted,
         label: 'data(edgeLabel)',
         color: text,
-        'font-size': 8,
+        'font-size': 11,
         'text-rotation': 'autorotate',
-        'text-background-color': surface,
-        'text-background-opacity': 0.92,
+        'text-background-color': canvasSurface,
+        'text-background-opacity': 1,
         'text-background-padding': '2px',
       },
     },
   ]
-  for (const relation of RELATION_METADATA) {
+  for (const [name, relation] of [
+    ...RELATION_METADATA.map(relation => [relation.name, relation] as const),
+    ...Object.entries(RELATION_ALIASES).map(([alias, canonical]) => [alias, RELATION_METADATA.find(relation => relation.name === canonical)!] as const),
+  ]) {
     const color = relationColor(relation, light)
     style.push({
-      selector: `edge[rel = "${relation.name}"]`,
+      selector: `edge[rel = "${name}"]`,
       style: {
         'line-color': color,
         'target-arrow-color': color,
         'line-style': relation.lineStyle,
+        'target-arrow-shape': relation.direction === 'lateral' ? 'none' : 'triangle',
       },
     })
   }
   return style
+}
+
+const RELATION_ALIASES: Record<string, string> = { descendants: 'descendants+', linked: 'linked+' }
+export function relationMetadata(name: string): RelationMetadata | undefined {
+  return RELATION_METADATA.find(relation => relation.name === (RELATION_ALIASES[name] ?? name))
 }
 
 // Force layout (Cytoscape "cose") sizing. cose is a spring simulation that
@@ -662,7 +683,10 @@ export async function mountGraph(
     name: 'concentric',
     concentric: (node: cytoscape.NodeSingular) => (node.data('anchor') === 'true' ? 2 : 1),
     levelWidth: () => 1,
-    minNodeSpacing: 34,
+    // Space nodes by their full labels as well as their shapes; otherwise a
+    // small relationship graph can place neighboring resource names together.
+    nodeDimensionsIncludeLabels: true,
+    minNodeSpacing: 48,
     padding: 16,
   })
   // Every node is tappable; the caller decides what (if anything) to do — for
@@ -673,11 +697,23 @@ export async function mountGraph(
   const focusGraph = () => container.focus()
   container.addEventListener('pointerdown', focusGraph)
   let resizeFrame = 0
+  let previousWidth = typeof ResizeObserver === 'undefined' ? 0 : cy.width()
+  let previousHeight = typeof ResizeObserver === 'undefined' ? 0 : cy.height()
   const resizeObserver = typeof ResizeObserver === 'undefined'
     ? null
     : new ResizeObserver(() => {
         cancelAnimationFrame(resizeFrame)
-        resizeFrame = requestAnimationFrame(() => cy.resize())
+        resizeFrame = requestAnimationFrame(() => {
+          cy.resize()
+          const width = cy.width()
+          const height = cy.height()
+          // Keep the same graph point centered without discarding the user's zoom.
+          if (previousWidth > 0 && previousHeight > 0 && width > 0 && height > 0) {
+            cy.panBy({ x: (width - previousWidth) / 2, y: (height - previousHeight) / 2 })
+          }
+          previousWidth = width
+          previousHeight = height
+        })
       })
   resizeObserver?.observe(container)
 
