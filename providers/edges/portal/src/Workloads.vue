@@ -72,12 +72,6 @@ const showFirstRun = computed(() => loaded.value && currentSnapshot.value && wor
   cursor: tableCursor.value,
   pageInfo: tablePageInfo.value,
 }) && !hasActiveTableFilters(tableQuery.value, filterValues.value))
-const workloadJourney = [
-  { label: 'Kubernetes edge', description: 'Connect the cluster that will run the workload.' },
-  { label: 'Workload and placement', description: 'Choose a container image and the edges it should target.' },
-  { label: 'Placements running', description: 'Agents apply the workload and report readiness per edge.' },
-]
-
 function handleFirstRunPrimary(): void {
   if (hasKubernetesEdges.value) emit('create')
   else emit('connectEdge')
@@ -473,9 +467,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
         ? 'Create a workload from a container image and choose which Kubernetes edges should run it.'
         : 'Workloads are scheduled only onto KubernetesCluster edges.'"
       :primary-label="hasKubernetesEdges ? 'Create workload' : 'Connect edge'"
-      :steps="workloadJourney"
-      :current-step="hasKubernetesEdges ? 1 : 0"
-      journey-label="Workload deployment path"
+      :steps="[]"
     >
       <template #icon><component :is="hasKubernetesEdges ? Boxes : Server" aria-hidden="true" /></template>
       <template #actions><a class="k-btn k-btn--primary" :href="firstRunHref" @click="followFirstRunLink">{{ hasKubernetesEdges ? 'Create workload' : 'Connect edge' }} <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>

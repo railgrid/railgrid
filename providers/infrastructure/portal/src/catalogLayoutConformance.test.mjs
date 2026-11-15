@@ -11,7 +11,12 @@ describe('Infrastructure template catalog layouts', () => {
     expect(source).toContain("'railgrid:portal:infrastructure:templates-layout'")
     expect(source).toContain('ref<LayoutMode>(readLayoutPreference(layoutPreferenceKey))')
     expect(source).toContain('watch(layout, mode => writeLayoutPreference(layoutPreferenceKey, mode))')
-    expect(source).toMatch(/<div class="filters">[\s\S]*All categories[\s\S]*<LayoutSelector v-model="layout" aria-label="Template layout"[\s\S]*<\/div>/)
+    const toolbar = source.match(/<div class="filters">([\s\S]*?)<\/div>/)?.[1] ?? ''
+    expect(toolbar.match(/<ResourceTableFilter\b[\s\S]*?\/>/g)).toEqual([
+      expect.stringContaining('v-model="category"'),
+      expect.stringContaining('v-model="cloud"'),
+    ])
+    expect(toolbar).toContain('<LayoutSelector v-model="layout" aria-label="Template layout"')
     const header = source.match(/<header class="page-head">([\s\S]*?)<\/header>/)?.[1] ?? ''
     expect(header).not.toContain('LayoutSelector')
   })
@@ -30,19 +35,21 @@ describe('Infrastructure template catalog layouts', () => {
     expect(source).toContain('class="catalog-loading-grid k-delayed-loading"')
     expect(source).toContain('<TemplateCard')
     expect(source).toMatch(/<ResourceTable[\s\S]*:loaded="loaded"[\s\S]*:loading="loading"/)
+    expect(source).toMatch(/<ResourceTable[\s\S]*searchable[\s\S]*paginated/)
     expect(source).not.toContain('variant="simple"')
     expect(source).toContain(':row-aria-label="(row) => `Provision template ${String(row.identity)}`"')
     expect(source).toContain('@row-click="selectTemplateRow"')
   })
 
   it('shows the supported template fields without inventing a cloud column', () => {
-    expect(source).toContain("{ key: 'identity', label: 'Template', primary: true }")
-    expect(source).toContain("{ key: 'category', label: 'Category' }")
-    expect(source).toContain("{ key: 'kind', label: 'Kind' }")
-    expect(source).toContain("{ key: 'version', label: 'Version' }")
-    expect(source).toContain("{ key: 'exposure', label: 'Exposure' }")
-    expect(source).not.toContain("{ key: 'cloud', label: 'Cloud' }")
-    expect(source).toContain('<span class="template-card-desc">{{ row.description }}</span>')
+    const columns = source.match(/const tableColumns = \[([\s\S]*?)\]/)?.[1] ?? ''
+    expect(columns).toContain("{ key: 'identity', label: 'Template', primary: true }")
+    expect(columns).toContain("{ key: 'category', label: 'Category' }")
+    expect(columns).toContain("{ key: 'kind', label: 'Kind' }")
+    expect(columns).toContain("{ key: 'version', label: 'Version' }")
+    expect(columns).toContain("{ key: 'exposure', label: 'Exposure' }")
+    expect(columns).not.toContain("key: 'cloud'")
+    expect(source).toContain(":search-keys=\"['identity', 'name', 'description', 'category', 'kind']\"")
   })
 
   it('retains true-empty refresh and filter-empty clearing in both layouts', () => {

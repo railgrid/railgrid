@@ -209,6 +209,8 @@ case "${job}" in
   # Sequential: the suites share the embedded kcp's fixed etcd port.
   e2e-providers)
     full_only
+    # The module proxy intermittently resets HTTP/2 streams on cold builds.
+    export GODEBUG="${GODEBUG:+${GODEBUG},}http2client=0"
     go_workspace
     make e2e-infra-provider
     make e2e-provider

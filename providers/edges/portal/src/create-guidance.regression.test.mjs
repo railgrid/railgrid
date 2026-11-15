@@ -6,7 +6,7 @@ import { MACOS_MASKED_JOIN_TOKEN, macosJoinSnippet } from './macos.ts'
 const readSource = file => readFileSync(resolve(process.cwd(), 'src', file), 'utf8')
 
 describe('Edges create guidance', () => {
-  it('uses shared first-run journeys for every user-created resource surface', () => {
+  it('uses shared first-run guidance for every user-created resource surface', () => {
     const edgeCollection = readSource('EdgeCollection.vue')
     const services = readSource('Services.vue')
     const workloads = readSource('Workloads.vue')
@@ -14,8 +14,10 @@ describe('Edges create guidance', () => {
     for (const source of [edgeCollection, services, workloads]) {
       expect(source).toMatch(/import FirstRunGuide from '\.\/portalkit\/FirstRunGuide\.vue'/)
       expect(source).toMatch(/<FirstRunGuide/)
-      expect(source).toMatch(/journey-label=/)
     }
+    expect(edgeCollection).toMatch(/journey-label=/)
+    expect(services).toMatch(/journey-label=/)
+    expect(workloads).toMatch(/:steps="\[\]"/)
     expect(services).toMatch(/hasEdges \? 'Create service' : 'Connect edge'/)
     expect(services).toMatch(/if \(hasEdges\.value\) emit\('create'\)[\s\S]*else emit\('connectEdge'\)/)
     expect(services).toMatch(/services\.value\.length === 0 && isCompleteFirstCursorPage\(/)

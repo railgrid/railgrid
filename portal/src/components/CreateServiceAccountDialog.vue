@@ -7,6 +7,7 @@ const props = defineProps<{
   organizationName: string
   create: (name: string, role: 'admin' | 'member') => Promise<boolean>
   errorMessage?: string | null
+  successFocusFallback?: () => HTMLElement | null
 }>()
 const emit = defineEmits<{ close: [] }>()
 const id = useId()
@@ -19,6 +20,7 @@ const roleHelp = computed(() => role.value === 'admin'
   ? 'Admin grants administrative access to this workspace.'
   : 'Member grants member access to this workspace without administrative permissions.')
 let disposed = false
+let created = false
 let returnFocus: HTMLElement | null = null
 
 function close() {
@@ -36,6 +38,7 @@ async function submit() {
     await nextTick()
     if (disposed) return
     if (succeeded) {
+      created = true
       busy.value = false
       close()
     } else {
@@ -56,6 +59,7 @@ onBeforeUnmount(() => {
   disposed = true
   dialogRef.value?.close()
   if (returnFocus?.isConnected) returnFocus.focus()
+  else if (created) props.successFocusFallback?.()?.focus()
 })
 </script>
 
