@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { AlertTriangle, Bot, ChevronRight, Clock } from 'lucide-vue-next'
 import { ApiClient } from '../api'
 import { hashFor } from '../router'
+import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import type { Agent, RailgridContext, RunSummary, Schedule } from '../types'
 import {
   TILE_ROWS,
@@ -23,6 +24,7 @@ const schedules = ref<Schedule[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
 const hasSnapshot = ref(false)
+const tileContent = ref<HTMLElement | null>(null)
 const api = new ApiClient()
 let poller: TilePoller | null = null
 let contextGeneration = 0
@@ -88,7 +90,7 @@ async function load(): Promise<void> {
     hasSnapshot.value = true
   } catch (cause) {
     if (generation !== contextGeneration) return
-    if (isBenignTileError(cause)) {
+    if (!hasSnapshot.value && isBenignTileError(cause)) {
       error.value = null
       if (!hasSnapshot.value) {
         agents.value = []
@@ -102,6 +104,14 @@ async function load(): Promise<void> {
   } finally {
     if (generation === contextGeneration) loading.value = false
   }
+}
+
+async function retryLoad(): Promise<void> {
+  if (loading.value) return
+  const focused = document.activeElement
+  await load()
+  await nextTick()
+  if (focused && !focused.isConnected && document.activeElement === document.body) tileContent.value?.focus()
 }
 
 const failed = computed(() => runs.value.filter(run => FAILED_PHASES.has(run.phase)).length)
@@ -140,53 +150,44 @@ function authorityKey(context: RailgridContext | null): string {
   ].map(part => part ?? '').join('\u0000')
 }
 
-function relative(iso: string): string {
-  const timestamp = Date.parse(iso)
-  if (Number.isNaN(timestamp)) return 'unknown'
-  const deltaSeconds = Math.round((timestamp - Date.now()) / 1000)
-  const future = deltaSeconds > 0
-  const seconds = Math.abs(deltaSeconds)
-  const render = (value: number, unit: string) => future ? `in ${value}${unit}` : `${value}${unit} ago`
-  if (seconds < 60) return future ? 'in <1m' : 'just now'
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return render(minutes, 'm')
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return render(hours, 'h')
-  return render(Math.round(hours / 24), 'd')
-}
-
 defineExpose({ load, api, applyContext })
 </script>
 
 <template>
-  <div v-if="loading && !hasSnapshot" class="agents-tile-msg" role="status" aria-live="polite">Loading agents…</div>
+  <div v-if="loading && !hasSnapshot && !error" class="agents-tile-msg" role="status" aria-live="polite">Loading agents…</div>
   <div v-else-if="error && !hasSnapshot" class="agents-tile-err" role="alert" aria-live="assertive">
-    <span>Failed to load: {{ error }}</span>
-    <button class="k-btn k-btn--ghost secondary" type="button" :disabled="loading" @click="load">{{ loading ? 'Retrying…' : 'Retry' }}</button>
+    <span>Could not load agents. {{ error }}</span>
+    <button class="k-btn k-btn--ghost secondary" type="button" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Retrying…' : 'Retry' }}</button>
   </div>
-  <div v-else class="agents-tile">
+  <div v-else ref="tileContent" class="agents-tile" tabindex="-1">
     <div v-if="error" class="agents-tile-err" role="status" aria-live="polite">
       Could not refresh. Showing the last loaded data. {{ error }}
     </div>
     <div class="agents-tile-stats">
       <span class="agents-tile-stat"><Bot aria-hidden="true" /><strong>{{ agents.length }}</strong> {{ agents.length === 1 ? 'agent' : 'agents' }}</span>
       <span v-if="failed" class="agents-tile-stat agents-tile-bad"><AlertTriangle aria-hidden="true" /><strong>{{ failed }}</strong> failed</span>
-      <span v-if="nextRun" class="agents-tile-stat agents-tile-next"><Clock aria-hidden="true" />next {{ relative(nextRun.at) }} · {{ nextRun.agent }}</span>
+      <span v-if="nextRun" class="agents-tile-stat agents-tile-next"><Clock aria-hidden="true" />next <ResourceTimestamp :value="nextRun.at" label="Next run" /> · {{ nextRun.agent }}</span>
     </div>
 
     <div v-if="visibleRuns.length">
       <div class="agents-tile-label">Recent runs</div>
       <ul class="agents-tile-rows">
-        <li v-for="run in visibleRuns" :key="run.id">
+        <li v-for="run in visibleRuns" :key="run.id" class="agents-tile-timed-row">
           <button class="k-btn k-btn--ghost" type="button" @click="emit('navigate', hashFor({ kind: 'run', id: run.id }))">
             <span :class="['agents-tile-dot', phaseDot(run.phase)]" aria-hidden="true" />
             <span class="agents-tile-agent">{{ run.agent }}</span>
-            <span :class="FAILED_PHASES.has(run.phase) ? 'agents-tile-bad' : 'agents-tile-dim'">{{ run.phase.toLowerCase() }} · {{ relative(run.createdAt) }}</span>
+            <span :class="FAILED_PHASES.has(run.phase) ? 'agents-tile-bad' : 'agents-tile-dim'">{{ run.phase.toLowerCase() }}</span>
             <ChevronRight class="agents-tile-chev" aria-hidden="true" />
           </button>
+          <ResourceTimestamp :value="run.createdAt" label="Run started" />
         </li>
       </ul>
     </div>
     <p v-else class="agents-tile-empty">{{ agents.length ? 'No runs yet.' : 'No agents yet — create one to get started.' }}</p>
   </div>
 </template>
+
+<style scoped>
+.agents-tile-timed-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 11px; }
+.agents-tile-timed-row > button { flex: 1 1 140px; min-width: 0; width: auto; }
+</style>
