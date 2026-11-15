@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -1106,7 +1107,7 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 			delete(r.running, attemptID)
 			delete(r.shutdown, attemptID)
 			if err := r.collectDeclaredArtifactsLocked(attempt); err != nil {
-				r.finishLocked(attempt, PhaseFailed, "collect declared artifacts: "+err.Error(), err)
+				r.finishLocked(attempt, PhaseFailed, declaredArtifactPersistBlocker, err)
 				r.mu.Unlock()
 				return
 			}
@@ -1157,7 +1158,7 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 		delete(r.shutdown, attemptID)
 		if err := r.collectDeclaredArtifactsLocked(attempt); err != nil {
 			cleanupGitResultArtifacts(gitResult)
-			r.finishLocked(attempt, PhaseFailed, "collect declared artifacts: "+err.Error(), err)
+			r.finishLocked(attempt, PhaseFailed, declaredArtifactPersistBlocker, err)
 			r.mu.Unlock()
 			return
 		}
@@ -1318,8 +1319,19 @@ func firstHarnessFailure(attempt *attemptRecord) error {
 }
 
 func (r *Runner) recordArtifactLocked(attempt *attemptRecord, data json.RawMessage) error {
-	return r.recordArtifactLockedFrom(attempt, data, nil, 0)
+	return r.recordArtifactLockedFrom(attempt, data, nil, noAggregateLimit)
 }
+
+// noAggregateLimit tells recordArtifactLockedFrom that the caller supplied no
+// completion-collection budget. A computed budget of zero is a real limit.
+const noAggregateLimit int64 = -1
+
+// declaredArtifactPersistBlocker is the remote-visible blocker when the
+// runner cannot durably record that it collected or skipped a declared
+// artifact. Local paths stay in the runner's own log.
+const declaredArtifactPersistBlocker = "collect declared artifacts: the runner could not persist the collection result"
+
+var errArtifactAggregateLimit = fmt.Errorf("collected artifacts exceed the %d-byte aggregate limit", maxArtifactTotalSize)
 
 // recordArtifactLockedFrom accepts a pre-opened source only for opt-in
 // completion collection. The rooted descriptor keeps a concurrent path swap
@@ -1371,7 +1383,7 @@ func (r *Runner) recordArtifactLockedFrom(attempt *attemptRecord, data json.RawM
 			return err
 		}
 		defer func() { _ = f.Close() }()
-		if aggregateLimit == 0 {
+		if aggregateLimit < 0 {
 			var collected int64
 			for _, prior := range attempt.Receipt.Artifacts {
 				for _, priorSpec := range attempt.ArtifactSpecs {
@@ -1382,6 +1394,9 @@ func (r *Runner) recordArtifactLockedFrom(attempt *attemptRecord, data json.RawM
 				}
 			}
 			aggregateLimit = maxArtifactTotalSize - collected
+			if aggregateLimit < 0 {
+				aggregateLimit = 0
+			}
 		}
 	} else {
 		source, resolveErr := artifactSource(attempt.Receipt.Workdir, input.Path)
@@ -1402,7 +1417,7 @@ func (r *Runner) recordArtifactLockedFrom(attempt *attemptRecord, data json.RawM
 		return err
 	}
 	fileLimit := r.cfg.MaxArtifactSize
-	if aggregateLimit > 0 && aggregateLimit < fileLimit {
+	if aggregateLimit >= 0 && aggregateLimit < fileLimit {
 		fileLimit = aggregateLimit
 	}
 	if info.Size() > fileLimit {
@@ -1457,6 +1472,11 @@ func (r *Runner) recordArtifactLockedFrom(attempt *attemptRecord, data json.RawM
 // adapter completes. Harnesses can stay unaware of the artifact API; the
 // caller's allowlist is the only source of names and paths, and all bytes pass
 // through the same path, type, size and digest checks as emitted artifacts.
+//
+// The artifacts are optional evidence, so one that is unsafe, oversize or
+// unreadable is skipped and reported by an artifact event; it never turns a
+// completed attempt into a failure or discards its Git result. Only a failure
+// to persist that report is returned.
 func (r *Runner) collectDeclaredArtifactsLocked(attempt *attemptRecord) error {
 	for _, spec := range attempt.ArtifactSpecs {
 		if !spec.CollectOnCompletion {
@@ -1472,45 +1492,69 @@ func (r *Runner) collectDeclaredArtifactsLocked(attempt *attemptRecord) error {
 		if alreadyRecorded {
 			continue
 		}
-		f, err := openDeclaredArtifact(attempt.Receipt.Workdir, spec.Path)
-		if errors.Is(err, os.ErrNotExist) {
+		collectErr := r.collectDeclaredArtifactLocked(attempt, spec)
+		if errors.Is(collectErr, os.ErrNotExist) {
 			continue
 		}
-		if err != nil {
-			return fmt.Errorf("open %q: %w", spec.Name, err)
-		}
-		info, err := f.Stat()
-		if err != nil {
-			_ = f.Close()
-			return fmt.Errorf("inspect %q: %w", spec.Name, err)
-		}
-		var collectedBytes int64
-		for _, prior := range attempt.Receipt.Artifacts {
-			for _, priorSpec := range attempt.ArtifactSpecs {
-				if prior.Name == priorSpec.Name && priorSpec.CollectOnCompletion {
-					collectedBytes += prior.Length
-					break
-				}
-			}
-		}
-		if collectedBytes+info.Size() > maxArtifactTotalSize {
-			_ = f.Close()
-			return fmt.Errorf("collected artifacts exceed %d-byte aggregate limit", maxArtifactTotalSize)
-		}
 		data, err := json.Marshal(map[string]string{"name": spec.Name, "path": spec.Path, "mediaType": spec.MediaType, "digest": spec.Digest})
+		message := "Declared artifact collected: " + spec.Name
+		if collectErr != nil {
+			data, err = json.Marshal(map[string]string{"name": spec.Name, "path": spec.Path, "skipped": declaredArtifactSkipReason(collectErr)})
+			message = "Declared artifact skipped: " + spec.Name + ": " + declaredArtifactSkipReason(collectErr)
+		}
 		if err != nil {
 			return err
 		}
-		if err := r.recordArtifactLockedFrom(attempt, data, f, maxArtifactTotalSize-collectedBytes); err != nil {
-			_ = f.Close()
-			return fmt.Errorf("collect %q: %w", spec.Name, err)
-		}
-		_ = f.Close()
-		if _, err := r.appendEventLocked(attempt.Receipt.AttemptID, EventArtifact, "Declared artifact collected: "+spec.Name, data); err != nil {
+		if _, err := r.appendEventLocked(attempt.Receipt.AttemptID, EventArtifact, message, data); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (r *Runner) collectDeclaredArtifactLocked(attempt *attemptRecord, spec ArtifactSpec) error {
+	f, err := openDeclaredArtifact(attempt.Receipt.Workdir, spec.Path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	var collectedBytes int64
+	for _, prior := range attempt.Receipt.Artifacts {
+		for _, priorSpec := range attempt.ArtifactSpecs {
+			if prior.Name == priorSpec.Name && priorSpec.CollectOnCompletion {
+				collectedBytes += prior.Length
+				break
+			}
+		}
+	}
+	if collectedBytes+info.Size() > maxArtifactTotalSize {
+		return errArtifactAggregateLimit
+	}
+	data, err := json.Marshal(map[string]string{"name": spec.Name, "path": spec.Path, "mediaType": spec.MediaType, "digest": spec.Digest})
+	if err != nil {
+		return err
+	}
+	return r.recordArtifactLockedFrom(attempt, data, f, maxArtifactTotalSize-collectedBytes)
+}
+
+// declaredArtifactSkipReason describes why a declared artifact was skipped
+// without the runner-local paths that file-system errors carry: the reason
+// is returned to remote callers in the receipt's events.
+func declaredArtifactSkipReason(err error) string {
+	var pathErr *fs.PathError
+	var linkErr *os.LinkError
+	switch {
+	case errors.As(err, &pathErr):
+		return pathErr.Op + ": " + pathErr.Err.Error()
+	case errors.As(err, &linkErr):
+		return linkErr.Op + ": " + linkErr.Err.Error()
+	default:
+		return err.Error()
+	}
 }
 
 func (r *Runner) finishLocked(attempt *attemptRecord, phase Phase, blocker string, lastErr error) {

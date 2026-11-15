@@ -313,6 +313,39 @@ func TestFeedbackRecordsChangesRequestedReviewerPermission(t *testing.T) {
 	}
 }
 
+// A 403 that is a secondary rate limit is retried, not recorded as "none";
+// a plain 403 still means the credential cannot vouch for write access.
+func TestRepositoryPermissionDoesNotTreatARateLimitAsNone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/repos/team/demo":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "full_name": "team/demo"})
+		case "/api/v3/repos/team/demo/collaborators/limited/permission":
+			w.Header().Set("Retry-After", "30")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": "You have exceeded a secondary rate limit.", "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits"})
+		case "/api/v3/repos/team/demo/collaborators/hidden/permission":
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": "Must have push access to view collaborator permission."})
+		default:
+			t.Errorf("unexpected route %s", r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	conn := &api.Connection{Spec: api.ConnectionSpec{Owner: "team", BaseURL: server.URL}}
+	repo := &api.Repository{Spec: api.RepositorySpec{Name: "demo"}, Status: api.RepositoryStatus{RepoID: "42"}}
+	permission, err := New().RepositoryPermission(context.Background(), conn, backend.Credential{Token: "test-token"}, repo, "limited")
+	var limited *backend.RateLimitError
+	if !errors.As(err, &limited) || permission != "" {
+		t.Fatalf("rate-limited lookup = %q, %v; want a rate-limit error to retry", permission, err)
+	}
+	permission, err = New().RepositoryPermission(context.Background(), conn, backend.Credential{Token: "test-token"}, repo, "hidden")
+	if err != nil || permission != "none" {
+		t.Fatalf("forbidden lookup = %q, %v; want none", permission, err)
+	}
+}
+
 func TestExistingOnlyRegistrationNeverCreatesOrDeletesRemote(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -610,5 +643,35 @@ func TestIssueCommentReadsTheCommentAndItsPullRequest(t *testing.T) {
 	}
 	if _, err := New().IssueComment(context.Background(), conn, cred, repo, 78); !errors.Is(err, backend.ErrCommentNotFound) {
 		t.Fatalf("missing comment err = %v", err)
+	}
+}
+
+func TestContainsCommitReadsTheComparison(t *testing.T) {
+	ancestor, ahead, diverged := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/repos/team/demo":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "full_name": "team/demo"})
+		case "/api/v3/repos/team/demo/compare/" + ancestor + "..." + ahead:
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ahead", "ahead_by": 1, "behind_by": 0, "base_commit": map[string]any{"sha": ancestor}})
+		case "/api/v3/repos/team/demo/compare/" + ancestor + "..." + diverged:
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "diverged", "ahead_by": 1, "behind_by": 1, "base_commit": map[string]any{"sha": ancestor}})
+		default:
+			t.Errorf("unexpected route %s", r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	conn := &api.Connection{Spec: api.ConnectionSpec{Owner: "team", BaseURL: server.URL}}
+	repo := &api.Repository{Spec: api.RepositorySpec{Name: "demo"}, Status: api.RepositoryStatus{RepoID: "42"}}
+	cred := backend.Credential{Token: "test-token"}
+	if contains, err := New().ContainsCommit(context.Background(), conn, cred, repo, ancestor, ahead); err != nil || !contains {
+		t.Fatalf("ahead = %v, %v", contains, err)
+	}
+	if contains, err := New().ContainsCommit(context.Background(), conn, cred, repo, ancestor, diverged); err != nil || contains {
+		t.Fatalf("diverged = %v, %v", contains, err)
+	}
+	if _, err := New().ContainsCommit(context.Background(), conn, cred, repo, "main", ahead); err == nil {
+		t.Fatal("a branch name was accepted as a commit")
 	}
 }

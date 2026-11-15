@@ -358,6 +358,13 @@ func TestRepositoryRunInvalidStructuredOutputDoesNotPublishArtifact(t *testing.T
 	if _, found, _ := s.store.GetRunArtifact(t.Context(), run.Scope, run.RunID, StructuredResultArtifactName); found {
 		t.Fatal("invalid result artifact was published")
 	}
+	// The run fails, but its verified Git result is not thrown away.
+	if stored.Result == nil {
+		t.Fatal("the verified Git result was dropped from the failed run")
+	}
+	if _, found, err := s.store.GetRunArtifact(t.Context(), run.Scope, run.RunID, backendharness.GitResultJSONName); err != nil || !found {
+		t.Fatalf("Git result artifact found=%v err=%v, want it stored", found, err)
+	}
 }
 
 // A completed attempt that reports no usable export is a FAILED run, with the

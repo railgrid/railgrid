@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -295,8 +296,11 @@ func TestMCPChatStreamsTheTurnAndReturnsTheTerminalFrame(t *testing.T) {
 
 }
 
-func TestMCPChatContinuesWithoutOptionalOwnerWhenIdentityReviewFails(t *testing.T) {
-	model := newFakeLLM(t, "Chat still works.")
+// Ownership is strict: a turn whose caller identity cannot be reviewed is
+// refused as retryable and stores nothing, so the session is not created
+// without the owner its first turn would have recorded.
+func TestMCPChatRefusesTurnWhenIdentityReviewFails(t *testing.T) {
+	model := newFakeLLM(t, "must not run")
 	s := newChatToolFixtureWithKCPSubject(t, model.srv.URL, "", nil, "")
 	s.cfg.ProcessID = "agents-chat-worker-1"
 	rec := httptest.NewRecorder()
@@ -306,21 +310,13 @@ func TestMCPChatContinuesWithoutOptionalOwnerWhenIdentityReviewFails(t *testing.
 	_, result := chatFrames(t, rpcMessages(t, rec))
 	sc, _ := result["structuredContent"].(map[string]any)
 	data, _ := sc["data"].(map[string]any)
-	if sc["event"] != "done" || data["status"] != "completed" {
-		t.Fatalf("identity review outage blocked ordinary chat: %v", sc)
+	if result["isError"] != true || sc["event"] != "error" || fmt.Sprint(data["code"]) != "503" {
+		t.Fatalf("identity review outage = %v, want a retryable refusal", result)
 	}
-	access := s.store.(store.SessionNotificationStore)
 	scope := store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "scout"}
-	tenantScope, err := s.tenant.For("c1", "test-token")
-	if err != nil {
-		t.Fatal(err)
-	}
-	storedAgent, err := tenantScope.Dynamic().Resource(agentsclient.AgentGVR).Get(context.Background(), "scout", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if owned, err := access.HasSessionAccess(context.Background(), scope, string(storedAgent.GetUID()), "review-unavailable", "alice"); err != nil || owned {
-		t.Fatalf("unverified Hub identity acquired session ownership: owned=%t err=%v", owned, err)
+	page, err := s.store.ListMessages(context.Background(), scope, "review-unavailable", 10, "")
+	if err != nil || len(page.Items) != 0 {
+		t.Fatalf("a refused turn stored messages: %+v, %v", page.Items, err)
 	}
 }
 

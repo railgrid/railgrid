@@ -126,6 +126,9 @@ func (p *PostgresStore) RevokeSessionAccess(ctx context.Context, scope Scope, ag
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
+	if err := validateSessionAccess(agentUID, sessionID, owner); err != nil {
+		return err
+	}
 	m, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return err
@@ -252,6 +255,13 @@ func (p *PostgresStore) CreateSessionNotification(ctx context.Context, scope Sco
 			return SessionNotification{}, false, ErrNotificationConflict
 		}
 		return item, true, m.commit()
+	}
+	// Keep only the newest notifications of the session. The session lock
+	// above serializes writers, so the bound holds under concurrency.
+	if _, err := m.executor.ExecContext(ctx, `DELETE FROM agents_session_notifications WHERE id IN (
+		SELECT id FROM agents_session_notifications WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND session_id=$5
+		ORDER BY created_at DESC,id DESC OFFSET $6)`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, sessionID, MaxSessionNotifications); err != nil {
+		return SessionNotification{}, false, err
 	}
 	return item, false, m.commit()
 }

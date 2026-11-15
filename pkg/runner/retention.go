@@ -121,7 +121,7 @@ func (r *Runner) purgeableLocked(id string, attempt *attemptRecord) bool {
 	}
 	// A repository cleanup hook that has not run yet gets its chances first;
 	// after three failures the directory is removed as it stands.
-	if attempt.Receipt.Phase.IsTerminal() && attempt.CleanupEligible && !attempt.CleanupDone && attempt.CleanupAttempts < 3 && attempt.Receipt.Workdir != "" {
+	if attempt.Receipt.Phase.IsTerminal() && attempt.CleanupEligible && !attempt.CleanupDone && attempt.CleanupAttempts < maxCleanupAttempts && attempt.Receipt.Workdir != "" {
 		return false
 	}
 	return true

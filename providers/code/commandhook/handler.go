@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,13 +49,36 @@ func Handler(clients ProviderClients) http.Handler {
 
 func newHandler(clients ProviderClients, now func() time.Time) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("POST "+Pattern, &handler{clients: clients, now: now})
+	mux.Handle("POST "+Pattern, &handler{clients: clients, now: now, targets: map[targetKey]target{}})
 	return mux
+}
+
+// targetCacheTTL bounds how long a Repository and its signing secret, or the
+// fact that there is none, are reused across deliveries. Without it every
+// unsigned POST would cost a Repository and a Secret read. A rotated secret
+// or a newly registered webhook takes effect within this window.
+const (
+	targetCacheTTL     = 30 * time.Second
+	targetCacheEntries = 4096
+)
+
+type targetKey struct{ cluster, name string }
+
+// target is what authenticating a delivery to one Repository needs. A zero
+// client means the Repository has no usable commands webhook.
+type target struct {
+	client     dynamic.Interface
+	repository *unstructured.Unstructured
+	secret     string
+	expires    time.Time
 }
 
 type handler struct {
 	clients ProviderClients
 	now     func() time.Time
+
+	mu      sync.Mutex
+	targets map[targetKey]target
 }
 
 // delivery is the part of GitHub's issue_comment payload the handler reads.
@@ -135,21 +159,69 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // authenticate uses only this workspace's Repository and Secret. A URL
 // reader cannot enqueue commands or spend the repository's GitHub quota.
+// authenticate checks the delivery's signature against the Repository's
+// signing secret. Every refusal before the signature is verified is the same
+// 404, so a caller cannot learn which workspaces or Repositories exist;
+// lookup failures are logged instead.
 func (h *handler) authenticate(ctx context.Context, cluster, name, signature string, body []byte) (dynamic.Interface, *unstructured.Unstructured, int) {
-	client, err := h.clients.AsProvider(cluster)
-	if err != nil {
-		return nil, nil, http.StatusServiceUnavailable
-	}
-	repository, err := client.Resource(repositoriesGVR).Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
+	t := h.target(ctx, cluster, name)
+	if t.client == nil || !validSignature(t.secret, signature, body) {
 		return nil, nil, http.StatusNotFound
 	}
+	return t.client, t.repository, 0
+}
+
+func (h *handler) target(ctx context.Context, cluster, name string) target {
+	key := targetKey{cluster: cluster, name: name}
+	now := h.now()
+	h.mu.Lock()
+	cached, ok := h.targets[key]
+	h.mu.Unlock()
+	if ok && now.Before(cached.expires) {
+		return cached
+	}
+	resolved, cacheable := h.resolveTarget(ctx, cluster, name)
+	if !cacheable {
+		return resolved
+	}
+	resolved.expires = now.Add(targetCacheTTL)
+	h.mu.Lock()
+	if len(h.targets) >= targetCacheEntries {
+		for k, entry := range h.targets {
+			if !now.Before(entry.expires) {
+				delete(h.targets, k)
+			}
+		}
+		if len(h.targets) >= targetCacheEntries {
+			h.targets = map[targetKey]target{}
+		}
+	}
+	h.targets[key] = resolved
+	h.mu.Unlock()
+	return resolved
+}
+
+// resolveTarget reads the Repository and its signing secret. A definite
+// answer, including "there is none", is cacheable; a transient failure is
+// not, so the next delivery tries again.
+func (h *handler) resolveTarget(ctx context.Context, cluster, name string) (target, bool) {
+	log := klog.FromContext(ctx)
+	client, err := h.clients.AsProvider(cluster)
 	if err != nil {
-		return nil, nil, http.StatusServiceUnavailable
+		log.Error(err, "building the provider client for a command webhook", "cluster", cluster, "repository", name)
+		return target{}, false
+	}
+	repository, err := client.Resource(repositoriesGVR).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) {
+		return target{}, true
+	}
+	if err != nil {
+		log.Error(err, "reading the Repository for a command webhook", "cluster", cluster, "repository", name)
+		return target{}, false
 	}
 	secretName, _, _ := unstructured.NestedString(repository.Object, "spec", "commandsWebhookSecretRef", "name")
 	if secretName == "" || repository.GetDeletionTimestamp() != nil {
-		return nil, nil, http.StatusNotFound
+		return target{}, true
 	}
 	namespace, _, _ := unstructured.NestedString(repository.Object, "spec", "commandsWebhookSecretRef", "namespace")
 	key, _, _ := unstructured.NestedString(repository.Object, "spec", "commandsWebhookSecretRef", "key")
@@ -158,19 +230,18 @@ func (h *handler) authenticate(ctx context.Context, cluster, name, signature str
 	}
 	secret, err := tenant.ResolveToken(ctx, client, namespace, secretName, key)
 	if errors.Is(err, tenant.ErrCredentialsMissing) || errors.Is(err, tenant.ErrAPIBindingMissing) {
-		return nil, nil, http.StatusNotFound
+		return target{}, true
 	}
 	if err != nil {
-		klog.FromContext(ctx).Error(err, "reading command webhook Secret", "cluster", cluster, "repository", name)
-		return nil, nil, http.StatusServiceUnavailable
+		log.Error(err, "reading command webhook Secret", "cluster", cluster, "repository", name)
+		return target{}, false
 	}
-	if !validSignature(secret, signature, body) {
-		return nil, nil, http.StatusNotFound
+	if secret == "" {
+		return target{}, true
 	}
-	return client, repository, 0
+	return target{client: client, repository: repository, secret: secret}, true
 }
 
-// record writes the unverified command, once per comment.
 func record(ctx context.Context, client dynamic.Interface, repository *unstructured.Unstructured, payload delivery) (int, error) {
 	name := repository.GetName()
 	repoID, _, _ := unstructured.NestedString(repository.Object, "status", "repoID")

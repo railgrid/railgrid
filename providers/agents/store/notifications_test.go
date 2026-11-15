@@ -11,6 +11,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -130,9 +131,40 @@ func testOwnedChatAdmissionOwnership(t *testing.T, scope Scope, access SessionNo
 	}
 }
 
+// A session keeps only its newest MaxSessionNotifications; the oldest are
+// dropped, and with them their idempotency keys.
+func testSessionNotificationRetention(t *testing.T, scope Scope, access SessionNotificationStore) {
+	t.Helper()
+	ctx := context.Background()
+	base := time.Now().UTC().Truncate(time.Millisecond)
+	if err := access.ClaimSessionOwner(ctx, scope, "uid-r", "busy", "owner", base); err != nil {
+		t.Fatal(err)
+	}
+	total := MaxSessionNotifications + 3
+	for i := range total {
+		if _, _, err := access.CreateSessionNotification(ctx, scope, "uid-r", "busy", "owner", fmt.Sprintf("key-%d", i), fmt.Sprintf("payload-%d", i), base.Add(time.Duration(i)*time.Millisecond)); err != nil {
+			t.Fatalf("notification %d: %v", i, err)
+		}
+	}
+	items, err := access.ListSessionNotifications(ctx, scope, "uid-r", "busy", "owner", 100)
+	if err != nil || len(items) != 100 || items[0].Key != fmt.Sprintf("key-%d", total-1) {
+		t.Fatalf("newest page = %d items, err=%v", len(items), err)
+	}
+	// key-0 was dropped, so delivering it again is a new notification
+	// rather than a reuse of the old one.
+	if _, reused, err := access.CreateSessionNotification(ctx, scope, "uid-r", "busy", "owner", "key-0", "different payload", base.Add(time.Hour)); err != nil || reused {
+		t.Fatalf("redelivery of a dropped key: reused=%v err=%v", reused, err)
+	}
+	// A retained key is still deduplicated.
+	if _, reused, err := access.CreateSessionNotification(ctx, scope, "uid-r", "busy", "owner", fmt.Sprintf("key-%d", total-1), fmt.Sprintf("payload-%d", total-1), base.Add(2*time.Hour)); err != nil || !reused {
+		t.Fatalf("retry of a retained key: reused=%v err=%v", reused, err)
+	}
+}
+
 func TestMemorySessionNotifications(t *testing.T) {
 	mem := NewMemoryStore()
 	testSessionNotifications(t, testScope(), mem, mem)
+	testSessionNotificationRetention(t, testScope(), mem)
 	testOwnedChatAdmissionOwnership(t, testScope(), mem, mem, mem)
 	legacy := testScope()
 	if err := mem.AppendMessage(context.Background(), legacy, Message{ID: "legacy-row", SessionID: "legacy", Role: "user", Content: "old", CreatedAt: time.Now()}); err != nil {
@@ -147,6 +179,7 @@ func TestPostgresSessionNotifications(t *testing.T) {
 	ps := openTestPostgres(t)
 	scope := pgScope(t, ps)
 	testSessionNotifications(t, scope, ps, ps)
+	testSessionNotificationRetention(t, pgScope(t, ps), ps)
 	testOwnedChatAdmissionOwnership(t, pgScope(t, ps), ps, ps, ps)
 	legacy := pgScope(t, ps)
 	if err := ps.AppendMessage(context.Background(), legacy, Message{ID: "legacy-" + scope.WorkspaceUUID, SessionID: "legacy", Role: "user", Content: "old", CreatedAt: time.Now()}); err != nil {

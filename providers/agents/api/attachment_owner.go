@@ -10,9 +10,11 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +34,19 @@ func (s *Server) resolveAuthenticatedKCPSubject(ctx context.Context, id identity
 	if s == nil || s.tenant == nil || strings.TrimSpace(id.clusterID) == "" || strings.TrimSpace(id.token) == "" {
 		return "", errors.New("a current caller bearer is required to resolve Agent attachment ownership")
 	}
+	key := subjectCacheKey(id.clusterID, id.token)
+	if subject, ok := s.subjects.get(key, time.Now()); ok {
+		return subject, nil
+	}
+	subject, err := s.reviewKCPSubject(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	s.subjects.put(key, subject, time.Now())
+	return subject, nil
+}
+
+func (s *Server) reviewKCPSubject(ctx context.Context, id identity) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	scope, err := s.tenant.For(id.clusterID, id.token)
@@ -53,6 +68,60 @@ func (s *Server) resolveAuthenticatedKCPSubject(ctx context.Context, id identity
 		return "", errors.New("the current caller identity response is incomplete")
 	}
 	return username, nil
+}
+
+// subjectCacheTTL bounds how long a bearer's resolved username is reused. The
+// cached value is only an identity label for ownership; every kcp call the
+// turn makes still presents the bearer, so a revoked token fails there.
+const (
+	subjectCacheTTL     = time.Minute
+	subjectCacheEntries = 1024
+)
+
+type subjectCacheEntry struct {
+	subject string
+	expires time.Time
+}
+
+// subjectCache is keyed by a digest of the cluster and bearer, never the
+// bearer itself.
+type subjectCache struct {
+	mu      sync.Mutex
+	entries map[[sha256.Size]byte]subjectCacheEntry
+}
+
+func subjectCacheKey(clusterID, token string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(clusterID + "\x00" + token))
+}
+
+func (c *subjectCache) get(key [sha256.Size]byte, now time.Time) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok || !now.Before(entry.expires) {
+		delete(c.entries, key)
+		return "", false
+	}
+	return entry.subject, true
+}
+
+func (c *subjectCache) put(key [sha256.Size]byte, subject string, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = map[[sha256.Size]byte]subjectCacheEntry{}
+	}
+	if len(c.entries) >= subjectCacheEntries {
+		for k, entry := range c.entries {
+			if !now.Before(entry.expires) {
+				delete(c.entries, k)
+			}
+		}
+		if len(c.entries) >= subjectCacheEntries {
+			c.entries = map[[sha256.Size]byte]subjectCacheEntry{}
+		}
+	}
+	c.entries[key] = subjectCacheEntry{subject: subject, expires: now.Add(subjectCacheTTL)}
 }
 
 // resumeAttachmentCaller is evaluated before claiming a paused run. A failed

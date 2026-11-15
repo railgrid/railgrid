@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
@@ -68,9 +69,22 @@ func (s *Server) repairMissingParkedInboxItems(ctx context.Context, scope store.
 	if len(callers) > 0 {
 		caller = callers[0]
 	}
+	// A clean sweep of this Agent's parked runs is not repeated for a short
+	// while: the gap it closes is a crash between two writes, and every inbox
+	// list (the portal polls it) would otherwise query every parked run.
+	if s.inboxRepairs.recent(scope, time.Now()) {
+		return items, nil
+	}
+	// The Agent is read only when an item is actually restored and needs a
+	// channel notification.
 	var agent *agentsv1alpha1.Agent
 	var agentErr error
-	if caller != nil {
+	agentLoaded := false
+	loadAgent := func() {
+		if agentLoaded || caller == nil {
+			return
+		}
+		agentLoaded = true
 		agent, agentErr = (clientCR{caller}).GetAgent(ctx, scope.AgentName)
 	}
 	workspaceScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}
@@ -130,6 +144,7 @@ func (s *Server) repairMissingParkedInboxItems(ctx context.Context, scope store.
 				items = append(items, item)
 			}
 			if created {
+				loadAgent()
 				s.events.publish(workspaceScope, "inbox", map[string]any{
 					"id": item.ID, "state": string(item.State), "agent": item.AgentName, "runID": item.RunID, "kind": string(item.Kind),
 				})
@@ -144,10 +159,40 @@ func (s *Server) repairMissingParkedInboxItems(ctx context.Context, scope store.
 			}
 		}
 		if page.NextCursor == "" {
+			s.inboxRepairs.mark(scope, time.Now())
 			return items, nil
 		}
 		cursor = page.NextCursor
 	}
+}
+
+// inboxRepairInterval is how long a clean parked-run sweep of one Agent is
+// trusted before an inbox list sweeps again. A failed sweep is never
+// recorded, so the next list retries it.
+const (
+	inboxRepairInterval = 30 * time.Second
+	inboxRepairEntries  = 4096
+)
+
+type inboxRepairThrottle struct {
+	mu    sync.Mutex
+	swept map[store.Scope]time.Time
+}
+
+func (t *inboxRepairThrottle) recent(scope store.Scope, now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	at, ok := t.swept[scope]
+	return ok && now.Sub(at) < inboxRepairInterval
+}
+
+func (t *inboxRepairThrottle) mark(scope store.Scope, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.swept == nil || len(t.swept) >= inboxRepairEntries {
+		t.swept = map[store.Scope]time.Time{}
+	}
+	t.swept[scope] = now
 }
 
 func (s *Server) addInboxItemOnce(ctx context.Context, scope store.Scope, item store.InboxItem) (created bool, err error) {

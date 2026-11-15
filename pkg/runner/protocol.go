@@ -163,7 +163,10 @@ type ArtifactSpec struct {
 	MediaType string `json:"mediaType,omitempty"`
 	Digest    string `json:"digest,omitempty"`
 	// CollectOnCompletion asks Runner to copy this fixed path after a successful
-	// adapter run. Older event-only artifact declarations retain their behavior.
+	// adapter run. The artifact is optional: a missing file is ignored, and one
+	// that is unsafe, oversize or unreadable is skipped with an artifact event
+	// whose data carries "skipped"; neither changes the attempt's phase. Older
+	// event-only artifact declarations retain their behavior.
 	CollectOnCompletion bool `json:"collectOnCompletion,omitempty"`
 }
 

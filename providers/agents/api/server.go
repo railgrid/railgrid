@@ -139,6 +139,15 @@ type Server struct {
 	// and harness-backed agents then report that precisely rather than composing
 	// a call that fails two hops away.
 	runners runnerDialer
+	// subjects caches the kcp username a caller bearer resolved to, briefly,
+	// so an attended chat does not pay a SelfSubjectReview on every turn.
+	subjects subjectCache
+	// cleanupObservations briefly reuses a runner's answer about a harness
+	// run's cleanup so trace reads do not each call the runner.
+	cleanupObservations cleanupObservationCache
+	// inboxRepairs remembers when each Agent's parked runs were last swept
+	// for a missing inbox item (see repairMissingParkedInboxItems).
+	inboxRepairs inboxRepairThrottle
 	// mcpEndpoints caches each workspace's aggregate MCP URL, read off the
 	// MCPServer object rather than composed from a hardcoded path.
 	mcpEndpoints *mcpEndpointCache

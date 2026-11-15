@@ -261,7 +261,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		pushed = true
 		var advanceErr error
 		if publicationActive {
-			advanceErr = r.advancePublication(ctx, host, conn, cred, repo, string(req.ClusterName), &pr, publication)
+			var landedAt string
+			landedAt, advanceErr = r.advancePublication(ctx, host, conn, cred, repo, string(req.ClusterName), &pr, publication)
+			if advanceErr == nil && landedAt != "" {
+				// The candidate is already in the branch, which has since
+				// moved past it: the publication happened.
+				r.finishPublication(&next.Status, "Published", landedAt, "the candidate was published; the head branch has since moved past it")
+			}
 		} else {
 			advanceErr = r.advance(ctx, host, conn, cred, repo, string(req.ClusterName), &pr, desiredHead)
 		}
@@ -534,27 +540,41 @@ func (r *Reconciler) openWithHead(ctx context.Context, host forge, conn *codev1a
 	return created, nil
 }
 
-func (r *Reconciler) advancePublication(ctx context.Context, host forge, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, cluster string, pr *codev1alpha1.PullRequest, intent *codev1alpha1.PullRequestPublication) error {
+func (r *Reconciler) advancePublication(ctx context.Context, host forge, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, cluster string, pr *codev1alpha1.PullRequest, intent *codev1alpha1.PullRequestPublication) (landedAt string, _ error) {
 	current, err := host.BranchHead(ctx, conn, cred, repo, pr.Spec.Branch)
 	if err != nil {
-		return fmt.Errorf("reading the head branch: %w", err)
+		return "", fmt.Errorf("reading the head branch: %w", err)
 	}
 	if current == intent.Candidate.Commit {
-		return nil
+		return "", nil
+	}
+	unexpected := (intent.ExpectedAbsent && current != "") || (!intent.ExpectedAbsent && current != intent.ExpectedHead)
+	if unexpected && current != "" {
+		// An earlier reconcile may have published and lost its status write,
+		// and someone pushed on top since. That is not a failure.
+		if ancestry, ok := host.(backend.CommitAncestry); ok {
+			contains, err := ancestry.ContainsCommit(ctx, conn, cred, repo, intent.Candidate.Commit, current)
+			if err != nil {
+				return "", fmt.Errorf("checking whether the head branch contains the candidate: %w", err)
+			}
+			if contains {
+				return current, nil
+			}
+		}
 	}
 	if intent.ExpectedAbsent {
 		if current != "" {
-			return permanentError{fmt.Errorf("the head branch %q exists at %s; expected it to be absent", pr.Spec.Branch, current)}
+			return "", permanentError{fmt.Errorf("the head branch %q exists at %s; expected it to be absent", pr.Spec.Branch, current)}
 		}
 	} else if current != intent.ExpectedHead {
-		return permanentError{fmt.Errorf("the head branch is at %s, not the authorized expected head %s", current, intent.ExpectedHead)}
+		return "", permanentError{fmt.Errorf("the head branch is at %s, not the authorized expected head %s", current, intent.ExpectedHead)}
 	}
 	snapshot, err := actions.FindStaged(ctx, r.Snapshots, cluster, intent.Candidate.BundleRef)
 	if err != nil {
-		return fmt.Errorf("staged snapshot %s: %w", intent.Candidate.BundleRef, err)
+		return "", fmt.Errorf("staged snapshot %s: %w", intent.Candidate.BundleRef, err)
 	}
 	if snapshot.Commit != intent.Candidate.Commit || snapshot.Tree != intent.Candidate.Tree || snapshot.BaseCommit != intent.Candidate.BaseCommit {
-		return permanentError{errors.New("the staged snapshot does not match the immutable publication intent")}
+		return "", permanentError{errors.New("the staged snapshot does not match the immutable publication intent")}
 	}
 	snapshot.Message = intent.Candidate.Message
 	if err := host.PublishSnapshot(ctx, conn, cred, repo, snapshot, pr.Spec.Branch, func() string {
@@ -563,9 +583,9 @@ func (r *Reconciler) advancePublication(ctx context.Context, host forge, conn *c
 		}
 		return intent.ExpectedHead
 	}()); err != nil {
-		return fmt.Errorf("advancing the head branch: %w", err)
+		return "", fmt.Errorf("advancing the head branch: %w", err)
 	}
-	return nil
+	return "", nil
 }
 
 func (r *Reconciler) finishPublication(status *codev1alpha1.PullRequestStatus, phase, observedHead, message string) {

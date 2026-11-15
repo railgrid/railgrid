@@ -461,9 +461,12 @@ the values remain inspectable.
 
 ### Session notifications and execution leases
 
-The first authenticated chat turn establishes the session owner. A session
-with transcript history from before ownership was recorded cannot acquire an
-owner on a later turn. Start a new session to use notification grants.
+The first authenticated chat turn establishes the session owner. If the
+caller's kcp identity cannot be checked, the turn is refused with a retryable
+503 and nothing is stored, so a new session is never created without its
+owner. A session with transcript history from before ownership was recorded
+cannot acquire an owner on a later turn. Start a new session to use
+notification grants.
 
 When upgrading from a release that predates execution leases, drain the old
 replicas before starting the new replicas. Older executors do not honor the

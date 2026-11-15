@@ -493,7 +493,7 @@ func (r *Runner) fingerprintEnvironmentLocked(ctx context.Context, key string, e
 
 func (r *Runner) environmentCleanupErrorLocked(env *warmEnvironment) error {
 	a := r.state.Attempts[env.AttemptID]
-	if a == nil || (a.CleanupAttempts >= 3 && !a.cleanupRunning && !a.CleanupDone) {
+	if a == nil || (a.CleanupAttempts >= maxCleanupAttempts && !a.cleanupRunning && !a.CleanupDone) {
 		return protocolError(ErrorUnavailable, false, fmt.Sprintf("environment cleanup exhausted retries for attempt %s; inspect its cleanup error and retained workdir, then use the documented operator recovery procedure", env.AttemptID), nil)
 	}
 	return protocolError(ErrorUnavailable, true, "environment cleanup is pending for attempt "+env.AttemptID, nil)

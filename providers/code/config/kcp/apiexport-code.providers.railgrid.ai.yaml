@@ -67,7 +67,7 @@ spec:
       crd: {}
   - group: code.railgrid.ai
     name: pullrequestcommands
-    schema: v261114-7058e03a8.pullrequestcommands.code.railgrid.ai
+    schema: v261115-b321d6393.pullrequestcommands.code.railgrid.ai
     storage:
       crd: {}
   - group: code.railgrid.ai

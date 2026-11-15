@@ -52,6 +52,11 @@ func notificationFingerprint(payload string) string {
 	return hex.EncodeToString(digest[:])
 }
 
+// MaxSessionNotifications bounds the notifications one session retains.
+// Delivering past it drops the oldest, so a key older than the newest
+// MaxSessionNotifications is no longer deduplicated.
+const MaxSessionNotifications = 500
+
 func validateSessionAccess(agentUID, sessionID, subject string) error {
 	if strings.TrimSpace(agentUID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(subject) == "" {
 		return fmt.Errorf("agent UID, session ID, and caller subject are required")

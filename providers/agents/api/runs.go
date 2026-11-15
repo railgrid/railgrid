@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
@@ -198,6 +199,22 @@ func harnessBackedRun(run store.Run) bool {
 // attempt. Failures use fixed reasons so an older or unreachable runner never
 // makes ordinary trace unreadable or reveals hook output, paths, or errors.
 func (s *Server) observeRunnerCleanup(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) *runner.CleanupObservation {
+	// Reading a trace is frequent (the portal polls it) and each live
+	// observation mints a harness identity and calls the runner, so a recent
+	// answer from the runner is reused for this run's attempt.
+	key := cleanupObservationKey{clusterID: id.clusterID, org: id.orgUUID, workspace: id.workspaceUUID, agent: run.AgentName, run: run.ID, attempt: run.AttemptID}
+	now := time.Now()
+	if cached, ok := s.cleanupObservations.get(key, now); ok {
+		return cached
+	}
+	observed := s.observeRunnerCleanupLive(ctx, c, id, run)
+	if observed != nil && observed.State != runner.CleanupUnknown {
+		s.cleanupObservations.put(key, observed, now)
+	}
+	return observed
+}
+
+func (s *Server) observeRunnerCleanupLive(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) *runner.CleanupObservation {
 	unknown := func(reason string) *runner.CleanupObservation {
 		return &runner.CleanupObservation{State: runner.CleanupUnknown, ObservedAt: time.Now().UTC(), Reason: reason}
 	}
@@ -257,6 +274,64 @@ func (s *Server) observeRunnerCleanup(ctx context.Context, c *agentsclient.Clien
 // runnerCleanupRunBindingIssue returns only fixed reason codes. Keeping the
 // Run-to-binding check separate from the remote receipt check makes an
 // observation actionable without exposing IDs or weakening any identity fence.
+// Cleanup observations that can still change are reused briefly; settled
+// ones (done, not applicable) for longer. Only answers the runner gave are
+// cached, never "unknown".
+const (
+	cleanupObservationTTL        = 15 * time.Second
+	settledCleanupObservationTTL = 10 * time.Minute
+	cleanupObservationEntries    = 1024
+)
+
+type cleanupObservationKey struct {
+	clusterID, org, workspace, agent, run, attempt string
+}
+
+type cleanupObservationEntry struct {
+	observation runner.CleanupObservation
+	expires     time.Time
+}
+
+type cleanupObservationCache struct {
+	mu      sync.Mutex
+	entries map[cleanupObservationKey]cleanupObservationEntry
+}
+
+func (c *cleanupObservationCache) get(key cleanupObservationKey, now time.Time) (*runner.CleanupObservation, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok || !now.Before(entry.expires) {
+		delete(c.entries, key)
+		return nil, false
+	}
+	observed := entry.observation
+	return &observed, true
+}
+
+func (c *cleanupObservationCache) put(key cleanupObservationKey, observed *runner.CleanupObservation, now time.Time) {
+	ttl := cleanupObservationTTL
+	if observed.State == runner.CleanupDone || observed.State == runner.CleanupNotApplicable {
+		ttl = settledCleanupObservationTTL
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = map[cleanupObservationKey]cleanupObservationEntry{}
+	}
+	if len(c.entries) >= cleanupObservationEntries {
+		for k, entry := range c.entries {
+			if !now.Before(entry.expires) {
+				delete(c.entries, k)
+			}
+		}
+		if len(c.entries) >= cleanupObservationEntries {
+			c.entries = map[cleanupObservationKey]cleanupObservationEntry{}
+		}
+	}
+	c.entries[key] = cleanupObservationEntry{observation: *observed, expires: now.Add(ttl)}
+}
+
 func runnerCleanupRunBindingIssue(run store.Run, clusterID string, binding *store.RunnerCleanupBinding) string {
 	attemptID := runHarnessAttemptID(run, binding)
 	switch {

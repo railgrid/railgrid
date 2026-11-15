@@ -39,6 +39,10 @@ const terminalRetention = 24 * time.Hour
 
 var commitPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
 
+// commitPinPattern is an argument that names a commit: an abbreviated or
+// full lower-case object ID.
+var commitPinPattern = regexp.MustCompile(`^[a-f0-9]{7,40}$`)
+
 // host is the backend as this reconciler needs it.
 type host interface {
 	backend.Collaboration
@@ -98,6 +102,13 @@ func (r *Reconciler) verify(ctx context.Context, c client.Client, command *codev
 		}
 		return ctrl.Result{}, deleteCommand(ctx, c, command)
 	}
+	// A command that cannot be verified (a missing connection, a credential
+	// that never resolves, a forge that keeps failing) is not retried
+	// forever: once it is older than any comment Code would still accept,
+	// it can only be rejected, so it is, and then expires like any other.
+	if !command.CreationTimestamp.IsZero() && r.now().After(command.CreationTimestamp.Add(commandhook.MaxCommandAge)) {
+		return ctrl.Result{}, r.reject(ctx, c, command, "the command could not be verified within an hour of being recorded; leave the command again")
+	}
 	repo, err := shared.ResolveRepository(ctx, c, command.Spec.RepositoryRef)
 	if err != nil {
 		return ctrl.Result{}, r.reject(ctx, c, command, err.Error())
@@ -145,6 +156,19 @@ func (r *Reconciler) verify(ctx context.Context, c client.Client, command *codev
 	if pr == nil || !commitPattern.MatchString(pr.Commit) {
 		return ctrl.Result{}, r.reject(ctx, c, command, "the pull request has no readable head commit")
 	}
+	// The head is read now, after the comment was written. A command that
+	// named a commit must still find it at the head, so a push in between
+	// cannot borrow the commenter's authority.
+	pinned := false
+	for _, arg := range args {
+		if !commitPinPattern.MatchString(arg) {
+			continue
+		}
+		if !strings.HasPrefix(pr.Commit, arg) {
+			return ctrl.Result{}, r.reject(ctx, c, command, fmt.Sprintf("the command names commit %s, but the pull request head is now %s; leave the command again for the current head", arg, pr.Commit))
+		}
+		pinned = true
+	}
 	permission := "none"
 	if comment.AuthorType == "User" {
 		if permission, err = forge.RepositoryPermission(ctx, conn, cred, repo, comment.Author); err != nil {
@@ -156,7 +180,7 @@ func (r *Reconciler) verify(ctx context.Context, c client.Client, command *codev
 		Phase: codev1alpha1.PullRequestCommandVerified, Number: comment.IssueNumber, URL: comment.URL,
 		Author: comment.Author, AuthorType: comment.AuthorType, AuthorPermission: permission,
 		Command: name, Args: args,
-		Head: pr.Commit, HeadBranch: pr.Head, Base: pr.Base, Fork: !strings.EqualFold(pr.HeadRepository, pr.Repository),
+		Head: pr.Commit, HeadPinned: pinned, HeadBranch: pr.Head, Base: pr.Base, Fork: !strings.EqualFold(pr.HeadRepository, pr.Repository),
 		State: pr.State, Merged: pr.Merged, Draft: pr.Draft,
 		CommentedAt: &commented, VerifiedAt: &verified,
 	}

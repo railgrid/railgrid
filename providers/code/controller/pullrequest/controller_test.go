@@ -174,7 +174,7 @@ func TestAcceptedPublicationUsesImmutableExpectedHeadAndRecoversCandidate(t *tes
 	intent := &codev1alpha1.PullRequestPublication{Sequence: 1, OperationID: "op-1", ExpectedHead: headB, Candidate: codev1alpha1.PullRequestHead{Commit: headA, BaseCommit: headC, Tree: tree, BundleRef: ref}}
 	pr := resource(nil)
 	forge := &fakeForge{branch: headB}
-	if err := r.advancePublication(context.Background(), forge, nil, backend.Credential{}, nil, "tenant", pr, intent); err != nil {
+	if _, err := r.advancePublication(context.Background(), forge, nil, backend.Credential{}, nil, "tenant", pr, intent); err != nil {
 		t.Fatal(err)
 	}
 	if forge.branch != headA || len(forge.published) != 1 || forge.expected[0] != headB {
@@ -182,14 +182,37 @@ func TestAcceptedPublicationUsesImmutableExpectedHeadAndRecoversCandidate(t *tes
 	}
 	// A retry after an accepted push recognizes the candidate already on the
 	// branch and does not create another forge write.
-	if err := r.advancePublication(context.Background(), forge, nil, backend.Credential{}, nil, "tenant", pr, intent); err != nil || len(forge.published) != 1 {
+	if _, err := r.advancePublication(context.Background(), forge, nil, backend.Credential{}, nil, "tenant", pr, intent); err != nil || len(forge.published) != 1 {
 		t.Fatalf("recovery repeated publication: err=%v writes=%d", err, len(forge.published))
 	}
 	// An external push after acceptance still fails the original lease.
 	forge.branch = headC
-	if err := r.advancePublication(context.Background(), forge, nil, backend.Credential{}, nil, "tenant", pr, intent); err == nil || len(forge.published) != 1 {
+	if _, err := r.advancePublication(context.Background(), forge, nil, backend.Credential{}, nil, "tenant", pr, intent); err == nil || len(forge.published) != 1 {
 		t.Fatalf("stale accepted lease wrote over an external head: err=%v writes=%d", err, len(forge.published))
 	}
+	// When the forge can tell that the moved branch still contains the
+	// candidate, the publication landed and someone pushed on top: it is
+	// reported as landed, not failed, and nothing is written.
+	containing := &ancestryForge{fakeForge: forge, contains: true}
+	landedAt, err := r.advancePublication(context.Background(), containing, nil, backend.Credential{}, nil, "tenant", pr, intent)
+	if err != nil || landedAt != headC || len(forge.published) != 1 || containing.asked != 1 {
+		t.Fatalf("landed publication: at=%q err=%v writes=%d asked=%d", landedAt, err, len(forge.published), containing.asked)
+	}
+	unrelated := &ancestryForge{fakeForge: forge}
+	if _, err := r.advancePublication(context.Background(), unrelated, nil, backend.Credential{}, nil, "tenant", pr, intent); err == nil {
+		t.Fatal("a branch without the candidate was reported as published")
+	}
+}
+
+type ancestryForge struct {
+	*fakeForge
+	contains bool
+	asked    int
+}
+
+func (f *ancestryForge) ContainsCommit(context.Context, *codev1alpha1.Connection, backend.Credential, *codev1alpha1.Repository, string, string) (bool, error) {
+	f.asked++
+	return f.contains, nil
 }
 
 func TestPublicationAllowsCandidateParentIndependentOfBranchLease(t *testing.T) {
