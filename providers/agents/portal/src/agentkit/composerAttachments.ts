@@ -207,17 +207,17 @@ export function assistantAttachmentValidationError(
   existing: readonly AssistantAttachmentCandidate[] = [],
 ): string | null {
   if (file.size <= 0) {
-    return 'Empty files cannot be attached.'
+    return 'Empty files cannot be attached. Choose a file with content.'
   }
   const maxBytes = assistantAttachmentMaxBytes(file)
   if (file.size > maxBytes) {
     const limit = `${Math.floor(maxBytes / (1024 * 1024)) || 1} MiB`
     const kind = assistantAttachmentKind(file)
     return kind === 'image'
-      ? `Images must be ${limit} or smaller.`
+      ? `Images must be ${limit} or smaller. Choose a smaller file.`
       : kind === 'text'
-        ? `Text files must be ${limit} or smaller.`
-        : `Files must be ${limit} or smaller.`
+        ? `Text files must be ${limit} or smaller. Choose a smaller file.`
+        : `Files must be ${limit} or smaller. Choose a smaller file.`
   }
   const active = existing.filter((candidate) => candidate.status !== 'error')
   if (active.length >= MAX_ASSISTANT_ATTACHMENTS_PER_TURN) {

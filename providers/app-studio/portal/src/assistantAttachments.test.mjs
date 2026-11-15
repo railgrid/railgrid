@@ -75,9 +75,9 @@ test('accepts any file while keeping per-kind limits visible to the portal', asy
 
   const glb = { name: 'jeep.glb', type: 'model/gltf-binary', size: 24 << 20 }
   assert.equal(assistantAttachmentValidationError(glb), null)
-  assert.equal(assistantAttachmentValidationError({ ...glb, size: (25 << 20) + 1 }), 'Files must be 25 MiB or smaller.')
-  assert.equal(assistantAttachmentValidationError({ name: 'screen.png', type: 'image/png', size: (8 << 20) + 1 }), 'Images must be 8 MiB or smaller.')
-  assert.equal(assistantAttachmentValidationError({ ...glb, size: 0 }), 'Empty files cannot be attached.')
+  assert.equal(assistantAttachmentValidationError({ ...glb, size: (25 << 20) + 1 }), 'Files must be 25 MiB or smaller. Choose a smaller file.')
+  assert.equal(assistantAttachmentValidationError({ name: 'screen.png', type: 'image/png', size: (8 << 20) + 1 }), 'Images must be 8 MiB or smaller. Choose a smaller file.')
+  assert.equal(assistantAttachmentValidationError({ ...glb, size: 0 }), 'Empty files cannot be attached. Choose a file with content.')
   const existing = [{ file: { size: 24 << 20 }, status: 'ready' }, { file: { size: 20 << 20 }, status: 'ready' }]
   assert.equal(assistantAttachmentValidationError(glb, existing), 'Attachments in one turn must total 50 MiB or less.')
 })
