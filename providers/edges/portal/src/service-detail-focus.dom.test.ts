@@ -62,3 +62,46 @@ it('propagates the app authority to service retry focus across a tenant change',
     expect(document.activeElement).toBe(host.querySelector('.k-resource-page__title'))
   } finally { app.unmount() }
 })
+
+it('keeps an unlisted saved type selectable and applies grouped Edit service choices', async () => {
+  const service = { name: 'demo', serviceType: 'legacy-type', scheme: 'http', port: 9443, edgeName: 'edge', conditions: [] }
+  const catalog = [
+    { type: 'home-assistant', displayName: 'Home Assistant', category: 'Home', auth: 'none', credential: { fields: [] } },
+    { type: 'unifi-network', displayName: 'UniFi Network', category: 'Network', auth: 'none', credential: { fields: [] }, defaultScheme: 'https', defaultPort: 443, schemeLocked: true },
+  ]
+  api.getService.mockResolvedValue(service)
+  const host = document.createElement('div')
+  document.body.append(host)
+  const app = createApp(ServiceEdit, { serviceName: service.name, catalog, edges: [] })
+  app.mount(host)
+  try {
+    await settle()
+    const type = host.querySelector<HTMLButtonElement>('#service-edit-type')!
+    const scheme = host.querySelector<HTMLButtonElement>('#service-edit-scheme')!
+    const port = host.querySelector<HTMLInputElement>('#service-edit-port')!
+    expect(type.textContent).toContain('legacy-type')
+    expect(port.value).toBe('9443')
+    scheme.click()
+    await settle()
+    document.querySelectorAll<HTMLButtonElement>('#service-edit-scheme-listbox [role="option"]')[1].click()
+    await settle()
+    expect(scheme.textContent).toContain('https')
+
+    type.focus()
+    type.click()
+    await settle()
+    const listbox = document.getElementById('service-edit-type-listbox')!
+    expect(listbox.querySelector('[aria-selected="true"]')?.textContent).toContain('legacy-type')
+    const groups = [...listbox.querySelectorAll('[role="group"]')]
+    expect(groups.map(group => document.getElementById(group.getAttribute('aria-labelledby')!)?.textContent)).toEqual(['Home', 'Network'])
+    type.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    type.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await settle()
+    expect(type.textContent).toContain('UniFi Network')
+    expect(document.activeElement).toBe(type)
+    expect(scheme.disabled).toBe(true)
+    expect(scheme.getAttribute('aria-describedby')).toBe('service-edit-scheme-help')
+    expect(port.value).toBe('443')
+    expect(api.updateEdgeService).not.toHaveBeenCalled()
+  } finally { app.unmount() }
+})

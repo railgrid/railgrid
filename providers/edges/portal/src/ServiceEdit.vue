@@ -8,12 +8,14 @@ import type { CatalogCredentialField, CatalogEntry, EdgeServiceEdit } from './ap
 import type { Edge, EdgeService, ErrorResponse } from './types'
 import ActionMenu, { type ActionMenuItem } from './portalkit/ActionMenu.vue'
 import ConditionsPanel from './portalkit/ConditionsPanel.vue'
+import FormSelect from './portalkit/FormSelect.vue'
 import ResourcePage from './portalkit/ResourcePage.vue'
 import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard, type ResourceStatTone } from './portalkit/ResourceStatCards.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import { toast } from './portalkit/toast'
+import { serviceSchemeOptions, serviceTypeOptions } from './serviceOptions'
 import { parseServiceHost, servicePortError } from './serviceValidation'
 import { serviceTarget } from './serviceTarget'
 
@@ -90,6 +92,12 @@ seedForm(service.value)
 // The catalog entry for the selected type drives provider information, scheme
 // locking, target hints, and credential fields.
 const entry = computed(() => props.catalog.find((c) => c.type === form.value.serviceType))
+const typeOptions = computed(() => {
+  const options = serviceTypeOptions(props.catalog)
+  const currentType = form.value.serviceType
+  if (currentType && !entry.value) options.unshift({ value: currentType, label: currentType })
+  return options
+})
 const schemeLocked = computed(() => !!entry.value?.schemeLocked)
 const parsedHost = computed(() => parseServiceHost(form.value.host, schemeLocked.value ? entry.value?.defaultScheme : undefined))
 const hostInputError = computed(() => targetMode.value === 'host' ? parsedHost.value.error || '' : '')
@@ -112,7 +120,9 @@ const targetRestriction = computed(() => entry.value?.hostRequired
   ? 'This service type requires a host or IP address.'
   : edgeIsHost.value ? 'Kubernetes Service targets require a Kubernetes edge.' : '')
 
-function onTypeChange(): void {
+function onTypeChange(type: string): void {
+  if (type === form.value.serviceType) return
+  form.value.serviceType = type
   hostError.value = null
   const catalogEntry = entry.value
   if (!catalogEntry) return
@@ -490,14 +500,28 @@ onUnmounted(() => {
 
             <ResourceSectionCard class="service-detail__card" id="service-configuration" eyebrow="Desired state" title="Configuration" description="Update the service type, endpoint, and AI guidance without exposing stored credentials.">
               <div class="service-detail__form-grid service-detail__form-grid--three">
-                <label class="fld"><span class="lbl">Type</span>
-                  <select v-model="form.serviceType" class="k-input" :disabled="busy || !service" @change="onTypeChange">
-                    <option v-if="service && !props.catalog.some((item) => item.type === form.serviceType)" :value="form.serviceType">{{ form.serviceType }}</option>
-                    <option v-for="catalogEntry in props.catalog" :key="catalogEntry.type" :value="catalogEntry.type">{{ catalogEntry.displayName }}</option>
-                  </select>
-                </label>
-                <div class="fld"><label for="service-edit-scheme" class="lbl">Scheme</label>
-                  <select id="service-edit-scheme" v-model="form.scheme" class="k-input" :disabled="busy || !service || schemeLocked" :aria-describedby="schemeLocked ? 'service-edit-scheme-help' : undefined"><option value="http">http</option><option value="https">https</option></select>
+                <div class="fld">
+                  <label id="service-edit-type-label" for="service-edit-type" class="lbl">Type</label>
+                  <FormSelect
+                    id="service-edit-type"
+                    :model-value="form.serviceType || ''"
+                    :options="typeOptions"
+                    :disabled="busy || !service"
+                    labelledby="service-edit-type-label"
+                    @update:model-value="onTypeChange"
+                  />
+                </div>
+                <div class="fld">
+                  <label id="service-edit-scheme-label" for="service-edit-scheme" class="lbl">Scheme</label>
+                  <FormSelect
+                    id="service-edit-scheme"
+                    :model-value="form.scheme || 'http'"
+                    :options="serviceSchemeOptions"
+                    :disabled="busy || !service || schemeLocked"
+                    labelledby="service-edit-scheme-label"
+                    :describedby="schemeLocked ? 'service-edit-scheme-help' : undefined"
+                    @update:model-value="form.scheme = $event"
+                  />
                   <span v-if="schemeLocked" id="service-edit-scheme-help" class="field-help">Fixed by the selected service type.</span>
                 </div>
                 <div class="fld"><label for="service-edit-port" class="lbl">Port</label><input id="service-edit-port" v-model="form.port" type="number" min="1" max="65535" class="k-input" :disabled="busy || !service" :aria-invalid="portError ? 'true' : undefined" :aria-describedby="portError ? 'service-edit-port-error' : undefined" @input="portError = null" /><span v-if="portError" id="service-edit-port-error" class="error" role="alert">{{ portError }}</span></div>

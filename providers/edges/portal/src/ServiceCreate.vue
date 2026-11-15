@@ -8,6 +8,7 @@ import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuid
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import FormSelect from './portalkit/FormSelect.vue'
 import { toast } from './portalkit/toast'
+import { serviceSchemeOptions, serviceTypeOptions } from './serviceOptions'
 import { displayServiceHost, parseServiceHost, servicePortError } from './serviceValidation'
 
 const props = withDefaults(defineProps<{
@@ -39,26 +40,7 @@ function catalogFor(type?: string): CatalogEntry | undefined {
   return catalog.value.find((entry) => entry.type === type)
 }
 
-const catalogGroups = computed(() => catalog.value.reduce<{ category: string; items: CatalogEntry[] }[]>((groups, entry) => {
-  const category = entry.category || 'Other'
-  let group = groups.find((item) => item.category === category)
-  if (!group) {
-    group = { category, items: [] }
-    groups.push(group)
-  }
-  group.items.push(entry)
-  return groups
-}, []))
-
-const typeOptions = computed(() => catalogGroups.value.flatMap(group => group.items.map(entry => ({
-  value: entry.type,
-  label: entry.displayName,
-  group: group.category,
-}))))
-const schemeOptions = [
-  { value: 'http', label: 'http' },
-  { value: 'https', label: 'https' },
-]
+const typeOptions = computed(() => serviceTypeOptions(catalog.value))
 
 const genericFallback: CatalogEntry = {
   type: 'generic',
@@ -341,7 +323,7 @@ onUnmounted(() => {
           <FormSelect
             id="service-create-scheme"
             :model-value="draft.scheme || 'http'"
-            :options="schemeOptions"
+            :options="serviceSchemeOptions"
             :disabled="schemeLocked"
             labelledby="service-create-scheme-label"
             :describedby="schemeLocked ? 'service-create-scheme-help' : undefined"
