@@ -153,6 +153,13 @@ function agentsFetch(input, init = {}) {
   const url = new URL(String(input), location.origin)
   const path = url.pathname
   calls.push({ provider: 'agents', path, method: init.method || 'GET', headers: hostHeaders(init) })
+  if (params.get('scenario') === 'toolset-missing-connection' && (!init.method || init.method === 'GET')) {
+    const prefix = '/clusters/workspace-test/apis/agents.railgrid.ai/v1alpha1/'
+    if (path === prefix + 'connections') return Promise.resolve(json(resourceList('ConnectionList', [])))
+    if (path === prefix + 'toolsets') return Promise.resolve(json(resourceList('ToolsetList', [
+      { metadata: { name: 'research' }, spec: { displayName: 'Research', connections: ['retired-search'], families: ['core', 'web'] } },
+    ])))
+  }
   if (path === '/services/providers/agents/oauth/providers') return Promise.resolve(json({ providers: {} }))
   if (path === '/ui/providers/agents/model-catalog.json') return Promise.resolve(json([{ id: 'gpt-4o-mini', inputPer1M: 0.15, outputPer1M: 0.6, contextWindow: 128000, vision: true, toolCall: true }]))
   if (path === '/clusters/workspace-test/apis/agents.railgrid.ai/v1alpha1/modelproviderconnections') return Promise.resolve(json(resourceList('ModelProviderConnectionList', agentsProviderConnections)))
