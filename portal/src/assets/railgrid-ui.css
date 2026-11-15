@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 51;
+  --railgrid-ui-core-version: 52;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -325,23 +325,29 @@ html.light .k-card {
   pointer-events: none;
   opacity: 0.4;
 }
+.k-btn[aria-disabled="true"] { cursor: default; }
+.k-btn[aria-busy="true"] { cursor: progress; }
+.k-btn:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
 .k-btn--primary {
   background: var(--color-accent, #8b6bff);
   color: var(--color-on-accent, #0a0b12);
   box-shadow: 0 0 16px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
 }
-.k-btn--primary:hover {
+.k-btn--primary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-accent-hover, #a18aff);
   box-shadow: 0 0 22px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
 }
 .k-btn--ghost {
-  background: var(--color-surface-overlay, #171927);
+  background: transparent;
   border-color: var(--color-border-default, rgba(255, 255, 255, 0.11));
   color: var(--color-text-primary, #e9e9f2);
 }
-.k-btn--ghost:hover {
-  background: var(--color-surface-hover, #1e2033);
-  border-color: color-mix(in srgb, var(--color-accent, #8b6bff) 30%, transparent);
+.k-btn--ghost:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: color-mix(in srgb, var(--color-text-primary, #e9e9f2) 6%, transparent);
+  border-color: var(--color-border-default, rgba(255, 255, 255, 0.11));
 }
 .k-btn--text {
   background: transparent;
@@ -699,7 +705,7 @@ html.light .k-create-surface {
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   color: var(--color-danger, #ff5d5d);
 }
-.k-btn--danger:hover {
+.k-btn--danger:hover:not(:disabled):not([aria-disabled="true"]) {
   background: color-mix(in srgb, var(--color-danger, #ff5d5d) 18%, transparent);
 }
 
@@ -715,7 +721,7 @@ html.light .k-create-surface {
   font-weight: 500;
   box-shadow: none;
 }
-.k-btn--danger-solid:hover:not(:disabled) {
+.k-btn--danger-solid:hover:not(:disabled):not([aria-disabled="true"]) {
   background: color-mix(in srgb, var(--color-danger, #ff5d5d) 90%, transparent);
 }
 .k-btn--danger-solid:focus-visible {
