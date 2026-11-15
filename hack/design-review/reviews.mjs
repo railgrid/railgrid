@@ -31,6 +31,7 @@ export const reviews = {
   'components.text-input': review('text-input', 'Text input states', 'Compare a labeled field, its error and the disabled state.', [[css]]),
   'components.radio': review('radio', 'Radio states', 'Try arrow keys, disabled examples and required validation.', [[css]]),
   'components.checkbox': review('checkbox', 'Checkbox states', 'Compare checked, mixed, disabled and keyboard focus states.', [[css]]),
+  'components.toggle': review('toggle', 'Toggle states', 'Use Space or click to change the setting. Compare the disabled setting and its help.', [[css]]),
   'components.action-menu': review('navigation', 'Row, labeled, and split menus', 'Open the action menu with the keyboard. Compare primary, split, busy, and disabled variants; press Escape and check that focus returns to the trigger.', [[vue('ActionMenu'), 'primaryLabel?:']]),
   'components.menu': review('navigation', 'Menu geometry and keyboard path', 'Open a menu at the right edge in the narrow frame. Try Arrow keys, Home, End, Escape, and an unavailable item.', [[css, '.k-menu-item'], [vue('ActionMenu'), 'role="menu"']]),
   'components.tabs': review('route-tabs', 'Provider and secondary navigation', 'Choose Connections or Usage & cost. Compare the primary underline and the smaller secondary tabs. Route links use sample destinations.', [[vue('Tabs'), 'aria-current'], [core('tabs.ts'), 'export function tabClass']]),
