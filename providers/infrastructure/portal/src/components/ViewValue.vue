@@ -6,23 +6,34 @@
 //   badge → neutral pill
 // Driven entirely by a ResolvedValue from view.ts, so list cells and detail
 // fields render identically.
-import { ref } from 'vue'
+import { onUnmounted, ref, watch } from 'vue'
 import { Check, Copy, ExternalLink } from 'lucide-vue-next'
 import type { ResolvedValue } from '../view'
-import { toast } from '../portalkit/toast'
 
 const props = withDefaults(defineProps<{ value: ResolvedValue; interactive?: boolean }>(), {
   interactive: true,
 })
 
-const copied = ref(false)
+const copyState = ref<'idle' | 'copied' | 'error'>('idle')
+let copyTimer: ReturnType<typeof setTimeout> | undefined
+let copyGeneration = 0
+function resetCopy() {
+  copyGeneration += 1
+  clearTimeout(copyTimer)
+  copyState.value = 'idle'
+}
+watch(() => [props.value.text, props.value.type, props.interactive], resetCopy)
+onUnmounted(resetCopy)
 async function copy() {
+  resetCopy()
+  const generation = copyGeneration
   try {
     await navigator.clipboard.writeText(props.value.text)
-    copied.value = true
-    window.setTimeout(() => (copied.value = false), 1200)
+    if (generation !== copyGeneration) return
+    copyState.value = 'copied'
+    copyTimer = setTimeout(() => { copyState.value = 'idle' }, 2000)
   } catch {
-    toast('error', 'Could not copy this value. Select it and copy it manually.')
+    if (generation === copyGeneration) copyState.value = 'error'
   }
 }
 </script>
@@ -46,19 +57,22 @@ async function copy() {
 
   <span
     v-else-if="value.type === 'code'"
-    class="view-value-code k-badge k-badge--muted font-mono text-[11px]"
+    class="view-value-code-wrap"
   >
-    <span class="view-value-text">{{ value.text }}</span>
-    <button
+    <span class="view-value-code k-badge k-badge--muted font-mono text-[11px]">
+      <span class="view-value-text">{{ value.text }}</span>
+      <button
       type="button"
-      class="k-btn k-btn--ghost k-icon-action view-value-copy"
-      :aria-label="copied ? 'Copied' : `Copy ${value.text}`"
-      :data-k-tip="copied ? 'Copied' : 'Copy value'"
+      class="k-icon-action view-value-copy"
+      :aria-label="copyState === 'copied' ? 'Value copied' : `Copy ${value.text}`"
+      :data-k-tip="copyState === 'copied' ? 'Copied' : 'Copy value'"
       @click.stop="copy"
     >
-      <Copy v-if="!copied" :size="12" :stroke-width="1.75" aria-hidden="true" />
+      <Copy v-if="copyState !== 'copied'" :size="12" :stroke-width="1.75" aria-hidden="true" />
       <Check v-else :size="12" :stroke-width="1.75" class="text-success" aria-hidden="true" />
     </button>
+    </span>
+    <span class="view-value-copy-feedback" :class="{ 'view-value-copy-feedback--error': copyState === 'error' }" role="status" aria-live="polite">{{ copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Could not copy. Select the value to copy it.' : '' }}</span>
   </span>
 
   <span
