@@ -704,9 +704,17 @@ const categoryChips = computed(() => {
 
 // Active filters. selectedCategory === null means "All".
 const search = ref('')
+const catalogSearch = ref<HTMLInputElement | null>(null)
 const selectedCategory = ref<string | null>(null)
 const customProviderSetupOpen = ref(false)
 const customProviderSetupHeading = ref<HTMLHeadingElement | null>(null)
+
+async function clearCatalogFilters() {
+  search.value = ''
+  selectedCategory.value = null
+  await nextTick()
+  catalogSearch.value?.focus()
+}
 
 async function setCustomProviderSetupOpen(open: boolean) {
   customProviderSetupOpen.value = open
@@ -732,7 +740,7 @@ const filteredCards = computed<ProviderCard[]>(() => {
 })
 const catalogEmptyMessage = computed(() => {
   if (!providers.loaded || filteredCards.value.length) return ''
-  return providers.items.length ? 'No providers match your search.' : 'No providers installed yet.'
+  return providers.items.length ? 'No providers match your filters.' : 'No providers installed yet.'
 })
 
 // The catalog renders as one flat grid, but self-managed providers — the ones
@@ -1281,6 +1289,7 @@ function dependencyNotice(p: ProviderDTO): string {
             <label for="provider-catalog-search" class="sr-only">Search providers</label>
             <input
               id="provider-catalog-search"
+              ref="catalogSearch"
               v-model="search"
               type="search"
               aria-label="Search providers"
@@ -1368,7 +1377,15 @@ function dependencyNotice(p: ProviderDTO): string {
         >
           <p role="status">{{ catalogEmptyMessage }}</p>
           <button
-            v-if="catalogEmptyMessage && orgProvidersAvailable"
+            v-if="catalogEmptyMessage && providers.items.length"
+            type="button"
+            class="k-btn k-btn--ghost mt-2"
+            @click="clearCatalogFilters"
+          >
+            Clear filters
+          </button>
+          <button
+            v-else-if="catalogEmptyMessage && orgProvidersAvailable"
             type="button"
             class="mt-2 text-accent underline underline-offset-2 pointer-coarse:min-h-11"
             :aria-expanded="customProviderSetupOpen"
@@ -1377,7 +1394,7 @@ function dependencyNotice(p: ProviderDTO): string {
           >
             Learn how to add a custom provider
           </button>
-          <p v-else-if="catalogEmptyMessage && providers.items.length === 0" class="mt-2 text-xs">
+          <p v-else-if="catalogEmptyMessage" class="mt-2 text-xs">
             See <code>docs/providers.md</code> and <code>providers/quickstart/</code> for an example.
           </p>
         </div>

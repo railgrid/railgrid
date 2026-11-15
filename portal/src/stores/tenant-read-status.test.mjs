@@ -58,6 +58,45 @@ function response(status, body = '') {
   })
 }
 
+test('workspace creation can return its own hub failure to the calling form', async () => {
+  installStorage()
+  const restoreWindow = installWindow()
+  setActivePinia(createPinia())
+  const store = useTenantStore()
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => response(403, JSON.stringify({ message: 'Workspace limit reached. Review your plan.' }))
+  try {
+    await assert.rejects(
+      store.createWorkspace('org-a', 'Development', { selectCreated: false, throwOnError: true }),
+      /Workspace limit reached\. Review your plan\./,
+    )
+    assert.equal(await store.createWorkspace('org-a', 'Development'), null)
+  } finally {
+    globalThis.fetch = realFetch
+    restoreWindow()
+  }
+})
+
+test('workspace creation gives an actionable fallback for missing or invalid response bodies', async () => {
+  installStorage()
+  const restoreWindow = installWindow()
+  setActivePinia(createPinia())
+  const store = useTenantStore()
+  const realFetch = globalThis.fetch
+  try {
+    for (const body of ['', 'not json', 'null']) {
+      globalThis.fetch = async () => response(503, body)
+      await assert.rejects(
+        store.createWorkspace('org-a', 'Development', { throwOnError: true }),
+        { message: 'Unable to create workspace (HTTP 503). Try again.' },
+      )
+    }
+  } finally {
+    globalThis.fetch = realFetch
+    restoreWindow()
+  }
+})
+
 test('same-target status uses the latest generation and fences late older responses', async () => {
   installStorage()
   const restoreWindow = installWindow()

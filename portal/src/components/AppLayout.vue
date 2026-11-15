@@ -2,7 +2,7 @@
 import { gettingStartedFocused } from '@/composables/gettingStartedFocus'
 import { useAgentOverlayStore } from '@/stores/agentOverlay'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
-import { ref, onMounted, onUnmounted, computed, watch, watchEffect } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch, watchEffect, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
@@ -271,7 +271,7 @@ const showHelpModal = ref(false)
 // a permanent 208px label column; labels expand on click and the choice
 // persists per browser. Collapsed rows are icon-only with a native title
 // tooltip (design.patterns.navigation-and-feedback: sidebar rail).
-const { sidebarExpanded, toggleSidebar } = useSidebarExpansion()
+const { sidebarExpanded, narrow, toggleSidebar, closeNarrowSidebar } = useSidebarExpansion()
 
 const {
   dockState,
@@ -290,7 +290,14 @@ const {
   onDragStart,
   onDragHandleKeydown,
   resetDockPos,
-} = useNavigationDock(sidebarExpanded, computed(() => gettingStartedFocused.value ? 0 : assistantOverlay.sidePanelWidth))
+} = useNavigationDock(computed(() => !narrow.value && sidebarExpanded.value), computed(() => gettingStartedFocused.value ? 0 : assistantOverlay.sidePanelWidth))
+
+async function toggleSidebarAndFocus() {
+  toggleSidebar()
+  await nextTick()
+  if (document.activeElement === document.body) dockedRef.value?.querySelector<HTMLButtonElement>('.shell-sidebar-toggle')?.focus()
+}
+watch(() => route.fullPath, () => { if (narrow.value) closeNarrowSidebar() })
 
 const dockHintId = 'railgrid-dock-hint'
 const dockHintText = 'Drag to an edge · Shift+Arrow to dock · Enter to float'
@@ -426,11 +433,13 @@ const contextStatus = computed<ContextStatus>(() => {
     </Transition>
 
     <!-- VERTICAL SIDEBAR (left or right) -->
+    <div v-if="!gettingStartedFocused && isVerticalDock && narrow && sidebarExpanded" aria-hidden="true" class="w-14 flex-shrink-0" :class="dockState.mode === 'left' ? 'order-first' : 'order-last'" />
     <aside
       v-if="!gettingStartedFocused && isVerticalDock"
       ref="dockedRef"
       class="relative z-50 flex h-full flex-shrink-0 flex-col overflow-hidden border-border-default bg-surface-raised py-3 px-2 transition-[width] duration-200"
-      :class="[dockState.mode === 'left' ? 'order-first border-r' : 'order-last border-l', sidebarExpanded ? 'w-52' : 'w-14']"
+      :class="[dockState.mode === 'left' ? 'order-first border-r' : 'order-last border-l', sidebarExpanded ? 'w-52' : 'w-14', narrow && sidebarExpanded ? (dockState.mode === 'left' ? '!absolute inset-y-0 left-0' : '!absolute inset-y-0 right-0') : '']"
+      @keydown.esc="narrow && sidebarExpanded && toggleSidebarAndFocus()"
     >
       <!-- Expanded rail header: brand identity owns the first row, while
            the dock grip remains its leading control. Exceptional context
@@ -466,7 +475,7 @@ const contextStatus = computed<ContextStatus>(() => {
             class="shell-sidebar-toggle k-btn k-btn--ghost ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-secondary transition-colors hover:bg-surface-overlay/50 hover:text-text-primary"
             aria-label="Collapse sidebar"
             title="Collapse sidebar"
-            @click="toggleSidebar"
+            @click="toggleSidebarAndFocus"
           >
             <PanelLeftClose class="h-3.5 w-3.5" :stroke-width="1.75" />
           </button>
@@ -514,7 +523,7 @@ const contextStatus = computed<ContextStatus>(() => {
           class="shell-sidebar-toggle k-btn k-btn--ghost flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-secondary transition-colors hover:bg-surface-overlay/50 hover:text-text-primary"
           aria-label="Expand sidebar"
           title="Expand sidebar"
-          @click="toggleSidebar"
+          @click="toggleSidebarAndFocus"
         >
           <PanelLeftOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
         </button>

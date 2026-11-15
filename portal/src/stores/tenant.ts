@@ -134,6 +134,7 @@ export interface WorkspaceRow {
   // in the sidebar; omitted by the hub until the workspace reports Ready.
   clusterName?: string
   deletionRequestedAt?: string | null
+  recoveryDeadline?: string | null
   // Set with deletionRequestedAt when the deletion skipped the recovery
   // window (DELETE ?force=true): the hub cascades on its next sweep and
   // refuses to restore the row.
@@ -205,6 +206,8 @@ export interface CreateWorkspaceOptions {
   // current operating target. The first-workspace flow keeps the default
   // selecting behavior by omitting this option.
   selectCreated?: boolean
+  // Let a caller-owned form display the failure from its own request.
+  throwOnError?: boolean
 }
 
 export interface WorkspaceDeleteResult {
@@ -935,13 +938,14 @@ export const useTenantStore = defineStore('tenant', () => {
       body: JSON.stringify({ displayName }),
     })
     if (!resp.ok) {
-      const message = await hubMessage(resp, `Failed to create workspace (HTTP ${resp.status}).`)
+      const message = await hubMessage(resp, 'Unable to create workspace', 'Try again.')
       // The POST may resolve after the caller switched organizations. Do not
       // publish an old target's failure through the shared store error, where
       // the newly active organization would render it as its own problem.
       if (isCurrentWorkspaceCreate(targetOrgUUID, creationSequence, selectionRevisionAtStart)) {
         error.value = message
       }
+      if (options.throwOnError) throw new Error(message)
       return null
     }
     const created = (await resp.json()) as WorkspaceRow
@@ -1070,9 +1074,10 @@ export const useTenantStore = defineStore('tenant', () => {
 
   // hubMessage is the hub's own sentence from a failed response, else the
   // fallback with the status.
-  async function hubMessage(resp: Response, fallback: string): Promise<string> {
-    const body = (await resp.json().catch(() => ({}))) as { message?: string; error?: string }
-    return body.message || body.error || `${fallback}: ${resp.status}`
+  async function hubMessage(resp: Response, fallback: string, recovery?: string): Promise<string> {
+    const body = (await resp.json().catch(() => ({}))) as { message?: string; error?: string } | null
+    if (!body?.message && !body?.error && recovery) return `${fallback} (HTTP ${resp.status}). ${recovery}`
+    return body?.message || body?.error || `${fallback}: ${resp.status}`
   }
 
   async function fetchOrgBilling(targetOrgUUID: string, signal?: AbortSignal): Promise<OrgBilling> {
