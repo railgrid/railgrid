@@ -291,6 +291,8 @@ function barLabel(row: Row): string {
           <component :is="interactive ? 'summary' : meterTo ? RouterLink : 'div'" :to="!interactive ? meterTo : undefined" class="metering-row" :class="{ 'metering-row--link': !interactive && !!meterTo }">
             <div class="metering-label">
               <span class="font-medium text-text-primary">{{ label(r.meter) }}</span>
+              <span v-if="variant === 'compact' && r.enforce !== 'Meter' && ['near', 'at', 'over'].includes(r.state)" class="metering-compact-state" :class="usedClass(r)">{{ stateLabel(r) }}</span>
+              <span v-else-if="variant === 'compact' && r.used !== null && !r.max" class="metering-compact-state text-text-secondary">No configured limit</span>
               <span v-if="interactive" class="metering-description">{{ description(r) }}</span>
               <span v-else-if="variant === 'compact' && rateUnit(r)" class="metering-description">{{ rateUnit(r) }}</span>
               <span v-else-if="r.enforce && variant !== 'compact'" class="metering-description">{{ r.enforce }} limit</span>
@@ -345,8 +347,12 @@ function barLabel(row: Row): string {
 .metering-list--compact .metering-numbers { margin-bottom: 0; text-align: end; }
 .metering-list--compact .metering-bar { width: 7rem; flex-shrink: 0; }
 @container (max-width: 540px) {
-  .metering-list--compact .metering-measure { flex-wrap: wrap; gap: 8px; }
-  .metering-list--compact .metering-bar { width: 100%; }
+  .metering-list--compact .metering-row { grid-template-columns: minmax(0, 1fr) 14px; gap: 8px 12px; }
+  .metering-list--compact .metering-row:not(.metering-row--link) { grid-template-columns: minmax(0, 1fr); }
+  .metering-list--compact .metering-measure { grid-column: 1; grid-row: 2; justify-content: flex-start; gap: 12px; }
+  .metering-list--compact .metering-numbers { flex: 0 0 auto; }
+  .metering-list--compact .metering-bar { flex: 1 1 4rem; width: auto; }
+  .metering-list--compact .metering-chevron { grid-column: 2; grid-row: 1 / span 2; }
 }
 /* The summary is one inline run, so the table cell's own ellipsis truncates
  * it and discloses the full text on hover; the grid has the whole detail row. */
@@ -363,6 +369,7 @@ function barLabel(row: Row): string {
 .metering-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .8fr); align-items: center; gap: 16px; padding: 7px 0; }
 .metering-label, .metering-measure { min-width: 0; overflow-wrap: anywhere; }
 .metering-description { display: block; font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; }
+.metering-compact-state { display: block; margin-top: 4px; font-size: 12px; line-height: 1.4; }
 .metering-numbers { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 7px; }
 .metering-numbers:last-child { margin-bottom: 0; }
 .metering-quantity { white-space: normal; overflow-wrap: anywhere; }

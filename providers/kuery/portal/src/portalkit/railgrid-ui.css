@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 64;
+  --railgrid-ui-core-version: 65;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1276,6 +1276,25 @@ html.light .k-tooltip-layer { box-shadow: 0 4px 12px color-mix(in srgb, var(--co
 .k-progress__bar--accent { background: var(--color-accent, #8b6bff); }
 .k-progress__bar--warning { background: var(--color-warning, #f0a63a); }
 .k-progress__bar--danger { background: var(--color-danger, #ff5d5d); }
+/* Native progress keeps browser semantics while matching the shared track. */
+.k-progress-native {
+  display: block;
+  width: 100%;
+  height: 6px;
+  appearance: none;
+  border: 0;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-accent, #8b6bff);
+}
+.k-progress-native::-webkit-progress-bar { background: var(--color-surface-overlay, #171927); }
+.k-progress-native::-webkit-progress-value { background: var(--color-accent, #8b6bff); }
+.k-progress-native::-moz-progress-bar { background: var(--color-accent, #8b6bff); }
+.k-task-progress { display: grid; gap: 8px; min-width: 0; }
+.k-task-progress__header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 16px; }
+.k-task-progress__label { color: var(--color-text-primary); font-size: 13px; font-weight: 600; }
+.k-task-progress__value { color: var(--color-text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /* ── Toggle switch — compact track with a light, theme-stable knob ──────
  * <button class="k-toggle" role="switch" aria-checked="true">
