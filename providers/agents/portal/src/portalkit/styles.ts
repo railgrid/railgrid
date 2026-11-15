@@ -13,6 +13,7 @@
 // standalone bundle. The runtime contract remains the same: stale hosts get
 // the exact canonical rules, and current hosts avoid injecting a duplicate.
 import railgridUIStyles from './railgrid-ui.css?inline'
+import { ensureTooltips } from './tooltip'
 
 export const RAILGRID_UI_STYLE_ID = 'k-railgrid-ui'
 export const RAILGRID_UI_CANONICAL_MARKER = '--railgrid-ui-canonical'
@@ -48,6 +49,7 @@ function hostStylesAreLoaded(): boolean {
 
 export function ensureRailgridUIStyles(): void {
   if (typeof document === 'undefined') return
+  ensureTooltips()
 
   // Never mutate an existing style element. It may be the host's canonical
   // stylesheet or an older fallback installed by another provider bundle;
