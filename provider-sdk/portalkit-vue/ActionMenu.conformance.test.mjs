@@ -168,12 +168,14 @@ test('ActionMenu keyboard paths activate, wrap, restore focus, and dismiss', () 
   assert.doesNotMatch(component, /deferredCloseTimer/)
 })
 
-test('teleported LayoutSelector keeps native Tab navigation relative to its trigger', () => {
-  assert.match(layoutSelector, /<Teleport to="body">/)
-  assert.match(layoutSelector, /ref="panelRef"/)
-  assert.match(layoutSelector, /@keydown="handleKeydown"/)
-  assert.match(layoutSelector, /function closeMenuAfterTab\(\)[\s\S]*?closeMenu\(\)[\s\S]*?trigger\.value\?\.focus\(\)/)
-  assert.doesNotMatch(layoutSelector, /deferredCloseTimer/)
+test('LayoutSelector exposes a single-tab-stop radio group', () => {
+  assert.match(layoutSelector, /role="radiogroup"/)
+  assert.match(layoutSelector, /role="radio"/)
+  assert.match(layoutSelector, /:aria-checked="mode === modelValue"/)
+  assert.match(layoutSelector, /:tabindex="mode === modelValue \? 0 : -1"/)
+  assert.match(layoutSelector, /event\.key === 'ArrowRight'/)
+  assert.match(layoutSelector, /event\.key === 'ArrowLeft'/)
+  assert.doesNotMatch(layoutSelector, /<Teleport/)
 })
 
 test('ActionMenu exposes the trigger/menu ARIA relationship and outside dismissal guards', () => {
