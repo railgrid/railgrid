@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import ResourceTimestamp from '@/portalkit/ResourceTimestamp.vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ArrowUpRight, RefreshCw } from 'lucide-vue-next'
 import { authSessionRevision } from '@/auth/token'
 import { useAuthStore } from '@/stores/auth'
 import { useTenantStore, type OrgBilling } from '@/stores/tenant'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import MeteringUsageList from '@/components/MeteringUsageList.vue'
+import ResourceTimestamp from '@/portalkit/ResourceTimestamp.vue'
 
 const tenant = useTenantStore()
 const auth = useAuthStore()
@@ -14,6 +14,9 @@ const { scopePath } = useScopedNavigation()
 const billing = ref<OrgBilling | null>(null)
 const loading = ref(false)
 const failed = ref(false)
+const retryButton = ref<HTMLButtonElement | null>(null)
+const refreshButton = ref<HTMLButtonElement | null>(null)
+const heading = ref<HTMLElement | null>(null)
 let generation = 0
 let controller: AbortController | undefined
 
@@ -31,6 +34,7 @@ const recordedAt = computed(() => {
 })
 
 async function load() {
+  if (loading.value) return
   const current = ++generation
   controller?.abort()
   const org = tenant.orgUUID
@@ -38,13 +42,25 @@ async function load() {
   controller = new AbortController()
   const session = authSessionRevision()
   loading.value = true
-  failed.value = false
   try {
     const result = await tenant.fetchOrgBilling(org, AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]))
     if (current !== generation || org !== tenant.orgUUID || session !== authSessionRevision()) return
+    const returnFocus = typeof document !== 'undefined' && document.activeElement === retryButton.value
     billing.value = result
+    failed.value = false
+    if (returnFocus) {
+      await nextTick()
+      if (current === generation && document.activeElement === document.body) heading.value?.focus()
+    }
   } catch {
-    if (current === generation && org === tenant.orgUUID && session === authSessionRevision()) failed.value = true
+    if (current === generation && org === tenant.orgUUID && session === authSessionRevision()) {
+      const returnFocus = typeof document !== 'undefined' && document.activeElement === refreshButton.value
+      failed.value = true
+      if (returnFocus) {
+        await nextTick()
+        if (current === generation && document.activeElement === document.body) retryButton.value?.focus()
+      }
+    }
   } finally {
     if (current === generation) loading.value = false
   }
@@ -69,7 +85,7 @@ onBeforeUnmount(() => {
   <section class="dashboard-usage rounded-xl border border-border-subtle bg-surface-raised p-5" aria-label="Plan usage" :aria-busy="loading">
     <header class="dashboard-usage__header">
       <div class="min-w-0">
-        <h2 class="text-sm font-semibold text-text-primary">{{ billing?.installed && planName ? `${planName} plan usage` : 'Plan usage' }}</h2>
+        <h2 ref="heading" tabindex="-1" class="text-sm font-semibold text-text-primary">{{ billing?.installed && planName ? `${planName} plan usage` : 'Plan usage' }}</h2>
         <p class="mt-1 text-xs text-text-secondary">Shared across all workspaces in this organization.</p>
       </div>
       <div v-if="billing?.installed" class="dashboard-usage__actions">
@@ -84,7 +100,7 @@ onBeforeUnmount(() => {
     <p v-else-if="loading && !billing" class="mt-4 text-sm text-text-secondary" role="status">Loading plan usage…</p>
     <div v-if="failed" class="dashboard-usage__error mt-4 text-xs text-text-secondary" role="status">
       <p>{{ billing ? 'Couldn’t refresh usage. Showing the last available measurements.' : 'Couldn’t load plan usage.' }}</p>
-      <button type="button" class="k-btn k-btn--ghost text-xs" @click="load">Retry</button>
+      <button ref="retryButton" type="button" class="k-btn k-btn--ghost text-xs" :aria-disabled="loading" @click="load">{{ loading ? 'Retrying…' : 'Retry' }}</button>
     </div>
     <template v-if="billing">
       <p v-if="!billing.installed" class="mt-4 text-sm text-text-secondary">Usage tracking is not configured for this hub.</p>
@@ -93,7 +109,7 @@ onBeforeUnmount(() => {
         <footer class="dashboard-usage__footer mt-3 text-xs text-text-secondary">
           <span v-if="recordedAt">Usage recorded <ResourceTimestamp :value="recordedAt.iso" label="Usage recorded" /></span>
           <span v-else>Latest reported usage</span>
-          <button type="button" class="k-dashboard-action dashboard-usage__refresh" :disabled="loading" @click="load">
+          <button v-if="!failed" ref="refreshButton" type="button" class="k-dashboard-action dashboard-usage__refresh" :aria-disabled="loading" @click="load">
             <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" /> {{ loading ? 'Refreshing…' : 'Refresh' }}
           </button>
         </footer>
@@ -107,5 +123,5 @@ onBeforeUnmount(() => {
 .dashboard-usage__header, .dashboard-usage__footer, .dashboard-usage__error { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 24px; }
 .dashboard-usage__actions { flex-shrink: 0; }
 .dashboard-usage__refresh { display: inline-flex; align-items: center; gap: 6px; }
-.dashboard-usage__refresh:disabled { cursor: wait; }
+.dashboard-usage__refresh[aria-disabled="true"] { cursor: wait; }
 </style>

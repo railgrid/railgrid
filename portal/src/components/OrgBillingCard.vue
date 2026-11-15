@@ -7,6 +7,7 @@
 // card says so; with metering but nothing sold it shows the plan read-only.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { formatFullTimestamp } from '@/portalkit/timestamp'
 import { ArrowLeft, ArrowRight, ChevronRight, ExternalLink, Loader2 } from 'lucide-vue-next'
 
 import StatusBadge from '@/portalkit/StatusBadge.vue'
@@ -200,10 +201,7 @@ const subscriptionBadge = computed(() => {
 })
 
 const periodEnd = computed(() => {
-  const end = billing.value?.subscription?.currentPeriodEnd
-  if (!end) return ''
-  const d = new Date(end)
-  return Number.isNaN(d.getTime()) ? end : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  return formatFullTimestamp(billing.value?.subscription?.currentPeriodEnd)
 })
 
 const managedByOperator = computed(() => billing.value?.managedBy === 'operator')
@@ -257,6 +255,22 @@ function suggestion(meter: string): OrgBillingPlan | null {
 
 const constraint = computed(() => billing.value?.limits.find((limit) => suggestion(limit.meter)) ?? null)
 const suggested = computed(() => constraint.value ? suggestion(constraint.value.meter) : null)
+// Compare what applies to this organization, including persistent overrides.
+function proposedLimits(plan: OrgBillingPlan, overrides?: OrgBillingLimit[]): OrgBillingLimit[] {
+  const limits = new Map(plan.limits.map((limit) => [limit.meter, limit]))
+  for (const limit of overrides ?? []) limits.set(limit.meter, limit)
+  return [...limits.values()]
+}
+// The declaration changes immediately; metering applies it on its next sample.
+// Keep the enforced snapshot visible, but do not infer upgrades from mixed versions.
+function allowancesPending(value: OrgBilling): boolean {
+  const plan = value.plans.find((item) => item.current)
+  if (!plan || value.overrides === undefined) return false
+  const signature = (limits: OrgBillingLimit[]) => JSON.stringify(limits.map((limit) => ({
+    meter: limit.meter, shape: limit.shape || 'Consumption', enforce: limit.enforce, max: limit.max ?? '',
+  })).sort((a, b) => a.meter.localeCompare(b.meter)))
+  return signature(proposedLimits(plan, value.overrides)) !== signature(value.limits)
+}
 const limitsPending = computed(() => billing.value ? allowancesPending(billing.value) : false)
 const overridesKnown = computed(() => billing.value?.overrides !== undefined)
 const comparisonPlans = computed(() => [
@@ -397,7 +411,8 @@ function retryHostedAction(): void {
         <p class="billing-description">
           <template v-if="billing && !billing.installed">Metering is not installed on this hub; no limits apply.</template>
           <template v-else-if="managedByOperator">Your plan is assigned by a platform administrator.</template>
-          <template v-else-if="billing?.subscription?.status && periodEnd">Current period ends {{ periodEnd }}<template v-if="billing.subscription.cancelAtPeriodEnd">; the organization then returns to {{ billing.defaultPlan }}</template>.</template>
+          <template v-else-if="billing?.subscription?.status && periodEnd">Current period ends <time :datetime="billing.subscription.currentPeriodEnd">{{ periodEnd }}</time><template v-if="billing.subscription.cancelAtPeriodEnd">; the organization then returns to {{ billing.defaultPlan }}</template>.</template>
+          <template v-else-if="billing?.subscription?.status && billing.subscription.cancelAtPeriodEnd">The current period end is unavailable; the organization returns to {{ billing.defaultPlan }} when it ends.</template>
           <template v-else>Understand each allowance, spot constraints, and compare capacity.</template>
         </p>
       </div>
