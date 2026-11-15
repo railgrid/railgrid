@@ -437,11 +437,26 @@ function requestRetry() {
   emit('retry')
 }
 
+function finishRetry() {
+  const focused = typeof document === 'undefined' ? null : document.activeElement
+  const table = tableElement.value
+  if (table && focused && focused.closest('.k-table--resource') === table
+    && focused.classList.contains('k-table__retry')) {
+    // An initial failure has no scroll region yet; the named table group is
+    // the stable fallback until the caller renders a successful snapshot.
+    const target = tableScrollRegion.value ?? table
+    target.focus({ preventScroll: true })
+  }
+  retryRequested.value = false
+}
 watch(() => props.loading, (loading, wasLoading) => {
-  if (wasLoading && !loading) retryRequested.value = false
+  if (wasLoading && !loading) {
+    if (!props.error) finishRetry()
+    else retryRequested.value = false
+  }
 })
 watch(() => props.error, error => {
-  if (!error) retryRequested.value = false
+  if (!error) finishRetry()
 })
 
 watch([currentQuery, filterSignature], () => clearSelection(), { flush: 'sync' })
@@ -1131,7 +1146,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
     <div v-if="showInitialError" class="k-table__error" role="alert" aria-live="assertive">
       <AlertCircle class="k-table__error-icon" :stroke-width="1.75" aria-hidden="true" />
       <span class="k-table__error-message">{{ error }}</span>
-      <button v-if="retryable" class="k-table__retry" type="button" :disabled="retrying" :aria-busy="retrying || undefined" @click="requestRetry">{{ retrying ? 'Retrying…' : 'Retry' }}</button>
+      <button v-if="retryable" class="k-table__retry" type="button" :aria-disabled="retrying || undefined" :aria-busy="retrying || undefined" @click="requestRetry">{{ retrying ? 'Retrying…' : 'Retry' }}</button>
     </div>
 
     <div
@@ -1179,7 +1194,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         <span class="k-table__error-message">
           {{ stale ? 'Showing the last successful result. ' : '' }}{{ error }}
         </span>
-        <button v-if="retryable" class="k-table__retry" type="button" :disabled="retrying" :aria-busy="retrying || undefined" @click="requestRetry">{{ retrying ? 'Retrying…' : 'Retry' }}</button>
+        <button v-if="retryable" class="k-table__retry" type="button" :aria-disabled="retrying || undefined" :aria-busy="retrying || undefined" @click="requestRetry">{{ retrying ? 'Retrying…' : 'Retry' }}</button>
       </div>
 
       <div v-if="showControls || selectionSurfaceVisible" class="k-table__toolbar-stack">

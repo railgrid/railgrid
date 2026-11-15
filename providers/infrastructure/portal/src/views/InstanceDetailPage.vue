@@ -220,6 +220,11 @@ function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
   return refresh.request(mode)
 }
 
+function refreshFromHeader(): void {
+  if (foregroundLoading.value || deleting.value || deletionInProgress.value) return
+  void load('foreground')
+}
+
 watch(
   () => props.instanceName,
   () => {
@@ -329,9 +334,11 @@ onUnmounted(() => {
           <button
             class="k-btn k-btn--ghost icon-text"
             type="button"
-            :disabled="foregroundLoading || deleting || deletionInProgress"
+            aria-label="Refresh instance"
+            :disabled="deleting || deletionInProgress"
+            :aria-disabled="foregroundLoading || undefined"
             :aria-busy="foregroundLoading || undefined"
-            @click="load('foreground')"
+            @click="refreshFromHeader"
           >
             <RefreshCw :size="14" :class="{ spin: foregroundLoading }" aria-hidden="true" />
             {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
@@ -389,7 +396,6 @@ onUnmounted(() => {
               :conditions="conditions"
               :generation="inst.generation"
               :observed-generation="conditionObservedGeneration"
-              empty-text="No conditions yet. The infrastructure controller has not reconciled this instance."
             />
           </ResourceSectionCard>
 

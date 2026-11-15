@@ -87,6 +87,28 @@ describe('mounted Infrastructure instance detail deletion behavior', () => {
     vi.useRealTimers()
   })
 
+  it('waits for the instance read before describing template metadata', async () => {
+    const pending = deferred<Instance>()
+    vi.mocked(api.getInstance).mockReturnValueOnce(pending.promise)
+    app = createApp(InstanceDetailPage, { instanceName: instance.name, tombstones: createResourceTombstones() })
+    app.mount(host)
+    await flushTicks()
+    expect(host.textContent).not.toContain('Template metadata unavailable')
+    expect((host.querySelector('.k-resource-page__meta')?.textContent?.match(/·/g) ?? []).length).toBe(1)
+
+    pending.resolve({ ...instance })
+    await flush()
+    expect(host.querySelector('.k-resource-page__meta')?.textContent).toContain('demo-template')
+  })
+
+  it('reports empty conditions without inferring controller state', async () => {
+    app = createApp(InstanceDetailPage, { instanceName: instance.name, tombstones: createResourceTombstones() })
+    app.mount(host)
+    await flush()
+    expect(host.querySelector('#instance-conditions')?.textContent).toContain('No conditions reported.')
+    expect(host.querySelector('#instance-conditions')?.textContent).not.toContain('has not reconciled')
+  })
+
   it('publishes only the loaded resource identity and clears it on read failure and unmount', async () => {
     const publish = vi.fn()
     app = createApp(InstanceDetailPage, {
@@ -135,10 +157,15 @@ describe('mounted Infrastructure instance detail deletion behavior', () => {
     expect(refresh?.disabled).toBe(false)
     expect(host.textContent).toContain('retained-value')
 
+    refresh?.focus()
     refresh?.click()
     await nextTick()
     expect(refresh?.textContent).toContain('Refreshing')
-    expect(refresh?.disabled).toBe(true)
+    expect(refresh?.disabled).toBe(false)
+    expect(refresh?.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(refresh)
+    refresh?.click()
+    expect(api.getInstance).toHaveBeenCalledTimes(2)
 
     backgroundRequest.resolve({ ...instance, message: 'Updated snapshot' })
     await flushTicks()
