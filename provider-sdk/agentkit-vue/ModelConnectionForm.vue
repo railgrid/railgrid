@@ -224,6 +224,7 @@ function isLocked(): boolean {
             :models="discoveredModels"
             :disabled="isLocked()"
             :invalid="Boolean(modelError)"
+            required
             :described-by="modelError ? 'model-id-error' : 'model-id-hint'"
             @update:model-value="emit('update:model', $event)"
             @select="emit('select-model', $event)"
