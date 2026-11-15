@@ -150,6 +150,7 @@ function isLocked(): boolean {
               :class="{ sel: key === secretKey }"
             >
               <input
+                class="k-checkbox"
                 type="radio"
                 name="harness-secret-key"
                 :value="key"

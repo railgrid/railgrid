@@ -907,7 +907,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
             <fieldset class="agents-fieldset" :aria-describedby="`automation-${kind}-events-hint`">
               <legend class="agents-fieldset-legend">Events</legend>
               <div class="agents-checkgrid">
-                <label v-for="event in GITHUB_EVENTS" :key="event.name" class="agents-check k-checkbox-hit"><input v-model="draft.ghEvents" type="checkbox" name="ghEvents" :value="event.name" :disabled="formBusy" /><span class="agents-check-copy"><span>{{ event.label }}</span><span class="agents-hint">{{ event.hint }}</span></span></label>
+                <label v-for="event in GITHUB_EVENTS" :key="event.name" class="agents-check k-checkbox-hit"><input class="k-checkbox" v-model="draft.ghEvents" type="checkbox" name="ghEvents" :value="event.name" :disabled="formBusy" /><span class="agents-check-copy"><span>{{ event.label }}</span><span class="agents-hint">{{ event.hint }}</span></span></label>
               </div>
               <span :id="`automation-${kind}-events-hint`" class="agents-hint">The event names this trigger fires on. Nothing selected fires on every event the webhook sends.</span>
             </fieldset>
@@ -923,7 +923,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         </template>
         <label>Task{{ kind === 'trigger' ? ' on fire' : '' }}<textarea v-model="draft.task" class="k-input" name="task" rows="3" :placeholder="meta.taskPlaceholder" :disabled="formBusy"></textarea></label>
         <label><span :id="`automation-${kind}-channel-label`">Channel</span><FormSelect v-model="draft.channelRef" :options="channelOptions" :disabled="formBusy" :labelledby="`automation-${kind}-channel-label`" :describedby="`automation-${kind}-channel-hint`" /><span :id="`automation-${kind}-channel-hint`" class="agents-hint">Where output is delivered</span></label>
-        <label class="agents-check k-checkbox-hit"><input v-model="draft.suspend" type="checkbox" name="suspend" :disabled="formBusy" /> Paused</label>
+        <label class="agents-check k-checkbox-hit"><input class="k-checkbox" v-model="draft.suspend" type="checkbox" name="suspend" :disabled="formBusy" /> Paused</label>
       </div>
       <div class="k-create-actions" :class="{ 'agents-automation-dialog__actions': showCreateModal }">
         <div v-if="showCreateModal && formError" class="k-inline-notification k-inline-notification--error agents-automation-dialog__error" role="alert">

@@ -684,11 +684,11 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                   <legend>Research focus</legend>
                   <div class="agents-grid2">
                     <label class="agents-template-radio k-btn k-btn--ghost">
-                      <input v-model="researchSpecialist" type="radio" name="research-focus" :value="false" :disabled="busy" />
+                      <input class="k-checkbox" v-model="researchSpecialist" type="radio" name="research-focus" :value="false" :disabled="busy" />
                       <span><strong>Generalist</strong><small>Research any topic.</small></span>
                     </label>
                     <label class="agents-template-radio k-btn k-btn--ghost">
-                      <input v-model="researchSpecialist" type="radio" name="research-focus" :value="true" :disabled="busy" />
+                      <input class="k-checkbox" v-model="researchSpecialist" type="radio" name="research-focus" :value="true" :disabled="busy" />
                       <span><strong>Specialist</strong><small>Focus on a field you define.</small></span>
                     </label>
                   </div>

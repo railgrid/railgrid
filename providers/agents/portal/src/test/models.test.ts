@@ -776,9 +776,7 @@ describe('model collection layouts', () => {
     search.dispatchEvent(new Event('input'))
     await settleVue()
     expect(view.element.querySelectorAll('.k-model-connection')).toHaveLength(1)
-    view.element.querySelector<HTMLButtonElement>('[aria-label="Model layout: Cards"]')!.click()
-    await settleVue()
-    const list = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(el => el.textContent?.trim() === 'List')!
+    const list = [...view.element.querySelectorAll<HTMLButtonElement>('[aria-label="Model layout"] [role="radio"]')].find(el => el.textContent?.trim() === 'List')!
     list.click()
     await settleVue()
     await settleVue(4, 150)
@@ -808,10 +806,8 @@ describe('model collection layouts', () => {
     const next = await mountVue(Models, { store, api })
     await settleVue()
     expect(next.element.querySelector('table')).toBeTruthy()
-    const layoutButton = next.element.querySelector<HTMLButtonElement>('[aria-label="Model layout: List"]')!
-    layoutButton.click()
-    await settleVue()
-    ;[...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(el => el.textContent?.trim() === 'Cards')!.click()
+    const cards = [...next.element.querySelectorAll<HTMLButtonElement>('[aria-label="Model layout"] [role="radio"]')].find(el => el.textContent?.trim() === 'Cards')!
+    cards.click()
     await settleVue()
     expect(next.element.querySelector('table')).toBeNull()
     expect(next.element.querySelectorAll('.k-model-connection')).toHaveLength(2)

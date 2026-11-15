@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 54;
+  --railgrid-ui-core-version: 57;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -828,8 +828,9 @@ textarea.k-input {
   box-shadow: none;
 }
 .k-checkbox:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+  box-shadow: none;
 }
 
 /* Use the associated label as the touch target while keeping the native
@@ -1123,103 +1124,44 @@ html.light .k-form-select__panel.k-form-select__portal {
   position: absolute;
 }
 
-/* ── Layout selector ──────────────────────────────────────────────────────
- * Compact controlled grid/list menu. It uses the menu selection language but
- * never glows: layout is a presentation preference, not a primary action. */
+/* ── Layout selector: a quiet, visible view preference ────────────────── */
 .k-layout-selector {
-  position: relative;
   display: inline-flex;
+  flex: 0 0 auto;
+  padding: 2px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  background: var(--color-surface-overlay);
 }
-.k-layout-selector__trigger {
+.k-layout-selector__item {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  min-width: 34px;
-  height: 32px;
-  padding: 5px 7px;
-  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid transparent;
   border-radius: 4px;
-  background: var(--color-surface-overlay, #171927);
-  color: var(--color-text-secondary, #8a8ca6);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
-  box-shadow: none;
-  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
 }
-.k-layout-selector__trigger:hover,
-.k-layout-selector__trigger[aria-expanded="true"] {
-  border-color: var(--color-border-default, rgba(255, 255, 255, 0.11));
-  background: var(--color-surface-hover, var(--color-surface-overlay, #171927));
-  color: var(--color-text-primary, #e9e9f2);
-  box-shadow: none;
-}
-.k-layout-selector__trigger:focus {
-  outline: none;
-  box-shadow: none;
-}
-.k-layout-selector__trigger:focus-visible {
-  outline: 2px solid var(--color-accent, #8b6bff);
-  outline-offset: 2px;
-  box-shadow: none;
-}
-.k-layout-selector__menu {
-  max-height: min(28rem, calc(100vh - 16px));
-  max-width: calc(100vw - 16px);
-  overflow-y: auto;
-  position: fixed;
-  z-index: var(--k-layer-menu, 1000);
-  width: 154px;
-}
-.k-layout-selector > .k-layout-selector__menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 5px);
-}
-.k-layout-selector__label {
-  padding: 5px 8px 4px;
-  color: var(--color-text-muted, #8587a1);
-  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-.k-layout-selector__item {
-  display: grid;
-  grid-template-columns: 16px 1fr 14px;
-  min-height: 30px;
-  box-shadow: none;
-}
-.k-layout-selector__item:hover,
-.k-layout-selector__item:focus,
-.k-layout-selector__item:focus-visible,
+.k-layout-selector__item:hover { color: var(--color-text-primary); }
 .k-layout-selector__item.is-selected {
-  box-shadow: none;
-}
-.k-layout-selector__item:focus {
-  outline: none;
+  border-color: var(--color-border-default);
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
 }
 .k-layout-selector__item:focus-visible {
-  outline: 1px solid var(--color-accent, #8b6bff);
-  outline-offset: -1px;
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  position: relative;
+  z-index: 1;
 }
-.k-layout-selector__item.is-selected { color: var(--color-accent-hover, #a18aff); }
-.k-layout-selector__icon {
-  width: 15px;
-  height: 15px;
-  flex: 0 0 auto;
-}
-.k-layout-selector__chevron {
-  width: 11px;
-  height: 11px;
-  color: var(--color-text-muted, #8587a1);
-}
-.k-layout-selector__check {
-  width: 13px;
-  height: 13px;
-  color: var(--color-accent, #8b6bff);
-}
+.k-layout-selector__icon { width: 15px; height: 15px; flex: 0 0 auto; }
 
 /* ── Kbd (shortcut key-cap) ───────────────────────────────────────────────*/
 .k-kbd {
@@ -1322,12 +1264,14 @@ html.light [data-k-tip]::after {
   width: 36px;
   height: 20px;
   border-radius: 4px;
-  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
-  background: var(--color-surface-overlay, #171927);
+  border: 1px solid var(--color-text-secondary, #8a8ca6);
+  background: var(--color-surface-raised, #111320);
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease;
   padding: 0;
 }
+.k-toggle::before { content: ''; position: absolute; inset: -12px -4px; }
+.k-toggle:not(:disabled):not([aria-checked="true"]):hover { border-color: var(--color-text-primary, #e9e9f2); }
 .k-toggle[aria-checked="true"] {
   background: var(--color-accent, #8b6bff);
   border-color: var(--color-accent, #8b6bff);
@@ -3582,7 +3526,6 @@ railgrid-resource-table-filter { display: contents; }
   .k-menu-item,
   .k-action-menu__trigger,
   .k-action-menu__item,
-  .k-layout-selector__trigger,
   .k-layout-selector__item,
   .k-modal--confirm .k-modal-btn {
     min-height: 44px;
