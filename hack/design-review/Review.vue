@@ -23,16 +23,26 @@ if (standaloneFrame && ['dark', 'light'].includes(previewTheme)) {
   document.documentElement.style.colorScheme = previewTheme
 }
 const requested = key => locationState.value.get(key)
-const foundationOrder = ['system', 'principles', 'colors', 'geometry', 'typography', 'recipes', 'theming', 'iconography', 'provider-integration']
+const foundationOrder = ['system', 'principles', 'colors', 'typography', 'geometry', 'iconography', 'motion']
+const implementationOrder = ['layering', 'recipes', 'theming', 'provider-integration']
+const groupFor = doc => {
+  const name = doc.id.split('.').at(-1)
+  if (doc.id.startsWith('design.foundations.')) return implementationOrder.includes(name) ? 'implementation' : 'foundations'
+  return doc.id.split('.')[1]
+}
 const entries = groups.flatMap(([key]) => {
-  const items = catalog.entries.filter(doc => doc.id.startsWith('design.' + key + '.'))
-  return key === 'foundations' ? items.toSorted((a, b) => foundationOrder.indexOf(a.id.split('.').at(-1)) - foundationOrder.indexOf(b.id.split('.').at(-1))) : items
+  const items = catalog.entries.filter(doc => groupFor(doc) === key)
+  const order = key === 'foundations' ? foundationOrder : null
+  return order ? items.toSorted((a, b) => order.indexOf(a.id.split('.').at(-1)) - order.indexOf(b.id.split('.').at(-1))) : items
 })
-const entry = computed(() => entries.find(doc => doc.id === requested('entry')) ?? entries.find(doc => doc.id === 'design.foundations.system'))
+const aliases = { 'design.foundations.materials': 'design.foundations.colors', 'design.foundations.spacing': 'design.foundations.geometry' }
+// Implementation entries remain directly reachable from component contracts,
+// but they do not appear in the review index or its previous/next sequence.
+const entry = computed(() => catalog.entries.find(doc => doc.id === (aliases[requested('entry')] ?? requested('entry'))) ?? entries.find(doc => doc.id === 'design.foundations.system'))
 const entryIndex = computed(() => entries.indexOf(entry.value))
-const group = computed(() => groups.find(([key]) => entry.value.id.startsWith('design.' + key + '.'))[1])
+const group = computed(() => groups.find(([key]) => groupFor(entry.value) === key)?.[1] ?? 'Implementation guidance')
 const matches = computed(() => groups.map(([key, label]) => ({
-  key, label, documents: entries.filter(doc => doc.id.startsWith('design.' + key + '.') &&
+  key, label, documents: entries.filter(doc => groupFor(doc) === key &&
     query.value.toLowerCase().trim().split(/\s+/).every(term => (
       [doc.title, doc.id, doc.review.title, doc.review.tryThis, ...doc.sources.map(item => item.path), ...doc.sections.map(item => item.title)].join(' ').toLowerCase().includes(term)
     ))),
@@ -130,7 +140,7 @@ watch(() => entry.value.id, id => { document.title = (entries.find(doc => doc.id
       </aside>
 
       <main id="review-main" tabindex="-1" class="review-main">
-        <div class="review-where"><span>{{ group }}</span><ChevronRight :size="13" aria-hidden="true" /><span>{{ entryIndex + 1 }} / {{ entries.length }}</span></div>
+        <div class="review-where"><span>{{ group }}</span><template v-if="entryIndex >= 0"><ChevronRight :size="13" aria-hidden="true" /><span>{{ entryIndex + 1 }} / {{ entries.length }}</span></template></div>
         <h1 ref="title" class="review-title">{{ entry.title }}</h1>
         <div class="review-meta">
           <span class="k-badge k-badge--muted">{{ entry.authority.design }}</span>
@@ -198,7 +208,7 @@ watch(() => entry.value.id, id => { document.title = (entries.find(doc => doc.id
 
         <footer class="review-pager">
           <a v-if="entries[entryIndex - 1]" :href="entryHref(entries[entryIndex - 1].id)"><ArrowLeft :size="15" aria-hidden="true" /> {{ entries[entryIndex - 1].title }}</a>
-          <a v-if="entries[entryIndex + 1]" :href="entryHref(entries[entryIndex + 1].id)">{{ entries[entryIndex + 1].title }} <ArrowRight :size="15" aria-hidden="true" /></a>
+          <a v-if="entryIndex >= 0 && entries[entryIndex + 1]" :href="entryHref(entries[entryIndex + 1].id)">{{ entries[entryIndex + 1].title }} <ArrowRight :size="15" aria-hidden="true" /></a>
         </footer>
       </main>
     </div>

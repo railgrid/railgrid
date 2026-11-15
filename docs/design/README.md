@@ -29,11 +29,12 @@ guidance must not be reported as globally shipped.
 ## Taxonomy
 
 - [Foundations](foundations.md) is the short system map.
-- [Principles](foundations/principles.md), [color tokens](foundations/colors.md),
-  [geometry](foundations/geometry.md), [typography](foundations/typography.md),
-  [recipes](foundations/recipes.md), [theming](foundations/theming.md),
-  [provider integration](foundations/provider-integration.md), and
-  [iconography](foundations/iconography.md) define the visual language.
+- Foundations comprise [principles](foundations/principles.md),
+  [color and materials](foundations/colors.md), [typography](foundations/typography.md),
+  [spacing and shape](foundations/geometry.md), [iconography](foundations/iconography.md),
+  and [motion](foundations/motion.md).
+- Implementation guidance covers [theme mechanics](implementation/theming.md), [provider integration](implementation/provider-integration.md),
+  and [shared CSS recipes](implementation/recipes.md).
 - [Components](components/) document reusable UI contracts and their current
   implementation status, including every distributed PortalKit asset.
 - [Patterns](patterns/) document page, read, creation, navigation, and form
