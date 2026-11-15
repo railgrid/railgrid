@@ -158,7 +158,7 @@ describe('Activity.vue', () => {
     const refresh = view.element.querySelector<HTMLButtonElement>('button[aria-label="Refresh runs"]')!
 
     expect(refresh.classList.contains('k-btn')).toBe(true)
-    expect(refresh.disabled).toBe(true)
+    expect(refresh.getAttribute('aria-disabled')).toBe('true')
     expect(refresh.getAttribute('aria-busy')).toBe('true')
     expect(refresh.querySelector('.k-spin')).not.toBeNull()
 

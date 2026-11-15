@@ -48,6 +48,7 @@ import { skippedQuestionResponse } from '../question-presentation'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
 import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presentation'
 import { inboxResolutionFailureMessage, sanitizeTechnicalDiagnostic, technicalDiagnosticExcerpt } from '../failure-presentation'
+import { attachCodeCopy } from '../vue/chat'
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -63,6 +64,17 @@ const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 const root = ref<HTMLElement | null>(null)
 const run = ref<Run | null>(null)
+watch(() => run.value?.phase === 'PendingApproval' ? run.value.pending?.inboxID : undefined, async (current, previous) => {
+  if (!previous || previous === current) return
+  const focused = document.activeElement
+  if (!(focused instanceof HTMLElement) || !root.value?.querySelector('.agents-run-state-message')?.contains(focused)) return
+  const authority = captureAuthority()
+  const runID = props.runId
+  await nextTick()
+  if (runID === props.runId && authorityIsCurrent(authority) && (document.activeElement === focused || document.activeElement === document.body)) {
+    root.value?.querySelector<HTMLElement>('#agents-run-steps-heading')?.focus({ preventScroll: true })
+  }
+})
 const error = ref<string | null>(null)
 const loading = ref(false)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
@@ -85,6 +97,7 @@ const now = ref(Date.now())
 let pollHandle = 0
 let tickHandle = 0
 let requestGeneration = 0
+let activeRead: { queued?: ResourceRefreshMode; promise?: Promise<void> } | null = null
 let boundStore: AppStore | null = null
 
 const LIVE_PHASES = new Set<RunPhase>(['Pending', 'Running', 'PendingApproval'])
@@ -200,12 +213,10 @@ function syncLive(current: Run | null): void {
   if (!tickHandle) tickHandle = window.setInterval(() => { now.value = Date.now() }, 1000)
 }
 
-async function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
+async function readRun(): Promise<void> {
   const requestedRunID = props.runId
   const generation = ++requestGeneration
   const authority = captureAuthority()
-  loading.value = true
-  refreshMode.value = mode
   try {
     const next = await authority.api.getRun(requestedRunID)
     if (generation !== requestGeneration || requestedRunID !== props.runId || !authorityIsCurrent(authority)) return
@@ -225,9 +236,41 @@ async function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
     error.value = (cause as Error).message
   }
   if (generation === requestGeneration && requestedRunID === props.runId && authorityIsCurrent(authority)) {
-    loading.value = false
     syncLive(run.value)
   }
+}
+
+function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
+  if (activeRead) {
+    activeRead.queued = activeRead.queued === 'foreground' || mode === 'foreground' ? 'foreground' : 'background'
+    if (mode === 'foreground') refreshMode.value = 'foreground'
+    return activeRead.promise!
+  }
+  const cycle: { queued?: ResourceRefreshMode; promise?: Promise<void> } = {}
+  activeRead = cycle
+  loading.value = true
+  refreshMode.value = mode
+  cycle.promise = (async () => {
+    try {
+      do {
+        cycle.queued = undefined
+        await readRun()
+        if (activeRead !== cycle) return
+        if (cycle.queued) refreshMode.value = cycle.queued
+      } while (cycle.queued)
+    } finally {
+      if (activeRead === cycle) {
+        activeRead = null
+        loading.value = false
+      }
+    }
+  })()
+  return cycle.promise
+}
+
+function refreshFromHeader(): void {
+  if (loading.value && refreshMode.value === 'foreground') return
+  void load('foreground')
 }
 
 function toggle(id: string): void {
@@ -311,29 +354,6 @@ function markdownHTML(source: string): string {
     anchor.setAttribute('rel', 'noopener noreferrer')
   })
   return template.innerHTML
-}
-
-function attachCodeCopy(container: ParentNode | null): void {
-  container?.querySelectorAll<HTMLPreElement>('.agents-body pre').forEach(pre => {
-    if (pre.dataset.copyWired) return
-    pre.dataset.copyWired = '1'
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'agents-code-copy'
-    button.textContent = 'Copy'
-    button.setAttribute('aria-label', 'Copy code block')
-    button.addEventListener('click', () => {
-      const text = pre.querySelector('code')?.textContent ?? pre.textContent ?? ''
-      void navigator.clipboard?.writeText(text).then(
-        () => {
-          button.textContent = 'Copied'
-          window.setTimeout(() => { button.textContent = 'Copy' }, 1500)
-        },
-        () => { button.textContent = 'Failed' },
-      )
-    })
-    pre.appendChild(button)
-  })
 }
 
 function stepClass(step: RunStep): 'ok' | 'err' | 'wait' | 'unknown' | 'audit' {
@@ -518,9 +538,11 @@ onMounted(() => {
   bindStore(props.store)
   void load()
 })
-watch(() => [props.store, props.api, props.runId, props.embeddedAgent] as const, () => {
+watch(() => [props.store, props.api, props.runId, props.embeddedAgent, props.authorityEpoch] as const, () => {
   bindStore(props.store)
+  resetCopyState()
   requestGeneration += 1
+  activeRead = null
   resolvingInboxID.value = ''
   resolvingDecision.value = ''
   cancellingRuns.value = new Set()
@@ -537,13 +559,13 @@ watch(() => [props.store, props.api, props.runId, props.embeddedAgent] as const,
   inspectorOpen.value = true
   void load()
 }, { flush: 'post' })
-onUpdated(() => { void nextTick(() => attachCodeCopy(root.value)) })
-watch(() => props.runId, resetCopyState)
+onUpdated(() => { void nextTick(() => { if (root.value) attachCodeCopy(root.value) }) })
 onBeforeUnmount(() => {
   resetCopyState()
   boundStore?.removeEventListener('server', onServerEvent as EventListener)
   boundStore = null
   requestGeneration += 1
+  activeRead = null
   stopLive()
 })
 </script>
@@ -596,7 +618,7 @@ onBeforeUnmount(() => {
         <div v-if="run && (!isEmbedded || !runAgentMismatch)" class="k-resource-page__header-side">
           <div class="k-resource-page__actions agents-detail-actions" role="group" aria-label="Run actions">
             <button v-if="LIVE_PHASES.has(run.phase)" class="k-btn k-btn--ghost secondary" type="button" :disabled="cancellingRuns.has(runId)" :aria-busy="cancellingRuns.has(runId) || undefined" @click="cancel"><X :stroke-width="1.75" aria-hidden="true" /> {{ cancellingRuns.has(runId) ? 'Cancelling…' : 'Cancel run' }}</button>
-            <button class="k-btn k-btn--ghost secondary" type="button" :disabled="loading && refreshMode === 'foreground'" :aria-busy="loading && refreshMode === 'foreground' || undefined" @click="load('foreground')"><RefreshCw :class="{ 'k-spin': loading && refreshMode === 'foreground' }" :stroke-width="1.75" aria-hidden="true" /> {{ loading && refreshMode === 'foreground' ? 'Refreshing…' : 'Refresh' }}</button>
+            <button class="k-btn k-btn--ghost secondary" type="button" aria-label="Refresh run" :aria-disabled="loading && refreshMode === 'foreground' || undefined" :aria-busy="loading && refreshMode === 'foreground' || undefined" @click="refreshFromHeader"><RefreshCw :class="{ 'k-spin': loading && refreshMode === 'foreground' }" :stroke-width="1.75" aria-hidden="true" /> {{ loading && refreshMode === 'foreground' ? 'Refreshing…' : 'Refresh' }}</button>
           </div>
         </div>
       </template>
