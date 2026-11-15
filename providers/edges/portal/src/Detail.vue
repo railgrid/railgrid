@@ -4,12 +4,15 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { ArrowUpCircle, Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Globe2, Home, Laptop, Plug, Plus, RefreshCw, Server, TerminalSquare } from 'lucide-vue-next'
 import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, deleteEdgeService } from './api'
 import { MACOS_MASKED_JOIN_TOKEN, macosJoinSnippet } from './macos'
+import { edgeStatusLabel } from './edge-status'
+import { EDGE_DELETE_MESSAGE } from './edge-delete'
 import { confirmDialog } from './portalkit/confirm'
 import { toast } from './portalkit/toast'
 import ConditionsPanel from './portalkit/ConditionsPanel.vue'
 import HarnessCard from './HarnessCard.vue'
 import ActionMenu, { type ActionMenuItem } from './portalkit/ActionMenu.vue'
 import ResourcePage from './portalkit/ResourcePage.vue'
+import ResourceTimestamp from './portalkit/ResourceTimestamp.vue'
 import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
@@ -28,6 +31,7 @@ import { edgeSupportsHarness, edgeTypeLabel as edgeTypeName, type EdgeDetail, ty
 const props = defineProps<{ name: string; type: EdgeType; cluster: string | null; token: string | null }>()
 const emit = defineEmits<{ back: []; deleted: []; addService: [] }>()
 let stopped = false
+let scopeGeneration = 0
 
 // SSH terminals dock at the bottom of the host portal (survives page
 // navigation) rather than rendering inline here. The provider is an isolated
@@ -53,6 +57,9 @@ const detailRefreshing = computed(() => loading.value && refreshMode.value === '
 const mutationError = ref<string | null>(null)
 const copied = ref<string | null>(null)
 const copyFeedback = ref('')
+const copyFeedbackField = ref<string | null>(null)
+const copyFailed = ref(false)
+let copyAttempt = 0
 let copyTimer: ReturnType<typeof setTimeout> | null = null
 const servicesExpanded = ref(false)
 const technicalExpanded = ref(false)
@@ -63,12 +70,12 @@ async function loadEdgeSnapshot(requestID: number) {
   const hadSnapshot = edge.value !== null
   try {
     const nextEdge = await getEdge(props.name, props.type)
-    if (!detailRefresh.isCurrent(requestID)) return
+    if (!detailRefresh.isCurrent(requestID)) return false
     edge.value = nextEdge
     readComplete.value = true
-    error.value = null
+    return true
   } catch (e) {
-    if (!detailRefresh.isCurrent(requestID)) return
+    if (!detailRefresh.isCurrent(requestID)) return false
     const response = e as ErrorResponse
     if (response?.reason === 'NotFound') {
       // A confirmed not-found must not leave an old snapshot looking current.
@@ -80,6 +87,7 @@ async function loadEdgeSnapshot(requestID: number) {
       readComplete.value = hadSnapshot
       error.value = response?.message ?? 'Failed to load edge'
     }
+    return false
   }
 }
 
@@ -103,16 +111,20 @@ async function refreshDetail() {
 
 async function onDelete() {
   const current = edge.value
+  const generation = scopeGeneration
   if (!current || deleting.value) return
-  if (!(await confirmDialog({ title: `Delete ${edgeDeleteLabel.value} "${props.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
+  const scope = { name: props.name, type: props.type, cluster: props.cluster }
+  if (!(await confirmDialog({ title: `Delete ${edgeDeleteLabel.value} "${props.name}"?`, message: EDGE_DELETE_MESSAGE, danger: true, confirmLabel: 'Delete' }))) return
+  if (stopped || generation !== scopeGeneration || deleting.value || props.name !== scope.name || props.type !== scope.type || props.cluster !== scope.cluster) return
   deleting.value = true
   mutationError.value = null
   try {
     await deleteEdge(current)
-    if (stopped || props.name !== current.name) return
+    if (stopped || generation !== scopeGeneration) return
     toast('info', `${edgeMutationLabel.value} deletion requested for ${current.name}.`)
     emit('deleted')
   } catch (e) {
+    if (stopped || generation !== scopeGeneration) return
     mutationError.value = (e as ErrorResponse)?.message ?? 'Delete failed'
     deleting.value = false
   }
@@ -123,18 +135,29 @@ function copyControlLabel(field: string, label: string): string {
 }
 
 async function copy(text: string, field: string, label: string) {
+  const attempt = ++copyAttempt
+  if (copyTimer) clearTimeout(copyTimer)
+  copied.value = null
+  copyFeedbackField.value = field
+  copyFeedback.value = ''
+  copyFailed.value = false
   try {
     await navigator.clipboard.writeText(text)
+    if (attempt !== copyAttempt) return
     copied.value = field
     copyFeedback.value = `${label} copied to clipboard.`
-    if (copyTimer) clearTimeout(copyTimer)
     copyTimer = setTimeout(() => {
       copied.value = null
       copyFeedback.value = ''
+      copyFeedbackField.value = null
       copyTimer = null
     }, 2000)
   } catch {
-    copyFeedback.value = `Could not copy the ${label.toLowerCase()}. Select the command and copy it manually.`
+    if (attempt !== copyAttempt) return
+    copyFailed.value = true
+    copyFeedback.value = field === 'join'
+      ? 'Could not copy the agent join command. Try copying again; the token may be masked.'
+      : `Could not copy the ${label.toLowerCase()}. Select the command and copy it manually.`
   }
 }
 
@@ -154,11 +177,7 @@ const harnessSupported = computed(() => edgeSupportsHarness(props.type))
 const edgeTypeLabel = computed(() => edgeTypeName(props.type))
 const edgeDeleteLabel = computed(() => `${edgeTypeName(props.type)} edge`)
 const edgeMutationLabel = computed(() => `${edgeTypeName(props.type)} edge`)
-const edgeStatus = computed(() => {
-  if (deleting.value) return 'Deleting'
-  if (!edge.value) return loading.value ? 'Loading' : 'Unavailable'
-  return edge.value.connected ? 'Connected' : (edge.value.phase || 'Disconnected')
-})
+const edgeStatus = computed(() => edgeStatusLabel(edge.value, loading.value, deleting.value))
 
 function statusTone(status: string): 'success' | 'warning' | 'danger' | 'muted' {
   const normalized = status.toLowerCase()
@@ -181,7 +200,7 @@ const metadataRows = computed(() => {
     { label: 'UID', value: value?.uid || '—', mono: true },
     { label: 'Resource version', value: value?.resourceVersion || '—', mono: true },
     { label: 'Generation', value: value?.generation ?? '—', mono: true },
-    { label: 'Created', value: value?.creationTimestamp ? formatTimestamp(value.creationTimestamp) : '—', mono: false },
+    { label: 'Created', value: value?.creationTimestamp || '', mono: false },
   ]
 })
 
@@ -210,11 +229,6 @@ const configurationRows = computed(() => {
     { label: 'Cluster access', value: value.connected ? 'Tunnel available' : 'Waiting for agent', mono: false },
   ]
 })
-
-function formatTimestamp(value: string): string {
-  const parsed = new Date(value)
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString()
-}
 
 function yamlScalar(value: unknown): string {
   if (value === null) return 'null'
@@ -383,18 +397,20 @@ function loadServices() {
 
 async function removeService(name: string) {
   if (deleting.value || deletingServiceName.value) return
-  if (!(await confirmDialog({ title: `Delete service "${name}"?`, danger: true, confirmLabel: 'Delete' }))) return
-  if (deleting.value || deletingServiceName.value) return
+  const scope = { name: props.name, type: props.type, cluster: props.cluster }
+  const generation = scopeGeneration
+  if (!(await confirmDialog({ title: 'Delete service', message: `"${name}" will be deleted, and its MCP tools will no longer be available.`, danger: true, confirmLabel: 'Delete service' }))) return
+  if (stopped || generation !== scopeGeneration || deleting.value || deletingServiceName.value || props.name !== scope.name || props.type !== scope.type || props.cluster !== scope.cluster) return
   deletingServiceName.value = name
   try {
     await deleteEdgeService(name)
-    if (stopped || props.name !== edge.value?.name) return
+    if (stopped || generation !== scopeGeneration) return
     toast('info', `Service deletion requested for ${name}.`)
     await loadServices()
   } catch (e) {
-    svcError.value = (e as ErrorResponse)?.message ?? 'Delete failed'
+    if (!stopped && generation === scopeGeneration) svcError.value = (e as ErrorResponse)?.message ?? 'Delete failed'
   } finally {
-    if (deletingServiceName.value === name) deletingServiceName.value = null
+    if (generation === scopeGeneration && deletingServiceName.value === name) deletingServiceName.value = null
   }
 }
 
@@ -406,19 +422,20 @@ function startConnect(name: string) {
 async function submitConnect() {
   if (!connectFor.value || !tokenInput.value.trim()) return
   const name = connectFor.value
+  const generation = scopeGeneration
   connecting.value = true
   svcError.value = null
   try {
     await connectEdgeService(name, tokenInput.value.trim())
-    if (stopped || connectFor.value !== name) return
+    if (stopped || generation !== scopeGeneration || connectFor.value !== name) return
     connectFor.value = null
     tokenInput.value = ''
     toast('ok', `Service credentials saved for ${name}.`)
     await loadServices()
   } catch (e) {
-    svcError.value = (e as ErrorResponse)?.message ?? 'Connect failed'
+    if (!stopped && generation === scopeGeneration) svcError.value = (e as ErrorResponse)?.message ?? 'Connect failed'
   } finally {
-    connecting.value = false
+    if (generation === scopeGeneration) connecting.value = false
   }
 }
 
@@ -437,18 +454,30 @@ detailRefresh = createLatestRefreshController(async (requestID, mode) => {
   refreshMode.value = mode
   loading.value = true
   if (mode === 'foreground') {
-    error.value = null
     svcError.value = null
   }
   try {
-    await Promise.all([loadEdgeSnapshot(requestID), loadServicesSnapshot(requestID)])
+    const [edgeReadSucceeded] = await Promise.all([loadEdgeSnapshot(requestID), loadServicesSnapshot(requestID)])
+    if (edgeReadSucceeded && detailRefresh.isCurrent(requestID)) error.value = null
   } finally {
     if (detailRefresh.isCurrent(requestID)) loading.value = false
     poller.schedule()
   }
 })
 
-watch(() => [props.name, props.type], () => {
+watch(() => [props.name, props.type, props.cluster], () => {
+  scopeGeneration++
+  deleting.value = false
+  deletingServiceName.value = null
+  connecting.value = false
+  connectFor.value = null
+  tokenInput.value = ''
+  mutationError.value = null
+  copyAttempt++
+  if (copyTimer) clearTimeout(copyTimer)
+  copied.value = null
+  copyFeedback.value = ''
+  copyFeedbackField.value = null
   detailRefresh.invalidate()
   edge.value = null
   services.value = []
@@ -459,6 +488,7 @@ watch(() => [props.name, props.type], () => {
   void load('foreground')
 }, { immediate: true })
 onUnmounted(() => {
+  copyAttempt++
   stopped = true
   detailRefresh.stop()
   poller.stop()
@@ -516,7 +546,9 @@ onUnmounted(() => {
             <button
               type="button"
               class="k-btn k-btn--ghost"
-              :disabled="detailRefreshing || deleting || connecting"
+              aria-label="Refresh edge"
+              :disabled="deleting || connecting"
+              :aria-disabled="detailRefreshing || undefined"
               :aria-busy="detailRefreshing || undefined"
               @click="refreshDetail"
             >
@@ -538,7 +570,6 @@ onUnmounted(() => {
 
         <template #body>
           <div v-if="mutationError" class="banner error" role="alert">{{ mutationError }}</div>
-          <p class="edge-detail__sr-only" role="status" aria-live="polite">{{ copyFeedback }}</p>
           <div v-if="deleting" class="waiting" role="status">Deleting this edge. The last successful snapshot remains visible until the hub confirms removal.</div>
 
           <div class="edge-detail__sections">
@@ -582,6 +613,7 @@ onUnmounted(() => {
                           </button>
                         </div>
                         <pre>{{ upgradeCliCommand }}</pre>
+                      <p v-if="copyFeedbackField === 'up-cli'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
                       </div>
                       <div class="snippet">
                         <div class="snippet-head"><span>Option B — Helm</span>
@@ -596,6 +628,7 @@ onUnmounted(() => {
                           </button>
                         </div>
                         <pre>{{ upgradeHelmSnippet }}</pre>
+                      <p v-if="copyFeedbackField === 'up-helm'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
                       </div>
                     </template>
 
@@ -612,6 +645,7 @@ onUnmounted(() => {
                         </button>
                       </div>
                       <pre>{{ upgradeServerSnippet }}</pre>
+                      <p v-if="copyFeedbackField === 'up-srv'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
                     </div>
                     <div v-else class="snippet">
                       <div class="snippet-head"><span>Replace binary and restart the launchd service</span>
@@ -627,6 +661,7 @@ onUnmounted(() => {
                       </div>
                       <p class="muted">The restart command assumes the default system LaunchDaemon; custom or user installs need their own label and domain.</p>
                       <pre>{{ upgradeMacOSSnippet }}</pre>
+                      <p v-if="copyFeedbackField === 'up-mac'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
                     </div>
 
                     <p class="muted">After upgrading, the agent reports its new version on the next heartbeat and this notice clears.</p>
@@ -654,6 +689,7 @@ onUnmounted(() => {
                         </button>
                       </div>
                       <pre>{{ joinDisplay }}</pre>
+                      <p v-if="copyFeedbackField === 'join'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
                     </div>
                   </div>
                 </details>
@@ -680,6 +716,7 @@ onUnmounted(() => {
                       </div>
                       <pre>railgrid edge kubeconfig {{ name }} &gt; {{ name }}.kubeconfig
 kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
+                      <p v-if="copyFeedbackField === 'kube'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
                     </div>
                   </div>
                 </details>
@@ -705,6 +742,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                         </button>
                       </div>
                       <pre>railgrid ssh {{ name }}</pre>
+                      <p v-if="copyFeedbackField === 'ssh'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
                     </div>
                   </div>
                 </details>
@@ -844,7 +882,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                       <dl class="k-resource-technical__definition">
                         <div v-for="row in configurationRows" :key="row.label">
                           <dt>{{ row.label }}</dt>
-                          <dd :class="{ mono: row.mono }">{{ row.value }}</dd>
+                          <dd :class="{ mono: row.mono }"><ResourceTimestamp v-if="row.label === 'Created'" :value="String(row.value || '')" label="Edge created" /><template v-else>{{ row.value }}</template></dd>
                         </div>
                       </dl>
                     </div>
@@ -860,7 +898,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                         empty-text="No health conditions reported yet."
                       />
                       <dl class="k-resource-technical__definition" style="margin-top: 12px;">
-                        <div><dt>Last heartbeat</dt><dd>{{ edge.lastHeartbeatTime ? formatTimestamp(edge.lastHeartbeatTime) : '—' }}</dd></div>
+                        <div><dt>Last heartbeat</dt><dd><ResourceTimestamp :value="edge.lastHeartbeatTime" label="Last heartbeat" /></dd></div>
                         <div><dt>Agent endpoint</dt><dd class="mono">{{ edge.statusURL || '—' }}</dd></div>
                       </dl>
                     </div>
@@ -872,7 +910,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                       <dl class="k-resource-technical__definition">
                         <div v-for="row in metadataRows" :key="row.label">
                           <dt>{{ row.label }}</dt>
-                          <dd :class="{ mono: row.mono }">{{ row.value }}</dd>
+                          <dd :class="{ mono: row.mono }"><ResourceTimestamp v-if="row.label === 'Created'" :value="String(row.value || '')" label="Edge created" /><template v-else>{{ row.value }}</template></dd>
                         </div>
                       </dl>
                       <template v-if="labelRows.length">
