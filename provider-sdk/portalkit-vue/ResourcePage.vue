@@ -129,15 +129,17 @@ watch(() => props.error, error => {
     <!-- Keep read announcements out of layout while preserving the
       caller-owned body. Foreground refreshes, background updates, and initial
       retries use distinct, truthful copy in one polite live region. -->
-    <span
-      class="k-resource-page__live"
-      role="status"
-      aria-live="polite"
-      aria-atomic="true"
-      style="block-size: 1px; clip: rect(0 0 0 0); clip-path: inset(50%); inline-size: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap;"
-    >
-      {{ refreshAnnouncement }}
-    </span>
+    <Teleport :to="pageElement?.closest('dialog, [aria-modal=true]') ?? 'body'">
+      <span
+        class="k-resource-page__live"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        style="block-size: 1px; clip: rect(0 0 0 0); clip-path: inset(50%); inline-size: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap;"
+      >
+        {{ showInitialLoading && initialReadPending ? `Loading ${title}` : refreshAnnouncement }}
+      </span>
+    </Teleport>
     <!-- A narrow header slot replaces only this inner heading/action content;
       the outer page header and all read-state surfaces remain authoritative. -->
     <header v-if="showHeader" class="k-resource-page__header" :class="{ 'k-resource-page__header--compact-actions': compactActions }">
@@ -177,17 +179,24 @@ watch(() => props.error, error => {
     <div
       v-else-if="initialReadPending"
       class="k-resource-page__loading k-delayed-loading"
-      :role="showInitialLoading ? 'status' : undefined"
-      :aria-live="showInitialLoading ? 'polite' : undefined"
-      :aria-label="showInitialLoading ? `Loading ${title}` : undefined"
-      :aria-hidden="showInitialLoading ? undefined : 'true'"
+      aria-hidden="true"
+      data-loading-visual
+      :data-pending-hidden="showInitialLoading ? undefined : 'true'"
     >
-      <!-- The shell owns the loading semantics; callers may replace only the
-        visual content when a resource needs a more specific placeholder. -->
+      <!-- The shell owns loading semantics; callers can replace the visual
+        placeholder when their page has a more specific layout. -->
       <slot name="loading">
-        <div class="shimmer k-resource-page__skeleton k-resource-page__skeleton--short" />
-        <div class="shimmer k-resource-page__skeleton k-resource-page__skeleton--wide" />
-        <div class="shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" />
+        <div v-if="variant !== 'collection' && $slots.summary" class="k-resource-page__loading-summary" aria-hidden="true">
+          <div v-for="n in 3" :key="n" class="k-resource-page__loading-stat"><span class="shimmer k-resource-page__skeleton k-resource-page__skeleton--short k-resource-page__skeleton--small" /><span class="shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" /><span class="shimmer k-resource-page__skeleton k-resource-page__skeleton--wide k-resource-page__skeleton--small" /></div>
+        </div>
+        <div v-if="variant === 'collection'" class="k-resource-page__loading-list" aria-hidden="true">
+          <div v-for="n in 4" :key="n" class="k-resource-page__loading-row"><span class="shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" /><span class="shimmer k-resource-page__skeleton k-resource-page__skeleton--short" /></div>
+        </div>
+        <div v-else class="k-resource-page__loading-section" aria-hidden="true">
+          <div class="shimmer k-resource-page__skeleton k-resource-page__skeleton--short" />
+          <div class="shimmer k-resource-page__skeleton k-resource-page__skeleton--wide" />
+          <div class="shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" />
+        </div>
       </slot>
     </div>
 
