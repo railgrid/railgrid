@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 62;
+  --railgrid-agent-ui-version: 63;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
@@ -844,6 +844,12 @@ button.k-workbench-tab {
   gap: 6px;
   color: var(--color-text-muted, #8587a1);
   line-height: 1.25rem;
+}
+.k-ai-action-row__line--wrap { flex-wrap: wrap; }
+.k-ai-action-row__line--wrap > .k-ai-action-row__toggle,
+.k-ai-action-row__line--wrap > .k-ai-action-row__title {
+  flex: 1 1 12rem;
+  min-width: min(12rem, calc(100% - 20px));
 }
 .k-ai-action-row__icon {
   width: 14px;

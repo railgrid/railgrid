@@ -184,6 +184,9 @@ function isGroupScrollable(group: AIActivityGroup): boolean {
             <template v-if="$slots['row-icon']" #icon>
               <slot name="row-icon" :row="row" :group="group" />
             </template>
+            <template v-if="$slots['row-after-outcome']" #after-outcome>
+              <slot name="row-after-outcome" :row="row" :group="group" />
+            </template>
             <template v-if="$slots.details" #details>
               <slot name="details" :row="row" :group="group" />
             </template>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { QuestionReply } from '../types'
+import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch } from 'vue'
 import {
   ChevronDown,
@@ -26,7 +27,6 @@ import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import {
   fmtDuration,
-  fmtTime,
   fmtTokens,
   fmtUSD,
   prettyJSON,
@@ -366,7 +366,6 @@ function stepStatusLabel(step: RunStep): string {
 function stepOutcome(step: RunStep, label: string): string {
   const parts = [label || step.outcome]
   if (step.durationMS) parts.push(fmtDuration(step.durationMS))
-  if (step.at) parts.push(fmtTime(step.at))
   return parts.join(' · ')
 }
 
@@ -591,7 +590,7 @@ onBeforeUnmount(() => {
                 </span>
               </template>
             </div>
-            <p class="k-resource-page__subtitle">{{ run ? `${run.class} · ${fmtTime(run.startedAt || run.createdAt)}` : runId }}</p>
+            <p class="k-resource-page__subtitle"><template v-if="run">{{ run.class }} · <ResourceTimestamp :value="run.startedAt || run.createdAt" label="Run started" /></template><template v-else>{{ runId }}</template></p>
           </template>
         </div>
         <div v-if="run && (!isEmbedded || !runAgentMismatch)" class="k-resource-page__header-side">
@@ -694,6 +693,9 @@ onBeforeUnmount(() => {
                 @toggle="toggleSteps"
                 @toggle-row="toggle"
               >
+                <template #row-after-outcome="{ row }">
+                  <ResourceTimestamp v-if="stepsByID.get(row.id)?.step.at" class="agents-step-timestamp" :value="stepsByID.get(row.id)?.step.at" label="Step recorded" />
+                </template>
                 <template #details="{ row }">
                   <template v-for="entry in [stepsByID.get(row.id)]" :key="row.id">
                     <template v-if="entry?.command">
@@ -754,8 +756,8 @@ onBeforeUnmount(() => {
                   <div v-if="ranOnHarness" class="agents-runmeta-cell"><span class="agents-runmeta-k">ran on</span><span class="agents-runmeta-v mono">harness</span></div>
                   <div v-if="harnessCoordinates?.attemptID" class="agents-runmeta-cell"><span class="agents-runmeta-k">runner attempt</span><span class="agents-runmeta-v mono">{{ harnessCoordinates.attemptID }}</span></div>
                   <div v-if="harnessCoordinates?.sessionID" class="agents-runmeta-cell"><span class="agents-runmeta-k">harness session</span><span class="agents-runmeta-v mono">{{ harnessCoordinates.sessionID }}</span></div>
-                  <div class="agents-runmeta-cell"><span class="agents-runmeta-k">started</span><span class="agents-runmeta-v">{{ fmtTime(run.startedAt || run.createdAt) }}</span></div>
-                  <div v-if="run.finishedAt" class="agents-runmeta-cell"><span class="agents-runmeta-k">finished</span><span class="agents-runmeta-v">{{ fmtTime(run.finishedAt) }}</span></div>
+                  <div class="agents-runmeta-cell"><span class="agents-runmeta-k">started</span><span class="agents-runmeta-v"><ResourceTimestamp :value="run.startedAt || run.createdAt" label="Run started" /></span></div>
+                  <div v-if="run.finishedAt" class="agents-runmeta-cell"><span class="agents-runmeta-k">finished</span><span class="agents-runmeta-v"><ResourceTimestamp :value="run.finishedAt" label="Run finished" /></span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">duration</span><span class="agents-runmeta-v"><template v-if="run.durationMS">{{ fmtDuration(run.durationMS) }}</template><span v-else-if="LIVE_PHASES.has(run.phase)" class="agents-elapsed"><LoaderCircle class="k-spin" :size="13" :stroke-width="1.75" aria-hidden="true" />{{ elapsed(run) }}</span><template v-else>—</template></span></div>
                   <div v-if="turnProgressDuration(run)" class="agents-runmeta-cell"><span class="agents-runmeta-k">total model and tool time</span><span class="agents-runmeta-v">{{ turnProgressDuration(run) }}</span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">usage</span><span class="agents-runmeta-v">{{ fmtTokens(run.inputTokens) }} in · {{ fmtTokens(run.outputTokens) }} out · {{ fmtUSD(run.usdMicros) }}</span></div>
