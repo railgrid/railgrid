@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.confirm-dialog","title":"ConfirmDialog and modal support","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"Vue and vanilla confirmation helpers mount the shared in-page dialog and replace native dialogs."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/confirm-dialog.md#confirmdialog-and-modal-support","role":"design"},{"path":"provider-sdk/portalkit-vue/ConfirmDialog.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/confirm.ts","role":"implementation"},{"path":"provider-sdk/portalkit/modal.ts","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Current byte-for-byte PortalKit and AgentKit copy and manifest parity passed."},{"kind":"browser","ref":"ConfirmDialog scoped interaction fixture","status":"passing","evidence":"Current core and provider fixture cases exercised safe Cancel initial focus, scoped/native Enter, focus trapping and restoration, bounded long-dialog layout, and 44px coarse targets across dark/light desktop/mobile/hybrid cases. Evidence: /tmp/railgrid-design-audit-fixture/current.json and /tmp/railgrid-verify-core-providers-browser-iteration3.log. Focus trapping and restoration were additionally checked in eight Vue/vanilla desktop/mobile light/dark cases: /tmp/design-audit-confirm-focus-final.log."},{"kind":"browser","ref":"Current rendered fixture boundary","status":"passing","evidence":"Six core and six provider dark/light desktop/mobile/hybrid cases passed with actual fonts loaded; this evidence does not establish all routes, live Tilt, or assistive-technology verification."}]},"relatedDocuments":[{"id":"design.patterns.navigation-and-feedback","relation":"see-also","path":"docs/design/patterns/navigation-and-feedback.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.foundations.recipes","relation":"prerequisite","path":"docs/design/implementation/recipes.md"},{"id":"design.components.resource-table-actions","relation":"see-also","path":"docs/design/components/resource-table-actions.md"}]}
+{"schema":1,"id":"design.components.confirm-dialog","title":"ConfirmDialog and modal support","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"Vue and vanilla helpers mount Railgrid confirmations in the browser's modal top layer."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/confirm-dialog.md#confirmdialog-and-modal-support","role":"design"},{"path":"provider-sdk/portalkit-vue/ConfirmDialog.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/confirm.ts","role":"implementation"},{"path":"provider-sdk/portalkit/modal.ts","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Current byte-for-byte PortalKit and AgentKit copy and manifest parity passed."},{"kind":"browser","ref":"ConfirmDialog scoped interaction fixture","status":"passing","evidence":"Current core and provider fixture cases exercised safe Cancel initial focus, scoped/native Enter, focus trapping and restoration, bounded long-dialog layout, and 44px coarse targets across dark/light desktop/mobile/hybrid cases. Evidence: /tmp/railgrid-design-audit-fixture/current.json and /tmp/railgrid-verify-core-providers-browser-iteration3.log. Focus trapping and restoration were additionally checked in eight Vue/vanilla desktop/mobile light/dark cases: /tmp/design-audit-confirm-focus-final.log."},{"kind":"browser","ref":"Current rendered fixture boundary","status":"passing","evidence":"Six core and six provider dark/light desktop/mobile/hybrid cases passed with actual fonts loaded; this evidence does not establish all routes, live Tilt, or assistive-technology verification."}]},"relatedDocuments":[{"id":"design.patterns.navigation-and-feedback","relation":"see-also","path":"docs/design/patterns/navigation-and-feedback.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.foundations.recipes","relation":"prerequisite","path":"docs/design/implementation/recipes.md"},{"id":"design.components.resource-table-actions","relation":"see-also","path":"docs/design/components/resource-table-actions.md"}]}
 ---
 
 # ConfirmDialog and modal support
@@ -33,40 +33,41 @@ wrapping confirmation geometry.
 
 ## Behavior
 
-The caller awaits a boolean result and owns the destructive action. Row delete
-actions pass `danger: true`. A danger confirmation initially focuses Cancel;
-the dialog's key handler is scoped to the dialog and does not convert arbitrary
-page Enter keydown into confirmation. Native Enter activates the focused button.
-Escape and backdrop cancel, and focus returns to the previously focused
-connected element.
+Use a plain confirmation for most destructive actions. Initial focus is Cancel
+for a plain destructive confirmation and Confirm for an informational one.
+Use an exact resource name only when an action has particularly consequential,
+irreversible effects, such as deleting an Infrastructure instance and the
+resources it provisioned. Put focus in the verification field for those
+requests. Confirm is unavailable until the name matches exactly.
+
+Cancel, Escape, and backdrop dismissal settle the request and return focus to
+the invoking control when it remains available. Replacing a request clears
+typed verification and settles the earlier request as cancelled.
 
 ## Content
 
-Use confirmation or alert copy appropriate to the caller-owned action. The
-dialog's danger treatment is reserved for the destructive confirmation action;
-the solid danger treatment never glows.
+Name the action in both the heading and confirmation button. In the description,
+name the resource and what will be removed. For irreversible actions, state
+that consequence in a distinct warning before the verification field.
 
 ## Layout and responsive behavior
 
-Confirmation dialogs and modals are 6px, `surface-raised`, and hairlined with
-heavy elevation. The confirmation variant is bounded to the viewport, scrolls
-long message bodies, wraps long titles and action labels, and wraps its footer
-actions. Its scrim derives from `surface` (`bg-surface/60` or
-`color-mix(in srgb, var(--color-surface) 60%, transparent)`), never from text or
-`bg-black/*`, so dark and light themes remain dark-on-dark and light-on-light.
+The modal uses the raised surface, a neutral Cancel button and a distinct
+destructive action. The scrollable content keeps long names, warnings and
+controls within the viewport. Footer actions wrap at narrow widths.
 
 ## Accessibility
 
-Use the shared in-page dialog so the interaction has the common dialog
-semantics and focus behavior; native browser dialogs are not part of this
-contract. The caller's action remains available through the promise result.
+Native modal dialogs place Vue and vanilla confirmations in the browser's
+top layer. Label the explicit Confirm and Cancel actions and associate the
+verification field with its instructions. Respect composition when processing
+Enter or Escape.
 
 ## Code and evidence
 
-Canonical implementations are [`ConfirmDialog.vue`](../../../provider-sdk/portalkit-vue/ConfirmDialog.vue),
-[`confirm.ts`](../../../provider-sdk/portalkit-vue/confirm.ts), and
-[`modal.ts`](../../../provider-sdk/portalkit/modal.ts). Distribution is checked
-by `make verify-portalkit`.
+Open the [confirmation review](http://127.0.0.1:5197/?entry=design.components.confirm-dialog)
+for a plain destructive action, Infrastructure instance deletion, and a vanilla
+confirmation. The fixture simulates each outcome locally.
 
 ## Related guidance
 
