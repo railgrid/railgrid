@@ -74,6 +74,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -622,11 +623,24 @@ func exactPreviewBridgeOrigin(raw string) (string, error) {
 		return "", fmt.Errorf("%q must be an http(s) origin without path, query or credentials", raw)
 	}
 	host := strings.ToLower(parsed.Host)
+	// Go's url.Parse and the browser's URL parser disagree on IDN hosts,
+	// percent-escapes, unusual host characters, leading-zero ports and IPv6
+	// spelling. The Vite plugin re-checks each origin against the browser's
+	// canonical form and disables the bridge on a mismatch, so accept only
+	// the form both parsers agree on and fail here, in the installer log.
+	if !canonicalPreviewBridgeHost.MatchString(host) {
+		return "", fmt.Errorf("%q must use an ASCII DNS name or IPv4 address (punycode for IDN) and a port without leading zeros", raw)
+	}
 	if (parsed.Scheme == "https" && strings.HasSuffix(host, ":443")) || (parsed.Scheme == "http" && strings.HasSuffix(host, ":80")) {
 		host = host[:strings.LastIndex(host, ":")]
 	}
 	return parsed.Scheme + "://" + host, nil
 }
+
+// canonicalPreviewBridgeHost matches a lowercase host[:port] already in the
+// WHATWG URL canonical form: DNS labels or an IPv4 address, and a port of
+// 1-65535 without leading zeros.
+var canonicalPreviewBridgeHost = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$`)
 
 func configFromEnv() (*agentConfig, error) {
 	workdir := strings.TrimSpace(os.Getenv("RAILGRID_DEV_WORKDIR"))

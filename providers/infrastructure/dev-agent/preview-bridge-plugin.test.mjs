@@ -241,6 +241,12 @@ test("bridge configuration accepts only exact http(s) origins", () => {
   );
 });
 
+test("client source embeds origins verbatim, without replacement patterns", () => {
+  const origins = ["http://a$&b.test", "http://c$'d.test", "http://e$`f.test"];
+  const source = previewBridgeClientSource({ portalOrigins: origins });
+  assert.ok(source.includes(`const PORTAL_ORIGINS = ${JSON.stringify(origins)};`));
+});
+
 test("plugin sets frame-ancestors on HTML documents only", () => {
   const plugin = createPreviewBridgePlugin(configuration);
   let middleware;
@@ -885,4 +891,119 @@ test("connected annotation mode captures bounded targets without activating the 
   assert.equal(documentListeners.has("click"), false);
   assert.equal(overlay.removed, true);
   assert.equal(pinLayer.removed, true, "oversized pin state should clean up the previous marker layer");
+});
+
+// loadBridge evaluates one preview document's bridge client against a fake
+// window whose parent records every postMessage with its targetOrigin.
+function loadBridge(bridgeConfiguration, parent = { messages: [] }) {
+  const windowListeners = new Map();
+  parent.postMessage ??= (message, origin, ports = []) => parent.messages.push({ message, origin, ports });
+  class FakePort {
+    constructor() {
+      this.messages = [];
+      this.closed = false;
+      this.peer = null;
+      this.onmessage = null;
+    }
+    postMessage(message) {
+      const copy = structuredClone(message);
+      this.messages.push(copy);
+      if (this.peer) {
+        this.peer.messages.push(copy);
+        this.peer.onmessage?.({ data: copy });
+      }
+    }
+    close() {
+      this.closed = true;
+      if (this.peer) this.peer.closed = true;
+    }
+    start() {}
+  }
+  class FakeMessageChannel {
+    constructor() {
+      this.port1 = new FakePort();
+      this.port2 = new FakePort();
+      this.port1.peer = this.port2;
+      this.port2.peer = this.port1;
+    }
+  }
+  class FakeNode {}
+  const window = {
+    parent,
+    console: {},
+    addEventListener(type, listener) {
+      windowListeners.set(type, listener);
+    },
+    removeEventListener(type, listener) {
+      if (windowListeners.get(type) === listener) windowListeners.delete(type);
+    },
+  };
+  const context = vm.createContext({
+    URL, Error, Element: FakeNode, Node: FakeNode, TextDecoder, TextEncoder, Uint8Array, atob,
+    crypto: { subtle: webcrypto.subtle, getRandomValues: webcrypto.getRandomValues.bind(webcrypto) },
+    location: { href: "https://preview.test/", origin: "https://preview.test", pathname: "/", search: "", hash: "" },
+    Promise, Date, JSON, Object, Array, String, Number, Boolean, Math, WeakSet, queueMicrotask,
+    MessageChannel: FakeMessageChannel,
+    window,
+  });
+  vm.runInContext(previewBridgeClientSource(bridgeConfiguration), context);
+  const deliver = (event) => windowListeners.get("message")({ ports: [], ...event });
+  return { parent, deliver, FakeMessageChannel };
+}
+
+test("bridge gives a non-allowlisted parent no READY, port or session", async () => {
+  // The preview is framed by a page on an origin outside the allowlist.
+  const foreignOrigin = "https://attacker.test";
+  const { parent, deliver, FakeMessageChannel } = loadBridge(configuration);
+
+  // The initial announcement is addressed only to the configured origin, so
+  // the browser drops it for any other parent; never "*".
+  assert.equal(parent.messages.length, 1);
+  assert.deepEqual(parent.messages.map((entry) => entry.origin), [portalOrigin]);
+  const announced = parent.messages.length;
+
+  // A PROBE from the foreign parent is ignored, including near-miss origins.
+  for (const origin of [foreignOrigin, "http://studio.test", "https://studio.test:8443", "https://evil.studio.test", "null"]) {
+    await deliver({ source: parent, origin, data: { type: "railgrid.preview-bridge.probe", version: 1 } });
+  }
+  assert.equal(parent.messages.length, announced, "no READY or handshake port for a non-allowlisted origin");
+
+  // A sender that is not the parent cannot probe even with the right origin.
+  await deliver({ source: { postMessage() {} }, origin: portalOrigin, data: { type: "railgrid.preview-bridge.probe", version: 1 } });
+  assert.equal(parent.messages.length, announced, "only window.parent may probe");
+
+  // START is honoured only on the handshake port, never as a window message
+  // carrying the sender's own port.
+  const forged = new FakeMessageChannel();
+  await deliver({
+    source: parent,
+    origin: foreignOrigin,
+    data: { type: "railgrid.preview-bridge.start", version: 1, sessionID: "forged", generation: parent.messages[0].message.documentID },
+    ports: [forged.port2],
+  });
+  await tick();
+  assert.equal(forged.port1.messages.length, 0, "a forged START must not open a session");
+  assert.equal(parent.messages.length, announced);
+});
+
+test("a reloaded preview document refuses a session bound to its predecessor", async () => {
+  const parent = { messages: [] };
+  loadBridge(configuration, parent);
+  const previousDocumentID = parent.messages[0].message.documentID;
+
+  // Reload: a new document runs the bridge again for the same parent.
+  parent.messages.length = 0;
+  loadBridge(configuration, parent);
+  const ready = parent.messages[0];
+  assert.notEqual(ready.message.documentID, previousDocumentID, "each document announces a fresh ID");
+
+  const port = ready.ports[0];
+  port.postMessage({ type: "railgrid.preview-bridge.start", version: 1, sessionID: "s", generation: previousDocumentID });
+  await tick();
+  assert.equal(port.messages.some((message) => message.type === "railgrid.preview-bridge.connected"), false,
+    "a START echoing the previous document's ID must not connect");
+
+  port.postMessage({ type: "railgrid.preview-bridge.start", version: 1, sessionID: "s", generation: ready.message.documentID });
+  const connected = await waitForPortMessage(port, "railgrid.preview-bridge.connected");
+  assert.equal(connected?.documentID, ready.message.documentID);
 });

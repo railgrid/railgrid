@@ -127,7 +127,12 @@ func New(runtime dynamic.Interface) *Backend {
 	}
 	maps.Copy(tokens, accessGateTokens())
 	maps.Copy(tokens, devImageTokens())
-	tokens[previewBridgePortalOriginsConfigKey] = resolvePreviewBridgePortalOrigins(tokens[hubPublicURLToken])
+	origins, source := resolvePreviewBridgePortalOrigins(tokens[hubPublicURLToken])
+	tokens[previewBridgePortalOriginsConfigKey] = origins
+	// The bridge fails open, so a wrong allowlist only shows up as a missing
+	// Annotate action. Say once where it came from: a hub URL fallback is
+	// usually cluster-internal and no browser is on that origin.
+	klog.Background().Info("preview bridge portal origins resolved", "origins", origins, "source", source)
 	return &Backend{runtime: runtime, tokens: tokens}
 }
 
@@ -137,19 +142,24 @@ func New(runtime dynamic.Interface) *Backend {
 // needs configuring. RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS overrides it (for a
 // hub reached through more than one origin), and
 // RAILGRID_PREVIEW_BRIDGE_ENABLED=false turns the bridge off. The dev agent
-// validates every entry and fails open.
-func resolvePreviewBridgePortalOrigins(hubPublicURL string) string {
+// validates every entry and fails open. The second result names where the
+// origins came from, for the startup log.
+func resolvePreviewBridgePortalOrigins(hubPublicURL string) (string, string) {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("RAILGRID_PREVIEW_BRIDGE_ENABLED")), "false") {
-		return ""
+		return "", "disabled by RAILGRID_PREVIEW_BRIDGE_ENABLED=false"
 	}
 	if origins := strings.TrimSpace(os.Getenv("RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS")); origins != "" {
-		return origins
+		return origins, "RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS"
 	}
 	parsed, err := url.Parse(strings.TrimSpace(hubPublicURL))
 	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
-		return ""
+		return "", "none: no usable hub URL, so the bridge is off"
 	}
-	return parsed.Scheme + "://" + parsed.Host
+	source := "RAILGRID_ACCESS_HUB_PUBLIC_URL"
+	if strings.TrimSpace(os.Getenv("RAILGRID_ACCESS_HUB_PUBLIC_URL")) == "" {
+		source = "hub URL fallback (RAILGRID_ACCESS_HUB_PUBLIC_URL unset; set publishing.hubPublicURL if this origin is not browser-reachable)"
+	}
+	return parsed.Scheme + "://" + parsed.Host, source
 }
 
 // DefaultAccessProxyImage backs ${railgrid.accessProxyImage} when

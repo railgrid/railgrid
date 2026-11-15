@@ -1121,7 +1121,9 @@ function portalOrigins(configuration) {
 
 export function previewBridgeClientSource(configuration) {
   const encoded = JSON.stringify(portalOrigins(configuration)).replaceAll("<", "\\u003c");
-  return previewBridgeClient.replace("__RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS__", encoded);
+  // A replacer function: a string replacement would expand $&, $` and $' in
+  // the origins, and `$` is a legal host character.
+  return previewBridgeClient.replace("__RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS__", () => encoded);
 }
 
 // frame-ancestors keeps every other site from embedding the development

@@ -431,6 +431,13 @@ func TestPreviewBridgeConfigRejectsNonOrigins(t *testing.T) {
 		"https://console.example.test?x=1",
 		"https://console.example.test#x",
 		"ftp://console.example.test",
+		"https://münchen.example.test",
+		"https://xn--mnchen-3ya.example.test:0443",
+		"https://a$&b.example.test",
+		"https://console%2eexample.test",
+		"https://console.example.test.",
+		"https://[::1]:9443",
+		"https://console.example.test:65536",
 		strings.Repeat("https://a.example.test,", 1) + "https://b.example.test,https://c.example.test,https://d.example.test,https://e.example.test,https://f.example.test,https://g.example.test,https://h.example.test,https://i.example.test",
 	} {
 		if _, err := previewBridgeConfig(raw); err == nil {
@@ -2150,5 +2157,18 @@ func TestStripBase64Whitespace(t *testing.T) {
 	}
 	if _, binary, err := decodeSyncContent(syncFile{Path: "a.bin", Content: "aGVs\nbG8=\n", Encoding: "base64"}); err != nil || !binary {
 		t.Fatalf("wrapped base64 rejected: binary=%v err=%v", binary, err)
+	}
+}
+
+func TestPreviewBridgeConfigCanonicalizesToBrowserOrigins(t *testing.T) {
+	// Each output must equal `new URL(input).origin` in a browser, which the
+	// Vite plugin re-checks before enabling the bridge.
+	got, err := previewBridgeConfig("HTTPS://Console.Example.Test:443, https://xn--mnchen-3ya.example.test:8443,http://127.0.0.1:80,http://localhost:9443/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"portalOrigins":["https://console.example.test","https://xn--mnchen-3ya.example.test:8443","http://127.0.0.1","http://localhost:9443"]}`
+	if string(got) != want {
+		t.Fatalf("previewBridgeConfig = %s, want %s", got, want)
 	}
 }
