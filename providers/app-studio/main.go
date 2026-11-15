@@ -79,17 +79,6 @@ func envOr(key, def string) string {
 	return def
 }
 
-func previewBridgeEnvironmentConfig() (bool, string, string) {
-	enabled := !strings.EqualFold(strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_BRIDGE_ENABLED")), "false")
-	privateKey := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY"))
-	keyID := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID"))
-	if enabled && privateKey == "" && keyID == "" {
-		log.Print("preview bridge requested but unavailable: signing key and key ID are not configured")
-		enabled = false
-	}
-	return enabled, privateKey, keyID
-}
-
 // loadProviderConfig loads the provider kubeconfig used for the kcp front-proxy
 // host + TLS only (the tenant client drops its credential and authenticates as
 // the caller). Resolution order matches the other providers.
@@ -267,14 +256,6 @@ func runServe() {
 	// Preview inspection drives the workspace's shared browser (the Studio's
 	// Playwright MCP instance) over the infrastructure data plane — no
 	// app-studio-owned browser worker to configure.
-	previewBridgeEnabled, previewBridgeSigningKey, previewBridgeSigningKeyID := previewBridgeEnvironmentConfig()
-	if err := apiServer.ConfigurePreviewBridge(
-		previewBridgeEnabled,
-		previewBridgeSigningKey,
-		previewBridgeSigningKeyID,
-	); err != nil {
-		log.Fatalf("preview bridge: %v", err)
-	}
 	// App Studio holds no runtime-cluster kubeconfig: the development data
 	// plane (logs/sync/restart) is served by the infrastructure provider as
 	// custom subresources on the template instance, which App Studio calls

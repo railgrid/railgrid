@@ -378,3 +378,23 @@ func TestAppPublicPortSuffix(t *testing.T) {
 		})
 	}
 }
+
+func TestResolvePreviewBridgePortalOrigins(t *testing.T) {
+	for _, tc := range []struct {
+		name, enabled, override, hubPublicURL, want string
+	}{
+		{name: "defaults to the hub public origin", hubPublicURL: "https://console.example.test/some/path", want: "https://console.example.test"},
+		{name: "keeps an explicit port", hubPublicURL: "https://console.127.0.0.1.sslip.io:9443", want: "https://console.127.0.0.1.sslip.io:9443"},
+		{name: "explicit list wins", override: " https://a.example.test,https://b.example.test ", hubPublicURL: "https://console.example.test", want: "https://a.example.test,https://b.example.test"},
+		{name: "kill switch", enabled: "false", override: "https://a.example.test", hubPublicURL: "https://console.example.test", want: ""},
+		{name: "no usable hub URL", hubPublicURL: "", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RAILGRID_PREVIEW_BRIDGE_ENABLED", tc.enabled)
+			t.Setenv("RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS", tc.override)
+			if got := resolvePreviewBridgePortalOrigins(tc.hubPublicURL); got != tc.want {
+				t.Errorf("resolvePreviewBridgePortalOrigins(%q) = %q, want %q", tc.hubPublicURL, got, tc.want)
+			}
+		})
+	}
+}

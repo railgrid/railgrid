@@ -335,15 +335,6 @@ spec:
           kind: DataPlaneEndpointSlice
           name: ai.railgrid.ai
   - group: ai.railgrid.ai
-    name: projects/preview-bridge-sessions
-    schema: v260924-87f1980f.preview-bridge-sessions.ai.railgrid.ai
-    storage:
-      virtual:
-        reference:
-          apiGroup: dataplane.railgrid.ai
-          kind: DataPlaneEndpointSlice
-          name: ai.railgrid.ai
-  - group: ai.railgrid.ai
     name: projects/preview-grants
     schema: v260924-87f1980f.preview-grants.ai.railgrid.ai
     storage:

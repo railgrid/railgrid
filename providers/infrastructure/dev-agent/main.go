@@ -93,8 +93,9 @@ const (
 	agentBinaryName         = "railgrid-dev-agent"
 
 	previewBridgePluginName     = "preview-bridge-plugin.mjs"
-	previewBridgeJWKSName       = "preview-bridge-jwks.json"
-	previewBridgeJWKSEnv        = "RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS"
+	previewBridgeConfigName     = "preview-bridge-config.json"
+	previewBridgeOriginsEnv     = "RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS"
+	previewBridgeMaxOrigins     = 8
 	workspaceManifestName       = ".railgrid-workspace-manifest.json"
 	serviceAccountTokenPath     = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 	serviceAccountCAPath        = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
@@ -500,15 +501,15 @@ func serveUntilDone(ctx context.Context, srv *http.Server, cleanup func()) error
 }
 
 // installSelf atomically installs the agent executable, the platform-owned
-// preview-bridge Vite plugin, and its optional trusted public JWKS into dir,
+// preview-bridge Vite plugin, and its optional portal-origin allowlist into dir,
 // the shared emptyDir the dev container mounts at /railgrid/bin. Plain copies are
 // used because the injector image may be scratch. Application dependencies are
 // deliberately not projected here: generated applications install their
 // declared package aliases through the component toolchain.
 //
-// Missing or invalid verification configuration disables the optional browser
-// bridge without blocking the application. Any stale JWKS is removed so an old
-// platform key set cannot be trusted accidentally after a bad rollout.
+// Missing or invalid origin configuration disables the optional browser
+// bridge without blocking the application. Any stale configuration is removed
+// so an old origin cannot be trusted accidentally after a bad rollout.
 func installSelf(dir string) error {
 	self, err := os.Executable()
 	if err != nil {
@@ -529,20 +530,20 @@ func installSelf(dir string) error {
 		return fmt.Errorf("install preview bridge plugin: %w", err)
 	}
 
-	jwksPath := filepath.Join(dir, previewBridgeJWKSName)
-	rawJWKS := strings.TrimSpace(os.Getenv(previewBridgeJWKSEnv))
-	if rawJWKS == "" {
-		if err := os.Remove(jwksPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove stale preview bridge JWKS: %w", err)
+	configPath := filepath.Join(dir, previewBridgeConfigName)
+	rawOrigins := strings.TrimSpace(os.Getenv(previewBridgeOriginsEnv))
+	if rawOrigins == "" {
+		if err := os.Remove(configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale preview bridge configuration: %w", err)
 		}
-		log.Printf("preview bridge disabled: %s is unset", previewBridgeJWKSEnv)
-	} else if jwks, err := normalizePreviewBridgeJWKS([]byte(rawJWKS)); err != nil {
-		if removeErr := os.Remove(jwksPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return fmt.Errorf("remove stale preview bridge JWKS after invalid configuration: %w", removeErr)
+		log.Printf("preview bridge disabled: %s is unset", previewBridgeOriginsEnv)
+	} else if config, err := previewBridgeConfig(rawOrigins); err != nil {
+		if removeErr := os.Remove(configPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("remove stale preview bridge configuration after invalid configuration: %w", removeErr)
 		}
-		log.Printf("preview bridge disabled: invalid %s: %v", previewBridgeJWKSEnv, err)
-	} else if err := atomicInstall(dir, previewBridgeJWKSName, 0o644, bytes.NewReader(jwks)); err != nil {
-		return fmt.Errorf("install preview bridge JWKS: %w", err)
+		log.Printf("preview bridge disabled: invalid %s: %v", previewBridgeOriginsEnv, err)
+	} else if err := atomicInstall(dir, previewBridgeConfigName, 0o644, bytes.NewReader(config)); err != nil {
+		return fmt.Errorf("install preview bridge configuration: %w", err)
 	}
 
 	if dirHandle, err := os.Open(dir); err == nil {
@@ -584,77 +585,47 @@ func atomicInstall(dir, name string, mode os.FileMode, src io.Reader) (retErr er
 	return nil
 }
 
-type publicVerificationJWK struct {
-	Kty string `json:"kty"`
-	Crv string `json:"crv"`
-	Kid string `json:"kid"`
-	X   string `json:"x"`
-	Y   string `json:"y"`
-	Alg string `json:"alg"`
-	Use string `json:"use"`
-}
-
-func normalizePreviewBridgeJWKS(raw []byte) ([]byte, error) {
-	var document struct {
-		Keys []map[string]json.RawMessage `json:"keys"`
-	}
-	if err := json.Unmarshal(raw, &document); err != nil {
-		return nil, fmt.Errorf("decode JWKS: %w", err)
-	}
-	if len(document.Keys) < 1 || len(document.Keys) > 2 {
-		return nil, fmt.Errorf("want current key and optional previous key, got %d", len(document.Keys))
-	}
-
+// previewBridgeConfig turns the comma-separated portal origin allowlist into
+// the plugin's JSON configuration. Every entry must be an exact http(s)
+// origin: the bridge compares it byte-for-byte with the browser-stamped
+// MessageEvent.origin and uses it as the postMessage targetOrigin.
+func previewBridgeConfig(raw string) ([]byte, error) {
 	seen := map[string]bool{}
-	keys := make([]publicVerificationJWK, 0, len(document.Keys))
-	for i, fields := range document.Keys {
-		if _, private := fields["d"]; private {
-			return nil, fmt.Errorf("keys[%d] contains private key material", i)
+	origins := []string{}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
 		}
-		var key publicVerificationJWK
-		for name, dst := range map[string]*string{
-			"kty": &key.Kty,
-			"crv": &key.Crv,
-			"kid": &key.Kid,
-			"x":   &key.X,
-			"y":   &key.Y,
-			"alg": &key.Alg,
-			"use": &key.Use,
-		} {
-			value, ok := fields[name]
-			if !ok {
-				continue
-			}
-			if err := json.Unmarshal(value, dst); err != nil {
-				return nil, fmt.Errorf("keys[%d].%s must be a string", i, name)
-			}
+		origin, err := exactPreviewBridgeOrigin(entry)
+		if err != nil {
+			return nil, err
 		}
-		if key.Kty != "EC" || key.Crv != "P-256" || strings.TrimSpace(key.Kid) == "" {
-			return nil, fmt.Errorf("keys[%d] must be a named EC P-256 key", i)
+		if !seen[origin] {
+			seen[origin] = true
+			origins = append(origins, origin)
 		}
-		if key.Alg != "" && key.Alg != "ES256" {
-			return nil, fmt.Errorf("keys[%d].alg must be ES256", i)
-		}
-		if key.Use != "" && key.Use != "sig" {
-			return nil, fmt.Errorf("keys[%d].use must be sig", i)
-		}
-		if seen[key.Kid] {
-			return nil, fmt.Errorf("duplicate key id %q", key.Kid)
-		}
-		seen[key.Kid] = true
-		for name, coordinate := range map[string]string{"x": key.X, "y": key.Y} {
-			decoded, err := base64.RawURLEncoding.DecodeString(coordinate)
-			if err != nil || len(decoded) != 32 {
-				return nil, fmt.Errorf("keys[%d].%s must be a 32-byte base64url coordinate", i, name)
-			}
-		}
-		key.Alg = "ES256"
-		key.Use = "sig"
-		keys = append(keys, key)
+	}
+	if len(origins) == 0 || len(origins) > previewBridgeMaxOrigins {
+		return nil, fmt.Errorf("want 1-%d portal origins, got %d", previewBridgeMaxOrigins, len(origins))
 	}
 	return json.Marshal(struct {
-		Keys []publicVerificationJWK `json:"keys"`
-	}{Keys: keys})
+		PortalOrigins []string `json:"portalOrigins"`
+	}{PortalOrigins: origins})
+}
+
+func exactPreviewBridgeOrigin(raw string) (string, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
+		parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		(parsed.Path != "" && parsed.Path != "/") {
+		return "", fmt.Errorf("%q must be an http(s) origin without path, query or credentials", raw)
+	}
+	host := strings.ToLower(parsed.Host)
+	if (parsed.Scheme == "https" && strings.HasSuffix(host, ":443")) || (parsed.Scheme == "http" && strings.HasSuffix(host, ":80")) {
+		host = host[:strings.LastIndex(host, ":")]
+	}
+	return parsed.Scheme + "://" + host, nil
 }
 
 func configFromEnv() (*agentConfig, error) {

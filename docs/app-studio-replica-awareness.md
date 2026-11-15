@@ -368,7 +368,8 @@ RWO claim.
 - The 15 s controller restart loop, the "manager started" readiness contract,
   and the three 10 minute safety resyncs.
 - The empty-workspace dev-sync wipe (F3) — non-owners never touch workspaces.
-- Preview-bridge session breakage (F6) — bridge routes ride the pin.
+- Preview-bridge session breakage (F6) — gone: the bridge has no server-side
+  session, only a browser MessagePort trusted by exact origin.
 
 These mechanisms do **not** delete the shared-browser race: projects in one
 workspace can have different owners while still targeting the same Browser. It

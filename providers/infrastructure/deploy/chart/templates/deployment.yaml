@@ -242,12 +242,15 @@ spec:
             - name: RAILGRID_SANDBOX_RUNTIME_CLASS_NAME
               value: {{ $sandboxRuntimeClass | quote }}
             {{- end }}
-            {{- with .Values.development.previewBridge.verificationJWKS }}
-            # Current and optional previous public ES256 keys for the
-            # development preview bridge. Signing keys remain in App
-            # Studio and are never passed to the infrastructure provider.
-            - name: RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS
-              value: {{ . | quote }}
+            {{- if not .Values.development.previewBridge.enabled }}
+            - name: RAILGRID_PREVIEW_BRIDGE_ENABLED
+              value: "false"
+            {{- end }}
+            {{- with .Values.development.previewBridge.portalOrigins }}
+            # Exact portal origins the development preview bridge answers.
+            # Unset, the provider uses the browser-reachable hub origin.
+            - name: RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS
+              value: {{ join "," . | quote }}
             {{- end }}
             {{- range $toolchain, $image := .Values.development.images }}
             {{- if $image }}

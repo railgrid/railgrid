@@ -163,13 +163,17 @@ development:
   agentImage: ""
   # Repository the release-versioned default above is built from.
   agentImageRepository: ghcr.io/railgrid/railgrid-dev-agent
-  # Public ES256 JSON Web Key Set used by the injected preview bridge
-  # to verify short-lived capabilities issued by App Studio. Configure the
-  # current key and, during rotation, the previous key. Never put a private
-  # signing key here. Empty disables the optional bridge without preventing
-  # development applications from starting.
+  # The injected preview bridge (App Studio annotations) answers only a
+  # parent frame on an allowed portal origin, and dev servers send
+  # frame-ancestors for the same origins so no other site can embed a preview.
+  # With portalOrigins empty the allowlist is the browser-reachable hub origin
+  # (publishing.hubPublicURL, else publishing.hubURL / hub.url), which is where
+  # the portal is served. List origins explicitly only when the portal is
+  # reached through more than one. enabled=false turns the optional bridge off;
+  # development applications start either way.
   previewBridge:
-    verificationJWKS: ""
+    enabled: true
+    portalOrigins: []
   # Toolchain image per ${railgrid.devImage.<toolchain>} token — each key K maps
   # to RAILGRID_DEV_IMAGE_<K>. A template referencing an unconfigured toolchain
   # (other than node) fails setup with a pointer to the missing env var.

@@ -221,10 +221,6 @@ var devProviderSpecs = []devProviderSpec{
 			return map[string]any{
 				"store": map[string]any{"databaseURL": env.DatabaseURL},
 				"hub":   map[string]any{"publicURL": o.hubExternalURL()},
-				// The preview bridge needs a signing key pair generated at
-				// install time; without it App Studio runs in its documented
-				// degraded mode (no signed preview annotations).
-				"previewBridge": map[string]any{"enabled": false},
 			}
 		},
 	},
