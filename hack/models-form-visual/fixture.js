@@ -156,7 +156,7 @@ function agentsFetch(input, init = {}) {
   if (path === '/services/providers/agents/oauth/providers') return Promise.resolve(json({ providers: {} }))
   if (path === '/ui/providers/agents/model-catalog.json') return Promise.resolve(json([{ id: 'gpt-4o-mini', inputPer1M: 0.15, outputPer1M: 0.6, contextWindow: 128000, vision: true, toolCall: true }]))
   if (path === '/clusters/workspace-test/apis/agents.railgrid.ai/v1alpha1/modelproviderconnections') return Promise.resolve(json(resourceList('ModelProviderConnectionList', agentsProviderConnections)))
-  if (path === '/clusters/workspace-test/apis/agents.railgrid.ai/v1alpha1/modelcredentials') return Promise.resolve(json(resourceList('ModelCredentialList', agentsCredentials)))
+  if (path === '/clusters/workspace-test/apis/agents.railgrid.ai/v1alpha1/modelcredentials') return Promise.resolve(json(resourceList('ModelCredentialList', params.get('scenario') === 'first-model' ? [] : agentsCredentials)))
   if (/^\/clusters\/workspace-test\/apis\/[^/]+\/[^/]+\/[^/]+$/.test(path)) return Promise.resolve(json(emptyList()))
   if (/\/agents\/[^/]+\/events$/.test(path)) return Promise.resolve(streamResponse())
   if (/\/agents\/[^/]+\/usage$/.test(path)) return Promise.resolve(json({ result: usage }))

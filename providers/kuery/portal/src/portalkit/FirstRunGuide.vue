@@ -47,9 +47,9 @@ const boundedCurrentStep = computed(() => props.complete ? props.steps.length : 
 </script>
 
 <template>
-  <component :is="embedded ? 'div' : 'section'" :class="embedded ? 'k-first-run--embedded' : 'k-first-run'" :aria-labelledby="embedded ? undefined : titleID">
+  <component :is="embedded ? 'div' : 'section'" :class="[embedded ? 'k-first-run--embedded' : 'k-first-run', { 'k-first-run--simple': !embedded && !steps.length }]" :aria-labelledby="embedded ? undefined : titleID">
     <div v-if="!embedded" class="k-first-run__lead">
-      <span class="k-first-run__icon" aria-hidden="true"><slot name="icon" /></span>
+      <span v-if="$slots.icon || steps.length" class="k-first-run__icon" aria-hidden="true"><slot name="icon" /></span>
       <div class="k-first-run__copy">
         <h3 :id="titleID">{{ title }}</h3>
         <p>{{ description }}</p>

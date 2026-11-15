@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 62;
+  --railgrid-ui-core-version: 63;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -617,6 +617,12 @@ html.light .k-create-surface {
 .k-first-run__copy p { color: var(--color-text-secondary, #8a8ca6); font-size: 13px; line-height: 1.55; margin: 0; max-width: 62ch; }
 .k-first-run__actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; grid-column: 2; }
 .k-first-run__actions svg { height: 14px; width: 14px; }
+.k-first-run--simple { align-items: center; justify-content: center; min-height: 260px; padding: 40px 24px; text-align: center; }
+.k-first-run--simple .k-first-run__lead { justify-items: center; grid-template-columns: minmax(0, 1fr); gap: 16px; max-width: 32rem; width: 100%; }
+.k-first-run--simple .k-first-run__icon { align-items: center; border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); border-radius: 6px; color: var(--color-text-secondary, #8a8ca6); height: 44px; justify-content: center; margin: 0; width: 44px; }
+.k-first-run--simple .k-first-run__icon svg { height: 20px; width: 20px; }
+.k-first-run--simple .k-first-run__copy h3 { font-size: 16px; }
+.k-first-run--simple .k-first-run__actions { grid-column: 1; justify-content: center; }
 .k-first-run__journey {
   display: grid;
   gap: 0;
