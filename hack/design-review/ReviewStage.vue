@@ -22,6 +22,7 @@ const FieldGroupStage = defineAsyncComponent(() => import('./FieldGroupStage.vue
 const SearchStage = defineAsyncComponent(() => import('./SearchStage.vue'))
 const ConfirmReviewStage = defineAsyncComponent(() => import('./ConfirmReviewStage.vue'))
 const ResourcePageStage = defineAsyncComponent(() => import('./ResourcePageStage.vue'))
+const EmptyStatesStage = defineAsyncComponent(() => import('./EmptyStatesStage.vue'))
 const TooltipReviewStage = defineAsyncComponent(() => import('./TooltipReviewStage.vue'))
 const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
 </script>
@@ -44,6 +45,7 @@ const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
   <SearchStage v-else-if="stage === 'search-input'" />
   <ConfirmReviewStage v-else-if="stage === 'confirm-review'" />
   <ResourcePageStage v-else-if="stage === 'resource-page-loading'" :entry="entry" />
+  <EmptyStatesStage v-else-if="stage === 'first-run-guide'" />
   <TooltipReviewStage v-else-if="stage === 'tooltip'" />
   <Lens v-else :stage="stage" :entry="entry" :catalog="catalog" />
   <section v-if="entry.id === 'design.foundations.colors'" class="spec-stack" aria-labelledby="materials-heading">

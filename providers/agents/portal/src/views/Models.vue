@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import snapshotSuffixPattern from '../model-snapshot-suffix.json'
 
-import { Play, ArrowLeft, Plus, Trash2 } from 'lucide-vue-next'
+import { Play, ArrowLeft, Cpu, Plus, Trash2 } from 'lucide-vue-next'
 import { computed, nextTick, ref, useId, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
@@ -212,8 +212,10 @@ const modelRows = computed(() => credentials.value.data.filter(item => !item.isC
   tone: tested.value.get(credentialStateKey(credential.name))?.ok ? 'success' as const : tested.value.has(credentialStateKey(credential.name)) ? 'danger' as const : statusTone(credential),
   credential,
 })))
-const showFirstRun = computed(() => credentials.value.loaded && (!credentials.value.error || credentials.value.hasSnapshot) &&
-  (props.setupNavigation ? !modelRows.value.length && !providerConnections.value.length : !credentials.value.data.length))
+const showFirstRun = computed(() => credentials.value.hasSnapshot && !modelRows.value.length
+  && !providerConnections.value.length && (props.setupNavigation || !credentials.value.data.length))
+const showFirstModel = computed(() => credentials.value.hasSnapshot && !modelRows.value.length
+  && providerConnections.value.length > 0)
 const createActions: readonly ActionMenuItem[] = [
   { id: 'model', label: 'Add model', description: 'Use a saved provider connection' },
   { id: 'provider', label: 'Connect provider', description: 'Save API access for models' },
@@ -483,7 +485,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
         <div class="k-resource-page__heading"><h3 id="available-models-title" class="k-resource-page__title">Available models</h3><p class="k-resource-page__subtitle">Models you can assign to agents.</p></div>
         <div v-if="!setupNavigation" class="k-resource-page__header-side">
           <div class="k-resource-page__actions">
-            <button v-if="!showFirstRun" type="button" class="k-btn k-btn--primary" @click="beginModel"><Plus :stroke-width="1.75" aria-hidden="true" /> Add model</button>
+            <button v-if="!showFirstRun" type="button" class="k-btn" :class="showFirstModel ? 'k-btn--ghost' : 'k-btn--primary'" @click="beginModel"><Plus :stroke-width="1.75" aria-hidden="true" /> Add model</button>
           </div>
         </div>
       </header>
@@ -548,7 +550,8 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           </tr>
         </template>
       </ModelCollection>
-      <div v-if="modelView && credentials.hasSnapshot && !showFirstRun && !modelRows.length" class="k-card agents-models-empty"><h3>No models configured</h3><p>Add a model using an existing provider connection, or connect a new provider.</p></div>
+      <FirstRunGuide v-if="modelView && showFirstModel" title="Add a model" description="Use a saved provider connection to add a model your agents can use." primary-label="Add model" :steps="[]" @primary="beginModel"><template #icon><Cpu :stroke-width="1.75" /></template></FirstRunGuide>
+      <div v-else-if="modelView && credentials.hasSnapshot && !showFirstRun && !modelRows.length" class="k-card agents-models-empty"><h3>No models configured</h3><p>Connect a provider to add a model your agents can use.</p></div>
       <section v-if="connectionView" class="k-resource-page k-resource-page--collection" :class="{ 'agents-model-providers': setupNavigation }" aria-labelledby="provider-connections-title">
         <header class="k-resource-page__header">
           <div class="k-resource-page__heading">
