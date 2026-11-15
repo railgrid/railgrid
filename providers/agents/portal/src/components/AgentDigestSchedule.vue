@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 
 const props = defineProps<{ modelValue: string; defaultValue: string; disabled: boolean; error?: string }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
@@ -23,6 +23,14 @@ const schedule = computed(() => {
   return { time: `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`, days: selected }
 })
 const editingCron = ref(!schedule.value)
+const cronInput = ref<HTMLInputElement | null>(null)
+const timeInput = ref<HTMLInputElement | null>(null)
+
+async function switchEditor(cron: boolean): Promise<void> {
+  editingCron.value = cron
+  await nextTick()
+  ;(cron ? cronInput.value : timeInput.value)?.focus()
+}
 
 function setSchedule(time: string, days: Set<number>): void {
   if (!/^\d{2}:\d{2}$/.test(time)) return
@@ -61,35 +69,38 @@ function toggleDay(day: number): void {
   <div v-if="editingCron || !schedule" class="agents-schedule-editor">
     <label>
       When to post the digest
-      <input id="agent-create-param-digestTime" class="k-input k-cell-mono" :value="timeMissing ? '' : modelValue" :placeholder="defaultValue"
+      <input id="agent-create-param-digestTime" ref="cronInput" class="k-input k-cell-mono" :value="timeMissing ? '' : modelValue" :placeholder="defaultValue"
         :disabled="disabled" autocomplete="off" :aria-invalid="!!error || undefined"
         :aria-describedby="error ? 'agent-digest-cron-hint agent-digest-cron-error' : 'agent-digest-cron-hint'"
         @input="updateCron" />
-      <span id="agent-digest-cron-hint" class="agents-hint">Five-field cron expression. The template default uses UTC.</span>
+      <span id="agent-digest-cron-hint" class="agents-hint">Cron uses UTC unless a TZ= or CRON_TZ= prefix sets another zone. Daylight saving changes can skip or repeat a local time.</span>
       <span v-if="error" id="agent-digest-cron-error" class="agents-fielderr" role="alert">{{ error }}</span>
     </label>
-    <button v-if="schedule" type="button" class="k-btn k-btn--text" :disabled="disabled" @click="editingCron = false">Use time and weekdays</button>
+    <button v-if="schedule" type="button" class="k-btn k-btn--text" :disabled="disabled" @click="switchEditor(false)">Use time and weekdays</button>
   </div>
   <div v-else class="agents-schedule-editor">
     <div class="agents-schedule-controls">
       <label>
         Post at (UTC)
-        <input type="time" class="k-input" :value="timeMissing ? '' : schedule.time" :disabled="disabled" required
+        <input ref="timeInput" type="time" class="k-input" :value="timeMissing ? '' : schedule.time" :disabled="disabled" required
           :aria-invalid="!!error || undefined" :aria-describedby="error ? 'agent-digest-cron-error' : undefined"
           @input="updateTime" />
         <span v-if="error" id="agent-digest-cron-error" class="agents-fielderr" role="alert">{{ error }}</span>
       </label>
-      <fieldset class="agents-template-choice">
+      <fieldset class="agents-template-choice" aria-describedby="agent-digest-days-hint">
         <legend>Repeat on</legend>
         <div class="agents-schedule-days">
           <button v-for="(day, index) in dayNumbers" :key="day" class="k-btn k-btn--ghost" type="button"
             :aria-label="weekdays[index]" :aria-pressed="schedule.days.has(day)"
-            :disabled="disabled || timeMissing || (schedule.days.size === 1 && schedule.days.has(day))" @click="toggleDay(day)">
+            :aria-disabled="schedule.days.size === 1 && schedule.days.has(day) ? 'true' : undefined"
+            :aria-describedby="schedule.days.size === 1 && schedule.days.has(day) ? 'agent-digest-days-hint' : undefined"
+            :disabled="disabled || timeMissing" @click="toggleDay(day)">
             {{ weekdays[index].slice(0, 2) }}
           </button>
         </div>
+        <span id="agent-digest-days-hint" class="agents-hint" aria-live="polite">{{ timeMissing ? 'Enter a time to choose weekdays.' : schedule.days.size === 1 ? 'At least one day must stay selected.' : 'Choose at least one day.' }}</span>
       </fieldset>
     </div>
-    <button type="button" class="k-btn k-btn--text" :disabled="disabled" @click="editingCron = true">Edit cron</button>
+    <button type="button" class="k-btn k-btn--text" :disabled="disabled" @click="switchEditor(true)">Edit cron</button>
   </div>
 </template>
