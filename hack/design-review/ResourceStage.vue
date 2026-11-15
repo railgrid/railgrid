@@ -6,6 +6,7 @@ import ResourceBoard from '../../provider-sdk/portalkit-vue/ResourceBoard.vue'
 import ResourcePage from '../../provider-sdk/portalkit-vue/ResourcePage.vue'
 import ResourceSectionCard from '../../provider-sdk/portalkit-vue/ResourceSectionCard.vue'
 import ResourceStatCards from '../../provider-sdk/portalkit-vue/ResourceStatCards.vue'
+import ResourceTableFilter from '../../provider-sdk/portalkit-vue/ResourceTableFilter.vue'
 import ResourceTable from '../../provider-sdk/portalkit-vue/ResourceTable.vue'
 import ResourceTableDeleteButton from '../../provider-sdk/portalkit-vue/ResourceTableDeleteButton.vue'
 import ResourceTableEditButton from '../../provider-sdk/portalkit-vue/ResourceTableEditButton.vue'
@@ -48,6 +49,9 @@ const outcome = ref('')
 const tableMode = ref('client')
 const server = ref({ page: 1, cursor: null, query: '', filters: {}, sort: null })
 const filters = [{ key: 'status', label: 'Status', options: ['Ready', 'Pending', 'Failed', 'Unknown'].map(value => ({ value, label: value })) }]
+const edgeFacet = { key: 'edge', label: 'Edge', control: 'combobox' }
+const edgeOptions = rows.map(row => ({ value: row.name, label: row.name }))
+const exampleEdge = ref('')
 const serverRows = computed(() => {
   const { query, filters, sort } = server.value
   const matches = rows.filter(row => row.name.includes(query.toLowerCase()) && (!filters.status || row.status === filters.status))
@@ -96,6 +100,9 @@ const copyExamples = [
     <div class="spec-row">
       <label class="spec-field spec-fit">Read state<select class="k-input" v-model="state"><option v-for="[value, label] in states" :key="value" :value="value">{{ label }}</option></select></label>
       <label v-if="stage === 'table'" class="spec-field spec-fit">Table mode<select class="k-input" v-model="tableMode" @change="selection = []; server = { page: 1, cursor: null, query: '', filters: {}, sort: null }; pageSize = 5"><option value="client">Client paging</option><option value="server">Cursor paging</option><option value="simple">Bounded simple list</option><option value="workbench">Embedded workbench</option></select></label>
+    </div>
+    <div v-if="stage === 'table'" class="spec-row">
+      <ResourceTableFilter v-model="exampleEdge" :definition="edgeFacet" :options="edgeOptions" />
     </div>
     <ResourcePage v-if="stage === 'resource'" v-bind="readProps" variant="collection" title="Edge connections" subtitle="Manage the edges connected to this workspace." @retry="state = 'ready'">
       <template #actions><button type="button" class="k-btn k-btn--ghost" @click="state = 'foreground'">Refresh</button></template>

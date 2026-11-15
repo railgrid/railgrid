@@ -46,8 +46,9 @@ test('table filter triggers and options meet the 44px coarse and hybrid pointer 
   assert.match(filterTouchRules, /\.k-table__filter-search input/)
 })
 
-test('current-page text remains readable on the accent tint in both themes', () => {
-  assert.match(styles, /\.k-table__page-indicator \{\s*background: var\(--color-accent-subtle[\s\S]*?color: var\(--color-accent-hover/)
+test('the page indicator shares the range label treatment', () => {
+  assert.match(styles, /\.k-table__range,\s*\.k-table__page-indicator \{[^}]*color: var\(--k-table-readable-muted, var\(--color-text-secondary/)
+  assert.match(styles, /\.k-table__page-indicator \{ min-width: 42px; text-align: center; \}/)
 })
 
 test('the primary column fills the remaining width and truncates instead of widening the table', () => {

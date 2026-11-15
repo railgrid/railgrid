@@ -1,12 +1,13 @@
 <!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies under providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`. -->
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onBeforeUpdate, onMounted, onUpdated, reactive, ref, useId, watch } from 'vue'
 import { AlertCircle, ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Inbox, Info, MoveHorizontal, MoveLeft, Search, X } from 'lucide-vue-next'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
 import {
   cursorPageRange,
   deriveTableFilterOptions,
   filterTableRows,
+  isCompleteFirstCursorPage,
   paginateTableRows,
   tablePageCount,
   tableRange,
@@ -58,6 +59,20 @@ type ResourceTableColumn = {
 }
 
 const CLIENT_FILTER_DEBOUNCE_MS = 100
+const tableElement = ref<HTMLElement | null>(null)
+let focusedRowBeforeUpdate: Element | null = null
+onBeforeUpdate(() => {
+  const focused = document.activeElement
+  const row = focused?.matches('.k-table-action, .k-action-menu__trigger') ? focused.closest('tr') : null
+  focusedRowBeforeUpdate = row && tableElement.value?.contains(row) ? row : null
+})
+onUpdated(() => {
+  if (focusedRowBeforeUpdate && !focusedRowBeforeUpdate.isConnected && document.activeElement === document.body && tableElement.value?.isConnected) {
+    const focusTarget = tableScrollRegion.value ?? tableElement.value
+    focusTarget.focus({ preventScroll: true })
+  }
+  focusedRowBeforeUpdate = null
+})
 const MAX_SKELETON_COLUMNS = 6
 const PRIMARY_TOOLTIP_GAP = 6
 const PRIMARY_TOOLTIP_VIEWPORT_MARGIN = 8
@@ -307,6 +322,13 @@ const totalPages = computed(() => {
 const visibleRange = computed(() => isServerPagination.value
   ? cursorPageRange(currentPage.value, currentPageSize.value, visibleRows.value.length, serverTotal.value)
   : tableRange(filteredRows.value.length, currentPage.value, currentPageSize.value))
+// An empty server page does not establish that the entire query is empty.
+const emptyServerPage = computed(() => isServerPagination.value
+  && visibleRows.value.length === 0
+  && serverTotal.value !== 0
+  && !(serverTotal.value === null && isCompleteFirstCursorPage({
+    page: currentPage.value, cursor: props.cursor, pageInfo: props.pageInfo,
+  })))
 const hasQuery = computed(() => !!currentQuery.value.trim())
 const hasFacetFilters = computed(() => Object.values(currentFilters.value).some(Boolean))
 const activeFilters = computed(() => hasQuery.value || hasFacetFilters.value)
@@ -1085,7 +1107,11 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
 
 <template>
   <div
+    ref="tableElement"
     class="k-table k-table--resource"
+    role="group"
+    :aria-label="tableAriaLabel"
+    tabindex="-1"
     data-resource-table
     :class="[`k-table--${variant}`, { 'k-table--workbench': appearance === 'workbench', 'k-table--selecting': selectionSurfaceVisible && selectedCount > 0 }]"
     :aria-busy="ariaBusy"
@@ -1332,7 +1358,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
             </td></tr>
             <tr v-else-if="visibleRows.length === 0"><td :colspan="renderedColumnCount" class="k-table__empty-cell">
               <Inbox class="k-table__empty-icon" :stroke-width="1.25" aria-hidden="true" />
-              <p class="k-table__empty-label" role="status" aria-live="polite" aria-atomic="true">{{ activeFilters ? noMatchText : emptyText }}</p>
+              <p class="k-table__empty-label" role="status" aria-live="polite" aria-atomic="true">{{ emptyServerPage ? 'No results on this page.' : activeFilters ? noMatchText : emptyText }}</p>
             </td></tr>
           </tbody>
         </table>
@@ -1340,7 +1366,8 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
 
       <footer v-if="showPagination" class="k-table__pagination" aria-label="Table pagination">
         <div class="k-table__range" aria-live="polite">
-          <template v-if="isServerPagination && serverTotal !== null && visibleRows.length">Showing <strong>{{ visibleRange.start }}–{{ visibleRange.end }}</strong> of <strong>{{ serverTotal }}</strong></template>
+          <template v-if="emptyServerPage">No results on this page<template v-if="serverTotal !== null"> · <strong>{{ serverTotal }}</strong> total</template></template>
+          <template v-else-if="isServerPagination && serverTotal !== null && visibleRows.length">Showing <strong>{{ visibleRange.start }}–{{ visibleRange.end }}</strong> of <strong>{{ serverTotal }}</strong></template>
           <template v-else-if="isServerPagination && visibleRows.length">Showing <strong>{{ visibleRange.start }}–{{ visibleRange.end }}</strong></template>
           <template v-else-if="filteredRows.length">Showing <strong>{{ visibleRange.start }}–{{ visibleRange.end }}</strong> of <strong>{{ filteredRows.length }}</strong></template>
           <template v-else>Showing <strong>0</strong> results</template>
@@ -1351,12 +1378,12 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
           </select>
         </label>
         <div class="k-table__page-actions">
-          <button class="k-table__page-button" type="button" aria-label="Previous page" :disabled="!canPrevious" @click="previousPage"><ChevronLeft :stroke-width="1.75" aria-hidden="true" /></button>
+          <button class="k-table__page-button" type="button" aria-label="Previous page" :aria-disabled="!canPrevious" @click="previousPage"><ChevronLeft :stroke-width="1.75" aria-hidden="true" /></button>
           <span class="k-table__page-indicator" aria-live="polite">
             <template v-if="isServerPagination && serverTotal === null">Page {{ currentPage }}</template>
             <template v-else>{{ currentPage }} / {{ totalPages }}</template>
           </span>
-          <button class="k-table__page-button" type="button" aria-label="Next page" :disabled="!canNext" @click="nextPage"><ChevronRight :stroke-width="1.75" aria-hidden="true" /></button>
+          <button class="k-table__page-button" type="button" aria-label="Next page" :aria-disabled="!canNext" @click="nextPage"><ChevronRight :stroke-width="1.75" aria-hidden="true" /></button>
         </div>
       </footer>
     </template>
