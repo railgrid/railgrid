@@ -45,7 +45,7 @@ close an open menu and prevent opening or selecting again until work settles.
 Keyboard behavior is complete and deterministic: closed `ArrowDown`, Enter, or
 Space opens on the first selectable item; closed `ArrowUp` opens on the last.
 Open ArrowUp/ArrowDown wrap over selectable items; Home/End jump to the first or
-last; Enter, Space, and Spacebar select. Escape closes and restores trigger
+last. Typing a character moves focus to the next matching enabled label and wraps when needed. Enter, Space, and Spacebar select. Escape closes and restores trigger
 focus. When Tab is pressed, the teleported menu closes and synchronously returns
 focus to its own trigger before the browser performs native adjacent focus
 movement. Pointer-down and focus-in outside the root close without stealing
