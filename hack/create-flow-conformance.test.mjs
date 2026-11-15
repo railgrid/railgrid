@@ -66,7 +66,11 @@ test('PortalKit defines shared first-run and guided-create widgets', async () =>
   assert.match(css, /@container k-create-surface \(max-width: 960px\)[\s\S]*\.k-create-guidance[\s\S]*grid-row: 2/)
   assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.k-first-run__journey/)
 
-  assert.match(firstRun, /:class="embedded \? \'k-first-run--embedded\' : \'k-first-run\'" :aria-labelledby="embedded \? undefined : titleID"/)
+  const firstRunRoot = firstRun.match(/<component\b[^>]*>/)?.[0] ?? ''
+  assert.match(firstRunRoot, /:is="embedded \? 'div' : 'section'"/)
+  assert.match(firstRunRoot, /embedded \? 'k-first-run--embedded' : 'k-first-run'/)
+  assert.match(firstRunRoot, /'k-first-run--simple': !embedded && !steps\.length/)
+  assert.match(firstRunRoot, /:aria-labelledby="embedded \? undefined : titleID"/)
   assert.match(firstRun, /ensureRailgridUIStyles\(\)/)
   assert.match(firstRun, /<ol v-if="steps\.length" class="k-first-run__journey"/)
   assert.match(firstRun, /:aria-current="index === boundedCurrentStep \? 'step' : undefined"/)
