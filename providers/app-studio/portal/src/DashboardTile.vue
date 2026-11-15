@@ -9,7 +9,7 @@
 // version live — and they live in different environments, so the tile reads
 // them off the environment list rather than the project phase.
 
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ChevronRight } from 'lucide-vue-next'
 import { api } from './api'
 import type { RailgridContext, Project, ProjectEnvironment } from './types'
@@ -33,14 +33,19 @@ const projects = ref<Project[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
 const hasSnapshot = ref(false)
+const retryPending = ref(false)
+const retryError = ref<string | null>(null)
+const displayError = computed(() => retryPending.value ? retryError.value : error.value)
 let poller: TilePoller | null = null
 let contextGeneration = 0
+let readSerial = 0
+let retryTarget = 0
+let retryFocus: Element | null = null
 
 function contextKey(ctx: TileContext | null): string {
   if (!ctx) return ''
-  // Token rotation is not a resource identity change and must not blank an
-  // otherwise stable tile. The selected workspace is the identity boundary.
-  return [ctx.tenant, ctx.orgUUID, ctx.workspaceUUID].map((part) => part ?? '').join('\u0000')
+  // A caller change fences the snapshot; host-managed token renewal does not.
+  return [ctx.tenant, ctx.orgUUID, ctx.workspaceUUID, ctx.user?.userId, ctx.user?.sub, ctx.user?.email, ctx.fetch ? '' : ctx.token, ctx.basePath].map((part) => part ?? '').join('\u0000')
 }
 
 function environment(project: Project, name: string): ProjectEnvironment | undefined {
@@ -78,6 +83,7 @@ const rows = computed(() =>
 async function load() {
   const ctx = props.context
   const generation = contextGeneration
+  const serial = ++readSerial
   if (!hasWorkspaceContext(ctx)) {
     projects.value = []
     error.value = null
@@ -98,8 +104,9 @@ async function load() {
   } catch (e) {
     if (generation !== contextGeneration) return
     if (isBenignTileError(e)) {
-      error.value = null
-      if (!hasSnapshot.value) {
+      if (hasSnapshot.value) error.value = tileErrorText(e)
+      else {
+        error.value = null
         projects.value = []
         hasSnapshot.value = true
       }
@@ -107,41 +114,59 @@ async function load() {
       error.value = tileErrorText(e)
     }
   } finally {
-    if (generation === contextGeneration) loading.value = false
+    if (generation === contextGeneration) {
+      loading.value = false
+      if (retryPending.value && serial >= retryTarget) {
+        const focused = retryFocus
+        retryPending.value = false
+        retryFocus = null
+        await nextTick()
+        if (focused && !focused.isConnected && document.activeElement === document.body) rootRef.value?.focus()
+      }
+    }
   }
+}
+
+function retry() {
+  if (retryPending.value || !poller) return
+  retryError.value = error.value
+  retryFocus = document.activeElement
+  retryTarget = readSerial + 1
+  retryPending.value = true
+  poller.refresh()
 }
 
 onMounted(() => {
   poller = createTilePoller(load)
   poller.start()
 })
-onUnmounted(() => poller?.stop())
+onUnmounted(() => { contextGeneration += 1; poller?.stop() })
 watch(
   () => contextKey(props.context),
   (next, previous) => {
     if (next === previous) return
     contextGeneration += 1
+    retryPending.value = false
+    retryError.value = null
+    retryFocus = null
     projects.value = []
     error.value = null
     hasSnapshot.value = false
     loading.value = true
     poller?.refresh()
-  },
+  }, { flush: 'sync' },
 )
 </script>
 
 <template>
-  <div ref="rootRef" :class="tileClass.root">
-    <div v-if="loading && !hasSnapshot" :class="tileClass.message" role="status" aria-live="polite">Loading projects&hellip;</div>
-    <div v-else-if="error && !hasSnapshot" :class="tileClass.error" role="alert" aria-live="assertive">
-      Failed to load: {{ error }}
-      <button type="button" class="k-btn k-btn--ghost k-btn--sm" @click="poller?.refresh()">Retry</button>
+  <div ref="rootRef" :class="tileClass.root" tabindex="-1" :aria-busy="loading || retryPending">
+    <div v-if="displayError" :class="tileClass.error" :role="hasSnapshot ? 'status' : 'alert'" :aria-live="hasSnapshot ? 'polite' : 'assertive'">
+      {{ hasSnapshot ? 'Could not refresh. Showing the last loaded data.' : 'Could not load projects.' }} {{ displayError }}
+      <button type="button" class="k-btn k-btn--ghost k-btn--sm" :aria-disabled="retryPending || undefined" :aria-busy="retryPending || undefined" @click="retry">{{ retryPending ? 'Retrying…' : 'Retry' }}</button>
     </div>
+    <div v-if="loading && !hasSnapshot && !displayError" :class="tileClass.message" role="status" aria-live="polite">Loading projects&hellip;</div>
 
-    <template v-else>
-      <div v-if="error" :class="tileClass.error" role="status" aria-live="polite">
-        Could not refresh. Showing the last loaded data. {{ error }}
-      </div>
+    <template v-if="hasSnapshot">
       <div :class="tileClass.stats">
         <span :class="[tileClass.stat, tileClass.statTotal]">
           <span v-html="ic('package', tileClass.statIcon)" />

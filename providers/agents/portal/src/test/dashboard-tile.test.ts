@@ -85,7 +85,8 @@ describe('agents dashboard tile refresh resilience', () => {
 
     const error = tile.querySelector<HTMLElement>('[role="alert"]')
     expect(error).not.toBeNull()
-    expect(text(error)).toContain('Failed to load: provider unavailable')
+    expect(text(error)).toContain('Could not load agents.')
+    expect(text(error)).not.toContain('provider unavailable')
     expect(error?.querySelector<HTMLButtonElement>('button')?.textContent).toContain('Retry')
     allowRetry = true
     error?.querySelector<HTMLButtonElement>('button')?.click()
@@ -93,6 +94,50 @@ describe('agents dashboard tile refresh resilience', () => {
 
     expect(listAgents.mock.calls.length).toBeGreaterThan(1)
     expect(tile.querySelector('[role="alert"]')).toBeNull()
+    tile.remove()
+  })
+
+  it('does not turn a forbidden response with misleading wording into an empty summary', async () => {
+    const tile = await mountTile(stubApi({
+      listAgents: vi.fn().mockRejectedValue({ status: 403, message: 'no workspace selected; private diagnostic' }),
+      listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }),
+    }))
+    expect(text(tile)).toContain('Check your workspace access')
+    expect(text(tile)).not.toContain('No agents yet')
+    expect(text(tile)).not.toContain('private diagnostic')
+    tile.remove()
+  })
+
+  it('treats a typed missing workspace on the first read as an expected absence', async () => {
+    const tile = await mountTile(stubApi({
+      listAgents: vi.fn().mockRejectedValue({ status: 400, reason: 'TenantMissing', message: 'no workspace selected' }),
+      listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }),
+    }))
+    expect(tile.querySelector('[role="alert"]')).toBeNull()
+    expect(text(tile)).toContain('No agents yet')
+    tile.remove()
+  })
+
+  it('keeps the initial error and focus while retrying, then focuses the restored tile', async () => {
+    const retryResult = deferred<ReturnType<typeof agentFixture>[]>()
+    let allowRetry = false
+    const listAgents = vi.fn().mockImplementation(() => allowRetry ? retryResult.promise : Promise.reject(new Error('provider unavailable')))
+    const tile = await mountTile(stubApi({ listAgents, listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }) }))
+    const retry = tile.querySelector<HTMLButtonElement>('[role="alert"] button')!
+    allowRetry = true
+    retry.focus()
+    retry.click()
+    await settle(tile)
+    expect(document.activeElement).toBe(retry)
+    expect(retry.getAttribute('aria-busy')).toBe('true')
+    expect(text(tile)).toContain('Could not load agents.')
+    const calls = listAgents.mock.calls.length
+    retry.click()
+    expect(listAgents).toHaveBeenCalledTimes(calls)
+    retryResult.resolve([agentFixture('scout')])
+    await settle(tile)
+    expect(text(tile)).toContain('1 agent')
+    expect(document.activeElement).toBe(tile.querySelector('.agents-tile'))
     tile.remove()
   })
 
@@ -117,6 +162,15 @@ describe('agents dashboard tile refresh resilience', () => {
     await settle(empty)
     expect(text(empty)).toContain('No agents yet')
     expect(text(empty.querySelector('.agents-tile-err'))).toContain('Showing the last loaded data')
+  })
+
+  it('labels the retained snapshot stale when a binding disappears', async () => {
+    const tile = await mountTile(stubApi({ listAgents: vi.fn().mockResolvedValue([agentFixture('scout')]), listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }) }))
+    Object.assign(tile.api!, stubApi({ listAgents: vi.fn().mockRejectedValue({ reason: 'APIBindingMissing', message: 'Binding unavailable' }), listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }) }))
+    await tile.load(); await settle(tile)
+    expect(text(tile)).toContain('1 agent')
+    expect(text(tile)).toContain('Showing the last loaded data')
+    tile.remove()
   })
 
   it('fences a same-workspace response when the host rotates authority', async () => {
@@ -208,7 +262,7 @@ describe('agents dashboard tile refresh resilience', () => {
 
     refresh.reject(new Error('forbidden'))
     await settle(tile)
-    expect(text(tile.querySelector('[role="alert"]'))).toContain('Failed to load: forbidden')
+    expect(text(tile.querySelector('[role="alert"]'))).toContain('Could not load agents.')
     expect(text(tile)).not.toContain('1 agent')
     tile.remove()
   })
@@ -244,7 +298,7 @@ describe('agents dashboard tile refresh resilience', () => {
     denied.reject(new Error('forbidden'))
     await settle(tile, 6)
 
-    expect(text(tile)).toContain('Failed to load: forbidden')
+    expect(text(tile)).toContain('Could not load agents.')
     expect(text(tile)).not.toContain('alice-agent')
     tile.remove()
   })
