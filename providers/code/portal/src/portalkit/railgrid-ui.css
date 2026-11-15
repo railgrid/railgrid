@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 58;
+  --railgrid-ui-core-version: 59;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -2003,6 +2003,7 @@ html.light [data-k-tip]::after {
   height: 32px;
 }
 .k-table__search-input {
+  background: transparent;
   padding: 0 30px;
   width: 100%;
 }
