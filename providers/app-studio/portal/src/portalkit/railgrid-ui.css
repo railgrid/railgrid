@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 49;
+  --railgrid-ui-core-version: 54;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -163,6 +163,13 @@ html.light .k-card {
 .k-badge--warning { background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); color: var(--color-warning, #f0a63a); }
 .k-badge--danger  { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));  color: var(--color-danger, #ff5d5d); }
 .k-badge--muted   { background: var(--color-surface-overlay, #171927); color: var(--color-text-muted, #8587a1); }
+.k-status-badge {
+  border-color: transparent;
+  padding: 2px 6px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
 .k-badge__dot {
   width: 5px;
   height: 5px;
@@ -318,23 +325,29 @@ html.light .k-card {
   pointer-events: none;
   opacity: 0.4;
 }
+.k-btn[aria-disabled="true"] { cursor: default; }
+.k-btn[aria-busy="true"] { cursor: progress; }
+.k-btn:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
 .k-btn--primary {
   background: var(--color-accent, #8b6bff);
   color: var(--color-on-accent, #0a0b12);
   box-shadow: 0 0 16px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
 }
-.k-btn--primary:hover {
+.k-btn--primary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-accent-hover, #a18aff);
   box-shadow: 0 0 22px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
 }
 .k-btn--ghost {
-  background: var(--color-surface-overlay, #171927);
+  background: transparent;
   border-color: var(--color-border-default, rgba(255, 255, 255, 0.11));
   color: var(--color-text-primary, #e9e9f2);
 }
-.k-btn--ghost:hover {
-  background: var(--color-surface-hover, #1e2033);
-  border-color: color-mix(in srgb, var(--color-accent, #8b6bff) 30%, transparent);
+.k-btn--ghost:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: color-mix(in srgb, var(--color-text-primary, #e9e9f2) 6%, transparent);
+  border-color: var(--color-border-default, rgba(255, 255, 255, 0.11));
 }
 .k-btn--text {
   background: transparent;
@@ -692,7 +705,7 @@ html.light .k-create-surface {
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   color: var(--color-danger, #ff5d5d);
 }
-.k-btn--danger:hover {
+.k-btn--danger:hover:not(:disabled):not([aria-disabled="true"]) {
   background: color-mix(in srgb, var(--color-danger, #ff5d5d) 18%, transparent);
 }
 
@@ -708,7 +721,7 @@ html.light .k-create-surface {
   font-weight: 500;
   box-shadow: none;
 }
-.k-btn--danger-solid:hover:not(:disabled) {
+.k-btn--danger-solid:hover:not(:disabled):not([aria-disabled="true"]) {
   background: color-mix(in srgb, var(--color-danger, #ff5d5d) 90%, transparent);
 }
 .k-btn--danger-solid:focus-visible {
@@ -745,6 +758,49 @@ html.light .k-create-surface {
   box-shadow:
     0 0 0 3px var(--color-accent-subtle, rgba(139, 107, 255, 0.14)),
     0 0 14px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
+}
+
+/* Text fields stay quiet until focused. Select triggers retain their own recipe. */
+:is(input, textarea).k-input {
+  background: transparent;
+}
+:is(input, textarea).k-input:focus {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+:is(input, textarea).k-input[aria-invalid="true"] {
+  border-color: var(--color-danger, #ff5d5d);
+}
+:is(input, textarea).k-input[aria-invalid="true"]:focus {
+  border-color: var(--color-danger, #ff5d5d);
+  box-shadow: none;
+}
+:is(input, textarea).k-input:disabled {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: not-allowed;
+}
+
+/* Native selects keep their platform popup but match the shared select's
+ * closed surface and focus treatment. */
+select.k-input { background: var(--color-surface-raised, #111320); }
+select.k-input:focus {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+select.k-input[aria-invalid="true"] { border-color: var(--color-danger, #ff5d5d); }
+select.k-input:disabled {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: not-allowed;
+}
+
+/* Resizing grows multiline fields without widening the form on narrow screens. */
+textarea.k-input {
+  max-inline-size: 100%;
+  resize: vertical;
 }
 
 /* Native checkbox reset for dense controls. Keep the browser's native glyph
@@ -978,6 +1034,14 @@ railgrid-form-select {
   justify-content: space-between;
   min-width: 0;
   text-align: start;
+  background: var(--color-surface-raised, #111320);
+}
+.k-form-select__trigger:focus {
+  box-shadow: none;
+}
+.k-form-select__trigger:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
 }
 /* Invalid controls retain a distinct focus ring and do not glow red. */
 .k-form-select.is-invalid .k-form-select__trigger {
@@ -989,18 +1053,10 @@ railgrid-form-select {
   box-shadow: none;
 }
 .k-form-select__error {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  margin: 5px 0 0;
+  margin: 6px 0 0;
   color: var(--color-danger, #ff5d5d);
   font-size: 12px;
   font-weight: 400;
-}
-.k-form-select__error svg {
-  flex: none;
-  width: 15px;
-  height: 15px;
 }
 
 .k-form-select__trigger:disabled {
@@ -1031,6 +1087,10 @@ railgrid-form-select {
   overscroll-behavior: contain;
   position: fixed;
   z-index: var(--k-layer-menu, 1000);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--color-surface, #0a0b12) 24%, transparent);
+}
+html.light .k-form-select__panel.k-form-select__portal {
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--color-text-primary, #e9e9f2) 12%, transparent);
 }
 .k-form-select__portal .k-form-select__option {
   justify-content: space-between;
@@ -1040,12 +1100,16 @@ railgrid-form-select {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-primary, #e9e9f2);
 }
+.k-form-select__portal .k-form-select__option.is-selected {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-primary, #e9e9f2);
+}
 .k-form-select__portal .k-form-select__option-label {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 .k-form-select__portal .k-form-select__check {
-  color: var(--color-accent, #8b6bff);
+  color: var(--color-text-primary, #e9e9f2);
   flex: none;
 }
 .k-form-select__portal .k-form-select__empty {
@@ -1353,13 +1417,13 @@ html.light [data-k-tip]::after {
 .k-tabs {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   min-width: 0;
   max-width: 100%;
   flex-wrap: nowrap;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
-  padding-bottom: 10px;
+  padding-bottom: 0;
   border-bottom: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
   scrollbar-width: thin;
 }
@@ -1368,7 +1432,7 @@ html.light [data-k-tip]::after {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 7px 13px;
+  padding: 10px 12px;
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -1379,12 +1443,17 @@ html.light [data-k-tip]::after {
   font-weight: 500;
   line-height: 1.5;
   white-space: nowrap;
+  text-decoration: none;
   box-shadow: none;
+  position: relative;
 }
 .k-tab:hover:not(:disabled) {
   background: var(--color-surface-hover, #1e2033);
   color: var(--color-text-primary, #e9e9f2);
   box-shadow: none;
+}
+.k-tabs:not(.k-tabs--secondary):not(.k-tabs--compact) .k-tab:hover:not(:disabled) {
+  background: transparent;
 }
 .k-tab:focus-visible {
   outline: 2px solid var(--color-accent, #8b6bff);
@@ -1393,16 +1462,24 @@ html.light [data-k-tip]::after {
 .k-tab--active,
 .k-tab[aria-current="page"] {
   border: 0;
-  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  background: transparent;
   color: var(--color-accent-hover, #a18aff);
   font-weight: 600;
   box-shadow: none;
 }
 .k-tab--active:hover:not(:disabled),
 .k-tab[aria-current="page"]:hover:not(:disabled) {
-  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  background: transparent;
   color: var(--color-accent-hover, #a18aff);
   box-shadow: none;
+}
+.k-tabs:not(.k-tabs--secondary):not(.k-tabs--compact) .k-tab[aria-current="page"]::after,
+.k-tabs:not(.k-tabs--secondary):not(.k-tabs--compact) .k-tab--active::after {
+  content: '';
+  position: absolute;
+  inset: auto 10px 0;
+  height: 2px;
+  background: currentColor;
 }
 .k-tab:disabled {
   cursor: default;
@@ -1440,22 +1517,36 @@ html.light [data-k-tip]::after {
 }
 .k-tab--active .k-tab__count,
 .k-tab[aria-current="page"] .k-tab__count {
-  background: var(--color-accent, #8b6bff);
-  color: var(--color-on-accent, #0a0b12);
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-primary, #e9e9f2);
 }
 .k-tab__count--attention {
   background: var(--color-warning, #f0a63a);
   color: var(--color-on-accent, #0a0b12);
 }
-.k-tabs--compact {
+.k-tabs--compact,
+.k-tabs--secondary {
   gap: 4px;
   padding-bottom: 0;
   border-bottom: 0;
 }
-.k-tabs--compact .k-tab {
+.k-tabs--compact .k-tab,
+.k-tabs--secondary .k-tab {
   min-height: 30px;
   padding: 6px 12px;
-  font-size: inherit;
+  font-size: 12.5px;
+}
+.k-tabs--compact .k-tab--active,
+.k-tabs--compact .k-tab[aria-current="page"],
+.k-tabs--secondary .k-tab--active,
+.k-tabs--secondary .k-tab[aria-current="page"] {
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent-hover, #a18aff);
+}
+.k-tabs--compact .k-tab--active:hover:not(:disabled),
+.k-tabs--secondary .k-tab--active:hover:not(:disabled) {
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent-hover, #a18aff);
 }
 
 /* ── Modal / confirmation dialog ──────────────────────────────────────────
@@ -3020,21 +3111,18 @@ railgrid-resource-table-filter { display: contents; }
   min-height: 78px;
   align-items: center;
   gap: 10px;
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border: 1px solid color-mix(in srgb, var(--color-border-subtle) 80%, transparent);
   border-radius: 6px;
   background: var(--color-surface-raised, #111320);
   padding: 12px;
 }
 .k-resource-stat-card__icon {
   display: grid;
-  width: 30px;
-  height: 30px;
+  width: 20px;
+  height: 20px;
   flex: none;
   place-items: center;
-  border: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 30%, transparent);
-  border-radius: 4px;
-  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
-  color: var(--color-accent, #8b6bff);
+  color: var(--color-text-secondary, #8a8ca6);
 }
 .k-resource-stat-card__content {
   display: flex;
@@ -3044,10 +3132,8 @@ railgrid-resource-table-filter { display: contents; }
 }
 .k-resource-stat-card__label {
   color: var(--color-text-muted, #8587a1);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: .1em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -3055,24 +3141,24 @@ railgrid-resource-table-filter { display: contents; }
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--color-text-primary, #e9e9f2);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   line-height: 1.3;
 }
 .k-resource-stat-card__value.mono {
   font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
-  font-size: 12px;
+  font-size: 14px;
 }
 .k-resource-stat-card__detail {
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--color-text-muted, #8587a1);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.35;
 }
-.k-resource-stat-card--success .k-resource-stat-card__icon { border-color: color-mix(in srgb, var(--color-success, #2fd6a0) 35%, transparent); background: var(--color-success-subtle, rgba(47, 214, 160, 0.12)); color: var(--color-success, #2fd6a0); }
-.k-resource-stat-card--warning .k-resource-stat-card__icon { border-color: color-mix(in srgb, var(--color-warning, #f0a63a) 35%, transparent); background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); color: var(--color-warning, #f0a63a); }
-.k-resource-stat-card--danger .k-resource-stat-card__icon { border-color: color-mix(in srgb, var(--color-danger, #ff5d5d) 35%, transparent); background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); color: var(--color-danger, #ff5d5d); }
+.k-resource-stat-card--success .k-resource-stat-card__icon { color: var(--color-success, #2fd6a0); }
+.k-resource-stat-card--warning .k-resource-stat-card__icon { color: var(--color-warning, #f0a63a); }
+.k-resource-stat-card--danger .k-resource-stat-card__icon { color: var(--color-danger, #ff5d5d); }
 /* Compact density is opt-in for detail views with several summary facts. The
  * default recipe above remains the shared Edge geometry. */
 .k-resource-stat-cards--compact .k-resource-stat-card {
@@ -3081,24 +3167,31 @@ railgrid-resource-table-filter { display: contents; }
   padding: 10px;
 }
 .k-resource-stat-cards--compact .k-resource-stat-card__icon {
-  width: 26px;
-  height: 26px;
+  width: 18px;
+  height: 18px;
 }
 .k-resource-stat-cards--compact .k-resource-stat-card__content { gap: 2px; }
-.k-resource-stat-cards--compact .k-resource-stat-card__value { font-size: 12px; }
-.k-resource-stat-cards--compact .k-resource-stat-card__value.mono { font-size: 11px; }
-.k-resource-stat-cards--compact .k-resource-stat-card__detail { font-size: 9px; }
+.k-resource-stat-cards--compact .k-resource-stat-card__value { font-size: 14px; }
+.k-resource-stat-cards--compact .k-resource-stat-card__value.mono { font-size: 13px; }
+.k-resource-stat-cards--compact .k-resource-stat-card__detail { font-size: 11px; }
 .k-resource-section-card {
   display: flex;
   width: 100%;
   box-sizing: border-box;
   min-width: 0;
   flex-direction: column;
-  gap: 18px;
-  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  gap: 20px;
+  border: 1px solid var(--color-border-subtle, var(--color-border-default));
   border-radius: 6px;
   background: var(--color-surface-raised, #111320);
-  padding: 20px;
+  padding: 24px;
+}
+.k-resource-section-card.k-resource-section-card--divided {
+  border: 0;
+  border-top: 1px solid var(--color-border-subtle, var(--color-border-default));
+  border-radius: 0;
+  background: transparent;
+  padding: 24px 0 0;
 }
 .k-resource-section-card__header {
   display: flex;
@@ -3135,7 +3228,7 @@ railgrid-resource-table-filter { display: contents; }
   word-break: break-word;
 }
 .k-resource-section-card__description {
-  margin: 4px 0 0;
+  margin: 6px 0 0;
   max-width: 100%;
   color: var(--color-text-muted, #8587a1);
   font-size: 11px;
@@ -3479,6 +3572,7 @@ railgrid-resource-table-filter { display: contents; }
     min-height: 44px;
     min-width: 44px;
   }
+  :is(input, textarea).k-input { min-height: 44px; }
   .k-checkbox-hit {
     min-height: 44px;
     min-width: 44px;

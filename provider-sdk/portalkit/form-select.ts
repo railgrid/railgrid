@@ -5,7 +5,9 @@
 // same combobox/listbox contract and composes the canonical k-input/k-menu CSS
 // recipes, while remaining usable by the vanilla/Lit provider portals.
 
+import { nextDocumentID } from './document-id'
 import { ic } from './icons'
+import { mountModalPopup } from './modal-popup'
 import { ensureRailgridUIStyles } from './styles'
 
 export interface FormSelectOption {
@@ -14,10 +16,8 @@ export interface FormSelectOption {
   disabled?: boolean
 }
 
-let nextFormSelectID = 0
-
 export class FormSelectElement extends HTMLElement {
-  private readonly instanceID = `form-select-${++nextFormSelectID}`
+  private readonly instanceID = `form-select-${nextDocumentID()}`
   private root: HTMLDivElement | null = null
   private trigger: HTMLButtonElement | null = null
   private valueNode: HTMLSpanElement | null = null
@@ -36,6 +36,7 @@ export class FormSelectElement extends HTMLElement {
   private currentDescribedby = ''
   private currentLabelledby = ''
   private currentName = ''
+  private nativeLabelID = ''
 
   get value(): string { return this.currentValue }
   set value(value: string) {
@@ -47,8 +48,13 @@ export class FormSelectElement extends HTMLElement {
 
   get options(): readonly FormSelectOption[] { return this.currentOptions }
   set options(options: readonly FormSelectOption[]) {
-    this.currentOptions = Array.isArray(options) ? options : []
-    if (this.isOpen) this.setInitialActive()
+    const activeValue = this.isOpen ? this.currentOptions[this.activeIndex]?.value : undefined
+    this.currentOptions = Array.isArray(options) ? options.map(option => ({ ...option })) : []
+    if (this.isOpen) {
+      const retained = activeValue === undefined ? -1 : this.currentOptions.findIndex(option => option.value === activeValue && !option.disabled)
+      if (retained < 0) this.setInitialActive()
+      else this.activeIndex = retained
+    }
     this.syncControl()
     this.renderPanel()
   }
@@ -111,7 +117,7 @@ export class FormSelectElement extends HTMLElement {
   private get errorID(): string { return `${this.instanceID}-error` }
   private optionID(index: number): string { return `${this.listboxID}-option-${index}` }
   private get accessibleLabelledby(): string {
-    return [this.currentLabelledby, this.valueID].filter(Boolean).join(' ')
+    return this.currentLabelledby ? `${this.currentLabelledby} ${this.valueID}` : ''
   }
 
   private renderControl(): void {
@@ -157,26 +163,19 @@ export class FormSelectElement extends HTMLElement {
     this.trigger.disabled = this.currentDisabled
     this.trigger.setAttribute('aria-controls', this.listboxID)
     this.trigger.setAttribute('aria-expanded', this.isOpen ? 'true' : 'false')
-    this.trigger.setAttribute('aria-labelledby', this.accessibleLabelledby)
+    this.setOptionalAttribute(this.trigger, 'aria-labelledby', this.accessibleLabelledby)
     this.setOptionalAttribute(this.trigger, 'aria-activedescendant', this.isOpen && this.activeIndex >= 0 ? this.optionID(this.activeIndex) : '')
     const showError = this.currentInvalid && !!this.currentErrorMessage
     if (showError && !this.errorNode) {
       this.errorNode = document.createElement('p')
       this.errorNode.id = this.errorID
       this.errorNode.className = 'k-form-select__error'
-      this.errorNode.setAttribute('role', 'alert')
-      const icon = document.createElement('span')
-      icon.innerHTML = ic('alert-circle')
-      const svg = icon.firstElementChild
-      if (svg) this.errorNode.append(svg)
       this.errorNode.append(document.createElement('span'))
       this.root.append(this.errorNode)
     }
     if (showError && this.errorNode) {
       const message = this.errorNode.lastElementChild
-      if (message && message.textContent !== this.currentErrorMessage) {
-        message.textContent = this.currentErrorMessage
-      }
+      if (message) message.textContent = this.currentErrorMessage
     } else if (this.errorNode) {
       this.errorNode.remove()
       this.errorNode = null
@@ -203,6 +202,7 @@ export class FormSelectElement extends HTMLElement {
     this.hiddenInput.name = this.currentName
     this.hiddenInput.value = this.currentValue
     this.hiddenInput.required = this.currentRequired
+    this.hiddenInput.disabled = this.currentDisabled
   }
 
   private setOptionalAttribute(element: HTMLElement, name: string, value: string): void {
@@ -233,6 +233,9 @@ export class FormSelectElement extends HTMLElement {
 
   private openSelect(): void {
     if (this.isOpen || this.currentDisabled) return
+    const label = !this.currentLabelledby ? this.trigger?.labels?.[0] : undefined
+    if (label && !label.id) label.id = `${this.instanceID}-native-label`
+    this.nativeLabelID = label?.id || ''
     this.setInitialActive()
     this.isOpen = true
     this.renderPanel()
@@ -280,13 +283,26 @@ export class FormSelectElement extends HTMLElement {
   }
 
   private onKeydown = (event: KeyboardEvent): void => {
+    if (event.isComposing || event.keyCode === 229) return
     if (event.key === 'Tab') {
       if (this.isOpen) this.closeSelect()
       return
     }
+    if (event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+      if (event.key === 'ArrowDown' && !this.isOpen) {
+        event.preventDefault()
+        this.openSelect()
+      } else if (event.key === 'ArrowUp' && this.isOpen) {
+        event.preventDefault()
+        this.closeSelect(true)
+      }
+      return
+    }
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return
     if (event.key === 'Escape') {
       if (!this.isOpen) return
       event.preventDefault()
+      event.stopPropagation()
       this.closeSelect(true)
       return
     }
@@ -318,7 +334,7 @@ export class FormSelectElement extends HTMLElement {
     panel.id = this.listboxID
     panel.className = 'k-menu k-form-select__panel k-form-select__portal'
     panel.setAttribute('role', 'listbox')
-    panel.setAttribute('aria-labelledby', this.accessibleLabelledby)
+    panel.setAttribute('aria-labelledby', this.accessibleLabelledby || this.nativeLabelID || this.valueID)
     panel.addEventListener('keydown', this.onKeydown)
 
     if (!this.currentOptions.length) {
@@ -360,7 +376,7 @@ export class FormSelectElement extends HTMLElement {
       })
     }
 
-    document.body.append(panel)
+    mountModalPopup(this.trigger, panel)
     this.panel = panel
     this.syncPanel()
     this.updatePanelPosition()

@@ -46,6 +46,8 @@ const { outputText } = ts.transpileModule(source, {
 })
 const exports = {}
 const dependencies = new Map([
+  ['./document-id', { nextDocumentID: () => 'test-id' }],
+  ['./modal-popup', { mountModalPopup() {} }],
   ['./icons', { ic: () => '' }],
   ['./styles', { ensureRailgridUIStyles() {} }],
 ])
@@ -57,7 +59,7 @@ runInNewContext(outputText, {
   window: new EventTarget(),
 }, { filename: 'form-select.ts' })
 
-test('FormSelect exposes and clears its validation alert and description', () => {
+test('FormSelect exposes and clears its validation message and description', () => {
   const select = new exports.FormSelectElement()
   select.connectedCallback()
   const root = select.firstElementChild
@@ -72,7 +74,7 @@ test('FormSelect exposes and clears its validation alert and description', () =>
   const error = findError()
   assert.ok(error)
   assert.ok(error.id)
-  assert.equal(error.getAttribute('role'), 'alert')
+  assert.equal(error.getAttribute('role'), null)
   assert.equal(error.lastElementChild.textContent, 'Select a region.')
   assert.equal(trigger.getAttribute('aria-invalid'), 'true')
   assert.equal(trigger.getAttribute('aria-describedby'), error.id)

@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.status-badge","title":"StatusBadge","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"StatusBadge is the shared square mono status tag; state-to-tone mapping remains caller-owned but vocabulary is fixed."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/status-badge.md#statusbadge","role":"design"},{"path":"provider-sdk/portalkit-vue/StatusBadge.vue","role":"implementation"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.foundations.colors","relation":"prerequisite","path":"docs/design/foundations/colors.md"},{"id":"design.content.ui-copy","relation":"see-also","path":"docs/design/content/ui-copy.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.quality.review-checklist","relation":"see-also","path":"docs/design/quality/review-checklist.md"}]}
+{"schema":1,"id":"design.components.status-badge","title":"StatusBadge","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"StatusBadge is the shared square mono status tag; state-to-tone mapping remains caller-owned but vocabulary is fixed."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/status-badge.md#statusbadge","role":"design"},{"path":"provider-sdk/portalkit-vue/StatusBadge.vue","role":"implementation"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"StatusBadge review fixture contrast","status":"passing","evidence":"Computed foreground and composited background contrast in the local review specimen was at least 4.92:1 in light and 4.96:1 in dark. The dark calculation used the review canvas surface. This does not establish contrast on every product surface or screen-reader behavior."},{"kind":"review","ref":"Product-wide status and assistive-technology audit","status":"pending"}]},"relatedDocuments":[{"id":"design.foundations.colors","relation":"prerequisite","path":"docs/design/foundations/colors.md"},{"id":"design.content.ui-copy","relation":"see-also","path":"docs/design/content/ui-copy.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.quality.review-checklist","relation":"see-also","path":"docs/design/quality/review-checklist.md"}]}
 ---
 
 # StatusBadge
@@ -12,32 +12,54 @@ fixed.
 
 ## Use when
 
-Use `StatusBadge` for operational and lifecycle status. Keep status vocabulary
-consistent: ready, active, and connected use success; pending, provisioning,
-and running use warning; failed, terminating, and disconnected use danger;
-unknown uses muted.
+Use `StatusBadge` for operational and lifecycle status. The component infers
+success for ready, active, and connected; warning for pending, provisioning,
+and running; danger for failed, terminating, and disconnected; and muted for
+unknown values. A caller may supply an explicit tone for domain-specific
+states. `connected=false` overrides the tone to danger, but does not change
+the visible status text; the caller must also communicate disconnection in
+the label or nearby text.
 
 ## Avoid when
 
 Finite non-status enum values use a muted square `.k-badge`, not
-`StatusBadge`. Verbose provider feedback belongs in the status title and
-accessible name rather than a second visible status line. Badges do not glow.
+`StatusBadge`. Put detailed provider feedback in nearby text or an associated
+details view when it is needed to understand or resolve a state. Badges do not
+glow.
 
 ## Anatomy and variants
 
-The badge is a square 3px-radius mono tag with a status dot. A live state may
-layer `.live-dot` on the 5–6px circle. The semantic tone variants are success,
-warning, danger, and muted as defined by the state vocabulary above.
+1. **Label:** the caller's concise status text, shown in its original case.
+2. **Dot:** a decorative 5px circle; it pulses only for in-progress states.
+3. **Surface:** a subtle semantic background with 3px corners and no visible
+   border. Mono text uses less weight than a general-purpose `.k-badge`.
+
+The inferred tone variants are:
+
+| Tone | Recognized status values |
+| --- | --- |
+| Success | Ready, Succeeded, Committed, Active, Connected, Loaded |
+| Warning | Scheduling, Queued, Building, Pending, Provisioning, Running, Retrying, Status unavailable, Loading, Starting, Loaded unverified |
+| Danger | Terminating, Failed, Error, Repository missing, Connection missing, Disconnected, Unreachable, Needs attention |
+| Muted | Other values, including Unknown |
+
+Matching is case-insensitive. A caller may explicitly choose a tone, and
+`connected=false` overrides it to danger without changing the label.
 
 ## Behavior
 
-Only live dots pulse; badges do not glow. The caller chooses the lifecycle state
-and the shared vocabulary supplies its semantic tone.
+Scheduling, queued, building, pending, provisioning, running, retrying,
+loading, and starting pulse their dot unless disconnected or danger-toned.
+Status unavailable and loaded unverified are warning-toned but do not pulse.
+Ready, failed, disconnected, and other settled states remain still.
+Reduced-motion preferences disable the pulse. Badges do not glow. The caller
+chooses the lifecycle state and may supply a semantic tone.
 
 ## Content
 
-Use the status value as the visible tag and put verbose provider feedback in the
-status title and accessible name. Keep finite non-status enum values as muted
+Use a concise status value as the visible tag. If connectivity and lifecycle
+phase differ, make both understandable in text rather than signaling
+disconnection only with color. Keep finite non-status enum values as muted
 square `.k-badge` tags.
 
 ## Layout and responsive behavior
@@ -47,15 +69,21 @@ badge into a pill or add decorative glow.
 
 ## Accessibility
 
-Expose the operational or lifecycle status through the status title and
-accessible name when additional provider feedback is needed; do not rely on a
-second visible status line. The [accessible interaction policy](../accessibility/interaction.md)
-supplies the cross-component naming and contrast contract.
+The visible text conveys the status; the decorative dot is hidden from
+assistive technology. This component does not provide a dedicated details or
+accessible-name prop. Put relevant explanation in visible context or an
+associated disclosure, and do not rely on color alone. The [accessible
+interaction policy](../accessibility/interaction.md) supplies the
+cross-component naming and contrast contract.
 
 ## Code and evidence
 
 The canonical implementations are `provider-sdk/portalkit-vue/StatusBadge.vue`
-and `provider-sdk/portalkit/railgrid-ui.css`. Verify with `make verify-portalkit`.
+and `provider-sdk/portalkit/railgrid-ui.css`. The Edges detail page uses the
+badge for connection status and retains a disconnected edge's reported phase
+in its visible label. The [Edge detail fixture](http://127.0.0.1:5199/detail.html)
+mounts that product component with simulated connection data. Verify shared
+copies with `make verify-portalkit`.
 
 ## Related guidance
 
