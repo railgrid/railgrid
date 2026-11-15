@@ -23,7 +23,7 @@ export default {
   base: './',
   publicDir: false,
   cacheDir: resolve(repo, 'portal/.vite-cache/design-review'),
-  plugins: [vue({ template: { compilerOptions: { isCustomElement: tag => tag === 'railgrid-form-select' } } }), tailwind(), {
+  plugins: [vue({ template: { compilerOptions: { isCustomElement: tag => ['railgrid-form-select', 'railgrid-provider-agents'].includes(tag) } } }), tailwind(), {
     name: 'railgrid-design-review-catalog',
     resolveId(id) { if (id === 'virtual:design-review') return virtual },
     load(id) {
