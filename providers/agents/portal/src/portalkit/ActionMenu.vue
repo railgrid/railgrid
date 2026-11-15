@@ -8,7 +8,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { ChevronDown, Ellipsis, Loader2, Plus } from 'lucide-vue-next'
 import { ensureRailgridUIStyles } from '../portalkit/styles'
-import { useAnchoredPopover } from './useAnchoredPopover'
+import { useAnchoredPopover, usePopupHosting } from './useAnchoredPopover'
 
 export type ActionMenuTone = 'neutral' | 'accent' | 'warning' | 'danger'
 
@@ -67,7 +67,9 @@ const {
   panelRef,
   panelStyle,
   close: closePopover,
+  updatePosition,
 } = useAnchoredPopover({ width: props.primaryMenu ? 288 : 180, gap: 5, align: 'end' })
+const { host: popupHost, modalPopover, reset: resetPopupHost, promote: promotePopup } = usePopupHosting(trigger)
 const activeIndex = ref(-1)
 
 const selectableIndexes = computed(() => props.items.reduce<number[]>((indexes, item, index) => {
@@ -98,22 +100,25 @@ function focusItem(index: number): void {
   void nextTick(() => menuItems()[index]?.focus())
 }
 
-function setInitialActive(): void {
-  activeIndex.value = firstSelectableIndex()
-}
-
 function openMenu(index = firstSelectableIndex()): void {
   if (unavailable.value || open.value || !props.items.length) return
+  resetPopupHost()
   open.value = true
   activeIndex.value = index
-  if (index >= 0) void nextTick(() => menuItems()[index]?.focus())
+  void nextTick(async () => {
+    if (!open.value) return
+    if (!promotePopup(panelRef.value)) await nextTick()
+    if (!open.value) return
+    updatePosition()
+    if (index >= 0) menuItems()[index]?.focus()
+  })
 }
 
 function closeMenu(restoreFocus = false): void {
   if (!open.value) return
   closePopover()
   activeIndex.value = -1
-  if (restoreFocus) void nextTick(() => trigger.value?.focus())
+  if (restoreFocus) trigger.value?.focus()
 }
 
 function closeMenuAfterTab(): void {
@@ -139,7 +144,11 @@ function onPrimary(): void {
 function select(id: string): void {
   const item = props.items.find(candidate => candidate.id === id)
   if (!item || unavailable.value || item.disabled || item.busy) return
-  closeMenu(true)
+  closeMenu()
+  // Restore focus before notifying the caller. A caller may synchronously
+  // open a dialog, which must capture the still-connected trigger as its
+  // return target rather than the menu item that is about to be removed.
+  trigger.value?.focus()
   emit('select', id)
 }
 
@@ -175,11 +184,13 @@ function matchAction(key: string): boolean {
   return false
 }
 
-
 function handleTriggerKeydown(event: KeyboardEvent): void {
+  if (event.isComposing || event.keyCode === 229) return
+  if (event.altKey || event.ctrlKey || event.metaKey || (event.shiftKey && event.key !== 'Tab')) return
   if (event.key === 'Escape') {
     if (!open.value) return
     event.preventDefault()
+    event.stopPropagation()
     closeMenu(true)
     return
   }
@@ -199,10 +210,11 @@ function handleTriggerKeydown(event: KeyboardEvent): void {
 }
 
 function handleMenuKeydown(event: KeyboardEvent): void {
-  if (event.isComposing || event.keyCode === 229 || event.altKey || event.ctrlKey || event.metaKey) return
-  if (event.shiftKey && event.key !== 'Tab' && (event.key.length !== 1 || event.key === ' ')) return
+  if (event.isComposing || event.keyCode === 229) return
+  if (event.altKey || event.ctrlKey || event.metaKey || (event.shiftKey && event.key !== 'Tab' && (event.key.length !== 1 || event.key === ' '))) return
   if (event.key === 'Escape') {
     event.preventDefault()
+    event.stopPropagation()
     closeMenu(true)
     return
   }
@@ -257,18 +269,29 @@ function focusTrigger(): void {
 
 defineExpose({ focus: focusTrigger })
 
-watch(() => props.items, () => {
+watch(() => props.items.map(item => ({ id: item.id, selectable: !item.disabled && !item.busy })), (items, previous) => {
   if (!open.value) return
-  if (!isSelectable(activeIndex.value)) {
-    setInitialActive()
-    if (activeIndex.value >= 0) void nextTick(() => menuItems()[activeIndex.value]?.focus())
-  } else if (activeIndex.value >= props.items.length) {
-    setInitialActive()
-  }
-}, { deep: true })
+  const previousID = previous[activeIndex.value]?.id
+  const retained = items.findIndex(item => item.id === previousID && item.selectable)
+  const focused = typeof document === 'undefined' ? null : document.activeElement
+  const wasInMenu = !!focused && !!panelRef.value?.contains(focused)
+  activeIndex.value = retained >= 0 ? retained : firstSelectableIndex()
+  if (wasInMenu) void nextTick(() => {
+    if (!open.value || (document.activeElement !== focused && document.activeElement !== document.body)) return
+    if (retained >= 0 && document.activeElement === focused) return
+    if (activeIndex.value >= 0) menuItems()[activeIndex.value]?.focus()
+    else trigger.value?.focus()
+  })
+})
 
 watch(unavailable, blocked => {
-  if (blocked) closeMenu()
+  if (!blocked) return
+  const focused = typeof document === 'undefined' ? null : document.activeElement
+  const wasInMenu = !!focused && !!panelRef.value?.contains(focused)
+  closeMenu()
+  if (wasInMenu && props.busy) void nextTick(() => {
+    if (document.activeElement === focused || document.activeElement === document.body) trigger.value?.focus()
+  })
 })
 
 onMounted(() => {
@@ -288,7 +311,9 @@ onBeforeUnmount(() => {
       v-if="primaryLabel"
       type="button"
       class="k-btn k-btn--primary k-action-menu__primary"
-      :disabled="unavailable"
+      :disabled="disabled"
+      :aria-disabled="busy ? 'true' : undefined"
+      :aria-busy="busy || undefined"
       @click="onPrimary"
     >
       <Plus :size="16" aria-hidden="true" />{{ primaryLabel }}
@@ -306,10 +331,11 @@ onBeforeUnmount(() => {
       :data-k-tip="primaryLabel || primaryMenu ? undefined : accessibleLabel"
       :aria-label="accessibleLabel"
       :aria-busy="busy || undefined"
+      :aria-disabled="busy ? 'true' : undefined"
       :aria-controls="menuID"
       aria-haspopup="menu"
       :aria-expanded="open"
-      :disabled="unavailable"
+      :disabled="disabled && !busy"
       @click="toggleMenu"
       @keydown="handleTriggerKeydown"
     >
@@ -323,14 +349,17 @@ onBeforeUnmount(() => {
     </button>
     <span class="k-table__live" role="status" aria-live="polite" aria-atomic="true">{{ busy ? accessibleLabel : '' }}</span>
 
-    <Teleport to="body">
+    <!-- Native modal dialogs make the rest of the document inert. Keep the
+         menu in the dialog's top layer when its trigger is inside one. -->
+    <Teleport :to="popupHost">
       <div
         v-if="open"
         :id="menuID"
         ref="panelRef"
         class="k-menu k-action-menu__menu"
         :class="{ 'k-action-menu__menu--primary': primaryMenu }"
-        :style="panelStyle"
+        :style="[modalPopover ? { inset: 'auto', margin: '0' } : {}, panelStyle]"
+        :popover="modalPopover ? 'manual' : undefined"
         role="menu"
         :aria-label="label"
         :aria-labelledby="triggerID"
