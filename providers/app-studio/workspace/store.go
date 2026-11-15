@@ -620,7 +620,7 @@ func (s *FileStore) openRegularFile(ctx context.Context, scope Scope, rawPath st
 		return "", nil, nil, fmt.Errorf("read %q: symlink paths are not allowed", clean)
 	}
 	if info.IsDir() {
-		return "", nil, nil, fmt.Errorf("%q is a directory", clean)
+		return "", nil, nil, fmt.Errorf("%q is a directory: %w", clean, fs.ErrNotExist)
 	}
 	if !info.Mode().IsRegular() {
 		return "", nil, nil, fmt.Errorf("path %q is not a regular file", clean)
@@ -861,7 +861,7 @@ func rejectSymlinkComponents(root, clean string, includeTarget bool) error {
 			return fmt.Errorf("path %q contains a symlink", strings.Join(parts[:i+1], "/"))
 		}
 		if !info.IsDir() && i < len(parts)-1 {
-			return fmt.Errorf("path %q is not a directory", strings.Join(parts[:i+1], "/"))
+			return fmt.Errorf("path %q is not a directory: %w", strings.Join(parts[:i+1], "/"), fs.ErrNotExist)
 		}
 	}
 	return nil

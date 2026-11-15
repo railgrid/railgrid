@@ -215,6 +215,7 @@ func (s *FileStore) RestoreSnapshot(ctx context.Context, scope Scope, snapshotID
 		}
 	}
 	var mutation *sourceMutation
+	var deleted []string
 	if changed {
 		// Reserve the revision before restoring any file. If an individual
 		// restore fails, rollback (even when incomplete) cannot leave bytes
@@ -223,6 +224,9 @@ func (s *FileStore) RestoreSnapshot(ctx context.Context, scope Scope, snapshotID
 		for _, plan := range plans {
 			if !plan.restored {
 				changedPaths = append(changedPaths, plan.path)
+				if !plan.entry.Existed {
+					deleted = append(deleted, plan.path)
+				}
 			}
 		}
 		mutation, err = s.beginSourceMutation(ctx, scope, changedPaths)
@@ -251,7 +255,7 @@ func (s *FileStore) RestoreSnapshot(ctx context.Context, scope Scope, snapshotID
 		result.Files = append(result.Files, mutationResult("restore_file", plan.path, plan.entry.After, string(plan.entry.Content), 0))
 	}
 	if mutation != nil {
-		if err := s.completeSourceMutation(ctx, scope, mutation); err != nil {
+		if err := s.completeSourceMutation(ctx, scope, mutation, deleted...); err != nil {
 			rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancelRollback()
 			rollbackErrs := []error{err}
