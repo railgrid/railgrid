@@ -677,7 +677,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
 
               <label v-if="!selectedTemplate">
                 <span id="agent-create-system-prompt-label">Instructions (optional)</span>
-                <textarea :value="instructions" class="k-input" rows="3" placeholder="Describe how this agent should help." :disabled="busy" aria-labelledby="agent-create-system-prompt-label" @input="editInstructions" />
+                <textarea :value="instructions" class="k-input" rows="6" placeholder="Describe how this agent should help." :disabled="busy" aria-labelledby="agent-create-system-prompt-label" @input="editInstructions" />
               </label>
               <div v-for="param in definitionParameters" :key="param.key" class="agents-template-parameter">
                 <fieldset v-if="isResearcher && param.key === 'domain'" class="agents-template-choice">

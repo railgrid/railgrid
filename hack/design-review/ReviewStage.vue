@@ -9,6 +9,7 @@ const Resource = defineAsyncComponent(() => import('./ResourceStage.vue'))
 const AI = defineAsyncComponent(() => import('./AIStage.vue'))
 const SpacingStage = defineAsyncComponent(() => import('./SpacingStage.vue'))
 const ButtonStage = defineAsyncComponent(() => import('./ButtonStage.vue'))
+const TextFieldStage = defineAsyncComponent(() => import('./TextFieldStage.vue'))
 const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
 </script>
 <template>
@@ -17,6 +18,7 @@ const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
   <AI v-else-if="ai.has(stage)" :stage="stage" />
   <SpacingStage v-else-if="stage === 'spacing'" />
   <ButtonStage v-else-if="stage === 'button'" />
+  <TextFieldStage v-else-if="stage === 'text-input' || stage === 'textarea'" :multiline="stage === 'textarea'" />
   <Lens v-else :stage="stage" :entry="entry" :catalog="catalog" />
   <section v-if="entry.id === 'design.foundations.colors'" class="spec-stack" aria-labelledby="materials-heading">
     <h2 id="materials-heading">Materials and surfaces</h2>
