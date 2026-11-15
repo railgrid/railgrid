@@ -24,6 +24,7 @@ const ConfirmReviewStage = defineAsyncComponent(() => import('./ConfirmReviewSta
 const ResourcePageStage = defineAsyncComponent(() => import('./ResourcePageStage.vue'))
 const EmptyStatesStage = defineAsyncComponent(() => import('./EmptyStatesStage.vue'))
 const TooltipReviewStage = defineAsyncComponent(() => import('./TooltipReviewStage.vue'))
+const ProgressReviewStage = defineAsyncComponent(() => import('./ProgressReviewStage.vue'))
 const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
 </script>
 <template>
@@ -47,6 +48,7 @@ const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
   <ResourcePageStage v-else-if="stage === 'resource-page-loading'" :entry="entry" />
   <EmptyStatesStage v-else-if="stage === 'first-run-guide'" />
   <TooltipReviewStage v-else-if="stage === 'tooltip'" />
+  <ProgressReviewStage v-else-if="stage === 'progress'" />
   <Lens v-else :stage="stage" :entry="entry" :catalog="catalog" />
   <section v-if="entry.id === 'design.foundations.colors'" class="spec-stack" aria-labelledby="materials-heading">
     <h2 id="materials-heading">Materials and surfaces</h2>
