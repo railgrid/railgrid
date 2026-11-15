@@ -158,7 +158,7 @@ type Reconciler struct {
 	// (resumable? attempted too often? cancelled meanwhile?) stays with the
 	// provider, which owns the checkpoint; the reconciler only decides when to
 	// ask, and it knows because the run's own claim went stale.
-	Recover func(ctx context.Context, clusterID, agentName, runID string) error
+	Recover func(ctx context.Context, clusterID, agentName, runID string) (time.Duration, error)
 
 	// Stop closes a run the reconciler has decided must not continue: one past
 	// its deadline, or one that has been claimed MaxClaims times without
@@ -255,11 +255,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	if stranded, requeue := r.stranded(&object); stranded {
-		if err := r.Recover(ctx, clusterID, object.Spec.AgentRef, object.Name); err != nil {
+		delay, err := r.Recover(ctx, clusterID, object.Spec.AgentRef, object.Name)
+		if err != nil {
 			klog.FromContext(ctx).Error(err, "recovering a stranded run", "run", object.Name, "cluster", clusterID)
 			return ctrl.Result{RequeueAfter: purgeRetryInterval}, nil
 		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: delay}, nil
 	} else if requeue > 0 {
 		return ctrl.Result{RequeueAfter: requeue}, nil
 	}

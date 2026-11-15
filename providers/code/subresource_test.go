@@ -36,12 +36,12 @@ func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 		t.Fatalf("subresourceRoutes: %v", err)
 	}
 
-	// Fifteen catalogued actions plus the three transfer verbs: every
+	// Eighteen catalogued actions plus the three transfer verbs: every
 	// coordinate this provider serves, and every one is an actions-handler
 	// coordinate at the one contract version — code registers no data-plane
 	// handler at all.
-	if len(routes) != 18 {
-		t.Errorf("routes has %d coordinates, want 18: %v", len(routes), keys(routes))
+	if len(routes) != 21 {
+		t.Errorf("routes has %d coordinates, want 21: %v", len(routes), keys(routes))
 	}
 	for coordinate, route := range routes {
 		if !route.Action || route.Version != "v1" {
@@ -56,6 +56,9 @@ func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 		"repositories/stage-snapshot",
 		"repositories/stage-commit-bundle",
 		"repositories/checkout",
+		"pullrequests/submit-review",
+		"pullrequests/upsert-comment",
+		"pullrequests/ready",
 	} {
 		if _, ok := routes[coordinate]; !ok {
 			t.Errorf("routes is missing %q; got %v", coordinate, keys(routes))
@@ -141,6 +144,9 @@ func TestShardForwardedPathReachesTheActionsHandler(t *testing.T) {
 			name: "uncatalogued upload verb", path: apis + "/repositories/app/stage-commit-bundle", resource: "repositories", objectName: "app", verb: "stage-commit-bundle",
 		},
 		{name: "connection-bound action", path: apis + "/connections/github/mint-registry-token", resource: "connections", objectName: "github", verb: "mint-registry-token"},
+		{name: "pull-request review action", path: apis + "/pullrequests/pr-1/submit-review", resource: "pullrequests", objectName: "pr-1", verb: "submit-review"},
+		{name: "pull-request managed comment action", path: apis + "/pullrequests/pr-1/upsert-comment", resource: "pullrequests", objectName: "pr-1", verb: "upsert-comment"},
+		{name: "pull-request ready action", path: apis + "/pullrequests/pr-1/ready", resource: "pullrequests", objectName: "pr-1", verb: "ready"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			seen, callers = nil, nil
@@ -183,6 +189,14 @@ func TestShardForwardedPathReachesTheActionsHandler(t *testing.T) {
 	handler.ServeHTTP(rec, undeclaredReq)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("POST %s → %d, want 404", undeclared, rec.Code)
+	}
+	prUndeclared := apis + "/pullrequests/pr-1/delete-everything"
+	prUndeclaredReq := httptest.NewRequest(http.MethodPost, prUndeclared, nil)
+	prUndeclaredReq.Header.Set(dataplane.HeaderRemoteUser, "alice")
+	prRec := httptest.NewRecorder()
+	handler.ServeHTTP(prRec, prUndeclaredReq)
+	if prRec.Code != http.StatusNotFound {
+		t.Errorf("POST %s → %d, want 404", prUndeclared, prRec.Code)
 	}
 
 	// Without a stamped identity there is nobody to authorize, and anonymous

@@ -111,6 +111,12 @@ type RepositorySpec struct {
 	// succeed right after creation.
 	// +optional
 	AutoInit bool `json:"autoInit,omitempty"`
+
+	// CommandsWebhookSecretRef enables the GitHub issue-comment webhook.
+	// Reference a dedicated Code-owned Secret in this workspace. The key
+	// defaults to "secret" and the namespace to the credentials namespace.
+	// +optional
+	CommandsWebhookSecretRef *LocalSecretReference `json:"commandsWebhookSecretRef,omitempty"`
 }
 
 // RepositoryStatus is the observed state.
@@ -138,6 +144,15 @@ type RepositoryStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=2048
 	SSHURL string `json:"sshURL,omitempty"`
+
+	// CommandsWebhookPath is the hub-relative URL that receives this
+	// repository's GitHub "Issue comments" webhook, so people can leave
+	// "/railgrid" commands on its pull requests. GitHub signs deliveries
+	// using the configured Secret. Prefix the path with the console's origin
+	// when adding the webhook.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	CommandsWebhookPath string `json:"commandsWebhookPath,omitempty"`
 
 	// Conditions follows the standard Kubernetes conditions pattern.
 	// +optional

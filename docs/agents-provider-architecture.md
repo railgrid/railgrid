@@ -229,7 +229,10 @@ and tools are edited inside the agent, next to a live chat playground.
   `agents.railgrid.ai/agent` label. What is not on the object is the `trace`
   verb: `GET …/runs/{id}/trace` returns the step-level trace (each tool call's
   args, result, outcome, duration — secrets redacted), the answer,
-  pending-approval state and delegated children. `POST …/runs/{id}/cancel`
+  pending-approval state and delegated children. For harness-backed runs it
+  also returns a live, bounded runner cleanup observation; an older or
+  unreachable runner reports unknown without making the trace unavailable.
+  `POST …/runs/{id}/cancel`
   aborts a live run and `GET …/runs/{id}/wait` long-polls one to a settled
   phase, for a caller with no watch to hold.
 - **Server-push events** — the `events` verb (SSE) streams one agent's run phase

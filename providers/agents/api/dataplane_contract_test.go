@@ -9,13 +9,18 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -25,6 +30,9 @@ import (
 	"github.com/railgrid/provider-sdk/serve"
 
 	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/store"
+
+	"github.com/railgrid/railgrid/pkg/runner"
 )
 
 const (
@@ -37,6 +45,71 @@ const (
 // kcp shard forwards it.
 func verbBase(cluster, resource, name string) string {
 	return "/clusters/" + cluster + "/apis/" + agentsclient.AgentGVR.Group + "/" + agentsclient.AgentGVR.Version + "/" + resource + "/" + name
+}
+
+func TestRunTraceRemainsAvailableWhenCleanupObservationIsUnavailable(t *testing.T) {
+	callers := &conformance.FakeCallers{
+		Cluster: conformanceCluster,
+		User:    conformanceUser,
+		Objects: []*unstructured.Unstructured{runObject("r1", conformanceAgent)},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Verb == "get" && a.Resource == "runs" && a.Name == "r1"
+		},
+	}
+	server := newGatedTestServer(t, callers)
+	scope := store.Scope{OrgUUID: store.UnmappedOrg, WorkspaceUUID: conformanceCluster, ClusterID: conformanceCluster, AgentName: conformanceAgent}
+	if err := server.store.SaveRun(t.Context(), scope, store.Run{
+		ID: "r1", AgentName: conformanceAgent, AgentUID: "agent-incarnation",
+		// Repository is a durable marker that this run required a Runner even
+		// if an older/projection record omitted Backend.
+		Repository: &store.RunRepository{RepositoryID: "repo", BaseCommit: "base"},
+		Phase:      store.RunPhaseSucceeded, AttemptID: "r1", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	gatedHandler(t, server).ServeHTTP(recorder, stamped(http.MethodGet, verbBase(conformanceCluster, "runs", "r1")+"/trace", nil, conformanceUser))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("trace → %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Cleanup *runner.CleanupObservation `json:"cleanup"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Cleanup == nil || response.Cleanup.State != runner.CleanupUnknown || response.Cleanup.Reason != "cleanup_binding_unavailable" {
+		t.Fatalf("trace cleanup observation = %+v", response.Cleanup)
+	}
+}
+
+func TestInboxResolveVerbRejectsApprovalAfterRunEnded(t *testing.T) {
+	callers := &conformance.FakeCallers{
+		Cluster: conformanceCluster, User: conformanceUser,
+		Objects: []*unstructured.Unstructured{agentObject(conformanceAgent)},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Verb == "get" && a.Resource == "agents" && a.Name == conformanceAgent
+		},
+	}
+	s := newGatedTestServer(t, callers)
+	scope := store.Scope{OrgUUID: store.UnmappedOrg, WorkspaceUUID: conformanceCluster, ClusterID: conformanceCluster, AgentName: conformanceAgent}
+	now := time.Now().UTC()
+	if err := s.store.SaveRun(t.Context(), scope, store.Run{ID: "ended", AgentName: conformanceAgent, Phase: store.RunPhaseSucceeded, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.store.AddInboxItem(t.Context(), scope, store.InboxItem{ID: "approval", AgentName: conformanceAgent, RunID: "ended", Kind: store.InboxKindApproval, State: store.InboxStatePending, Payload: map[string]any{"tool": "shell", "args": "{}"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	path := verbBase(conformanceCluster, "agents", conformanceAgent) + "/inbox-resolve/approval"
+	gatedHandler(t, s).ServeHTTP(recorder, stamped(http.MethodPost, path, strings.NewReader(`{"decision":"approve"}`), conformanceUser))
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "RunEnded") {
+		t.Fatalf("approve verb → %d %s, want 409 RunEnded", recorder.Code, recorder.Body.String())
+	}
+	item, err := s.store.GetInboxItem(t.Context(), scope, "approval")
+	if err != nil || item.State != store.InboxStatePending {
+		t.Fatalf("HTTP approval mutated item: %+v, %v", item, err)
+	}
 }
 
 // gatedHandler is the provider's REAL data-plane surface: the DataPlane
@@ -141,6 +214,262 @@ func TestAgentArtifactCaptureRequiresAttendedMCP(t *testing.T) {
 	handler.ServeHTTP(recorder, stamped(http.MethodPost, path, strings.NewReader(`{"runID":"run"}`), conformanceUser))
 	if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, DELETE" {
 		t.Fatalf("POST artifacts → %d Allow=%q, want 405 Allow=GET, DELETE: %s", recorder.Code, recorder.Header().Get("Allow"), recorder.Body.String())
+	}
+}
+
+func TestInboxAnswerHTTPPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, agent, kind, decision string
+		reason                      string
+		runPhase                    store.RunPhase
+		want                        int
+	}{
+		{name: "approval rejected", agent: conformanceAgent, kind: string(store.InboxKindApproval), decision: "answer", reason: "InvalidInboxItem", want: http.StatusBadRequest},
+		{name: "approval decision rejected", agent: conformanceAgent, kind: string(store.InboxKindApproval), decision: "approve", reason: "decision must be answer", want: http.StatusBadRequest},
+		{name: "another agent hidden", agent: "other", kind: string(store.InboxKindQuestion), decision: "answer", want: http.StatusNotFound},
+		{name: "question before park stays pending", agent: conformanceAgent, kind: string(store.InboxKindQuestion), decision: "answer", reason: "RunNotParked", runPhase: store.RunPhaseRunning, want: http.StatusConflict},
+		{name: "question answered", agent: conformanceAgent, kind: string(store.InboxKindQuestion), decision: "answer", runPhase: store.RunPhasePendingApproval, want: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			callers := &conformance.FakeCallers{
+				Cluster: conformanceCluster, User: conformanceUser,
+				Objects: []*unstructured.Unstructured{agentObject(conformanceAgent)},
+				Allow: func(a conformance.Attributes) bool {
+					return a.Verb == "get" && a.Resource == "agents" && a.Name == conformanceAgent
+				},
+			}
+			server := newGatedTestServer(t, callers)
+			scope := store.Scope{OrgUUID: store.UnmappedOrg, WorkspaceUUID: conformanceCluster}
+			now := time.Now().UTC()
+			item := store.InboxItem{ID: "item", AgentName: tc.agent, Kind: store.InboxItemKind(tc.kind), State: store.InboxStatePending,
+				Prompt: "Question?", Payload: map[string]any{"questions": []any{}}, CreatedAt: now, UpdatedAt: now}
+			if tc.runPhase != "" {
+				item.RunID = "run"
+				checkpoint := []byte(nil)
+				if tc.runPhase == store.RunPhasePendingApproval {
+					checkpoint = []byte(`{"inboxID":"item"}`)
+				}
+				if err := server.store.SaveRun(t.Context(), store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: tc.agent}, store.Run{
+					ID: "run", AgentName: tc.agent, Phase: tc.runPhase,
+					Checkpoint: checkpoint, CreatedAt: now, UpdatedAt: now,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := server.store.AddInboxItem(t.Context(), scope, item); err != nil {
+				t.Fatal(err)
+			}
+			path := verbBase(conformanceCluster, "agents", conformanceAgent) + "/inbox-answer/item"
+			recorder := httptest.NewRecorder()
+			gatedHandler(t, server).ServeHTTP(recorder, stamped(http.MethodPost, path, strings.NewReader(`{"decision":"`+tc.decision+`","response":"Here"}`), conformanceUser))
+			if recorder.Code != tc.want {
+				t.Fatalf("inbox-answer → %d, want %d: %s", recorder.Code, tc.want, recorder.Body.String())
+			}
+			if tc.reason != "" && !strings.Contains(recorder.Body.String(), tc.reason) {
+				t.Fatalf("inbox-answer response %q does not contain rejection reason %q", recorder.Body.String(), tc.reason)
+			}
+			saved, err := server.store.GetInboxItem(t.Context(), scope, item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == http.StatusOK {
+				if saved.State != store.InboxStateAnswered {
+					t.Fatalf("question state = %s, want answered", saved.State)
+				}
+				deadline := time.Now().Add(time.Second)
+				for {
+					parked, getErr := server.store.GetRun(t.Context(), store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: tc.agent}, "run")
+					if getErr != nil {
+						t.Fatal(getErr)
+					}
+					if parked.Phase != store.RunPhasePendingApproval {
+						break // the resume path ran; this fixture has no model credential.
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("answered question did not resume its parked run")
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+			} else if saved.State != store.InboxStatePending {
+				t.Fatalf("rejected request changed item state to %s", saved.State)
+			}
+		})
+	}
+}
+
+func TestInboxListRepairsMissingItemForParkedRun(t *testing.T) {
+	callers := &conformance.FakeCallers{
+		Cluster: conformanceCluster, User: conformanceUser,
+		Objects: []*unstructured.Unstructured{agentObject(conformanceAgent)},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Verb == "get" && a.Resource == "agents" && a.Name == conformanceAgent
+		},
+	}
+	server := newGatedTestServer(t, callers)
+	scope := store.Scope{OrgUUID: store.UnmappedOrg, WorkspaceUUID: conformanceCluster, AgentName: conformanceAgent}
+	now := time.Now().UTC()
+	checkpoint, err := json.Marshal(runCheckpoint{Question: "Continue?", InboxID: "missing-item", Backend: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.store.SaveRun(t.Context(), scope, store.Run{ID: "parked", AgentName: conformanceAgent, Phase: store.RunPhasePendingApproval,
+		Checkpoint: checkpoint, Trigger: "chat", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	path := verbBase(conformanceCluster, "agents", conformanceAgent) + "/inbox"
+	recorder := httptest.NewRecorder()
+	gatedHandler(t, server).ServeHTTP(recorder, stamped(http.MethodGet, path, nil, conformanceUser))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("inbox list → %d: %s", recorder.Code, recorder.Body.String())
+	}
+	items, err := server.store.ListInbox(t.Context(), store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}, store.InboxStatePending)
+	if err != nil || len(items) != 1 || items[0].ID != "missing-item" || items[0].Kind != store.InboxKindQuestion {
+		t.Fatalf("repaired items = %+v, err=%v", items, err)
+	}
+}
+
+type failFirstInboxRepairStore struct {
+	store.Store
+	failed bool
+}
+
+func (s *failFirstInboxRepairStore) AddInboxItemForParkedRun(ctx context.Context, scope store.Scope, runID string, item store.InboxItem) error {
+	if !s.failed {
+		s.failed = true
+		return errors.New("temporary inbox write failure")
+	}
+	return s.Store.AddInboxItemForParkedRun(ctx, scope, runID, item)
+}
+
+func TestInboxListRetriesMissingItemRepairAfterTransientWriteFailure(t *testing.T) {
+	callers := &conformance.FakeCallers{Cluster: conformanceCluster, User: conformanceUser,
+		Objects: []*unstructured.Unstructured{agentObject(conformanceAgent)},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Verb == "get" && a.Resource == "agents" && a.Name == conformanceAgent
+		}}
+	server := newGatedTestServer(t, callers)
+	base := server.store
+	server.store = &failFirstInboxRepairStore{Store: base}
+	scope := store.Scope{OrgUUID: store.UnmappedOrg, WorkspaceUUID: conformanceCluster, AgentName: conformanceAgent}
+	now := time.Now().UTC()
+	checkpoint, err := json.Marshal(runCheckpoint{Question: "Continue?", InboxID: "retry-item", Backend: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := base.SaveRun(t.Context(), scope, store.Run{ID: "parked", AgentName: conformanceAgent, Phase: store.RunPhasePendingApproval,
+		Checkpoint: checkpoint, Trigger: "chat", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	handler := gatedHandler(t, server)
+	path := verbBase(conformanceCluster, "agents", conformanceAgent) + "/inbox"
+	for i, want := range []int{http.StatusServiceUnavailable, http.StatusOK} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, stamped(http.MethodGet, path, nil, conformanceUser))
+		if recorder.Code != want {
+			t.Fatalf("inbox list attempt %d → %d, want %d: %s", i+1, recorder.Code, want, recorder.Body.String())
+		}
+	}
+	items, err := base.ListInbox(t.Context(), store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}, store.InboxStatePending)
+	if err != nil || len(items) != 1 || items[0].ID != "retry-item" {
+		t.Fatalf("repaired items after retry = %+v, err=%v", items, err)
+	}
+}
+
+type inboxNotificationTransport struct {
+	host     string
+	local    http.RoundTripper
+	original http.RoundTripper
+}
+
+func (t inboxNotificationTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host == t.host {
+		return t.local.RoundTrip(req)
+	}
+	return t.original.RoundTrip(req)
+}
+
+// Model another repair winning after this request listed the inbox but before
+// it attempted to insert the second item.
+type competingInboxRepairStore struct{ store.Store }
+
+func (s competingInboxRepairStore) AddInboxItemForParkedRun(ctx context.Context, scope store.Scope, runID string, item store.InboxItem) error {
+	err := s.Store.AddInboxItemForParkedRun(ctx, scope, runID, item)
+	if err == nil && item.ID == "competing-item" {
+		return store.ErrInboxItemExists
+	}
+	return err
+}
+
+func TestInboxRepairNotifiesOncePerNewItem(t *testing.T) {
+	for _, kind := range []store.InboxItemKind{store.InboxKindApproval, store.InboxKindQuestion} {
+		t.Run(string(kind), func(t *testing.T) {
+			var sent []string
+			var sentMu sync.Mutex
+			webhook := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var message struct{ Content string }
+				if err := json.NewDecoder(r.Body).Decode(&message); err != nil {
+					t.Errorf("decode webhook: %v", err)
+				}
+				sentMu.Lock()
+				sent = append(sent, message.Content)
+				sentMu.Unlock()
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer webhook.Close()
+			original := http.DefaultTransport
+			http.DefaultTransport = inboxNotificationTransport{host: webhook.Listener.Addr().String(), local: webhook.Client().Transport, original: original}
+			defer func() { http.DefaultTransport = original }()
+
+			agent := agentObject(conformanceAgent)
+			if err := unstructured.SetNestedSlice(agent.Object, []any{
+				map[string]any{"name": "primary", "connectionRef": "notify"},
+			}, "spec", "channels"); err != nil {
+				t.Fatal(err)
+			}
+			connection := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": agentsclient.ConnectionGVR.GroupVersion().String(), "kind": "Connection",
+				"metadata": map[string]any{"name": "notify"},
+				"spec":     map[string]any{"type": "discord", "channel": webhook.URL},
+			}}
+			callers := &conformance.FakeCallers{Cluster: conformanceCluster, User: conformanceUser,
+				Objects: []*unstructured.Unstructured{agent, connection},
+				Allow:   func(a conformance.Attributes) bool { return a.Verb == "get" }}
+			server := newGatedTestServer(t, callers)
+			server.store = competingInboxRepairStore{server.store}
+			scope := store.Scope{OrgUUID: store.UnmappedOrg, WorkspaceUUID: conformanceCluster, AgentName: conformanceAgent}
+			now := time.Now().UTC()
+			for _, itemID := range []string{"missing-item", "competing-item"} {
+				checkpoint := runCheckpoint{InboxID: itemID, Question: "Continue?"}
+				if kind == store.InboxKindApproval {
+					checkpoint.Tool = "shell"
+				}
+				raw, err := json.Marshal(checkpoint)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := server.store.SaveRun(t.Context(), scope, store.Run{ID: itemID, AgentName: conformanceAgent,
+					Phase: store.RunPhasePendingApproval, Checkpoint: raw, Trigger: "chat", CreatedAt: now, UpdatedAt: now}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			handler := gatedHandler(t, server)
+			for range 2 {
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, stamped(http.MethodGet, verbBase(conformanceCluster, "agents", conformanceAgent)+"/inbox", nil, conformanceUser))
+				if response.Code != http.StatusOK {
+					t.Fatalf("inbox list: %d %s", response.Code, response.Body.String())
+				}
+			}
+			want := "Continue?"
+			if kind == store.InboxKindApproval {
+				want = "permission to use shell"
+			}
+			sentMu.Lock()
+			defer sentMu.Unlock()
+			if len(sent) != 1 || !strings.Contains(sent[0], want) {
+				t.Fatalf("webhook sends = %q, want one notification containing %q", sent, want)
+			}
+		})
 	}
 }
 

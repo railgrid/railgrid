@@ -379,7 +379,10 @@ func insertAgentChatRun(ctx context.Context, executor scopedExecutor, scope Scop
 	if err != nil {
 		return err
 	}
-	var delivery, harnessSettings, repository, result, modelSettings any
+	var delivery, harnessSettings, repository, result, structuredResult, modelSettings, executionLeaseAt, runnerCleanupBinding, limits any
+	if !run.ExecutionLeaseAt.IsZero() {
+		executionLeaseAt = run.ExecutionLeaseAt.UTC()
+	}
 	if run.Delivery != nil {
 		delivery, err = marshalJSONB(run.Delivery)
 	}
@@ -392,21 +395,30 @@ func insertAgentChatRun(ctx context.Context, executor scopedExecutor, scope Scop
 	if err == nil && run.Result != nil {
 		result, err = marshalJSONB(run.Result)
 	}
+	if err == nil && run.StructuredResult != nil {
+		structuredResult, err = marshalJSONB(run.StructuredResult)
+	}
 	if err == nil && run.ModelSettings != nil {
 		modelSettings, err = marshalJSONB(run.ModelSettings)
+	}
+	if err == nil && run.Limits != nil {
+		limits, err = marshalJSONB(run.Limits)
+	}
+	if err == nil && run.RunnerCleanupBinding != nil {
+		runnerCleanupBinding, err = marshalJSONB(run.RunnerCleanupBinding)
 	}
 	if err != nil {
 		return err
 	}
 	_, err = executor.ExecContext(ctx, `
 		INSERT INTO agents_runs
-			(id,org_uuid,workspace_uuid,agent_name,session_id,trigger_kind,parent_run_id,phase,attempt,input,output,sources,idempotency_key,delivery,message,checkpoint,input_tokens,output_tokens,usd_micros,created_at,updated_at,started_at,finished_at,worked_duration_ms,backend,attempt_id,harness_session_id,repository,result,retries,retry_at,harness_settings,model_settings)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)`,
+			(id,org_uuid,workspace_uuid,agent_name,session_id,trigger_kind,parent_run_id,phase,attempt,input,output,sources,idempotency_key,delivery,message,checkpoint,input_tokens,output_tokens,usd_micros,created_at,updated_at,started_at,finished_at,worked_duration_ms,backend,attempt_id,harness_session_id,repository,result,structured_result,invocation_fingerprint,invocation_agent_uid,invocation_prevented,retries,retry_at,harness_settings,model_settings,execution_owner,execution_lease_at,execution_epoch,agent_uid,recovery_identity,runner_cleanup_binding,limits,usage_completeness,cost_basis)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46)`,
 		run.ID, scope.OrgUUID, scope.WorkspaceUUID, run.AgentName, run.SessionID, run.Trigger, run.ParentRunID,
 		string(run.Phase), run.Attempt, run.Input, run.Output, sources, run.IdempotencyKey, delivery, run.Message,
 		nullBytes(run.Checkpoint), run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), nullInt64(run.WorkedDurationMS),
-		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, run.Retries, nullTime(run.RetryAt), harnessSettings, modelSettings)
+		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, structuredResult, run.InvocationFingerprint, run.InvocationAgentUID, run.InvocationPrevented, run.Retries, nullTime(run.RetryAt), harnessSettings, modelSettings, run.ExecutionOwner, executionLeaseAt, run.ExecutionEpoch, run.AgentUID, string(run.RecoveryIdentity), runnerCleanupBinding, limits, run.UsageCompleteness, run.CostBasis)
 	return err
 }
 

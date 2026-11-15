@@ -128,6 +128,10 @@ func newChatToolServer(t *testing.T, reply string) *Server {
 }
 
 func newChatToolFixture(t *testing.T, modelURL, aggregateURL string, review http.HandlerFunc) *Server {
+	return newChatToolFixtureWithKCPSubject(t, modelURL, aggregateURL, review, "alice")
+}
+
+func newChatToolFixtureWithKCPSubject(t *testing.T, modelURL, aggregateURL string, review http.HandlerFunc, kcpSubject string) *Server {
 	t.Helper()
 	ws := tenanttest.New()
 	agent := researchAgent(false)
@@ -149,6 +153,17 @@ func newChatToolFixture(t *testing.T, modelURL, aggregateURL string, review http
 		}})
 	}
 	kcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/selfsubjectreviews") {
+			if kcpSubject == "" {
+				http.Error(w, "identity review unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"apiVersion": "authentication.k8s.io/v1", "kind": "SelfSubjectReview",
+				"status": map[string]any{"userInfo": map[string]any{"username": kcpSubject}},
+			})
+			return
+		}
 		if review != nil && strings.HasSuffix(r.URL.Path, "/selfsubjectaccessreviews") {
 			review(w, r)
 			return
@@ -172,7 +187,10 @@ func newChatToolFixture(t *testing.T, modelURL, aggregateURL string, review http
 }
 
 func TestMCPChatStreamsTheTurnAndReturnsTheTerminalFrame(t *testing.T) {
-	s := newChatToolServer(t, "Three instances are ready.")
+	model := newFakeLLM(t, "Three instances are ready.")
+	kcpSubject := "system:serviceaccount:default:verified-chat-owner"
+	s := newChatToolFixtureWithKCPSubject(t, model.srv.URL, "", nil, kcpSubject)
+	s.cfg.ProcessID = "agents-chat-worker-1"
 	rec := httptest.NewRecorder()
 	s.MCPHandler().ServeHTTP(rec, chatToolRequest("tools/call", map[string]any{
 		"name":      "chat",
@@ -200,10 +218,16 @@ func TestMCPChatStreamsTheTurnAndReturnsTheTerminalFrame(t *testing.T) {
 	if data["content"] != "Three instances are ready." {
 		t.Fatalf("content = %v, want the model's reply", data["content"])
 	}
-	if data["runID"] == "" || data["runID"] == nil {
+	runID, _ := data["runID"].(string)
+	if runID == "" {
 		t.Fatalf("done frame carries no runID: %v", data)
 	}
-	page, err := s.store.ListMessages(context.Background(), store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "scout"}, "t1", 100, "")
+	scope := store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "scout"}
+	storedRun, err := s.store.GetRun(context.Background(), scope, runID)
+	if err != nil || storedRun.Phase != store.RunPhaseSucceeded {
+		t.Fatalf("ProcessID chat run = %+v, err=%v; want a durable succeeded run", storedRun, err)
+	}
+	page, err := s.store.ListMessages(context.Background(), scope, "t1", 100, "")
 	if err != nil {
 		t.Fatal(err)
 	}

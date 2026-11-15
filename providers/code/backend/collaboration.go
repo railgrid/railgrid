@@ -7,6 +7,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	api "github.com/railgrid/provider-code/apis/v1alpha1"
@@ -26,28 +27,59 @@ type Collaboration interface {
 	ReplyToReview(context.Context, *api.Connection, Credential, *api.Repository, int, int64, string) (*Comment, error)
 }
 
+// CommandReader is the optional host capability behind pull request
+// commands: reading a comment back by its identifier and a person's current
+// repository permission, so nothing a webhook claims is taken on trust.
+type CommandReader interface {
+	IssueComment(context.Context, *api.Connection, Credential, *api.Repository, int64) (*IssueComment, error)
+	RepositoryPermission(context.Context, *api.Connection, Credential, *api.Repository, string) (string, error)
+}
+
+// ErrCommentNotFound means the host has no comment under that identifier in
+// the repository.
+var ErrCommentNotFound = errors.New("comment not found")
+
+// IssueComment is a conversation comment as the host reports it, with the
+// issue or pull request it belongs to.
+type IssueComment struct {
+	ID          int64     `json:"id"`
+	IssueNumber int       `json:"issueNumber"`
+	URL         string    `json:"url"`
+	Body        string    `json:"body"`
+	Author      string    `json:"author"`
+	AuthorType  string    `json:"authorType"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
 type PullRequestInput struct {
 	Head   string `json:"head"`
 	Base   string `json:"base"`
 	Commit string `json:"commit"`
 	Title  string `json:"title,omitempty"`
 	Body   string `json:"body,omitempty"`
+	Draft  bool   `json:"draft,omitempty"`
 }
 
 type PullRequest struct {
-	Number         int        `json:"number"`
-	URL            string     `json:"url"`
-	Repository     string     `json:"repository"`
-	HeadRepository string     `json:"headRepository"`
-	Head           string     `json:"head"`
-	Base           string     `json:"base"`
-	Commit         string     `json:"commit"`
-	State          string     `json:"state"`
-	Merged         bool       `json:"merged"`
-	MergeCommit    string     `json:"mergeCommit,omitempty"`
-	MergedAt       *time.Time `json:"mergedAt,omitempty"`
-	Merger         string     `json:"merger,omitempty"`
-	MergerType     string     `json:"mergerType,omitempty"`
+	Number           int        `json:"number"`
+	NodeID           string     `json:"nodeID,omitempty"`
+	URL              string     `json:"url"`
+	Repository       string     `json:"repository"`
+	HeadRepository   string     `json:"headRepository"`
+	Head             string     `json:"head"`
+	Base             string     `json:"base"`
+	Commit           string     `json:"commit"`
+	State            string     `json:"state"`
+	Merged           bool       `json:"merged"`
+	MergeCommit      string     `json:"mergeCommit,omitempty"`
+	MergedAt         *time.Time `json:"mergedAt,omitempty"`
+	Merger           string     `json:"merger,omitempty"`
+	MergerType       string     `json:"mergerType,omitempty"`
+	Draft            bool       `json:"draft,omitempty"`
+	BaseHead         string     `json:"baseHead,omitempty"`
+	BaseCurrent      *bool      `json:"baseCurrent,omitempty"`
+	BaseCurrentError string     `json:"baseCurrentError,omitempty"`
+	MergeableState   string     `json:"mergeableState,omitempty"`
 }
 
 type Check struct {
@@ -68,6 +100,10 @@ type Review struct {
 	State       string    `json:"state"`
 	Body        string    `json:"body"`
 	SubmittedAt time.Time `json:"submittedAt"`
+	// AuthorPermission is the reviewer's current permission on the
+	// repository — admin, write, read or none — read only for a person's
+	// CHANGES_REQUESTED review; empty when it was not read.
+	AuthorPermission string `json:"authorPermission,omitempty"`
 }
 type Feedback struct {
 	Checks  []Check  `json:"checks"`
@@ -89,6 +125,13 @@ type CommentPage struct {
 // BranchLister lists a bounded page using the registered repository identity.
 type BranchLister interface {
 	ListBranches(context.Context, *api.Connection, Credential, *api.Repository, int) (*BranchPage, error)
+}
+
+// PullRequestBaseObserver optionally reads the current base branch tip and
+// compares it with the PR head. It is separate from ordinary PR reads because
+// ancestry checks are extra forge calls.
+type PullRequestBaseObserver interface {
+	ObservePullRequestBase(context.Context, *api.Connection, Credential, *api.Repository, *PullRequest) (string, *bool, string, error)
 }
 type BranchPage struct {
 	Branches []string `json:"branches"`

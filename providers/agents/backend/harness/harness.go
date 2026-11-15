@@ -69,6 +69,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -298,6 +299,21 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 	if err != nil {
 		return backend.Outcome{Status: backend.StatusFailed}, err
 	}
+	if repo := b.cfg.Repository; repo != nil && len(repo.Artifacts) > 0 {
+		reader, ok := b.cfg.Runner.(interface {
+			Capabilities(context.Context) (runner.Capabilities, error)
+		})
+		if !ok {
+			return backend.Outcome{Status: backend.StatusFailed}, errors.New("runner does not advertise completion-artifact support; update the runner before requesting repository artifacts")
+		}
+		capabilities, err := reader.Capabilities(ctx)
+		if err != nil {
+			return backend.Outcome{Status: backend.StatusFailed}, fmt.Errorf("could not verify runner completion-artifact support: %w", err)
+		}
+		if !slices.Contains(capabilities.Verification, runner.CompletionArtifactsCapability) {
+			return backend.Outcome{Status: backend.StatusFailed}, errors.New("runner does not support completion-collected repository artifacts; update the runner before retrying")
+		}
+	}
 	credential := b.credential()
 	req := runner.StartRequest{
 		RequestID:         b.newID(),
@@ -377,6 +393,7 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 		req.BaseCommit = repo.BaseCommit
 		req.Repository = repo.Source
 		req.ExportGitResult = true
+		req.Artifacts = append([]runner.ArtifactSpec(nil), repo.Artifacts...)
 		req.CommitMessage = repo.CommitMessage
 		req.RequiredCapabilities = repo.RequiredCapabilities
 		req.RequiredToolchains = repo.RequiredToolchains
@@ -811,7 +828,17 @@ func usage(spent dispatch.Usage, prior backend.Cost) backend.Usage {
 		},
 		CostMicros: prior.CostMicros + billed.CostMicros,
 	}
-	return backend.Usage{Total: total, Billed: billed}
+	completeness := backend.UsageUnavailable
+	if total.InputTokens > 0 || total.OutputTokens > 0 || billed.InputTokens > 0 || billed.OutputTokens > 0 {
+		// Harness protocols do not declare whether they emitted every usage
+		// event, so any observed counters remain partial evidence.
+		completeness = backend.UsagePartial
+	}
+	costBasis := backend.CostBasisUnavailable
+	if total.CostMicros > 0 || billed.CostMicros > 0 {
+		costBasis = backend.CostBasisProviderReported
+	}
+	return backend.Usage{Total: total, Billed: billed, Completeness: completeness, CostBasis: costBasis}
 }
 
 // statusFor classifies an error the turn could not continue past. A turn stopped

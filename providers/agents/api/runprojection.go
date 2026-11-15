@@ -66,6 +66,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/util/retry"
 
+	"github.com/railgrid/railgrid/pkg/runner"
+
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
@@ -87,7 +89,25 @@ const (
 // is authoritative and its error is returned; the projection is reporting and
 // its error is logged.
 func (s *Server) saveRun(ctx context.Context, scope store.Scope, run store.Run) error {
-	if err := s.store.SaveRun(ctx, scope, run); err != nil {
+	if lease, ok := leaseIdentityFromContext(ctx, run.ID); ok {
+		ok, err := s.store.SaveRunOwned(ctx, scope, run, lease.owner, lease.epoch, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return store.ErrRunLeaseLost
+		}
+	} else if run.CancelRequested && run.Phase == store.RunPhaseAborted {
+		ok, err := s.store.SaveCancelledRun(ctx, scope, run)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return store.ErrRunCancellationRequested
+		}
+	} else if run.ExecutionOwner != "" {
+		return store.ErrRunLeaseLost
+	} else if err := s.store.SaveRun(ctx, scope, run); err != nil {
 		return err
 	}
 	s.projectRun(ctx, scope, run)
@@ -281,6 +301,7 @@ func (s *Server) createRunObject(ctx context.Context, dyn dynamic.Interface, run
 		Spec: agentsv1alpha1.RunSpec{
 			AgentRef:       run.AgentName,
 			Trigger:        run.Trigger,
+			Limits:         runLimitsForStored(run.Limits),
 			SessionID:      effectiveSessionID(run.SessionID, run.Trigger),
 			ParentRunRef:   run.ParentRunID,
 			IdempotencyKey: run.IdempotencyKey,
@@ -296,6 +317,7 @@ func (s *Server) createRunObject(ctx context.Context, dyn dynamic.Interface, run
 		object.Spec.Repository = &agentsv1alpha1.RunRepository{
 			EnvironmentID: run.Repository.EnvironmentID,
 			RepositoryID:  repo.RepositoryID, BaseCommit: repo.BaseCommit, CommitMessage: repo.CommitMessage,
+			Artifacts: append([]runner.ArtifactSpec(nil), repo.Artifacts...),
 		}
 	}
 	if d := run.Delivery; d != nil {
@@ -351,6 +373,13 @@ func runStatusFor(run store.Run) agentsv1alpha1.RunStatus {
 		Message: safeTruncate(run.Message, 2048),
 		Retries: int32(run.Retries),
 	}
+	if run.Phase == store.RunPhaseRunning && run.ExecutionOwner != "" && !run.ExecutionLeaseAt.IsZero() {
+		// A projected heartbeat lets the Run watch schedule recovery for
+		// both controller-dispatched and caller-started runs.
+		status.Owner = run.ExecutionOwner
+		claimedAt := metav1.NewTime(run.ExecutionLeaseAt)
+		status.ClaimedAt = &claimedAt
+	}
 	if run.RetryAt != nil && run.Phase == store.RunPhasePending {
 		// Only a queued run has a wake-up time; the reconciler clears it on the
 		// object when it claims the retry, and the row drops it when the turn
@@ -381,11 +410,16 @@ func runStatusFor(run store.Run) agentsv1alpha1.RunStatus {
 			status.Usage.DurationMS = run.FinishedAt.Sub(*run.StartedAt).Milliseconds()
 		}
 	}
+	status.UsageCompleteness = run.UsageCompleteness
+	status.CostBasis = run.CostBasis
 	if r := run.Result; r != nil {
 		status.Result = &agentsv1alpha1.RunResult{
 			BaseCommit: r.BaseCommit, Commit: r.Commit, Tree: r.Tree, NoChanges: r.NoChanges,
 			ResultDigest: r.ResultDigest, BundleDigest: r.BundleDigest, BundleSize: r.BundleSize,
 		}
+	}
+	if r := run.StructuredResult; r != nil {
+		status.StructuredResult = &agentsv1alpha1.StructuredResult{State: r.State, Digest: r.Digest, Size: r.Size}
 	}
 	return status
 }
@@ -420,9 +454,13 @@ func equalStatus(current, next map[string]any) bool {
 	if current == nil {
 		return false
 	}
-	// Owner and conditions are written by the reconciler, not by the
-	// projection, so they are carried over rather than compared.
-	for _, key := range []string{"owner", "claimedAt", "attempt", "conditions", "deadlineAt", "observedGeneration"} {
+	// The controller owns dispatch claims. A running executor with a lease
+	// publishes its own owner and heartbeat.
+	keys := []string{"attempt", "conditions", "deadlineAt", "observedGeneration"}
+	if next["phase"] != agentsv1alpha1.RunPhaseRunning || next["owner"] == nil {
+		keys = append(keys, "owner", "claimedAt")
+	}
+	for _, key := range keys {
 		if value, ok := current[key]; ok {
 			next[key] = value
 		}

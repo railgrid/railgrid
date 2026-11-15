@@ -210,6 +210,14 @@ func (o Options) adapter(stateRoot string) (harness.Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
+	if environment.ProcessScope != "" {
+		if o.Harness != HarnessCodex {
+			return nil, errors.New("environment.processScope is currently supported only by the Codex runner")
+		}
+		if runtime.GOOS != "linux" {
+			return nil, errors.New("environment.processScope=systemd-user is supported only on Linux")
+		}
+	}
 	switch o.Harness {
 	case HarnessClaude:
 		home := o.ClaudeHome

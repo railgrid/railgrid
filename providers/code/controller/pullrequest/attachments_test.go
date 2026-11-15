@@ -210,12 +210,14 @@ type reconcileImageForge struct {
 	imageForge
 	backend.GitBackend
 	updates    int
+	reads      int
 	failUpdate bool
 	body       string
 }
 
 func (f *reconcileImageForge) Name() string { return "github" }
 func (f *reconcileImageForge) ReadPullRequest(context.Context, *api.Connection, backend.Credential, *api.Repository, int) (*backend.PullRequest, error) {
+	f.reads++
 	return f.pr, nil
 }
 func (f *reconcileImageForge) UpdatePullRequest(_ context.Context, _ *api.Connection, _ backend.Credential, _ *api.Repository, _ int, in backend.PullRequestInput) (*backend.PullRequest, error) {
@@ -334,5 +336,41 @@ func TestAttachmentFailuresDoNotWithholdPR(t *testing.T) {
 				t.Fatal("terminal failure retries unchanged spec")
 			}
 		})
+	}
+}
+
+// Adopting someone else's pull request takes its title and description as
+// they stand on the forge. Code writes the text only when the spec's text
+// later changes, so a coordinator that adopts a human PR to review it never
+// overwrites what its author wrote.
+func TestAdoptionKeepsTheForgeTitleAndDescription(t *testing.T) {
+	pr := resource(nil)
+	pr.Name = "pr"
+	pr.Generation = 1
+	pr.Spec.Number = 42
+	pr.Spec.Branch = "alice/feature"
+	pr.Spec.Title = "Review alice/feature"
+	repo := &api.Repository{ObjectMeta: metav1.ObjectMeta{Name: "product", UID: "repo"}, Spec: api.RepositorySpec{ConnectionRef: "conn", Owner: "acme", Name: "product"}}
+	conn := &api.Connection{ObjectMeta: metav1.ObjectMeta{Name: "conn"}, Spec: api.ConnectionSpec{Type: api.CredentialTypePAT, Provider: api.ProviderGitHub, SecretRef: api.LocalSecretReference{Name: "credential", Namespace: "default", Key: "token"}}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credential", Namespace: "default"}, Data: map[string][]byte{"token": []byte("test-token")}}
+	c := fake.NewClientBuilder().WithScheme(codescheme.NewScheme()).WithStatusSubresource(pr).WithObjects(pr, repo, conn, secret).Build()
+	host := &reconcileImageForge{}
+	host.pr = &backend.PullRequest{Number: 42, URL: "https://example.invalid/pull/42", Repository: "acme/product", HeadRepository: "acme/product", Head: "alice/feature", Base: "main", Commit: headA, State: "open"}
+	registry := backend.NewRegistry()
+	if err := registry.Register(host); err != nil {
+		t.Fatal(err)
+	}
+	r := &Reconciler{Manager: imageManager{c: c}, Backends: registry}
+	req := mcreconcile.Request{ClusterName: "tenant", Request: reconcile.Request{NamespacedName: types.NamespacedName{Name: "pr"}}}
+	for range 3 {
+		if _, err := r.Reconcile(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.Get(t.Context(), client.ObjectKey{Name: "pr"}, pr); err != nil {
+		t.Fatal(err)
+	}
+	if pr.Status.Number != 42 || pr.Status.Head != headA || host.updates != 0 || host.created != 0 {
+		t.Fatalf("adoption: number=%d head=%s updates=%d created=%d", pr.Status.Number, pr.Status.Head, host.updates, host.created)
 	}
 }

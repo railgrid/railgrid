@@ -365,6 +365,7 @@ function validateRepositoryResource(
     validateOptionalString(status.htmlURL, `${label} status.htmlURL`)
     validateOptionalString(status.cloneURL, `${label} status.cloneURL`)
     validateOptionalString(status.sshURL, `${label} status.sshURL`)
+    validateOptionalString(status.commandsWebhookPath, `${label} status.commandsWebhookPath`)
   }
   return resource
 }
@@ -491,6 +492,7 @@ function repoFromCR(cr: RawCR): Repository {
     htmlURL: status.htmlURL ? String(status.htmlURL) : undefined,
     cloneURL: status.cloneURL ? String(status.cloneURL) : undefined,
     sshURL: status.sshURL ? String(status.sshURL) : undefined,
+    commandsWebhookPath: typeof status.commandsWebhookPath === 'string' && status.commandsWebhookPath.startsWith('/services/providers/code/webhooks/github/') ? status.commandsWebhookPath : undefined,
     ready: reconciliation.reconciled && condTrue(cr, 'Ready'),
     failed: reconciliation.reconciled && condFalse(cr, 'Ready'),
     message: reconciliation.waitingMessage ?? condMsg(cr, 'Ready'),

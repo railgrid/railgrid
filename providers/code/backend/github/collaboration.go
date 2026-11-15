@@ -74,7 +74,7 @@ func pullResult(pr *gh.PullRequest) *backend.PullRequest {
 	if pr == nil {
 		return nil
 	}
-	result := &backend.PullRequest{Number: pr.GetNumber(), URL: pr.GetHTMLURL(), Repository: pr.GetBase().GetRepo().GetFullName(), HeadRepository: pr.GetHead().GetRepo().GetFullName(), Head: pr.GetHead().GetRef(), Base: pr.GetBase().GetRef(), Commit: pr.GetHead().GetSHA(), State: pr.GetState(), Merged: pr.GetMerged()}
+	result := &backend.PullRequest{Number: pr.GetNumber(), NodeID: pr.GetNodeID(), URL: pr.GetHTMLURL(), Repository: pr.GetBase().GetRepo().GetFullName(), HeadRepository: pr.GetHead().GetRepo().GetFullName(), Head: pr.GetHead().GetRef(), Base: pr.GetBase().GetRef(), Commit: pr.GetHead().GetSHA(), State: pr.GetState(), Merged: pr.GetMerged(), Draft: pr.GetDraft(), BaseHead: pr.GetBase().GetSHA(), MergeableState: pr.GetMergeableState()}
 	// GitHub fills merge_commit_sha for OPEN pull requests too: it is the sha
 	// of a trial merge it computes for mergeability, not evidence of a merge.
 	// Only a merged pull request carries merge proof.
@@ -144,6 +144,57 @@ func (b *Backend) ReadPullRequest(ctx context.Context, conn *api.Connection, cre
 	}
 	return result, nil
 }
+
+// ContainsCommit reports whether head's history contains ancestor: the
+// comparison from ancestor to head is "ahead" or "identical".
+func (b *Backend) ContainsCommit(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, ancestor, head string) (bool, error) {
+	if !objectID.MatchString(ancestor) || !objectID.MatchString(head) {
+		return false, errors.New("commit identity is invalid")
+	}
+	c, err := b.collaborationClient(ctx, conn, cred, repo)
+	if err != nil {
+		return false, err
+	}
+	comparison, response, err := c.Repositories.CompareCommits(ctx, owner(conn, repo), repo.Spec.Name, ancestor, head, &gh.ListOptions{PerPage: 1})
+	if err != nil {
+		return false, classify(response, err)
+	}
+	if comparison == nil || comparison.GetBaseCommit().GetSHA() != ancestor || comparison.GetStatus() == "" {
+		return false, errors.New("forge returned an incomplete commit comparison")
+	}
+	return comparison.GetStatus() == "ahead" || comparison.GetStatus() == "identical", nil
+}
+
+var _ backend.CommitAncestry = (*Backend)(nil)
+
+// ObservePullRequestBase compares immutable commit IDs after resolving the actual
+// current base branch tip. The PR payload's base SHA can lag the branch itself.
+func (b *Backend) ObservePullRequestBase(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, pr *backend.PullRequest) (string, *bool, string, error) {
+	if !validBranch(pr.Base) || !objectID.MatchString(pr.Commit) {
+		return "", nil, "", errors.New("pull request base or head identity is invalid")
+	}
+	c, err := b.collaborationClient(ctx, conn, cred, repo)
+	if err != nil {
+		return "", nil, "", err
+	}
+	branch, response, err := c.Repositories.GetBranch(ctx, owner(conn, repo), repo.Spec.Name, pr.Base, 0)
+	if err != nil {
+		return "", nil, "reading current base branch: " + classify(response, err).Error(), nil
+	}
+	baseSHA := branch.GetCommit().GetSHA()
+	if branch.GetName() != pr.Base || !objectID.MatchString(baseSHA) {
+		return "", nil, "current base branch returned an invalid identity", nil
+	}
+	comparison, response, err := c.Repositories.CompareCommits(ctx, owner(conn, repo), repo.Spec.Name, baseSHA, pr.Commit, &gh.ListOptions{PerPage: 1})
+	if err != nil {
+		return baseSHA, nil, "comparing current base with pull request head: " + classify(response, err).Error(), nil
+	}
+	if comparison == nil || comparison.GetBaseCommit().GetSHA() != baseSHA || comparison.GetStatus() == "" || comparison.BehindBy == nil {
+		return baseSHA, nil, "forge returned an incomplete base comparison", nil
+	}
+	current := (comparison.GetStatus() == "ahead" || comparison.GetStatus() == "identical") && comparison.GetBehindBy() == 0
+	return baseSHA, &current, "", nil
+}
 func (b *Backend) CreatePullRequest(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, in backend.PullRequestInput) (*backend.PullRequest, error) {
 	if !validPullInput(in) || strings.TrimSpace(in.Title) == "" || len(in.Title) > 256 || len(in.Body) > 32768 {
 		return nil, errors.New("invalid pull request input")
@@ -159,7 +210,7 @@ func (b *Backend) CreatePullRequest(ctx context.Context, conn *api.Connection, c
 	if err != nil {
 		return nil, err
 	}
-	raw, response, err := c.PullRequests.Create(ctx, owner(conn, repo), repo.Spec.Name, &gh.NewPullRequest{Title: &in.Title, Body: &in.Body, Head: &in.Head, Base: &in.Base})
+	raw, response, err := c.PullRequests.Create(ctx, owner(conn, repo), repo.Spec.Name, &gh.NewPullRequest{Title: &in.Title, Body: &in.Body, Head: &in.Head, Base: &in.Base, Draft: gh.Bool(in.Draft)})
 	if err != nil {
 		return nil, classify(response, err)
 	}
@@ -213,6 +264,7 @@ func (b *Backend) PullRequestFeedback(ctx context.Context, conn *api.Connection,
 	expectedChecks := -1
 	seenChecks := map[int64]bool{}
 	seenReviews := map[int64]bool{}
+	permissions := reviewerPermissions{client: c, owner: owner(conn, repo), repo: repo.Spec.Name, levels: map[string]string{}}
 	for page := 1; page <= 20; page++ {
 		checks, response, err := c.Checks.ListCheckRunsForRef(ctx, owner(conn, repo), repo.Spec.Name, commit, &gh.ListCheckRunsOptions{ListOptions: gh.ListOptions{Page: page, PerPage: 50}})
 		if err != nil {
@@ -274,7 +326,14 @@ func (b *Backend) PullRequestFeedback(ctx context.Context, conn *api.Connection,
 			if err != nil {
 				return nil, err
 			}
-			result.Reviews = append(result.Reviews, backend.Review{ID: review.GetID(), Login: review.GetUser().GetLogin(), ActorType: review.GetUser().GetType(), Commit: review.GetCommitID(), State: review.GetState(), Body: body, SubmittedAt: review.GetSubmittedAt().Time})
+			permission := ""
+			if review.GetState() == "CHANGES_REQUESTED" && review.GetUser().GetType() == "User" {
+				permission, err = permissions.of(ctx, review.GetUser().GetLogin())
+				if err != nil {
+					return nil, err
+				}
+			}
+			result.Reviews = append(result.Reviews, backend.Review{ID: review.GetID(), Login: review.GetUser().GetLogin(), ActorType: review.GetUser().GetType(), Commit: review.GetCommitID(), State: review.GetState(), Body: body, SubmittedAt: review.GetSubmittedAt().Time, AuthorPermission: permission})
 		}
 		if response == nil || response.NextPage == 0 {
 			break
@@ -381,4 +440,97 @@ func (b *Backend) ListBranches(ctx context.Context, conn *api.Connection, cred b
 		return nil, errors.New("invalid next branch page")
 	}
 	return result, nil
+}
+
+// reviewerPermissions reads, once per login, the permission a reviewer holds
+// on the repository now. A coordinator acts on a request for changes only
+// from someone who could push the change themselves.
+type reviewerPermissions struct {
+	client      *gh.Client
+	owner, repo string
+	levels      map[string]string
+}
+
+func (p reviewerPermissions) of(ctx context.Context, login string) (string, error) {
+	if level, ok := p.levels[login]; ok {
+		return level, nil
+	}
+	level, response, err := p.client.Repositories.GetPermissionLevel(ctx, p.owner, p.repo, login)
+	if err == nil {
+		p.levels[login] = normalizePermission(level.GetPermission())
+		return p.levels[login], nil
+	}
+	// A rate limit is not an answer. GitHub sends secondary limits as 403,
+	// and recording one as "none" would demote a maintainer's command or
+	// blocking review; it is retried instead.
+	classified := classify(response, err)
+	var limited *backend.RateLimitError
+	if errors.As(classified, &limited) {
+		return "", classified
+	}
+	if response != nil && (response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusForbidden) {
+		// Not a collaborator, or the credential cannot read collaborators:
+		// either way the review carries no write authority.
+		p.levels[login] = "none"
+		return "none", nil
+	}
+	return "", classified
+}
+
+func normalizePermission(permission string) string {
+	switch permission {
+	case "admin", "write", "read":
+		return permission
+	default:
+		return "none"
+	}
+}
+
+// IssueComment reads one conversation comment back by its identifier. The
+// issue number comes from the comment's own issue URL.
+func (b *Backend) IssueComment(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, id int64) (*backend.IssueComment, error) {
+	if id <= 0 {
+		return nil, errors.New("comment id required")
+	}
+	c, err := b.collaborationClient(ctx, conn, cred, repo)
+	if err != nil {
+		return nil, err
+	}
+	raw, response, err := c.Issues.GetComment(ctx, owner(conn, repo), repo.Spec.Name, id)
+	if err != nil {
+		if response != nil && response.StatusCode == http.StatusNotFound {
+			return nil, backend.ErrCommentNotFound
+		}
+		return nil, classify(response, err)
+	}
+	if raw.GetID() != id || raw.GetUser().GetLogin() == "" {
+		return nil, errors.New("invalid comment identity")
+	}
+	number, err := issueNumberFromURL(raw.GetIssueURL())
+	if err != nil {
+		return nil, err
+	}
+	return &backend.IssueComment{ID: raw.GetID(), IssueNumber: number, URL: raw.GetHTMLURL(), Body: raw.GetBody(), Author: raw.GetUser().GetLogin(), AuthorType: raw.GetUser().GetType(), CreatedAt: raw.GetCreatedAt().Time}, nil
+}
+
+func issueNumberFromURL(raw string) (int, error) {
+	index := strings.LastIndex(raw, "/issues/")
+	if index < 0 {
+		return 0, errors.New("comment has no issue")
+	}
+	number, err := strconv.Atoi(raw[index+len("/issues/"):])
+	if err != nil || number <= 0 {
+		return 0, errors.New("comment has an invalid issue number")
+	}
+	return number, nil
+}
+
+// RepositoryPermission is login's current permission on the repository:
+// admin, write, read or none.
+func (b *Backend) RepositoryPermission(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, login string) (string, error) {
+	c, err := b.collaborationClient(ctx, conn, cred, repo)
+	if err != nil {
+		return "", err
+	}
+	return reviewerPermissions{client: c, owner: owner(conn, repo), repo: repo.Spec.Name, levels: map[string]string{}}.of(ctx, login)
 }

@@ -36,18 +36,21 @@ func TestRunStatusForProjectsTheRunAndNotItsContent(t *testing.T) {
 	worked := int64(45_000)
 	status := runStatusFor(store.Run{
 		ID: "r1", AgentName: "scout", SessionID: "s1", Trigger: agentsv1alpha1.RunTriggerAPI,
-		Phase: store.RunPhaseSucceeded, Message: "",
+		Limits: &store.RunLimits{MaxOutputTokens: 500},
+		Phase:  store.RunPhaseSucceeded, Message: "",
 		Input:  "summarise the incident report and post it to #ops",
 		Output: "Here is the summary …",
 		// Checkpoint is the engine's resume state — opaque, large, and of no
 		// use to anyone reading the object.
-		Checkpoint:       []byte(`{"messages":[…]}`),
-		InputTokens:      1200,
-		OutputTokens:     340,
-		USDMicros:        12_345,
-		StartedAt:        &projectedStart,
-		FinishedAt:       &projectedFinish,
-		WorkedDurationMS: &worked,
+		Checkpoint:        []byte(`{"messages":[…]}`),
+		InputTokens:       1200,
+		OutputTokens:      340,
+		USDMicros:         12_345,
+		UsageCompleteness: "complete",
+		CostBasis:         "catalog_estimate",
+		StartedAt:         &projectedStart,
+		FinishedAt:        &projectedFinish,
+		WorkedDurationMS:  &worked,
 	})
 
 	if status.Phase != agentsv1alpha1.RunPhaseSucceeded {
@@ -73,6 +76,9 @@ func TestRunStatusForProjectsTheRunAndNotItsContent(t *testing.T) {
 	}
 	if status.Usage.DurationMS != 90_000 {
 		t.Errorf("durationMS = %d, want the wall clock between the two stamps", status.Usage.DurationMS)
+	}
+	if status.UsageCompleteness != "complete" || status.CostBasis != "catalog_estimate" {
+		t.Errorf("usage evidence = completeness %q, cost basis %q", status.UsageCompleteness, status.CostBasis)
 	}
 	if status.Usage.WorkedDurationMS == nil || *status.Usage.WorkedDurationMS != worked {
 		t.Errorf("workedDurationMS = %v, want the measured %d", status.Usage.WorkedDurationMS, worked)
@@ -197,4 +203,36 @@ func indexOf(haystack, needle string) int {
 		}
 	}
 	return -1
+}
+
+func TestRunningProjectionCarriesExecutionLeaseForRecovery(t *testing.T) {
+	now := time.Now().UTC()
+	run := store.Run{Phase: store.RunPhaseRunning, ExecutionOwner: "worker/lease", ExecutionLeaseAt: now}
+	got := runStatusFor(run)
+	if got.Owner != run.ExecutionOwner || got.ClaimedAt == nil || !got.ClaimedAt.Time.Equal(now) {
+		t.Fatalf("running lease projection = %+v", got)
+	}
+	run.Phase = store.RunPhasePendingApproval
+	got = runStatusFor(run)
+	if got.Owner != "" || got.ClaimedAt != nil {
+		t.Fatalf("parked lease projection = %+v", got)
+	}
+}
+
+func TestProjectedLeaseHeartbeatAdvancesOnWrite(t *testing.T) {
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	s, _, run := newProjectionFixture(t, dyn, store.RunPhaseRunning)
+	first := time.Now().UTC().Truncate(time.Second)
+	run.ExecutionOwner, run.ExecutionLeaseAt = "worker/lease", first
+	if err := s.writeRunObject(t.Context(), dyn, run, nil); err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionLeaseAt = first.Add(40 * time.Second)
+	if err := s.writeRunObject(t.Context(), dyn, run, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := unstructured.NestedString(projectedObject(t, dyn, run.ID).Object, "status", "claimedAt")
+	if got != run.ExecutionLeaseAt.Format(time.RFC3339) {
+		t.Fatalf("projected claimedAt = %q, want %s", got, run.ExecutionLeaseAt)
+	}
 }

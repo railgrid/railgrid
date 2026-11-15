@@ -76,7 +76,7 @@ func TestCodeActionsCatalogParityAndDigests(t *testing.T) {
 		t.Fatalf("unexpected export name %v", name)
 	}
 	resources, ok := export["resources"].([]any)
-	if !ok || len(resources) != 2 {
+	if !ok || len(resources) != 3 {
 		t.Fatalf("unexpected Code export resources: %#v", export["resources"])
 	}
 
@@ -96,6 +96,10 @@ func TestCodeActionsCatalogParityAndDigests(t *testing.T) {
 		case "connections":
 			if resource["kind"] != "Connection" {
 				t.Fatalf("connections is bound to kind %v", resource["kind"])
+			}
+		case "pullrequests":
+			if resource["kind"] != "PullRequest" {
+				t.Fatalf("pullrequests is bound to kind %v", resource["kind"])
 			}
 		default:
 			t.Fatalf("Code declares coordinates on %v, a kind this provider does not serve", resource["name"])
@@ -130,7 +134,7 @@ func TestCodeActionsCatalogParityAndDigests(t *testing.T) {
 			}
 		}
 	}
-	if total != 15 {
-		t.Fatalf("Code declares %d actions, want 15", total)
+	if total != 18 {
+		t.Fatalf("Code declares %d actions, want 18", total)
 	}
 }

@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261031-c205dcb4.repositories.code.railgrid.ai
+  name: v261114-d8445494b.repositories.code.railgrid.ai
 spec:
   group: code.railgrid.ai
   names:
@@ -68,6 +68,33 @@ spec:
                 default branch immediately. Required if DeployKeys/clones must
                 succeed right after creation.
               type: boolean
+            commandsWebhookSecretRef:
+              description: |-
+                CommandsWebhookSecretRef enables the GitHub issue-comment webhook.
+                Reference a dedicated Code-owned Secret in this workspace. The key
+                defaults to "secret" and the namespace to the credentials namespace.
+              properties:
+                key:
+                  description: |-
+                    Key is the entry within the Secret's data holding the value. For a
+                    Connection PAT this defaults to "token"; for a DeployKey private
+                    key the controller writes "ssh-privatekey".
+                  maxLength: 253
+                  type: string
+                name:
+                  description: Name of the Secret.
+                  maxLength: 253
+                  minLength: 1
+                  type: string
+                namespace:
+                  description: |-
+                    Namespace of the Secret. Empty resolves to the provider's
+                    convention namespace ("default").
+                  maxLength: 253
+                  type: string
+              required:
+              - name
+              type: object
             connectionRef:
               description: ConnectionRef names the Connection (same workspace) whose
                 credential
@@ -120,6 +147,15 @@ spec:
             cloneURL:
               description: CloneURL is the HTTPS clone URL.
               maxLength: 2048
+              type: string
+            commandsWebhookPath:
+              description: |-
+                CommandsWebhookPath is the hub-relative URL that receives this
+                repository's GitHub "Issue comments" webhook, so people can leave
+                "/railgrid" commands on its pull requests. GitHub signs deliveries
+                using the configured Secret. Prefix the path with the console's origin
+                when adding the webhook.
+              maxLength: 512
               type: string
             conditions:
               description: Conditions follows the standard Kubernetes conditions pattern.

@@ -54,6 +54,7 @@ func (f *recoverFixture) seedRun(t *testing.T, id string, phase store.RunPhase, 
 	run := store.Run{
 		ID: id, AgentName: "scout", SessionID: "chat", Trigger: agentsv1alpha1.RunTriggerChat,
 		Phase: phase, Attempt: attempt, Input: "do the thing", CreatedAt: at, UpdatedAt: at, StartedAt: &at,
+		RecoveryIdentity: store.RecoveryIdentityAgent,
 	}
 	if checkpointed {
 		payload, err := json.Marshal(runCheckpoint{Engine: engine.Checkpoint{
@@ -478,7 +479,7 @@ func TestRecoveryResumeClaimsRunningCheckpoint(t *testing.T) {
 	f := newRecoverFixture(t)
 	run := f.seedRun(t, "recovery-claim", store.RunPhaseRunning, time.Minute, true, 0)
 	checked := false
-	claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, time.Now().UTC())
+	claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, "owner", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,11 +499,11 @@ func TestRecoveryResumeRejectsSupersededClaim(t *testing.T) {
 	ctx := context.Background()
 	f := newRecoverFixture(t)
 	run := f.seedRun(t, "superseded-recovery", store.RunPhaseRunning, time.Minute, true, 0)
-	claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, time.Now().UTC())
+	claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, "owner", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
-	newer, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, claimed.UpdatedAt, claimed.UpdatedAt.Add(time.Second))
+	newer, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, claimed.UpdatedAt, "owner-2", claimed.ExecutionLeaseAt.Add(store.RunLeaseDuration+time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -521,7 +522,7 @@ func TestRecoveryResumeGuards(t *testing.T) {
 			run := f.seedRun(t, "guard", store.RunPhaseRunning, time.Minute, true, 0)
 			intent := resumeIntent{FromPhase: store.RunPhaseRunning}
 			if cancelled {
-				claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, time.Now().UTC())
+				claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, "owner", time.Now().UTC())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -547,7 +548,7 @@ type recoveryClaimErrorStore struct {
 	calls int
 }
 
-func (s *recoveryClaimErrorStore) ClaimRecovery(context.Context, store.Scope, string, time.Time, time.Time) (store.Run, error) {
+func (s *recoveryClaimErrorStore) ClaimRecovery(context.Context, store.Scope, string, time.Time, string, time.Time) (store.Run, error) {
 	s.calls++
 	return store.Run{}, s.err
 }
@@ -558,7 +559,7 @@ func TestRecoveryClaimErrors(t *testing.T) {
 		want    store.RunPhase
 		resumed bool
 	}{
-		{"stale", fmt.Errorf("wrapped: %w", store.ErrRecoveryClaimStale), store.RunPhaseRunning, true},
+		{"stale", fmt.Errorf("wrapped: %w", store.ErrRecoveryClaimStale), store.RunPhaseRunning, false},
 		{"database", errors.New("database unavailable"), store.RunPhaseFailed, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -577,5 +578,21 @@ func TestRecoveryClaimErrors(t *testing.T) {
 				t.Fatalf("missing failure cause: %s", got.Message)
 			}
 		})
+	}
+}
+
+func TestRecoverRunRequeuesLiveRemoteLease(t *testing.T) {
+	f := newRecoverFixture(t)
+	bg := &background{server: f.s}
+	scope := bg.scopeFor(t.Context(), "cluster-review", "scout")
+	now := time.Now().UTC()
+	run := store.Run{ID: "live-remote", AgentName: scope.AgentName, Phase: store.RunPhaseRunning,
+		CreatedAt: now, UpdatedAt: now, ExecutionOwner: "remote/lease", ExecutionLeaseAt: now}
+	if err := f.s.store.SaveRun(t.Context(), scope, run); err != nil {
+		t.Fatal(err)
+	}
+	delay, err := bg.RecoverRun(t.Context(), "cluster-review", scope.AgentName, run.ID)
+	if err != nil || delay <= 0 || delay > store.RunLeaseDuration {
+		t.Fatalf("live remote lease recovery = %s, %v", delay, err)
 	}
 }

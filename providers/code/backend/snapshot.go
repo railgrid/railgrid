@@ -31,3 +31,10 @@ type SnapshotPublisher interface {
 	VerifySnapshot(context.Context, *api.Connection, Credential, *api.Repository, Snapshot) error
 	PublishSnapshot(context.Context, *api.Connection, Credential, *api.Repository, Snapshot, string, string) error
 }
+
+// CommitAncestry is optionally implemented by a forge that can say whether
+// head's history contains ancestor. It lets a publication that already
+// landed be recognised after someone else pushed on top of it.
+type CommitAncestry interface {
+	ContainsCommit(ctx context.Context, conn *api.Connection, cred Credential, repo *api.Repository, ancestor, head string) (bool, error)
+}

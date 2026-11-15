@@ -98,7 +98,7 @@ spec:
       crd: {}
   - group: agents.railgrid.ai
     name: runs
-    schema: v261018-de5a5683.runs.agents.railgrid.ai
+    schema: v261115-b321d6393.runs.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai
@@ -165,6 +165,15 @@ spec:
   - group: agents.railgrid.ai
     name: agents/inbox
     schema: v260924-87f1980f.inbox.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/inbox-answer
+    schema: v261113-09bc5d78c.inbox-answer.agents.railgrid.ai
     storage:
       virtual:
         reference:

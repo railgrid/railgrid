@@ -31,6 +31,7 @@ import (
 
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"
+	"github.com/railgrid/provider-code/commandhook"
 	"github.com/railgrid/provider-code/controller/shared"
 )
 
@@ -143,6 +144,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	repo.Status.HTMLURL = res.HTMLURL
 	repo.Status.CloneURL = res.CloneURL
 	repo.Status.SSHURL = res.SSHURL
+	repo.Status.CommandsWebhookPath = ""
+	if repo.Spec.CommandsWebhookSecretRef != nil {
+		repo.Status.CommandsWebhookPath = commandhook.Path(string(req.ClusterName), repo.Name)
+	}
 	shared.SetCondition(&repo.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionTrue, codev1alpha1.ReasonReady, "", repo.Generation)
 	if err := c.Status().Update(ctx, &repo); err != nil {
 		return ctrl.Result{}, err

@@ -24,7 +24,10 @@ import (
 	"strings"
 	"time"
 
+	api "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
+
+	"github.com/railgrid/railgrid/pkg/runner"
 )
 
 // ErrSessionCheckpointStale indicates that a concurrent compaction already
@@ -38,6 +41,15 @@ var ErrSessionNotFound = fmt.Errorf("session not found")
 
 // ErrRunClaimConflict means the run no longer matches the claim conditions.
 var ErrRunClaimConflict = errors.New("run is no longer claimable")
+var ErrRunNotParked = errors.New("run is not parked on this inbox item")
+var ErrRunNotFound = errors.New("run not found")
+var ErrInboxItemExists = errors.New("inbox item already exists")
+var ErrInvocationAgentChanged = errors.New("idempotency key belongs to a different Agent identity")
+var ErrRunLeaseLost = errors.New("run execution lease was lost")
+var ErrRunCancellationRequested = errors.New("run cancellation was requested")
+var ErrRunRecoveryUnrecoverable = errors.New("run recovery identity cannot be safely restored")
+
+const RunLeaseDuration = 2 * time.Minute
 
 // ErrRecoveryClaimStale means the observed run changed before recovery claimed it.
 var ErrRecoveryClaimStale = fmt.Errorf("recovery claim is stale")
@@ -149,13 +161,19 @@ type Run struct {
 	// progress is presentation-only, updated independently of lifecycle saves.
 	progress json.RawMessage
 
-	ID          string   `json:"id"`
-	AgentName   string   `json:"agentName"`
-	SessionID   string   `json:"sessionID,omitempty"`
-	Trigger     string   `json:"trigger"`
-	ParentRunID string   `json:"parentRunID,omitempty"`
-	Phase       RunPhase `json:"phase"`
-	Attempt     int      `json:"attempt,omitempty"`
+	ID               string           `json:"id"`
+	AgentName        string           `json:"agentName"`
+	SessionID        string           `json:"sessionID,omitempty"`
+	Limits           *RunLimits       `json:"limits,omitempty"`
+	Trigger          string           `json:"trigger"`
+	ParentRunID      string           `json:"parentRunID,omitempty"`
+	Phase            RunPhase         `json:"phase"`
+	Attempt          int              `json:"attempt,omitempty"`
+	ExecutionOwner   string           `json:"-"`
+	ExecutionLeaseAt time.Time        `json:"-"`
+	ExecutionEpoch   uint64           `json:"-"`
+	AgentUID         string           `json:"-"`
+	RecoveryIdentity RecoveryIdentity `json:"-"`
 	// Retries counts how many times this run was handed back to the queue after
 	// a transient refusal (a runner at capacity, a runner not yet ready) instead
 	// of being failed. It is distinct from Attempt, which counts recoveries of a
@@ -177,7 +195,10 @@ type Run struct {
 	// IdempotencyKey is a caller-supplied de-duplication token, unique per
 	// (org, workspace, agent). An at-least-once caller retrying a delivery gets
 	// the original run back instead of a second one doing the same work twice.
-	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+	IdempotencyKey        string `json:"idempotencyKey,omitempty"`
+	InvocationFingerprint string `json:"-"`
+	InvocationAgentUID    string `json:"-"`
+	InvocationPrevented   bool   `json:"-"`
 	// Delivery records where this run's answer was headed. Persisted because the
 	// goroutine that knew is exactly what a crash destroys: without it, a run that
 	// dies mid-flight can never tell the person waiting in a channel that it is
@@ -209,16 +230,20 @@ type Run struct {
 	// Result is what a repository run produced, once the exported Git result
 	// was fetched and verified. Nil until the run succeeds, and always nil for
 	// a run with no Repository.
-	Result       *RunResult      `json:"result,omitempty"`
-	Message      string          `json:"message,omitempty"`
-	Checkpoint   json.RawMessage `json:"checkpoint,omitempty"`
-	InputTokens  int64           `json:"inputTokens,omitempty"`
-	OutputTokens int64           `json:"outputTokens,omitempty"`
-	USDMicros    int64           `json:"usdMicros,omitempty"` // cost in millionths of a USD
-	CreatedAt    time.Time       `json:"createdAt"`
-	UpdatedAt    time.Time       `json:"updatedAt"`
-	StartedAt    *time.Time      `json:"startedAt,omitempty"`
-	FinishedAt   *time.Time      `json:"finishedAt,omitempty"`
+	Result               *RunResult            `json:"result,omitempty"`
+	StructuredResult     *StructuredResult     `json:"structuredResult,omitempty"`
+	Message              string                `json:"message,omitempty"`
+	Checkpoint           json.RawMessage       `json:"checkpoint,omitempty"`
+	RunnerCleanupBinding *RunnerCleanupBinding `json:"-"`
+	InputTokens          int64                 `json:"inputTokens,omitempty"`
+	OutputTokens         int64                 `json:"outputTokens,omitempty"`
+	USDMicros            int64                 `json:"usdMicros,omitempty"` // cost in millionths of a USD
+	UsageCompleteness    string                `json:"usageCompleteness,omitempty"`
+	CostBasis            string                `json:"costBasis,omitempty"`
+	CreatedAt            time.Time             `json:"createdAt"`
+	UpdatedAt            time.Time             `json:"updatedAt"`
+	StartedAt            *time.Time            `json:"startedAt,omitempty"`
+	FinishedAt           *time.Time            `json:"finishedAt,omitempty"`
 	// WorkedDurationMS is measured model-response and tool-callback time. It is
 	// nil when the run has no authoritative timing measurement; a non-nil zero
 	// is a measured zero and remains distinct from unknown.
@@ -236,6 +261,32 @@ type Run struct {
 	CancelRequestedBy string `json:"-"`
 }
 
+// RunLimits are hard allowances frozen when a run is admitted.
+type RunLimits struct {
+	MaxOutputTokens int64 `json:"maxOutputTokens"`
+}
+
+type RecoveryIdentity string
+
+const (
+	RecoveryIdentityUnknown RecoveryIdentity = ""
+	RecoveryIdentityAgent   RecoveryIdentity = "agent"
+	RecoveryIdentityCaller  RecoveryIdentity = "caller"
+)
+
+// CanResumeAsAgent admits legacy rows only for known unattended triggers.
+func (run Run) CanResumeAsAgent() bool {
+	if run.RecoveryIdentity != RecoveryIdentityUnknown {
+		return run.RecoveryIdentity == RecoveryIdentityAgent
+	}
+	switch run.Trigger {
+	case api.RunTriggerSchedule, api.RunTriggerHeartbeat, api.RunTriggerWakeup, api.RunTriggerEvent, api.RunTriggerChannel:
+		return true
+	default:
+		return false
+	}
+}
+
 // RunRepository is what a repository run was asked to run against. The same
 // shape is projected onto the Run object's spec.repository, so a reader of
 // either knows what ran without being able to clone it.
@@ -245,9 +296,11 @@ type RunRepository struct {
 	// +kubebuilder:validation:MaxLength=128
 	EnvironmentID string `json:"environmentID,omitempty"`
 
-	RepositoryID  string `json:"repositoryID"`
-	BaseCommit    string `json:"baseCommit"`
-	CommitMessage string `json:"commitMessage,omitempty"`
+	RepositoryID  string                `json:"repositoryID"`
+	BaseCommit    string                `json:"baseCommit"`
+	CommitMessage string                `json:"commitMessage,omitempty"`
+	ResultSchema  json.RawMessage       `json:"resultSchema,omitempty"`
+	Artifacts     []runner.ArtifactSpec `json:"artifacts,omitempty"`
 }
 
 // RunResult is a repository run's verified Git result: the snapshot commit on
@@ -261,6 +314,29 @@ type RunResult struct {
 	ResultDigest string `json:"resultDigest"`
 	BundleDigest string `json:"bundleDigest,omitempty"`
 	BundleSize   int64  `json:"bundleSize,omitempty"`
+}
+
+// RunnerCleanupBinding retains only the exact non-secret coordinates needed
+// to inspect cleanup after a harness run becomes terminal and its resume
+// checkpoint is cleared. It never contains a runner credential or clone token.
+type RunnerCleanupBinding struct {
+	ClusterID    string `json:"clusterID"`
+	EdgeKind     string `json:"edgeKind"`
+	EdgeName     string `json:"edgeName"`
+	Service      string `json:"service"`
+	RunnerID     string `json:"runnerID"`
+	TaskID       string `json:"taskID"`
+	AttemptID    string `json:"attemptID"`
+	AttemptEpoch uint64 `json:"attemptEpoch"`
+	AgentUID     string `json:"agentUID"`
+	BackendKey   string `json:"backendKey"`
+}
+
+// StructuredResult reports the independent caller-requested JSON output.
+type StructuredResult struct {
+	State  string `json:"state"`
+	Digest string `json:"digest,omitempty"`
+	Size   int64  `json:"size,omitempty"`
 }
 
 // RunArtifact is one artifact a repository run exported, stored whole so the
@@ -900,9 +976,16 @@ type Store interface {
 	// revive work after the cancel flag or terminal phase is recorded. When
 	// supplied, inboxID must match the parked checkpoint atomically.
 	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time, inboxID ...string) (Run, error)
+	ClaimRunWithLease(ctx context.Context, scope Scope, id, owner string, agentUID string, recovery RecoveryIdentity, now time.Time, inboxID ...string) (Run, error)
+	ClaimFreshRun(ctx context.Context, scope Scope, id string, observed time.Time, owner, agentUID string, recovery RecoveryIdentity, now time.Time) (Run, error)
 	// ClaimRecovery claims exactly the observed Running revision and increments its
 	// recovery attempt atomically. Stale, cancelled and terminal runs are rejected.
-	ClaimRecovery(ctx context.Context, scope Scope, id string, observed time.Time, now time.Time) (Run, error)
+	ClaimRecovery(ctx context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error)
+	ClaimRunClosure(ctx context.Context, scope Scope, id string, observed time.Time, owner string, now time.Time) (Run, error)
+	RenewRunLease(ctx context.Context, scope Scope, id, owner string, epoch uint64, now time.Time) (Run, bool, error)
+	ReleaseRunLease(ctx context.Context, scope Scope, id, owner string, epoch uint64) (bool, error)
+	SaveRunOwned(ctx context.Context, scope Scope, run Run, owner string, epoch uint64, now time.Time) (bool, error)
+	SaveCancelledRun(ctx context.Context, scope Scope, run Run) (bool, error)
 	// RequestCancel durably asks a run to stop: it sets CancelRequested (and
 	// the time of the first request) on the row without touching anything
 	// else, so it cannot race a concurrent checkpoint SaveRun. Idempotent; a
@@ -921,12 +1004,16 @@ type Store interface {
 	// key, so a retried request is answered with the original run rather than
 	// starting the same work again. Scope must name the agent.
 	FindRunByIdempotencyKey(ctx context.Context, scope Scope, key string) (Run, bool, error)
+	// PreventStartRun atomically returns the admitted run for key, or stores an
+	// Aborted tombstone so a delayed invocation with that key cannot start.
+	PreventStartRun(ctx context.Context, scope Scope, key, agentUID, fingerprint string, now time.Time) (Run, bool, error)
 
 	// Run artifacts: what a repository run exported, stored with the run and
 	// deleted with it (DeleteRunData). SaveRunArtifact upserts on (scope, run,
 	// name) and needs the agent on the scope; GetRunArtifact reports ok=false
 	// for a name the run never stored.
 	SaveRunArtifact(ctx context.Context, scope Scope, artifact RunArtifact) error
+	SaveRunArtifactOwned(ctx context.Context, scope Scope, artifact RunArtifact, owner string, epoch uint64, now time.Time) (bool, error)
 	GetRunArtifact(ctx context.Context, scope Scope, runID, name string) (RunArtifact, bool, error)
 
 	// Agent artifacts are immutable caller-owned captures of successful tool
@@ -947,6 +1034,9 @@ type Store interface {
 
 	// Approvals inbox.
 	AddInboxItem(ctx context.Context, scope Scope, item InboxItem) error
+	// AddInboxItemForParkedRun atomically verifies that the run still owns this
+	// pending-approval checkpoint and inserts its reconstructed inbox item.
+	AddInboxItemForParkedRun(ctx context.Context, scope Scope, runID string, item InboxItem) error
 	GetInboxItem(ctx context.Context, scope Scope, id string) (InboxItem, error)
 	ListInbox(ctx context.Context, scope Scope, state InboxItemState) ([]InboxItem, error)
 	ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, resolution InboxResolution) (InboxItem, error)

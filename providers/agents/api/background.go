@@ -53,6 +53,7 @@ import (
 	"github.com/google/uuid"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -435,10 +436,11 @@ func (b *background) scoped(ctx context.Context, clusterID string) (dynamic.Inte
 // construction: it acts as the calling user, and there is none.
 func (b *background) agentAccess(ctx context.Context, dyn dynamic.Interface, clusterID, agentName string) runAccess {
 	return runAccess{
-		Creds:     vwSecrets{dyn},
-		CR:        vwCR{dyn},
-		ClusterID: clusterID,
-		HubToken:  b.agentToken(ctx, dyn, clusterID, agentName),
+		Creds:            vwSecrets{dyn},
+		CR:               vwCR{dyn},
+		ClusterID:        clusterID,
+		HubToken:         b.agentToken(ctx, dyn, clusterID, agentName),
+		RecoveryIdentity: store.RecoveryIdentityAgent,
 	}
 }
 
@@ -547,11 +549,32 @@ func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun,
 	if err != nil {
 		return fmt.Errorf("workspace %s: %w", clusterID, err)
 	}
+	expectedUID := sr.Run.AgentUID
+	if sr.Run.RecoveryIdentity == store.RecoveryIdentityUnknown && sr.Run.CanResumeAsAgent() && expectedUID == "" {
+		// Legacy unattended rows can recover with the Agent UID pinned by their
+		// Run object. A replaced Agent with the same name has a different UID.
+		object, err := dyn.Resource(agentsclient.RunGVR).Get(ctx, sr.Run.ID, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return store.ErrRunRecoveryUnrecoverable
+		}
+		if err != nil {
+			return fmt.Errorf("reading the legacy run binding: %w", err)
+		}
+		for _, owner := range object.GetOwnerReferences() {
+			if owner.APIVersion == agentsv1alpha1.SchemeGroupVersion.String() && owner.Kind == "Agent" && owner.Name == sr.Run.AgentName {
+				expectedUID = string(owner.UID)
+				break
+			}
+		}
+		if expectedUID == "" {
+			return store.ErrRunRecoveryUnrecoverable
+		}
+	}
 	// Claim synchronously so competing reconciles cannot resume the same
 	// revision, and a failed claim cannot silently abandon recovery.
-	claimed, err := b.server.store.ClaimRecovery(ctx, sr.Scope, sr.Run.ID, sr.Run.UpdatedAt, time.Now().UTC())
+	claimed, err := b.server.store.ClaimRecovery(ctx, sr.Scope, sr.Run.ID, sr.Run.UpdatedAt, newExecutionOwner(b.server.cfg.ProcessID), time.Now().UTC())
 	if errors.Is(err, store.ErrRecoveryClaimStale) {
-		return nil // Another writer advanced or settled the run.
+		return err // Retry from the current durable state.
 	}
 	if err != nil {
 		return fmt.Errorf("claiming recovered run: %w", err)
@@ -561,7 +584,7 @@ func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun,
 	go func() {
 		// The detached continuation records its terminal error on the run.
 		_, _ = b.server.resumeRun(context.WithoutCancel(ctx), sr.Scope, sr.Run.ID, access,
-			resumeIntent{FromPhase: store.RunPhaseRunning, RecoveryClaimedAt: claimed.UpdatedAt})
+			resumeIntent{FromPhase: store.RunPhaseRunning, RecoveryClaimedAt: claimed.UpdatedAt, RecoveryAgentUID: expectedUID})
 	}()
 	return nil
 }
@@ -794,23 +817,38 @@ func (b *background) releaseSlot() {
 // changed is who asks, and when: a sweep over every non-terminal run in every
 // tenant, every thirty seconds, is now one reconcile of one object whose own
 // claim went stale.
-func (b *background) RecoverRun(ctx context.Context, clusterID, agentName, runID string) error {
+func (b *background) RecoverRun(ctx context.Context, clusterID, agentName, runID string) (time.Duration, error) {
 	scope := b.scopeFor(ctx, clusterID, agentName)
 	run, err := b.server.store.GetRun(ctx, scope, runID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if runSettled(run.Phase) {
-		return nil
+		return 0, nil
 	}
 	if b.server.liveRuns.has(runID) {
 		// Executing right here after all. A run can sit inside one slow tool
 		// call for far longer than any grace, and killing it because its claim
 		// looks old would be the sweep's oldest bug reintroduced.
-		return nil
+		return 0, nil
 	}
-	b.server.recoverRun(ctx, store.ScopedRun{Scope: scope, Run: run}, b.resumeRecoveredRun, b.notifyStrandedRun)
-	return nil
+	if remaining := time.Until(run.ExecutionLeaseAt.Add(store.RunLeaseDuration)); run.ExecutionOwner != "" && remaining > 0 {
+		return remaining, nil
+	}
+	if b.server.recoverRun(ctx, store.ScopedRun{Scope: scope, Run: run}, b.resumeRecoveredRun, b.notifyStrandedRun) {
+		return 0, nil
+	}
+	current, err := b.server.store.GetRun(ctx, scope, runID)
+	if err != nil {
+		return 0, err
+	}
+	if !runSettled(current.Phase) {
+		if remaining := time.Until(current.ExecutionLeaseAt.Add(store.RunLeaseDuration)); current.ExecutionOwner != "" && remaining > 0 {
+			return remaining, nil
+		}
+		return 0, store.ErrRecoveryClaimStale
+	}
+	return 0, nil
 }
 
 // StopRun closes a run the Run reconciler has decided must not continue: one
@@ -897,6 +935,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	var repository *repositoryAttempt
 	var modelSettings *store.ModelSettings
 	var harnessSettings *store.HarnessSettings
+	var storedRun *store.Run
 	var retries int
 	if job.RunID != "" {
 		stored, gerr := b.server.store.GetRun(ctx, scope, job.RunID)
@@ -910,6 +949,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 			log.Printf("background: job %s/%s: run %s is %s (cancelRequested=%t); not starting it", job.Kind, job.SourceName, job.RunID, stored.Phase, stored.CancelRequested)
 			return nil
 		}
+		storedRun = &stored
 		// A repository run picked up here never has its clone source any
 		// more — that died with the process that accepted it — so a fresh
 		// dispatch of one fails with the retry message rather than
@@ -921,9 +961,14 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		// was handed back, which is what bounds handing it back again.
 		retries = stored.Retries
 	}
+	var runLimits *agentsv1alpha1.RunLimits
+	if storedRun != nil {
+		runLimits = runLimitsForStored(storedRun.Limits)
+	}
 	tr := taskRun{
 		Scope: scope, Agent: agent, RunID: job.RunID,
-		SessionID: effectiveSessionID(job.SessionID, job.Trigger), Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
+		PreAdmitted: storedRun != nil,
+		SessionID:   effectiveSessionID(job.SessionID, job.Trigger), Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
 		NotifyChannel: job.NotifyChannel,
 		// Recorded on the run so a crash mid-flight can still be reported to
 		// whoever is waiting — the goroutine that knows this is the thing a
@@ -931,6 +976,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		ReplyTarget:     job.ReplyTarget,
 		DeliveryKind:    string(job.Kind),
 		Repository:      repository,
+		Limits:          runLimits,
 		HarnessSettings: harnessSettings,
 		ModelSettings:   modelSettings,
 		Retries:         retries,
