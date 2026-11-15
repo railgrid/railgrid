@@ -168,20 +168,6 @@ html.light .contour-grid {
   animation: stagger-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
- * Live status dot. Consumed globally by host StatusBadge AND by the
- * self-contained providers' own StatusBadge copies (app-studio, code,
- * databricks) via the light DOM — NEVER delete this selector. Softened from
- * the old glowing pulse to a quiet opacity pulse.
- * ────────────────────────────────────────────────────────────────────────── */
-@keyframes live-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-.live-dot {
-  animation: live-pulse 2.5s ease-in-out infinite;
-}
-
 /* ── Shimmer (skeleton loading) ── */
 @keyframes shimmer {
   0% { background-position: -200% 0; }
