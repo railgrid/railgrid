@@ -375,7 +375,7 @@ describe('public Agents shell routing', () => {
     push.mockClear()
     replace.mockClear()
 
-    buttonWithText(element, 'New connection').click()
+    element.querySelector<HTMLAnchorElement>('.k-resource-page__actions a[href="#/create/connection"]')!.click()
     await settleVue()
     expect(location.hash).toBe('#/create/connection')
     expect(push).toHaveBeenCalledTimes(1)
@@ -736,6 +736,9 @@ describe('public Agents shell routing', () => {
     name.dispatchEvent(new InputEvent('input', { bubbles: true }))
     task.value = 'Post the daily digest'
     task.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    const cadence = dialog.querySelector<HTMLInputElement>('input[name="schedule"]')!
+    cadence.value = '0 9 * * *'
+    cadence.dispatchEvent(new InputEvent('input', { bubbles: true }))
 
     buttonWithText(dialog, 'Create schedule').click()
     await settleVue()
