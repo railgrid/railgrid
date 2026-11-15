@@ -29,7 +29,7 @@ var selfSubjectReviews = schema.GroupVersionResource{
 // resolveAuthenticatedKCPSubject asks the caller-authenticated API server for
 // the Kubernetes principal attached to this bearer. The hub's browser user ID
 // is a Railgrid User UUID and is not necessarily the username KCP stores on a
-// data-plane request, so it cannot own upload bytes or session grants directly.
+// data-plane request, so it cannot own upload bytes directly.
 func (s *Server) resolveAuthenticatedKCPSubject(ctx context.Context, id identity) (string, error) {
 	if s == nil || s.tenant == nil || strings.TrimSpace(id.clusterID) == "" || strings.TrimSpace(id.token) == "" {
 		return "", errors.New("a current caller bearer is required to resolve Agent attachment ownership")

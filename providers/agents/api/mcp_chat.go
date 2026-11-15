@@ -175,24 +175,15 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 			return chatRefused(errBadRequest("conversation attachment history could not be verified"))
 		}
 		// The Hub user ID in id.user is not the KCP username attached to the
-		// caller's bearer. Resolve that canonical subject once and use it for both
-		// attachment ownership and the first attended turn's session owner.
-		//
-		// A turn whose caller cannot be resolved is refused, not run
-		// anonymously: the first turn of a session records its owner, and a
-		// session stored without one could never be claimed afterwards.
-		kcpSubject, identityErr := s.resolveAuthenticatedKCPSubject(ctx, id)
-		if identityErr != nil {
-			if len(attachmentRefs) > 0 {
-				return chatRefused(errBadRequest("the current caller identity could not be verified for conversation attachments"))
-			}
-			return chatRefused(errUnavailable("the current caller identity could not be verified; retry the message"))
-		}
+		// caller's bearer, so attachment ownership resolves that subject.
 		attachmentOwner := ""
 		if len(attachmentRefs) > 0 || len(historicalAttachmentOwners) > 0 {
-			attachmentOwner = kcpSubject
-			// History from another uploader is rendered as metadata by the
-			// hydrator, never a reason to lock a shared session.
+			attachmentOwner, err = s.resolveAuthenticatedKCPSubject(ctx, id)
+			if err != nil && len(attachmentRefs) > 0 {
+				return chatRefused(errBadRequest("the current caller identity could not be verified for conversation attachments"))
+			}
+			// History from another uploader (or an unverified caller) is rendered
+			// as metadata by the hydrator, never a reason to lock a shared session.
 		}
 		if len(attachmentRefs) > 0 {
 			if err := s.verifyAgentAttachmentReceipts(ctx, id.scope(agent.Name), string(agent.UID), sessionID, attachmentOwner, attachmentRefs); err != nil {
@@ -231,10 +222,7 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 		run := taskRun{
 			Scope: id.scope(agent.Name), Agent: agent,
 			RunID: uuid.NewString(), SessionID: sessionID, Task: task, Trigger: agentsv1alpha1.RunTriggerChat,
-			// Session ownership is optional when SelfSubjectReview is unavailable;
-			// ordinary chat continues with the prior shared-session behavior.
-			SessionOwnerSubject: kcpSubject,
-			ArtifactOwner:       id.user, ArtifactRefs: append([]store.AgentArtifactReference(nil), in.ArtifactRefs...),
+			ArtifactOwner: id.user, ArtifactRefs: append([]store.AgentArtifactReference(nil), in.ArtifactRefs...),
 			AttachmentOwner: attachmentOwner, AttachmentCaller: attachmentOwner,
 			AttachmentRefs: append([]store.AgentAttachmentReceipt(nil), attachmentRefs...),
 			ContentParts:   append([]agentChatContentPart(nil), parts...), SkillRefs: append([]agentSkillSelection(nil), in.SkillRefs...),

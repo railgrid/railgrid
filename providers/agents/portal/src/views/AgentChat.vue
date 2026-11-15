@@ -41,7 +41,6 @@ import { waitForAgentConfigSaves } from '../vue/config-save-queue'
 import { chatModelRequestKey, serializeChatModelRequest } from '../vue/chatModelRequestQueue'
 import { useAgentsRuntime, useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import ChatMessageView from './ChatMessage.vue'
-import SessionNotifications from '../components/SessionNotifications.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
 import AgentApprovalCard from '../components/AgentApprovalCard.vue'
 import { skippedQuestionResponse } from '../question-presentation'
@@ -52,7 +51,6 @@ import { agentChatDraftStorageKey, clearAgentChatDraft, readAgentChatDraft, writ
 import { assistantAttachmentContentTypeKind } from '../agentkit/composerAttachments'
 
 const domID = useAgentDOMID()
-const sessionNotificationsPanelID = domID('session-notifications-panel')
 
 const LIVE_RUN_PHASES = new Set(['Pending', 'Running', 'PendingApproval'])
 const TERMINAL_RUN_PHASES = new Set(['Succeeded', 'Failed', 'Aborted'])
@@ -180,12 +178,6 @@ const sessionsError = ref<string | null>(null)
 const sessionsHasSnapshot = ref(false)
 const sessionsLoading = ref(false)
 const sessionID = ref('')
-const sessionNotificationsOpen = ref(false)
-const sessionNotificationsToggle = ref<HTMLButtonElement | null>(null)
-function closeSessionNotifications(): void {
-  sessionNotificationsOpen.value = false
-  void nextTick(() => sessionNotificationsToggle.value?.focus())
-}
 const selectingSessionID = ref('')
 watch(sessionID, () => {
   renameError.value = ''
@@ -3396,28 +3388,6 @@ defineExpose({
           action-busy-label="Retrying…"
           :action-busy="messagesLoading"
           @action="loadMessages(sessionID)"
-        />
-
-        <div class="agents-session-notifications-control">
-          <button
-            ref="sessionNotificationsToggle"
-            type="button"
-            class="k-btn k-btn--ghost secondary"
-            :disabled="!sessionID"
-            :aria-expanded="sessionNotificationsOpen"
-            :aria-controls="sessionNotificationsPanelID"
-            @click="sessionNotificationsOpen = !sessionNotificationsOpen"
-          >
-            {{ sessionNotificationsOpen ? 'Hide session notifications' : 'Session notifications' }}
-          </button>
-        </div>
-        <SessionNotifications
-          v-if="sessionNotificationsOpen"
-          :id="sessionNotificationsPanelID"
-          :api="api"
-          :agent="name"
-          :session="sessionID"
-          @close="closeSessionNotifications"
         />
 
         <div
