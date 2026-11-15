@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 61;
+  --railgrid-ui-core-version: 62;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1664,6 +1664,8 @@ html.light [data-k-tip]::after {
   align-items: flex-end;
   gap: 8px;
   max-width: 360px;
+  max-height: calc(100dvh - var(--k-toast-bottom-offset, 16px) - 16px);
+  overflow-y: auto;
 }
 .k-toast {
   display: flex;
@@ -1687,13 +1689,11 @@ html.light [data-k-tip]::after {
 .k-toast--warning .k-toast__icon { color: var(--color-warning, #f0a63a); }
 .k-toast--error .k-toast__icon { color: var(--color-danger, #ff5d5d); }
 .k-toast--info .k-toast__icon { color: var(--color-accent, #8b6bff); }
-.k-toast--warning { border-color: var(--color-warning, #f0a63a); }
-.k-toast--error { border-color: var(--color-danger, #ff5d5d); }
 .k-toast__message { flex: 1; overflow-wrap: anywhere; }
 .k-toast__action {
   flex: none;
-  border: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 35%, transparent);
-  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--color-accent-hover, #a18aff);
   border-radius: 4px;
   min-height: 24px;
@@ -1703,6 +1703,18 @@ html.light [data-k-tip]::after {
   font-weight: 600;
   cursor: pointer;
 }
+.k-toast__link {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--color-accent-hover, #a18aff);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 4px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.k-toast__link:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
 .k-toast__action:hover {
   background: color-mix(in srgb, var(--color-accent, #8b6bff) 22%, transparent);
   color: var(--color-accent-hover, #a18aff);
@@ -1722,6 +1734,7 @@ html.light [data-k-tip]::after {
 }
 .k-toast__dismiss svg { width: 12px; height: 12px; }
 .k-toast__dismiss:hover { background: var(--color-surface-hover, #1e2033); color: inherit; }
+.k-toast__dismiss:focus-visible, .k-toast__action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 
 /* ── Vue toast host and contextual notifications ──────────────────────────
  * Vue providers share a document-level queue. The host owns one visual stack;
@@ -3503,6 +3516,7 @@ railgrid-resource-table-filter { display: contents; }
   .k-toast-host .k-toast,
   .k-inline-notification { gap: 7px; padding: 9px 10px; }
   .k-toast-host .k-toast__action,
+  .k-toast-host .k-toast__link,
   .k-inline-notification__action { max-inline-size: 38%; overflow-wrap: anywhere; }
 }
 @media (pointer: coarse), (any-pointer: coarse) {
@@ -3519,6 +3533,7 @@ railgrid-resource-table-filter { display: contents; }
   }
   .k-toast__action,
   .k-toast-host .k-toast__action,
+  .k-toast-host .k-toast__link,
   .k-toast-host .k-toast__dismiss,
   .k-inline-notification__action,
   .k-inline-notification__dismiss {
