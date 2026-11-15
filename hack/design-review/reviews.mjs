@@ -29,6 +29,7 @@ export const reviews = {
   'components.button': review('button', 'Button states', 'Compare button priority, disabled and busy feedback.', [[css]]),
   'components.textarea': review('textarea', 'Textarea states', 'Edit and vertically resize the instructions field. Compare the disabled, read-only and invalid states.', [[css]]),
   'components.text-input': review('text-input', 'Text input states', 'Compare a labeled field, its error and the disabled state.', [[css]]),
+  'components.ai-interrupt': review('studio-clarification', 'Clarification and retry', 'Answer both questions, submit, and retry the simulated failure.', [['providers/app-studio/portal/src/ReviewRequest.vue']]),
   'components.action-menu': review('navigation', 'Row, labeled, and split menus', 'Open the action menu with the keyboard. Compare primary, split, busy, and disabled variants; press Escape and check that focus returns to the trigger.', [[vue('ActionMenu'), 'primaryLabel?:']]),
   'components.menu': review('navigation', 'Menu geometry and keyboard path', 'Open a menu at the right edge in the narrow frame. Try Arrow keys, Home, End, Escape, and an unavailable item.', [[css, '.k-menu-item'], [vue('ActionMenu'), 'role="menu"']]),
   'components.tabs': review('route-tabs', 'Provider and secondary navigation', 'Choose Connections or Usage & cost. Compare the primary underline and the smaller secondary tabs. Route links use sample destinations.', [[vue('Tabs'), 'aria-current'], [core('tabs.ts'), 'export function tabClass']]),
