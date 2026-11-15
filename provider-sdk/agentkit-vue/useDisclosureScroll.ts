@@ -60,7 +60,8 @@ export function useDisclosureScroll(): (event: MouseEvent) => void {
         // contents already have their final height; follow the wrapper's
         // visible edge instead. An ancestor containing the trigger is not
         // this disclosure's animation boundary.
-        const disclosure = panel.closest<HTMLElement>('.k-ai-disclosure')
+        const disclosure = panel.querySelector<HTMLElement>(':scope > .k-ai-disclosure') ??
+          panel.closest<HTMLElement>('.k-ai-disclosure')
         const revealed = disclosure && !disclosure.contains(button) ? disclosure : panel
         const viewport = scroller.getBoundingClientRect()
         const viewportTop = viewport.top + scroller.clientTop + 8

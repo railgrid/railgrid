@@ -145,7 +145,13 @@ watch(
     () => props.context?.user?.userId || props.context?.user?.sub || props.context?.user?.email,
     () => props.context?.fetch,
     () => typeof props.context?.fetch === 'function' ? null : props.context?.token],
-  () => {
+  ([tenant, org, workspace, user, fetch, token], [previousTenant, previousOrg, previousWorkspace, previousUser, previousFetch]) => {
+    const sameCaller = tenant === previousTenant && org === previousOrg && workspace === previousWorkspace &&
+      user === previousUser && fetch === previousFetch && Boolean(user && token)
+    if (sameCaller) {
+      load('background')
+      return
+    }
     retryGeneration += 1
     retryPending.value = false
     retryError.value = null

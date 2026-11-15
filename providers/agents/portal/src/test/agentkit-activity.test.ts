@@ -65,7 +65,9 @@ describe('AgentKit activity feed presentation', () => {
     expect(rowsIn(view)[0]?.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')?.getAttribute('aria-expanded')).toBe('false')
     expect(rowsIn(view)[1]?.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')?.getAttribute('aria-expanded')).toBe('true')
     expect(text(view.element.querySelector('#activity-order-row-b-details'))).toBe('Details for row-b: Write the file')
-    expect(view.element.querySelector('#activity-order-row-a-details')).toBeNull()
+    const collapsed = view.element.querySelector('#activity-order-row-a-details')
+    expect(collapsed).not.toBeNull()
+    expect(text(collapsed)).toBe('')
 
     groups.value = [{
       key: 'ordered',
