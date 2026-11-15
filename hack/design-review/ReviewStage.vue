@@ -53,6 +53,7 @@ const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
   <ProgressReviewStage v-else-if="stage === 'progress'" />
   <TimestampStage v-else-if="stage === 'timestamp'" />
   <DisclosureReviewStage v-else-if="stage === 'disclosure'" />
+  <a v-else-if="stage === 'product'" class="review-source-link" :href="entry.review.product.href">{{ entry.review.product.label }}</a>
   <Lens v-else :stage="stage" :entry="entry" :catalog="catalog" />
   <section v-if="entry.id === 'design.foundations.colors'" class="spec-stack" aria-labelledby="materials-heading">
     <h2 id="materials-heading">Materials and surfaces</h2>
