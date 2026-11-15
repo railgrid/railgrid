@@ -133,12 +133,14 @@ function followInstancesLink(event: MouseEvent): void {
       <ResourceTableFilter
         v-if="categoryOptions.length > 1"
         v-model="category"
+        class="catalog-filter"
         :definition="{ key: 'category', label: 'Category' }"
         :options="categoryOptions"
       />
       <ResourceTableFilter
         v-if="cloudOptions.length > 0"
         v-model="cloud"
+        class="catalog-filter"
         :definition="{ key: 'cloud', label: 'Cloud' }"
         :options="cloudOptions"
       />

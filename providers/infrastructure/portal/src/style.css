@@ -76,7 +76,7 @@ railgrid-provider-infrastructure .filters {
 }
 
 @media (max-width: 640px) {
-  railgrid-provider-infrastructure .filters > .k-table__filter {
+  railgrid-provider-infrastructure .catalog-filter {
     flex-basis: 100%;
   }
 }
