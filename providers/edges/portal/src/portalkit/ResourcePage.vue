@@ -187,15 +187,15 @@ watch(() => props.error, error => {
         placeholder when their page has a more specific layout. -->
       <slot name="loading">
         <div v-if="variant !== 'collection' && $slots.summary" class="k-resource-page__loading-summary" aria-hidden="true">
-          <div v-for="n in 3" :key="n" class="k-resource-page__loading-stat"><span class="shimmer k-resource-page__skeleton k-resource-page__skeleton--short k-resource-page__skeleton--small" /><span class="shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" /><span class="shimmer k-resource-page__skeleton k-resource-page__skeleton--wide k-resource-page__skeleton--small" /></div>
+          <div v-for="n in 3" :key="n" class="k-resource-page__loading-stat"><span class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--short k-resource-page__skeleton--small" /><span class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" /><span class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--wide k-resource-page__skeleton--small" /></div>
         </div>
         <div v-if="variant === 'collection'" class="k-resource-page__loading-list" aria-hidden="true">
-          <div v-for="n in 4" :key="n" class="k-resource-page__loading-row"><span class="shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" /><span class="shimmer k-resource-page__skeleton k-resource-page__skeleton--short" /></div>
+          <div v-for="n in 4" :key="n" class="k-resource-page__loading-row"><span class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" /><span class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--short" /></div>
         </div>
         <div v-else class="k-resource-page__loading-section" aria-hidden="true">
-          <div class="shimmer k-resource-page__skeleton k-resource-page__skeleton--short" />
-          <div class="shimmer k-resource-page__skeleton k-resource-page__skeleton--wide" />
-          <div class="shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" />
+          <div class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--short" />
+          <div class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--wide" />
+          <div class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" />
         </div>
       </slot>
     </div>

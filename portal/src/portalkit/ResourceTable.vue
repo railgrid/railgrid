@@ -1142,15 +1142,15 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
       :data-pending-hidden="showInitialLoading ? undefined : 'true'"
     >
       <div v-if="hasConfiguredControls" class="k-table__loading-controls" aria-hidden="true">
-        <div v-if="searchable" class="shimmer k-table__loading-control k-table__loading-control--search" />
-        <div v-for="filter in filters" :key="filter.key" class="shimmer k-table__loading-control k-table__loading-control--filter" />
-        <div v-if="hasFacetFilters" class="shimmer k-table__loading-control k-table__loading-control--clear" />
+        <div v-if="searchable" class="k-loading-shimmer k-table__loading-control k-table__loading-control--search" />
+        <div v-for="filter in filters" :key="filter.key" class="k-loading-shimmer k-table__loading-control k-table__loading-control--filter" />
+        <div v-if="hasFacetFilters" class="k-loading-shimmer k-table__loading-control k-table__loading-control--clear" />
       </div>
       <div class="k-table__loading-head" :style="{ '--k-table-loading-columns': skeletonColumns.length }">
         <div
           v-for="(column, index) in skeletonColumns"
           :key="column.key"
-          class="shimmer k-table__skeleton"
+          class="k-loading-shimmer k-table__skeleton"
           :class="index === 0 ? 'k-table__skeleton--short' : ''"
         />
       </div>
@@ -1163,7 +1163,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         <div
           v-for="(column, index) in skeletonColumns"
           :key="column.key"
-          class="shimmer k-table__skeleton"
+          class="k-loading-shimmer k-table__skeleton"
           :class="[
             index === 0 ? 'k-table__skeleton--wide' : '',
             index === 1 ? 'k-table__skeleton--mid' : '',

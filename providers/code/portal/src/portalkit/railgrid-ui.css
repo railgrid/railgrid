@@ -1910,8 +1910,7 @@ html.light [data-k-tip]::after {
   pointer-events: none;
   visibility: hidden;
 }
-.k-resource-page__loading .shimmer,
-.k-table__loading .shimmer {
+.k-loading-shimmer {
   background: linear-gradient(90deg, var(--color-surface-overlay, #171927) 25%, var(--color-surface-hover, #1e2033) 50%, var(--color-surface-overlay, #171927) 75%);
   background-size: 200% 100%;
   animation: k-placeholder-shimmer 1.8s ease-in-out infinite;
@@ -2780,8 +2779,7 @@ railgrid-resource-table-filter { display: contents; }
 
 @media (prefers-reduced-motion: reduce) {
   .k-delayed-loading { transition-duration: 1ms; }
-  .k-resource-page__loading .shimmer,
-  .k-table__loading .shimmer { animation: none; }
+  .k-loading-shimmer { animation: none; }
   .k-table-action__icon--expand { transition-duration: 1ms; }
   .k-loading-reveal { animation-duration: 1ms; }
 }
