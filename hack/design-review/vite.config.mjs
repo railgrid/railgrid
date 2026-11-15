@@ -1,6 +1,8 @@
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import vue from '../../portal/node_modules/@vitejs/plugin-vue/dist/index.mjs'
+import tailwind from '../../portal/node_modules/@tailwindcss/vite/dist/index.mjs'
 // Keep the executable design verifier outside Vite's config bundler (it has a shebang).
 // Version the import so a Vite config restart reloads the catalog and review mappings.
 const catalogURL = new URL('./catalog.mjs', import.meta.url)
@@ -9,10 +11,6 @@ const { reviewCatalog, repo } = await import(catalogURL.href)
 
 const root = fileURLToPath(new URL('.', import.meta.url))
 const require = createRequire(resolve(repo, 'portal/package.json'))
-const [{ default: vue }, { default: tailwind }] = await Promise.all([
-  import(require.resolve('@vitejs/plugin-vue')),
-  import(require.resolve('@tailwindcss/vite')),
-])
 const aliases = Object.fromEntries([
   'vue', 'pinia', 'vue-router', 'lucide-vue-next', 'markdown-it',
   '@fontsource-variable/instrument-sans', '@fontsource-variable/archivo/wdth.css',
@@ -44,6 +42,6 @@ export default {
     outDir: resolve(repo, '.kcp/design-review-dist'),
     emptyOutDir: true,
     target: 'esnext',
-    rollupOptions: { input: { review: resolve(root, 'index.html'), onboarding: resolve(root, 'onboarding.html'), dex: resolve(root, 'dex.html'), handoff: resolve(root, 'handoff.html') } },
+    rollupOptions: { input: { review: resolve(root, 'index.html'), onboarding: resolve(root, 'onboarding.html'), dex: resolve(root, 'dex.html'), handoff: resolve(root, 'handoff.html'), materials: resolve(root, 'material-sample.html') } },
   },
 }
