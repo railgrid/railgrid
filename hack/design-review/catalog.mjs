@@ -4,6 +4,7 @@ import { dirname, extname, posix, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateDesignDocs } from '../verify-design-docs.mjs'
 const { reviews } = await import(new URL('./reviews.mjs?loaded=' + Date.now(), import.meta.url).href)
+const { adoption } = await import(new URL('./adoption.mjs?loaded=' + Date.now(), import.meta.url).href)
 
 export const repo = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const require = createRequire(resolve(repo, 'portal/package.json'))
@@ -25,7 +26,14 @@ function localLink(href, path) {
   return { file, fragment }
 }
 
-export function reviewCatalog() {
+export function requireAssetContract(documented, kit, name) {
+  const key = kit + '/' + name
+  const contract = documented.get(key)
+  if (!contract?.entry) throw new Error('Missing explicit design contract for distributed asset: ' + key)
+  return contract
+}
+
+export function reviewCatalog({ manifestCode = read('hack/sync-portalkit.sh') } = {}) {
   const { catalog, diagnostics } = validateDesignDocs()
   if (diagnostics.length) throw new Error(JSON.stringify(diagnostics, null, 2))
   const documents = catalog.documents
@@ -90,6 +98,7 @@ export function reviewCatalog() {
 
   const ids = new Set(documents.map(doc => doc.id.replace(/^design\./, '')))
   for (const id of ids) if (!reviews[id]) throw new Error('Missing review fixture: design.' + id)
+  for (const id of Object.keys(adoption)) if (!ids.has(id)) throw new Error('Orphaned adoption evidence: design.' + id)
   for (const id of Object.keys(reviews)) if (!ids.has(id)) throw new Error('Orphaned review fixture: design.' + id)
   const entries = documents.map(doc => {
     const review = reviews[doc.id.slice('design.'.length)]
@@ -97,6 +106,7 @@ export function reviewCatalog() {
       ...doc,
       ...documentBody(doc),
       review: { ...review, sources: (review.sources ?? []).map(([path, needle]) => source(path, needle)) },
+      adoption: (adoption[doc.id.slice('design.'.length)] ?? []).map(([label, path, needle]) => ({ label, ...source(path, needle) })),
       sources: doc.canonicalSource.map(ref => ({ ...source(ref.path), role: ref.role, label: ref.label })),
     }
   })
@@ -115,7 +125,9 @@ export function reviewCatalog() {
   let kit = 'portalkit'
   for (const [i, line] of rows(read(assetDoc)).entries()) {
     if (line === '## Vue assets') kit = 'portalkit-vue'
-    if (line === '## Optional AgentKit assets') kit = 'agentkit-vue'
+    if (line === '## Shared plain assets in Vue portals') kit = 'portalkit'
+    if (line === '### AgentKit Vue assets') kit = 'agentkit-vue'
+    if (line === '### AgentKit plain assets') kit = 'agentkit'
     const match = line.match(/^\| `([^`]+)` \| \[([^\]]+)\]\(([^)]+)\)/)
     if (!match) continue
     const [, name, contract, target] = match
@@ -128,31 +140,20 @@ export function reviewCatalog() {
     ['VUE_TOAST_FILES', 'portalkit-vue'], ['AGENTS_LEGACY_FILES', 'portalkit'],
     ['AGENTKIT_FILES', 'agentkit'], ['AGENTKIT_VUE_FILES', 'agentkit-vue'],
   ]
-  const fallbacks = {
-    'page-context.ts': 'components.provider-agent-context',
-    'navigation.ts': 'patterns.navigation-and-feedback',
-    'kube.ts': 'components.portalkit-support',
-    'page-state.ts': 'patterns.resource-reads',
-    'ResourceBoard.vue': 'components.resource-board',
-    'ResourceTableExpandButton.vue': 'components.resource-table-actions',
-    'ResourceTableActionTooltip.vue': 'components.resource-table-actions',
-    'useUserLabels.ts': 'components.resource-table',
-  }
   const assets = new Map()
-  const manifestCode = read(manifest)
   for (const [array, kit] of distribution) {
     const match = manifestCode.match(new RegExp('^' + array + '=\\(([^)]*)\\)', 'm'))
     if (!match) throw new Error('Missing distribution array: ' + array)
     for (const name of match[1].trim().split(/\s+/)) {
       const key = kit + '/' + name
       if (assets.has(key)) continue
-      const found = documented.get(key) ?? (kit === 'agentkit' ? documented.get('agentkit-vue/' + name) : undefined)
-      const fallback = fallbacks[name] ?? (kit.startsWith('agentkit') ? 'components.ai-conversation' : 'components.portalkit-support')
-      const doc = entries.find(entry => entry.id === (found?.entry ?? 'design.' + fallback))
+      const found = requireAssetContract(documented, kit, name)
+      const doc = entries.find(entry => entry.id === found.entry)
+      if (!doc) throw new Error('Unknown design contract for distributed asset: ' + key)
       const begin = rows(manifestCode.slice(0, match.index)).length
       const line = begin + rows(match[0]).findIndex(line => line.trim().split(/[()\s]+/).includes(name))
       assets.set(key, {
-        name, contract: found?.contract ?? doc.title, entry: doc.id, spec: found?.spec,
+        name, contract: found.contract, entry: doc.id, spec: found.spec,
         source: source('provider-sdk/' + key), manifest: source(manifest + '#L' + line),
       })
     }

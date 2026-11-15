@@ -1,0 +1,3 @@
+@import "../../portal/src/assets/main.css";
+@source "../../portal/src/components/TerminalDock.vue";
+@source "../../portal/src/components/TerminalInstance.vue";

@@ -27,6 +27,26 @@ const TooltipReviewStage = defineAsyncComponent(() => import('./TooltipReviewSta
 const ProgressReviewStage = defineAsyncComponent(() => import('./ProgressReviewStage.vue'))
 const TimestampStage = defineAsyncComponent(() => import('./TimestampStage.vue'))
 const DisclosureReviewStage = defineAsyncComponent(() => import('./DisclosureReviewStage.vue'))
+const ConditionsStage = defineAsyncComponent(() => import('./ConditionsStage.vue'))
+const BackLinkStage = defineAsyncComponent(() => import('./BackLinkStage.vue'))
+const SectionCardStage = defineAsyncComponent(() => import('./SectionCardStage.vue'))
+const StatCardsStage = defineAsyncComponent(() => import('./StatCardsStage.vue'))
+const InlineNotificationStage = defineAsyncComponent(() => import('./InlineNotificationStage.vue'))
+const AIExecutionStage = defineAsyncComponent(() => import('./AIExecutionStage.vue'))
+const SkillCatalogStage = defineAsyncComponent(() => import('./SkillCatalogStage.vue'))
+const ModelReasoningStage = defineAsyncComponent(() => import('./ModelReasoningStage.vue'))
+const TokenizedListStage = defineAsyncComponent(() => import('./TokenizedListStage.vue'))
+const TerminalStage = defineAsyncComponent(() => import('./TerminalStage.vue'))
+const DigestScheduleStage = defineAsyncComponent(() => import('./DigestScheduleStage.vue'))
+const LinkStage = defineAsyncComponent(() => import('./LinkStage.vue'))
+const DashboardTileStage = defineAsyncComponent(() => import('./DashboardTileStage.vue'))
+const LayeringStage = defineAsyncComponent(() => import('./LayeringStage.vue'))
+const EdgesDashboardTileStage = defineAsyncComponent(() => import('./EdgesDashboardTileStage.vue'))
+const CodeDashboardTileStage = defineAsyncComponent(() => import('./CodeDashboardTileStage.vue'))
+const InfrastructureDashboardTileStage = defineAsyncComponent(() => import('./InfrastructureDashboardTileStage.vue'))
+const AppStudioDashboardTileStage = defineAsyncComponent(() => import('./AppStudioDashboardTileStage.vue'))
+const PlainDashboardTileStage = defineAsyncComponent(() => import('./PlainDashboardTileStage.vue'))
+const SpinnerStage = defineAsyncComponent(() => import('./SpinnerStage.vue'))
 const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
 </script>
 <template>
@@ -54,11 +74,31 @@ const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
   <TimestampStage v-else-if="stage === 'timestamp'" />
   <DisclosureReviewStage v-else-if="stage === 'disclosure'" />
   <a v-else-if="stage === 'product'" class="review-source-link" :href="entry.review.product.href">{{ entry.review.product.label }}</a>
+  <ConditionsStage v-else-if="stage === 'conditions'" />
+  <BackLinkStage v-else-if="stage === 'back-link'" />
+  <SectionCardStage v-else-if="stage === 'section-card'" />
+  <StatCardsStage v-else-if="stage === 'stat-cards'" />
+  <InlineNotificationStage v-else-if="stage === 'inline-notification'" />
+  <AIExecutionStage v-else-if="stage === 'ai-execution'" />
+  <SkillCatalogStage v-else-if="stage === 'skill-catalog'" />
+  <ModelReasoningStage v-else-if="stage === 'model-reasoning'" />
+  <TokenizedListStage v-else-if="stage === 'tokenized-list'" />
+  <TerminalStage v-else-if="stage === 'terminal-dock'" />
+  <DigestScheduleStage v-else-if="stage === 'digest-schedule'" />
+  <LinkStage v-else-if="stage === 'link'" />
+  <DashboardTileStage v-else-if="stage === 'dashboard-tile'" />
+  <LayeringStage v-else-if="stage === 'layering'" />
+  <SpinnerStage v-else-if="stage === 'spinner'" />
   <Lens v-else :stage="stage" :entry="entry" :catalog="catalog" />
   <section v-if="entry.id === 'design.foundations.colors'" class="spec-stack" aria-labelledby="materials-heading">
     <h2 id="materials-heading">Materials and surfaces</h2>
     <Lens stage="materials" :entry="entry" :catalog="catalog" />
   </section>
+  <EdgesDashboardTileStage v-if="entry.id === 'design.components.dashboard-tile'" />
+  <CodeDashboardTileStage v-if="entry.id === 'design.components.dashboard-tile'" />
+  <InfrastructureDashboardTileStage v-if="entry.id === 'design.components.dashboard-tile'" />
+  <AppStudioDashboardTileStage v-if="entry.id === 'design.components.dashboard-tile'" />
+  <PlainDashboardTileStage v-if="entry.id === 'design.components.dashboard-tile'" />
   <details v-if="entry.id === 'design.foundations.recipes'" class="review-outline">
     <summary>All documented recipe selectors</summary>
     <div class="spec-scroll"><table class="spec-data"><thead><tr><th>Selector</th><th>Contract</th></tr></thead><tbody>
