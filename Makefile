@@ -817,7 +817,7 @@ verify-ci-selection: ## Test CI change selection and completion gates (requires 
 	@python3 -m unittest discover -s hack/ci -p 'test_*.py' -v
 
 verify-workflows: $(ACTIONLINT) ## Validate CI workflows with pinned Actionlint
-	@$(ACTIONLINT) -shellcheck= -pyflakes= .github/workflows/ci.yaml .github/workflows/e2e.yaml .github/workflows/images.yaml .github/workflows/helm-images.yaml .github/workflows/macos.yaml .github/workflows/auth-node-release.yaml
+	@$(ACTIONLINT) -shellcheck= -pyflakes= .github/workflows/ci.yaml .github/workflows/e2e.yaml .github/workflows/images.yaml .github/workflows/helm-images.yaml .github/workflows/main-builds.yaml .github/workflows/macos.yaml .github/workflows/auth-node-release.yaml
 
 $(ACTIONLINT):
 	GOBIN=$(TOOLS_GOBIN_DIR) $(GO_INSTALL) github.com/rhysd/actionlint/cmd/actionlint actionlint $(ACTIONLINT_VER)
