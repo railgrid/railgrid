@@ -8,6 +8,7 @@ const Core = defineAsyncComponent(() => import('./CoreStage.vue'))
 const Resource = defineAsyncComponent(() => import('./ResourceStage.vue'))
 const AI = defineAsyncComponent(() => import('./AIStage.vue'))
 const SpacingStage = defineAsyncComponent(() => import('./SpacingStage.vue'))
+const AIActionRowStage = defineAsyncComponent(() => import('./AIActionRowStage.vue'))
 const ButtonStage = defineAsyncComponent(() => import('./ButtonStage.vue'))
 const TextFieldStage = defineAsyncComponent(() => import('./TextFieldStage.vue'))
 const SelectFieldStage = defineAsyncComponent(() => import('./SelectFieldStage.vue'))
@@ -18,6 +19,7 @@ const Lens = defineAsyncComponent(() => import('./LensStage.vue'))
   <Resource v-else-if="resource.has(stage)" :stage="stage" />
   <AI v-else-if="ai.has(stage)" :stage="stage" />
   <SpacingStage v-else-if="stage === 'spacing'" />
+  <AIActionRowStage v-else-if="stage === 'ai-action-row'" />
   <ButtonStage v-else-if="stage === 'button'" />
   <TextFieldStage v-else-if="stage === 'text-input' || stage === 'textarea'" :multiline="stage === 'textarea'" />
   <SelectFieldStage v-else-if="stage === 'form-select'" />
