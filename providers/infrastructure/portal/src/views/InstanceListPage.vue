@@ -4,6 +4,7 @@ import StatusBadge from '../portalkit/StatusBadge.vue'
 import ViewValue from '../components/ViewValue.vue'
 import { api, isContextChangedError } from '../api'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import { Package } from 'lucide-vue-next'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
@@ -133,7 +134,7 @@ const rows = computed<Array<Record<string, unknown>>>(() => items.value.map(inst
     rowKey: `${instanceKey(instance)}/${instance.uid ?? ''}`,
     template: instance.template,
     status: instanceIsDeleting(instance) ? 'Deleting' : instance.phase,
-    age: formatAge(instance.createdAt),
+    age: instance.createdAt || null,
     actions: '',
     instance,
   }
@@ -404,19 +405,6 @@ function selectInstance(row: Record<string, unknown>) {
   emit('select', instance.name)
 }
 
-function formatAge(timestamp?: string): string {
-  if (!timestamp) return '-'
-  const then = new Date(timestamp).getTime()
-  if (Number.isNaN(then)) return '-'
-  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h`
-  return `${Math.floor(hours / 24)}d`
-}
-
 onMounted(() => {
   mounted = true
   void load('foreground')
@@ -516,7 +504,7 @@ onUnmounted(() => {
       <template #status="{ row }">
         <StatusBadge :status="String(row.status)" :tone="String(row.status) === 'Deleting' ? 'warning' : null" />
       </template>
-      <template #age="{ value }"><span class="cell-mono">{{ value }}</span></template>
+      <template #age="{ value }"><ResourceTimestamp :value="value ? String(value) : null" label="Instance created" /></template>
       <template #actions="{ row }">
         <div class="row-actions">
           <ResourceTableDeleteButton

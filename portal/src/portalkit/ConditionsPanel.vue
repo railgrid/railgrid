@@ -1,6 +1,7 @@
 <!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies under providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`. -->
 <script setup lang="ts">
 import { computed } from 'vue'
+import ResourceTimestamp from './ResourceTimestamp.vue'
 import ResourceTable from './ResourceTable.vue'
 import StatusBadge from './StatusBadge.vue'
 
@@ -73,7 +74,7 @@ function conditionTone(condition: Pick<ConditionInfo, 'type' | 'status'>): 'succ
       <template #type="{ value }"><span class="k-conditions__type">{{ value }}</span></template>
       <template #status="{ value, row }"><StatusBadge :status="String(value)" :tone="conditionTone({ type: String(row.type), status: String(value) })" /></template>
       <template #messageLabel="{ value }"><span class="k-conditions__message">{{ value }}</span></template>
-      <template #sinceLabel="{ value }"><span class="k-conditions__muted k-cell-mono">{{ value }}</span></template>
+      <template #sinceLabel="{ row }"><ResourceTimestamp :value="typeof row.lastTransitionTime === 'string' ? row.lastTransitionTime : null" :label="`Condition ${String(row.type)} last transitioned`" /></template>
     </ResourceTable>
   </div>
 </template>

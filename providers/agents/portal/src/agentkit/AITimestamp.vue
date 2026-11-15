@@ -9,7 +9,8 @@
   to the full locale value with hover, focus, or click.
 -->
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import ResourceTableActionTooltip from '../portalkit/ResourceTableActionTooltip.vue'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import { useReactiveNow } from './clock'
 import { formatFullTime, formatRelativeTime, isValidTimestamp } from './timestamp'
@@ -28,11 +29,13 @@ const props = withDefaults(defineProps<{
 })
 
 const expanded = ref(false)
+const button = ref<HTMLButtonElement | null>(null)
+watch(() => props.value, () => { expanded.value = false })
 const now = useReactiveNow()
 const relative = computed(() => formatRelativeTime(props.value, props.numeric, now.value))
 const full = computed(() => formatFullTime(props.value))
 const visible = computed(() => isValidTimestamp(props.value) && Boolean(relative.value && full.value))
-const accessibleLabel = computed(() => props.ariaLabel.trim() || full.value)
+const accessibleLabel = computed(() => `${props.ariaLabel.trim() || 'Message time'}: ${relative.value} — ${full.value}`)
 
 function toggle(): void {
   expanded.value = !expanded.value
@@ -44,14 +47,15 @@ ensureAgentUIStyles()
 <template>
   <span v-if="visible" class="k-ai-timestamp">
     <button
+      ref="button"
       type="button"
       class="k-ai-timestamp__button"
-      :title="full"
       :aria-label="accessibleLabel"
+      :aria-pressed="expanded"
       @click="toggle"
     >
       <time class="k-ai-timestamp__time" :datetime="value || undefined">{{ expanded ? full : relative }}</time>
     </button>
-    <span v-if="!expanded" class="k-ai-timestamp__tooltip" role="tooltip" aria-hidden="true">{{ full }}</span>
+    <ResourceTableActionTooltip :anchor="button" :label="expanded ? '' : full" />
   </span>
 </template>
