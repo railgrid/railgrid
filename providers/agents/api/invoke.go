@@ -279,28 +279,7 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if found {
-			resp, ownerErr := reusedInvocationResponse(existing, string(agent.UID))
-			if ownerErr != nil {
-				writeStatus(w, http.StatusConflict, "Conflict", ownerErr.Error())
-				return
-			}
-			if existing.InvocationPrevented {
-				resp.Reused = true
-				if detail, derr := s.runDetailFor(r.Context(), scope, existing.ID); derr == nil {
-					resp.Run = &detail
-				}
-				writeJSON(w, http.StatusOK, resp)
-				return
-			}
-			if existing.InvocationFingerprint != "" && existing.InvocationFingerprint != fingerprint {
-				writeStatus(w, http.StatusConflict, "Conflict", "idempotencyKey was already used with different invocation input")
-				return
-			}
-			resp.Reused = true
-			if detail, derr := s.runDetailFor(r.Context(), scope, existing.ID); derr == nil {
-				resp.Run = &detail
-			}
-			writeJSON(w, http.StatusOK, resp)
+			s.writeReusedInvocation(w, r, scope, existing, string(agent.UID), fingerprint)
 			return
 		}
 	}
@@ -373,19 +352,9 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if found {
-			resp, ownerErr := reusedInvocationResponse(existing, string(agent.UID))
-			if ownerErr != nil {
-				writeStatus(w, http.StatusConflict, "Conflict", ownerErr.Error())
-				return
-			}
-			if existing.InvocationPrevented {
-				resp.Reused = true
-				writeJSON(w, http.StatusOK, resp)
-				return
-			}
-		}
-		if found && existing.InvocationFingerprint != "" && existing.InvocationFingerprint != fingerprint {
-			writeStatus(w, http.StatusConflict, "Conflict", "idempotencyKey was already used with different invocation input")
+			// Another request admitted this key first: answer exactly as a
+			// retry that found it up front would.
+			s.writeReusedInvocation(w, r, scope, existing, string(agent.UID), fingerprint)
 			return
 		}
 	}
@@ -410,6 +379,26 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, invokeRunResponse{RunID: runID, Phase: string(admission.Phase), Reused: admission.Reused})
+}
+
+// writeReusedInvocation answers a request whose idempotency key already names
+// a run: 200 with the run's detail, or 409 when the key belongs to another
+// Agent or was used with different input. A prevented key matches any input.
+func (s *Server) writeReusedInvocation(w http.ResponseWriter, r *http.Request, scope store.Scope, existing store.Run, agentUID, fingerprint string) {
+	resp, ownerErr := reusedInvocationResponse(existing, agentUID)
+	if ownerErr != nil {
+		writeStatus(w, http.StatusConflict, "Conflict", ownerErr.Error())
+		return
+	}
+	if !existing.InvocationPrevented && existing.InvocationFingerprint != "" && existing.InvocationFingerprint != fingerprint {
+		writeStatus(w, http.StatusConflict, "Conflict", "idempotencyKey was already used with different invocation input")
+		return
+	}
+	resp.Reused = true
+	if detail, derr := s.runDetailFor(r.Context(), scope, existing.ID); derr == nil {
+		resp.Run = &detail
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func reusedInvocationResponse(run store.Run, agentUID string) (invokeRunResponse, error) {

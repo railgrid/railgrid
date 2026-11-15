@@ -31,27 +31,30 @@ type deliverSessionNotificationRequest struct {
 	ExpectedOwner *string `json:"expectedOwner,omitempty"`
 }
 
-func (s *Server) sessionNotificationContext(w http.ResponseWriter, r *http.Request) (identity, string, store.SessionNotificationStore, bool) {
+// sessionNotificationContext returns the caller, the gated Agent's UID, the
+// trimmed session ID every handler must use (never the raw path tail) and
+// the store.
+func (s *Server) sessionNotificationContext(w http.ResponseWriter, r *http.Request) (identity, string, string, store.SessionNotificationStore, bool) {
 	_, id, ok := s.requireClient(w, r)
 	if !ok {
-		return identity{}, "", nil, false
+		return identity{}, "", "", nil, false
 	}
 	if strings.TrimSpace(id.user) == "" {
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "an authenticated caller subject is required")
-		return identity{}, "", nil, false
+		return identity{}, "", "", nil, false
 	}
 	sessionID := strings.TrimSpace(r.PathValue("tail"))
 	gate, gated := gateFrom(r.Context())
 	if sessionID == "" || !gated || gate.object == nil || gate.object.GetUID() == "" {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "a session ID and current Agent identity are required")
-		return identity{}, "", nil, false
+		return identity{}, "", "", nil, false
 	}
 	storeAPI, ok := s.store.(store.SessionNotificationStore)
 	if !ok {
 		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "session notification storage is unavailable")
-		return identity{}, "", nil, false
+		return identity{}, "", "", nil, false
 	}
-	return id, string(gate.object.GetUID()), storeAPI, true
+	return id, string(gate.object.GetUID()), sessionID, storeAPI, true
 }
 
 func decodeBoundedJSON(w http.ResponseWriter, r *http.Request, target any) error {
@@ -71,7 +74,7 @@ func decodeBoundedJSON(w http.ResponseWriter, r *http.Request, target any) error
 }
 
 func (s *Server) sessionAccess(w http.ResponseWriter, r *http.Request) {
-	id, agentUID, access, ok := s.sessionNotificationContext(w, r)
+	id, agentUID, sessionID, access, ok := s.sessionNotificationContext(w, r)
 	if !ok {
 		return
 	}
@@ -87,9 +90,9 @@ func (s *Server) sessionAccess(w http.ResponseWriter, r *http.Request) {
 	}
 	var err error
 	if r.Method == http.MethodDelete {
-		err = access.RevokeSessionAccess(r.Context(), id.scope(r.PathValue("name")), agentUID, r.PathValue("tail"), id.user, request.Subject)
+		err = access.RevokeSessionAccess(r.Context(), id.scope(r.PathValue("name")), agentUID, sessionID, id.user, request.Subject)
 	} else {
-		err = access.GrantSessionAccess(r.Context(), id.scope(r.PathValue("name")), agentUID, r.PathValue("tail"), id.user, request.Subject, time.Now().UTC())
+		err = access.GrantSessionAccess(r.Context(), id.scope(r.PathValue("name")), agentUID, sessionID, id.user, request.Subject, time.Now().UTC())
 	}
 	if errors.Is(err, store.ErrSessionAccessDenied) {
 		writeStatus(w, http.StatusForbidden, "Forbidden", "only the session owner can change exact-session access")
@@ -103,7 +106,7 @@ func (s *Server) sessionAccess(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deliverSessionNotification(w http.ResponseWriter, r *http.Request) {
-	id, agentUID, notifications, ok := s.sessionNotificationContext(w, r)
+	id, agentUID, sessionID, notifications, ok := s.sessionNotificationContext(w, r)
 	if !ok {
 		return
 	}
@@ -124,7 +127,7 @@ func (s *Server) deliverSessionNotification(w http.ResponseWriter, r *http.Reque
 	if request.ExpectedOwner != nil {
 		ownerBinding = []string{*request.ExpectedOwner}
 	}
-	item, reused, err := notifications.CreateSessionNotification(r.Context(), id.scope(r.PathValue("name")), agentUID, r.PathValue("tail"), id.user, request.Key, request.Payload, time.Now().UTC(), ownerBinding...)
+	item, reused, err := notifications.CreateSessionNotification(r.Context(), id.scope(r.PathValue("name")), agentUID, sessionID, id.user, request.Key, request.Payload, time.Now().UTC(), ownerBinding...)
 	switch {
 	case errors.Is(err, store.ErrSessionAccessDenied):
 		writeStatus(w, http.StatusForbidden, "Forbidden", "caller has no explicit access to this session")
@@ -140,11 +143,11 @@ func (s *Server) deliverSessionNotification(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) listSessionNotifications(w http.ResponseWriter, r *http.Request) {
-	id, agentUID, notifications, ok := s.sessionNotificationContext(w, r)
+	id, agentUID, sessionID, notifications, ok := s.sessionNotificationContext(w, r)
 	if !ok {
 		return
 	}
-	items, err := notifications.ListSessionNotifications(r.Context(), id.scope(r.PathValue("name")), agentUID, r.PathValue("tail"), id.user, 100)
+	items, err := notifications.ListSessionNotifications(r.Context(), id.scope(r.PathValue("name")), agentUID, sessionID, id.user, 100)
 	if errors.Is(err, store.ErrSessionAccessDenied) {
 		writeStatus(w, http.StatusForbidden, "Forbidden", "caller has no explicit access to this session")
 		return

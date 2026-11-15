@@ -25,9 +25,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/railgrid/railgrid/pkg/runner/harness"
+)
+
+// maxCleanupAttempts bounds automatic workspace cleanup retries for one
+// attempt; past it the attempt reports retry_limit_reached and waits for an
+// operator.
+const maxCleanupAttempts = 3
+
+// Startup probes of retained process scopes: each is bounded, and a few run
+// at once so many retained scopes do not delay startup one timeout at a time.
+const (
+	startupCleanupRecoveryTimeout     = 5 * time.Second
+	startupCleanupRecoveryParallelism = 8
 )
 
 // repositoryCleanup is deliberately read from the approved base, not the
@@ -157,7 +170,7 @@ func (r *Runner) scheduleCleanupLocked(attempt *attemptRecord) {
 	if r.retainEnvironmentLocked(attempt) {
 		return
 	}
-	if !attempt.CleanupEligible || !attempt.Receipt.Phase.IsTerminal() || attempt.CleanupDone || attempt.cleanupRunning || attempt.Receipt.Workdir == "" || attempt.CleanupAttempts >= 3 {
+	if !attempt.CleanupEligible || !attempt.Receipt.Phase.IsTerminal() || attempt.CleanupDone || attempt.cleanupRunning || attempt.Receipt.Workdir == "" || attempt.CleanupAttempts >= maxCleanupAttempts {
 		return
 	}
 	attempt.cleanupRunning = true
@@ -240,7 +253,7 @@ func (r *Runner) cleanupObservationLocked(attempt *attemptRecord) *CleanupObserv
 		obs.State = CleanupDone
 	case attempt.cleanupRunning:
 		obs.State = CleanupRunning
-	case attempt.CleanupAttempts >= 3:
+	case attempt.CleanupAttempts >= maxCleanupAttempts:
 		obs.State = CleanupFailed
 		obs.Reason = "retry_limit_reached"
 	default:
@@ -253,36 +266,53 @@ func (r *Runner) cleanupObservationLocked(attempt *attemptRecord) *CleanupObserv
 // recovery attempt before retention runs. Unavailable or inconclusive probes
 // remain quarantined for a later retention tick or operator recovery.
 func (r *Runner) recoverProcessCleanupsAtStartup() {
-	changed := false
 	recovery, canRecover := r.adapter.(harness.ProcessCleanupRecovery)
-	for _, attempt := range r.state.Attempts {
-		if attempt == nil || attempt.ProcessCleanupReference == "" {
-			continue
-		}
-		if !canRecover {
-			attempt.ProcessCleanupUnconfirmed = true
-			changed = true
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		done, err := recovery.RecoverProcessCleanup(ctx, attempt.ProcessCleanupReference)
-		cancel()
-		if err != nil || !done {
-			attempt.ProcessCleanupUnconfirmed = true
-			if err != nil {
-				log.Printf("process cleanup recovery at startup failed: %v", err)
-			}
-			changed = true
-			continue
-		}
-		attempt.ProcessCleanupUnconfirmed = false
-		attempt.ProcessCleanupReference = ""
-		changed = true
+	type probe struct {
+		attempt *attemptRecord
+		done    bool
+		err     error
 	}
-	if changed {
-		if err := r.persistLocked(); err != nil {
-			log.Printf("persist startup process cleanup recovery: %v", err)
+	var probes []*probe
+	for _, attempt := range r.state.Attempts {
+		if attempt != nil && attempt.ProcessCleanupReference != "" {
+			probes = append(probes, &probe{attempt: attempt})
 		}
+	}
+	if len(probes) == 0 {
+		return
+	}
+	if canRecover {
+		// Each probe is bounded on its own, and they run side by side so a
+		// runner with many retained scopes does not start one timeout at a
+		// time. Results are applied after every probe has returned.
+		var wg sync.WaitGroup
+		slots := make(chan struct{}, startupCleanupRecoveryParallelism)
+		for _, p := range probes {
+			wg.Add(1)
+			slots <- struct{}{}
+			go func(p *probe, ref string) {
+				defer wg.Done()
+				defer func() { <-slots }()
+				ctx, cancel := context.WithTimeout(context.Background(), startupCleanupRecoveryTimeout)
+				defer cancel()
+				p.done, p.err = recovery.RecoverProcessCleanup(ctx, ref)
+			}(p, p.attempt.ProcessCleanupReference)
+		}
+		wg.Wait()
+	}
+	for _, p := range probes {
+		if !canRecover || p.err != nil || !p.done {
+			p.attempt.ProcessCleanupUnconfirmed = true
+			if p.err != nil {
+				log.Printf("process cleanup recovery at startup failed: %v", p.err)
+			}
+			continue
+		}
+		p.attempt.ProcessCleanupUnconfirmed = false
+		p.attempt.ProcessCleanupReference = ""
+	}
+	if err := r.persistLocked(); err != nil {
+		log.Printf("persist startup process cleanup recovery: %v", err)
 	}
 }
 

@@ -81,6 +81,10 @@ func TestGitHubInstallationCredentialIsSignedAndBounded(t *testing.T) {
 	if err != nil || actor != "railgrid-helper[bot]" || actorType != "Bot" || appIdentityCalls != 1 {
 		t.Fatalf("app actor resolution failed: calls=%d actor=%q type=%q error=%v", appIdentityCalls, actor, actorType, err)
 	}
+	// The slug is stable: a second write does not describe the App again.
+	if actor, _, err := resolver.ResolveActor(context.Background(), conn, data); err != nil || actor != "railgrid-helper[bot]" || appIdentityCalls != 1 {
+		t.Fatalf("repeated actor resolution: calls=%d actor=%q error=%v", appIdentityCalls, actor, err)
+	}
 	for _, field := range []string{"appID", "installationID", "privateKey"} {
 		original := data[field]
 		data[field] = []byte("invalid")

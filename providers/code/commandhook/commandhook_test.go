@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestParseReadsOnlyTheFirstLine(t *testing.T) {
@@ -189,5 +191,44 @@ func TestHandlerUsesRotatedRepositorySecret(t *testing.T) {
 	}
 	if code := deliver(t, h, route, "issue_comment", commandPayload, deliverySignature(rotatedSecret, commandPayload)); code != http.StatusAccepted {
 		t.Fatalf("rotated secret = %d", code)
+	}
+}
+
+type failingClients struct{}
+
+func (failingClients) AsProvider(string) (dynamic.Interface, error) {
+	return nil, errors.New("workspace unavailable")
+}
+
+// Unsigned or wrongly signed deliveries reuse one lookup of the Repository
+// and its Secret instead of costing two kcp reads each, and every refusal
+// before the signature is checked looks the same.
+func TestHandlerCachesItsLookupsAndHidesWhatExists(t *testing.T) {
+	gvrs := map[schema.GroupVersionResource]string{repositoriesGVR: "RepositoryList", commandsGVR: "PullRequestCommandList"}
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), gvrs, repository("app", "4242"), webhookSecret(signingSecret))
+	reads := 0
+	client.PrependReactor("get", "*", func(k8stesting.Action) (bool, runtime.Object, error) {
+		reads++
+		return false, nil, nil
+	})
+	clock := deliveryTime
+	h := newHandler(fakeClients{client}, func() time.Time { return clock })
+	route := strings.TrimPrefix(Path("cluster", "app"), "/services/providers/code")
+	forged := deliverySignature("not the secret", commandPayload)
+	for range 5 {
+		if code := deliver(t, h, route, "issue_comment", commandPayload, forged); code != http.StatusNotFound {
+			t.Fatalf("forged delivery = %d", code)
+		}
+	}
+	if reads != 2 {
+		t.Fatalf("kcp reads for five forged deliveries = %d, want one Repository and one Secret read", reads)
+	}
+	clock = clock.Add(targetCacheTTL)
+	if code := deliver(t, h, route, "issue_comment", commandPayload, forged); code != http.StatusNotFound || reads != 4 {
+		t.Fatalf("after the cache window: code=%d reads=%d, want a fresh lookup", code, reads)
+	}
+	unavailable := newHandler(failingClients{}, func() time.Time { return deliveryTime })
+	if code := deliver(t, unavailable, route, "issue_comment", commandPayload, forged); code != http.StatusNotFound {
+		t.Fatalf("an unreachable workspace answered %d, want the same 404 as a missing Repository", code)
 	}
 }

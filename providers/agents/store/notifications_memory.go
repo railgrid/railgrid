@@ -153,6 +153,14 @@ func (m *MemoryStore) CreateSessionNotification(_ context.Context, scope Scope, 
 	item := SessionNotification{ID: uuid.NewString(), SessionID: sessionID, Key: key, Producer: subject, Payload: payload, CreatedAt: now.UTC()}
 	m.sessionNotifications[access] = append(m.sessionNotifications[access], item)
 	m.notificationKeys[keyed] = item
+	if items := m.sessionNotifications[access]; len(items) > MaxSessionNotifications {
+		slices.SortStableFunc(items, func(a, b SessionNotification) int { return a.CreatedAt.Compare(b.CreatedAt) })
+		dropped := items[:len(items)-MaxSessionNotifications]
+		for _, old := range dropped {
+			delete(m.notificationKeys, access+"|"+old.Producer+"|"+old.Key)
+		}
+		m.sessionNotifications[access] = slices.Clone(items[len(dropped):])
+	}
 	return item, false, nil
 }
 

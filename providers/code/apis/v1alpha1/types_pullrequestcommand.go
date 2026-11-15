@@ -114,6 +114,15 @@ type PullRequestCommandStatus struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[a-f0-9]{40}$`
 	Head string `json:"head,omitempty"`
+	// HeadPinned is true when the command named the head commit itself (an
+	// argument of 7 to 40 hex digits that is a prefix of Head). Head is read
+	// when Code verifies the command, which is after the comment was written,
+	// so an unpinned command can find a commit pushed in between. A consumer
+	// acting on code the commenter does not control, such as a fork, should
+	// require a pinned command. A command that names any other commit is
+	// Rejected.
+	// +optional
+	HeadPinned bool `json:"headPinned,omitempty"`
 	// HeadBranch and Base are the pull request's branches.
 	// +optional
 	// +kubebuilder:validation:MaxLength=256

@@ -176,13 +176,20 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 		}
 		// The Hub user ID in id.user is not the KCP username attached to the
 		// caller's bearer. Resolve that canonical subject once and use it for both
-		// attachment ownership and the optional first-attended-session owner.
+		// attachment ownership and the first attended turn's session owner.
+		//
+		// A turn whose caller cannot be resolved is refused, not run
+		// anonymously: the first turn of a session records its owner, and a
+		// session stored without one could never be claimed afterwards.
 		kcpSubject, identityErr := s.resolveAuthenticatedKCPSubject(ctx, id)
-		if identityErr != nil && len(attachmentRefs) > 0 {
-			return chatRefused(errBadRequest("the current caller identity could not be verified for conversation attachments"))
+		if identityErr != nil {
+			if len(attachmentRefs) > 0 {
+				return chatRefused(errBadRequest("the current caller identity could not be verified for conversation attachments"))
+			}
+			return chatRefused(errUnavailable("the current caller identity could not be verified; retry the message"))
 		}
 		attachmentOwner := ""
-		if identityErr == nil && (len(attachmentRefs) > 0 || len(historicalAttachmentOwners) > 0) {
+		if len(attachmentRefs) > 0 || len(historicalAttachmentOwners) > 0 {
 			attachmentOwner = kcpSubject
 			// History from another uploader is rendered as metadata by the
 			// hydrator, never a reason to lock a shared session.

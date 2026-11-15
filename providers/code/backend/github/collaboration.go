@@ -145,6 +145,28 @@ func (b *Backend) ReadPullRequest(ctx context.Context, conn *api.Connection, cre
 	return result, nil
 }
 
+// ContainsCommit reports whether head's history contains ancestor: the
+// comparison from ancestor to head is "ahead" or "identical".
+func (b *Backend) ContainsCommit(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, ancestor, head string) (bool, error) {
+	if !objectID.MatchString(ancestor) || !objectID.MatchString(head) {
+		return false, errors.New("commit identity is invalid")
+	}
+	c, err := b.collaborationClient(ctx, conn, cred, repo)
+	if err != nil {
+		return false, err
+	}
+	comparison, response, err := c.Repositories.CompareCommits(ctx, owner(conn, repo), repo.Spec.Name, ancestor, head, &gh.ListOptions{PerPage: 1})
+	if err != nil {
+		return false, classify(response, err)
+	}
+	if comparison == nil || comparison.GetBaseCommit().GetSHA() != ancestor || comparison.GetStatus() == "" {
+		return false, errors.New("forge returned an incomplete commit comparison")
+	}
+	return comparison.GetStatus() == "ahead" || comparison.GetStatus() == "identical", nil
+}
+
+var _ backend.CommitAncestry = (*Backend)(nil)
+
 // ObservePullRequestBase compares immutable commit IDs after resolving the actual
 // current base branch tip. The PR payload's base SHA can lag the branch itself.
 func (b *Backend) ObservePullRequestBase(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, pr *backend.PullRequest) (string, *bool, string, error) {
@@ -434,17 +456,25 @@ func (p reviewerPermissions) of(ctx context.Context, login string) (string, erro
 		return level, nil
 	}
 	level, response, err := p.client.Repositories.GetPermissionLevel(ctx, p.owner, p.repo, login)
-	switch {
-	case err == nil:
+	if err == nil {
 		p.levels[login] = normalizePermission(level.GetPermission())
-	case response != nil && (response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusForbidden):
+		return p.levels[login], nil
+	}
+	// A rate limit is not an answer. GitHub sends secondary limits as 403,
+	// and recording one as "none" would demote a maintainer's command or
+	// blocking review; it is retried instead.
+	classified := classify(response, err)
+	var limited *backend.RateLimitError
+	if errors.As(classified, &limited) {
+		return "", classified
+	}
+	if response != nil && (response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusForbidden) {
 		// Not a collaborator, or the credential cannot read collaborators:
 		// either way the review carries no write authority.
 		p.levels[login] = "none"
-	default:
-		return "", classify(response, err)
+		return "none", nil
 	}
-	return p.levels[login], nil
+	return "", classified
 }
 
 func normalizePermission(permission string) string {

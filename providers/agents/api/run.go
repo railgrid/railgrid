@@ -1177,6 +1177,9 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	}
 
 	structuredFailureState := ""
+	// failedResult keeps a verified, stored Git result on a run that fails
+	// for a reason after it, so the work is still retrievable.
+	var failedResult *store.RunResult
 	var structuredResult *store.StructuredResult
 	finishFailedTurn := func(cause error) (runResult, error) {
 		phase := store.RunPhaseFailed
@@ -1205,6 +1208,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			Phase: phase, Message: cause.Error(), Usage: out.Usage.Total.Tokens,
 			CostMicros: out.Usage.Total.CostMicros, UsageCompleteness: string(out.Usage.Completeness), CostBasis: string(out.Usage.CostBasis),
 			WorkedDurationMS: tracker.workedDurationMS(), Harness: harnessT, StructuredResult: structuredResult,
+			Result: failedResult,
 		}, end)
 		s.recordAgentRun(persistCtx, run.CR, agent, end, &window)
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
@@ -1300,6 +1304,11 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 				out.Artifacts = append(out.Artifacts, backend.Artifact{Name: StructuredResultArtifactName, MediaType: "application/json", Data: data, Size: int64(len(data)), Digest: digest})
 			}
 			if rerr != nil {
+				// The run fails, but the Git result is verified and stays
+				// retrievable: store its artifacts and keep it on the run.
+				if serr := s.storeRunArtifacts(ctx, scope, runID, out.Artifacts, end); serr == nil {
+					failedResult = runResultFor(out.Result)
+				}
 				return finishFailedTurn(fmt.Errorf("structured result invalid: %w", rerr))
 			}
 			structuredResult = &store.StructuredResult{State: state, Digest: digest, Size: int64(len(data))}

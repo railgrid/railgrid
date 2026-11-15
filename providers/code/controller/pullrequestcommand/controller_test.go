@@ -8,6 +8,7 @@ package pullrequestcommand
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,7 @@ func TestCommandsAreRejectedWithAReason(t *testing.T) {
 		"stale":              func(f *fakeForge) { f.comment.CreatedAt = now.Add(-2 * time.Hour) },
 		"not a command":      func(f *fakeForge) { f.comment.Body = "please review" },
 		"no head":            func(f *fakeForge) { f.pr.Commit = "" },
+		"head moved":         func(f *fakeForge) { f.comment.Body = "/railgrid review bbbbbbb" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -186,5 +188,40 @@ func TestTerminalCommandsExpireFromVerificationTime(t *testing.T) {
 				t.Fatalf("expired command still present: %v", err)
 			}
 		})
+	}
+}
+
+// A command that names the head commit is recorded as pinned; one that names
+// nothing is not, so a consumer can tell a commit the commenter chose from a
+// head read after the comment.
+func TestCommitPinIsRecorded(t *testing.T) {
+	for body, want := range map[string]bool{
+		"/railgrid review " + head[:7]: true,
+		"/railgrid review " + head:     true,
+		"/railgrid review":             false,
+		"/railgrid review fast":        false,
+	} {
+		t.Run(body, func(t *testing.T) {
+			forge := validForge()
+			forge.comment.Body = body
+			r, c, command := fixture(t, forge)
+			got := verifyOnce(t, r, c, command)
+			if got.Status.Phase != api.PullRequestCommandVerified || got.Status.HeadPinned != want {
+				t.Fatalf("status = %+v, want headPinned=%v", got.Status, want)
+			}
+		})
+	}
+}
+
+// A command Code cannot verify is rejected once no comment that old would be
+// accepted, instead of being retried for ever.
+func TestUnverifiableCommandIsRejectedAfterTheCommandAge(t *testing.T) {
+	forge := validForge()
+	forge.commentErr = errors.New("github unavailable")
+	r, c, command := fixture(t, forge)
+	command.CreationTimestamp = metav1.NewTime(now.Add(-2 * time.Hour))
+	got := verifyOnce(t, r, c, command)
+	if got.Status.Phase != api.PullRequestCommandRejected || !strings.Contains(got.Status.Reason, "could not be verified") {
+		t.Fatalf("status = %+v", got.Status)
 	}
 }

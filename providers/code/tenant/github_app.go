@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	api "github.com/railgrid/provider-code/apis/v1alpha1"
@@ -105,9 +106,102 @@ func (r CredentialResolver) ResolveActor(ctx context.Context, conn *api.Connecti
 }
 
 func (r CredentialResolver) appSlug(ctx context.Context, conn *api.Connection, data map[string][]byte) (string, error) {
+	now := r.now()
+	base, err := githubAppAPIBase(conn)
+	if err != nil {
+		return "", err
+	}
+	// The slug of an App never changes, so it is not fetched for every write.
+	// The key includes the private key's digest, so a slug is only reused for
+	// the credential that fetched it.
+	keyDigest := sha256.Sum256(data["privateKey"])
+	cacheKey := base + "\x00" + strings.TrimSpace(string(data["appID"])) + "\x00" + string(keyDigest[:])
+	if slug, ok := appSlugs.get(cacheKey, now); ok {
+		return slug, nil
+	}
+	jwt, err := githubAppJWT(data, now)
+	if err != nil {
+		return "", err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/app", nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Authorization", "Bearer "+jwt)
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	response, err := r.githubAppHTTPClient().Do(request)
+	if err != nil {
+		return "", errors.New("GitHub App identity request failed")
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub App identity returned HTTP %d", response.StatusCode)
+	}
+	var result struct {
+		Slug string `json:"slug"`
+	}
+	if json.NewDecoder(io.LimitReader(response.Body, 65537)).Decode(&result) != nil || result.Slug == "" || len(result.Slug) > 100 {
+		return "", errors.New("invalid GitHub App identity response")
+	}
+	appSlugs.put(cacheKey, result.Slug, now)
+	return result.Slug, nil
+}
+
+// appSlugTTL bounds how long a resolved App slug is reused.
+const (
+	appSlugTTL     = time.Hour
+	appSlugEntries = 1024
+)
+
+type appSlugEntry struct {
+	slug    string
+	expires time.Time
+}
+
+type appSlugCache struct {
+	mu      sync.Mutex
+	entries map[string]appSlugEntry
+}
+
+var appSlugs appSlugCache
+
+func (c *appSlugCache) get(key string, now time.Time) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok || !now.Before(entry.expires) {
+		delete(c.entries, key)
+		return "", false
+	}
+	return entry.slug, true
+}
+
+func (c *appSlugCache) put(key, slug string, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil || len(c.entries) >= appSlugEntries {
+		c.entries = map[string]appSlugEntry{}
+	}
+	c.entries[key] = appSlugEntry{slug: slug, expires: now.Add(appSlugTTL)}
+}
+
+func (r CredentialResolver) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+// githubAppJWT signs the short-lived App JWT GitHub requires before it
+// issues an installation token or describes the App.
+func githubAppJWT(data map[string][]byte, now time.Time) (string, error) {
 	appID, err := strconv.ParseInt(strings.TrimSpace(string(data["appID"])), 10, 64)
 	if err != nil || appID <= 0 {
 		return "", errors.New("GitHub App appID must be positive")
+	}
+	if len(data["privateKey"]) > 32768 {
+		return "", errors.New("GitHub App private key exceeds limit")
 	}
 	block, rest := pem.Decode(data["privateKey"])
 	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
@@ -124,10 +218,6 @@ func (r CredentialResolver) appSlug(ctx context.Context, conn *api.Connection, d
 	if err != nil || key == nil || key.N.BitLen() < 2048 {
 		return "", errors.New("GitHub App requires a valid RSA key of at least 2048 bits")
 	}
-	now := time.Now()
-	if r.Now != nil {
-		now = r.Now()
-	}
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
 	claims, _ := json.Marshal(map[string]any{"iss": strconv.FormatInt(appID, 10), "iat": now.Add(-time.Minute).Unix(), "exp": now.Add(9 * time.Minute).Unix()})
 	unsigned := header + "." + base64.RawURLEncoding.EncodeToString(claims)
@@ -136,45 +226,36 @@ func (r CredentialResolver) appSlug(ctx context.Context, conn *api.Connection, d
 	if err != nil {
 		return "", errors.New("GitHub App signing failed")
 	}
-	base := "https://api.github.com"
-	if conn.Spec.BaseURL != "" {
-		u, err := url.Parse(conn.Spec.BaseURL)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return "", errors.New("GitHub App baseURL must be an HTTPS API endpoint")
-		}
-		base = strings.TrimRight(u.String(), "/")
-		if !strings.HasSuffix(base, "/api/v3") {
-			base += "/api/v3"
-		}
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+// githubAppAPIBase is the REST API root for the Connection: api.github.com,
+// or a GitHub Enterprise Server's /api/v3.
+func githubAppAPIBase(conn *api.Connection) (string, error) {
+	if conn.Spec.BaseURL == "" {
+		return "https://api.github.com", nil
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/app", nil)
-	if err != nil {
-		return "", err
+	u, err := url.Parse(conn.Spec.BaseURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("GitHub App baseURL must be an HTTPS API endpoint")
 	}
-	request.Header.Set("Authorization", "Bearer "+unsigned+"."+base64.RawURLEncoding.EncodeToString(signature))
-	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	base := strings.TrimRight(u.String(), "/")
+	if !strings.HasSuffix(base, "/api/v3") {
+		base += "/api/v3"
+	}
+	return base, nil
+}
+
+// githubAppHTTPClient never follows a redirect: a credential request must
+// not be replayed to another host.
+func (r CredentialResolver) githubAppHTTPClient() *http.Client {
 	client := &http.Client{Timeout: 20 * time.Second}
 	if r.Client != nil {
 		copied := *r.Client
 		client = &copied
 	}
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("credential redirects forbidden") }
-	response, err := client.Do(request)
-	if err != nil {
-		return "", errors.New("GitHub App identity request failed")
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub App identity returned HTTP %d", response.StatusCode)
-	}
-	var result struct {
-		Slug string `json:"slug"`
-	}
-	if json.NewDecoder(io.LimitReader(response.Body, 65537)).Decode(&result) != nil || result.Slug == "" || len(result.Slug) > 100 {
-		return "", errors.New("invalid GitHub App identity response")
-	}
-	return result.Slug, nil
+	return client
 }
 
 // installationToken mints a GitHub App installation access token for the
@@ -188,54 +269,18 @@ func (r CredentialResolver) appSlug(ctx context.Context, conn *api.Connection, d
 // it must not be able to do anything but pull — and how mint-clone-token hands
 // out a contents:read token that can fetch one repository and nothing more.
 func (r CredentialResolver) installationToken(ctx context.Context, conn *api.Connection, data map[string][]byte, permissions map[string]string) (string, time.Time, error) {
-	appID, err := strconv.ParseInt(strings.TrimSpace(string(data["appID"])), 10, 64)
-	if err != nil || appID <= 0 {
-		return "", time.Time{}, errors.New("GitHub App appID must be positive")
-	}
 	installationID, err := strconv.ParseInt(strings.TrimSpace(string(data["installationID"])), 10, 64)
 	if err != nil || installationID <= 0 {
 		return "", time.Time{}, errors.New("GitHub App installationID must be positive")
 	}
-	if len(data["privateKey"]) > 32768 {
-		return "", time.Time{}, errors.New("GitHub App private key exceeds limit")
-	}
-	block, rest := pem.Decode(data["privateKey"])
-	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
-		return "", time.Time{}, errors.New("GitHub App privateKey must contain one RSA private key")
-	}
-	var key *rsa.PrivateKey
-	if block.Type == "RSA PRIVATE KEY" {
-		key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
-	} else {
-		var parsed any
-		parsed, err = x509.ParsePKCS8PrivateKey(block.Bytes)
-		key, _ = parsed.(*rsa.PrivateKey)
-	}
-	if err != nil || key == nil || key.N.BitLen() < 2048 {
-		return "", time.Time{}, errors.New("GitHub App requires a valid RSA key of at least 2048 bits")
-	}
-	now := time.Now()
-	if r.Now != nil {
-		now = r.Now()
-	}
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
-	claims, _ := json.Marshal(map[string]any{"iss": strconv.FormatInt(appID, 10), "iat": now.Add(-time.Minute).Unix(), "exp": now.Add(9 * time.Minute).Unix()})
-	unsigned := header + "." + base64.RawURLEncoding.EncodeToString(claims)
-	digest := sha256.Sum256([]byte(unsigned))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	now := r.now()
+	jwt, err := githubAppJWT(data, now)
 	if err != nil {
-		return "", time.Time{}, errors.New("GitHub App signing failed")
+		return "", time.Time{}, err
 	}
-	base := "https://api.github.com"
-	if conn.Spec.BaseURL != "" {
-		u, err := url.Parse(conn.Spec.BaseURL)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return "", time.Time{}, errors.New("GitHub App baseURL must be an HTTPS API endpoint")
-		}
-		base = strings.TrimRight(u.String(), "/")
-		if !strings.HasSuffix(base, "/api/v3") {
-			base += "/api/v3"
-		}
+	base, err := githubAppAPIBase(conn)
+	if err != nil {
+		return "", time.Time{}, err
 	}
 	body := "{}"
 	if len(permissions) > 0 {
@@ -249,17 +294,11 @@ func (r CredentialResolver) installationToken(ctx context.Context, conn *api.Con
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+unsigned+"."+base64.RawURLEncoding.EncodeToString(signature))
+	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	client := &http.Client{Timeout: 20 * time.Second}
-	if r.Client != nil {
-		copied := *r.Client
-		client = &copied
-	}
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("credential redirects forbidden") }
-	response, err := client.Do(req)
+	response, err := r.githubAppHTTPClient().Do(req)
 	if err != nil {
 		return "", time.Time{}, errors.New("GitHub installation token request failed")
 	}

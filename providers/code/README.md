@@ -465,18 +465,32 @@ Acting on it is up to other providers (Factory), which watch `PullRequestCommand
 3. Code checks `X-Hub-Signature-256` against the original request body and
    checks the repository ID before recording the comment ID in a
    `PullRequestCommand` owned by the Repository. To rotate the secret, update
-   the Secret data and GitHub's **Secret** setting.
+   the Secret data and GitHub's **Secret** setting; Code picks up the new
+   secret within 30 seconds. Every delivery Code cannot authenticate gets the
+   same 404, whether the workspace, Repository or Secret is missing or the
+   signature is wrong.
 4. The `PullRequestCommand` reconciler re-reads the comment from GitHub with
    the Repository's own credential. It checks that the comment is on a pull
    request, is at most an hour old and parses as a command. Then it records
    the author, the author's permission on the repository (`none` for bots),
    and the pull request's head, branches, fork flag and state. The result is
    `Verified` or `Rejected` with a reason. A comment GitHub doesn't have is
-   deleted. Code keeps terminal commands for 24 hours. Redeliveries of
+   deleted. A command Code cannot verify within an hour of recording it is
+   rejected. Code keeps terminal commands for 24 hours. Redeliveries of
    comments older than one hour are ignored even after their records expire.
+   A permission lookup that GitHub rate-limits is retried, never recorded as
+   `none`.
 
 Consumers decide who may run what from `status.authorPermission`, and they act
 on `status.head`, not on whatever the branch points at later.
+
+`status.head` is read when Code verifies the command, which is after the
+comment was written, so a push in between can land a commit the commenter
+never saw. A command can pin the commit it means by naming it as an argument
+(7 to 40 hex digits, for example `/railgrid review 1a2b3c4`). Code rejects
+the command if the head is no longer that commit, and sets
+`status.headPinned`. Consumers acting on code the commenter does not control,
+such as a fork's pull request, should require `status.headPinned`.
 
 ## MCP integration
 
