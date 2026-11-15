@@ -11,9 +11,11 @@ import '@fontsource-variable/archivo/wdth.css' // brand display (width axis)
 import '@fontsource/ibm-plex-mono/400.css' // data / mono
 import '@fontsource/ibm-plex-mono/500.css'
 import './assets/main.css'
+import { ensureTooltips } from './portalkit/tooltip'
 
 // Apply theme before mount to prevent flash
 initTheme()
+ensureTooltips()
 
 // Register the dynamic /providers/:name/:rest(.*)* matcher BEFORE the
 // router resolves the initial URL. If it lands in App.vue's setup instead
