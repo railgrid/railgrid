@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ResourceTimestamp from './portalkit/ResourceTimestamp.vue'
 import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
 import AIWorkbenchSection from './agentkit/AIWorkbenchSection.vue'
 import { computed, nextTick } from 'vue'
@@ -9,8 +10,6 @@ import StatusBadge from './portalkit/StatusBadge.vue'
 import type { ProjectRepositoryCommit } from './types'
 import {
   adjacentHistoryCommit,
-  formatHistoryAge,
-  formatHistoryDate,
   orderRepositoryCommits,
   repositoryCommitSelectable,
   selectedHistoryCommit,
@@ -60,14 +59,6 @@ function shortSHA(commitSHA: string | undefined): string {
   return normalized ? normalized.slice(0, 7) : 'pending'
 }
 
-function commitDate(commit: ProjectRepositoryCommit): string {
-  return formatHistoryDate(commit.completedAt || commit.createdAt)
-}
-
-function commitAge(commit: ProjectRepositoryCommit): string {
-  return formatHistoryAge(commit.completedAt || commit.createdAt)
-}
-
 function optionID(commit: ProjectRepositoryCommit): string {
   return `app-studio-history-${(repositoryCommitSelectable(commit) ? `revision-${commit.commitSHA.trim().toLowerCase()}` : `operation-${commit.name}`).replace(/[^a-zA-Z0-9_-]/g, '-')}`
 }
@@ -75,6 +66,10 @@ function optionID(commit: ProjectRepositoryCommit): string {
 function selectCommit(commit: ProjectRepositoryCommit) {
   if (!repositoryCommitSelectable(commit) || props.restoreBusy) return
   emit('select', commit.commitSHA)
+}
+
+function refreshHistory() {
+  if (!props.refreshing && !props.restoreBusy) emit('refresh')
 }
 
 function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
@@ -92,9 +87,11 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
       <button
         type="button"
         class="k-btn k-btn--ghost shrink-0"
-        :disabled="refreshing || restoreBusy"
-        :aria-label="refreshing ? 'Refreshing Git history' : 'Refresh Git history'"
-        @click="emit('refresh')"
+        :disabled="restoreBusy"
+        :aria-disabled="refreshing || undefined"
+        :aria-busy="refreshing || undefined"
+        aria-label="Refresh Git history"
+        @click="refreshHistory"
       >
         <Loader2 v-if="refreshing" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
         <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
@@ -167,12 +164,11 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
                 <span class="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-text-muted">
                   <code class="font-mono text-text-secondary" :title="commit.commitSHA ? `Full commit SHA: ${commit.commitSHA}` : 'Commit SHA is not available'">{{ shortSHA(commit.commitSHA) }}</code>
                   <span v-if="commit.branch">{{ commit.branch }}</span>
-                  <span v-if="commitAge(commit)" aria-hidden="true">·</span>
-                  <time v-if="commitAge(commit)" :datetime="commit.completedAt || commit.createdAt" :title="commitDate(commit)">{{ commitAge(commit) }}</time>
                   <span v-if="commit.fileCount" aria-hidden="true">·</span>
                   <span v-if="commit.fileCount">{{ commit.fileCount }} {{ commit.fileCount === 1 ? 'file' : 'files' }}</span>
                 </span>
               </button>
+              <div v-if="commit.completedAt || commit.createdAt" class="px-2 text-[11px] text-text-muted"><ResourceTimestamp :value="commit.completedAt || commit.createdAt" label="Commit recorded" /></div>
             </div>
           </div>
         </div>
@@ -190,7 +186,7 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
           <p class="mt-1 flex flex-wrap gap-x-2 text-[11px] leading-5 text-text-muted">
             <code :title="selected.commitSHA">{{ shortSHA(selected.commitSHA) }}</code>
             <span v-if="selected.branch">{{ selected.branch }}</span>
-            <time :datetime="selected.completedAt || selected.createdAt">{{ commitDate(selected) }}</time>
+            <ResourceTimestamp :value="selected.completedAt || selected.createdAt" label="Commit recorded" />
           </p>
         </template>
       </div>
