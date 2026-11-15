@@ -107,10 +107,10 @@ onBeforeUnmount(() => {
       <template v-else>
         <MeteringUsageList class="mt-4" :limits="billing.limits" :usage="billing.usage" :window="billing.window ?? null" variant="compact" :meter-to="billingPath" />
         <footer class="dashboard-usage__footer mt-3 text-xs text-text-secondary">
-          <span v-if="recordedAt">Usage recorded <ResourceTimestamp :value="recordedAt.iso" label="Usage recorded" /></span>
+          <span v-if="recordedAt">Usage recorded <ResourceTimestamp class="dashboard-usage__timestamp" :value="recordedAt.iso" label="Usage recorded" /></span>
           <span v-else>Latest reported usage</span>
           <button v-if="!failed" ref="refreshButton" type="button" class="k-dashboard-action dashboard-usage__refresh" :aria-disabled="loading" @click="load">
-            <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" /> {{ loading ? 'Refreshing…' : 'Refresh' }}
+            <RefreshCw class="dashboard-usage__refresh-icon h-3 w-3" :stroke-width="1.75" aria-hidden="true" />{{ loading ? 'Refreshing…' : 'Refresh' }}
           </button>
         </footer>
       </template>
@@ -122,6 +122,9 @@ onBeforeUnmount(() => {
 .dashboard-usage { width: 100%; min-width: 0; }
 .dashboard-usage__header, .dashboard-usage__footer, .dashboard-usage__error { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 24px; }
 .dashboard-usage__actions { flex-shrink: 0; }
-.dashboard-usage__refresh { display: inline-flex; align-items: center; gap: 6px; }
+.dashboard-usage__footer { align-items: baseline; }
+.dashboard-usage__timestamp { vertical-align: baseline; margin-inline-start: 4px; }
+.dashboard-usage__refresh { display: inline-block; }
+.dashboard-usage__refresh-icon { display: inline-block; vertical-align: middle; margin-inline-end: 6px; }
 .dashboard-usage__refresh[aria-disabled="true"] { cursor: wait; }
 </style>
