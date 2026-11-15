@@ -88,7 +88,7 @@ spec:
       crd: {}
   - group: agents.railgrid.ai
     name: modelcredentials
-    schema: v261101-755b78bd.modelcredentials.agents.railgrid.ai
+    schema: v261114-7e90bd2f.modelcredentials.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai

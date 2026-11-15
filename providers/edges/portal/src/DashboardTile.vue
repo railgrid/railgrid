@@ -9,9 +9,10 @@
 // is therefore "N of M connected" rather than a bare total, because the ratio
 // is the fact worth glancing at.
 
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { AlertTriangle, Check, ChevronRight } from 'lucide-vue-next'
 import { listEdges, setHostFetch, setTenant, setToken } from './api'
+import ResourceTimestamp from './portalkit/ResourceTimestamp.vue'
 import type { Edge } from './types'
 import { edgeDetailPath } from './routes'
 import {
@@ -38,6 +39,10 @@ const edges = ref<Edge[]>([])
 const loading = ref(true)
 const loaded = ref(false)
 const error = ref<string | null>(null)
+const retryPending = ref(false)
+const retryError = ref<string | null>(null)
+const displayError = computed(() => retryPending.value ? retryError.value : error.value)
+let retryGeneration = 0
 let refresh!: LatestRefreshController
 const poller = createAdaptiveRefreshTimer(() => load('background'), () =>
   !loaded.value || error.value || edges.value.some(edge => !edge.connected) ? FAST_REFRESH_MS : STABLE_REFRESH_MS,
@@ -80,6 +85,19 @@ function load(mode: 'foreground' | 'background' = 'foreground'): void {
   void refresh.request(mode)
 }
 
+async function retry(): Promise<void> {
+  if (retryPending.value) return
+  const generation = ++retryGeneration
+  const focused = document.activeElement
+  retryError.value = error.value
+  retryPending.value = true
+  await refresh.request('foreground')
+  if (generation !== retryGeneration) return
+  retryPending.value = false
+  await nextTick()
+  if (focused && !focused.isConnected && document.activeElement === document.body) rootRef.value?.focus()
+}
+
 refresh = createLatestRefreshController(async (requestID) => {
   const ctx = props.context
   if (!hasWorkspaceContext(ctx)) {
@@ -103,7 +121,7 @@ refresh = createLatestRefreshController(async (requestID) => {
     loaded.value = true
   } catch (e) {
     if (!refresh.isCurrent(requestID)) return
-    error.value = isBenignTileError(e) ? null : tileErrorText(e)
+    error.value = !loaded.value && isBenignTileError(e) ? null : tileErrorText(e)
     if (!error.value && !loaded.value) loaded.value = true
   } finally {
     if (refresh.isCurrent(requestID)) {
@@ -118,13 +136,19 @@ onMounted(() => {
   poller.schedule()
 })
 onUnmounted(() => {
+  retryGeneration += 1
   poller.stop()
   refresh.stop()
 })
 watch(
   [() => props.context?.tenant, () => props.context?.orgUUID, () => props.context?.workspaceUUID,
-    () => props.context?.user?.userId || props.context?.user?.sub || props.context?.user?.email],
+    () => props.context?.user?.userId || props.context?.user?.sub || props.context?.user?.email,
+    () => props.context?.fetch,
+    () => typeof props.context?.fetch === 'function' ? null : props.context?.token],
   () => {
+    retryGeneration += 1
+    retryPending.value = false
+    retryError.value = null
     edges.value = []
     error.value = null
     loaded.value = false
@@ -133,20 +157,15 @@ watch(
     load()
   },
 )
-watch([() => props.context?.token, () => props.context?.fetch], () => {
-  refresh.invalidate()
-  load('background')
-})
 </script>
 
 <template>
-  <div ref="rootRef" :class="tileClass.root" :aria-busy="loading">
-    <div v-if="loading && !loaded" :class="tileClass.message" role="status" aria-live="polite">Loading edges&hellip;</div>
-    <div v-else-if="error && !loaded" :class="tileClass.error" role="alert">Failed to load: {{ error }} <button type="button" class="k-dashboard-action" @click="load()">Retry</button></div>
+  <div ref="rootRef" :class="tileClass.root" :aria-busy="loading || retryPending" tabindex="-1">
+    <div v-if="displayError" :class="tileClass.error" :role="loaded ? 'status' : 'alert'" aria-live="polite">{{ loaded ? 'Could not refresh. Showing cached edges.' : 'Could not load edges.' }} {{ displayError }} <button type="button" class="k-dashboard-action" :aria-disabled="retryPending || undefined" :aria-busy="retryPending || undefined" @click="retry">{{ retryPending ? 'Retrying…' : 'Retry' }}</button></div>
+    <div v-if="loading && !loaded && !displayError" :class="tileClass.message" role="status" aria-live="polite">Loading edges&hellip;</div>
 
-    <template v-else>
-      <div v-if="error" :class="tileClass.error" role="status" aria-live="polite">Showing cached edges. {{ error }} <button type="button" class="k-dashboard-action" @click="load()">Retry</button></div>
-      <span v-else-if="loading" class="sr-only" role="status" aria-live="polite">Updating edges…</span>
+    <template v-if="loaded">
+      <span v-if="loading && !displayError" class="sr-only" role="status" aria-live="polite">Updating edges…</span>
       <div :class="tileClass.stats">
         <span :class="[tileClass.stat, tileClass.statTotal]">
           <Check :class="tileClass.statIcon" :stroke-width="1.75" aria-hidden="true" />
@@ -167,7 +186,7 @@ watch([() => props.context?.token, () => props.context?.fetch], () => {
              you need to look at is the one that stopped reporting. -->
         <div :class="tileClass.sectionLabel">Least recently seen</div>
         <ul :class="tileClass.list">
-          <li v-for="edge in rows" :key="`${edge.type}/${edge.name}`">
+          <li v-for="edge in rows" :key="`${edge.type}/${edge.name}`" class="edge-tile-timed-row">
             <button
               type="button"
               :class="tileClass.row"
@@ -181,9 +200,11 @@ watch([() => props.context?.token, () => props.context?.fetch], () => {
               <span :class="tileClass.rowPrimary">{{ edge.name }}</span>
               <span
                 :class="[tileClass.rowSecondary, edge.connected ? '' : 'text-danger']"
-              >{{ edge.connected ? 'Connected' : 'Offline' }} · {{ age(edge.lastHeartbeatTime) }}</span>
+              >{{ edge.connected ? 'Connected' : 'Offline' }}</span>
               <ChevronRight :class="tileClass.chevron" :stroke-width="1.75" aria-hidden="true" />
             </button>
+            <ResourceTimestamp v-if="edge.lastHeartbeatTime" :value="edge.lastHeartbeatTime" label="Last heartbeat" />
+            <span v-else>Never reported</span>
           </li>
         </ul>
       </div>
@@ -192,3 +213,8 @@ watch([() => props.context?.token, () => props.context?.fetch], () => {
     </template>
   </div>
 </template>
+
+<style scoped>
+.edge-tile-timed-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 11px; }
+.edge-tile-timed-row > button { flex: 1 1 140px; min-width: 0; width: auto; }
+</style>

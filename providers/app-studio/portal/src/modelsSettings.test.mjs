@@ -122,8 +122,8 @@ async function modelSettingsLoader() {
     const selectedNameFromPath = ref(projectName);
     const pendingFirstProjectSubmission = null;
     const hasProjectRequestTransport = () => true;
-    let llmSettingsLoadSerial = 0, llmSettingsLoadProject = '';
-    const llmSettings = ref(null), llmSettingsLoading = ref(false), llmActionError = ref(null);
+    let llmSettingsLoadSerial = 0, llmSettingsRetrySerial = 0, llmSettingsLoadProject = '';
+    const llmSettings = ref(null), llmSettingsLoading = ref(false), llmSettingsRetrying = ref(false), llmActionError = ref(null);
     const llmSettingsError = ref('Previous read failed');
     const llmConfigured = computed(() => llmSettings.value?.models.some(model => model.configured));
     const reads = [], timers = [];
@@ -590,7 +590,8 @@ test('presents multiple workspace models with explicit default and readiness sta
 })
 
 test('uses an explicit empty state before opening the model form', async () => {
-  const html = await render()
+  const settings = { provider: 'openai-compatible', baseURL: '', model: '', configured: false, models: [] }
+  const html = await render({ settings, connectionsLoaded: true })
 
   assert.match(html, /Connect a provider to add models/)
   assert.match(html, />Connect provider/)
@@ -1192,7 +1193,7 @@ test('associates field guidance and validation errors with their controls', asyn
   })
 
   assert.match(html, /id="model-display-name"[^>]*aria-invalid="true"[^>]*aria-describedby="model-display-name-error"/)
-  assert.match(html, /id="model-id"[^>]*aria-invalid="true"[^>]*aria-describedby="[^"]*model-id-error[^"]*binding-model-help"/)
+  assert.match(html, /id="model-id"[^>]*aria-invalid="true"[^>]*aria-describedby="[^"]*model-id-error[^"]*binding-model-help[^"]*"/)
   assert.match(html, /id="model-display-name"[^>]*aria-describedby="model-display-name-error"/)
   assert.match(html, /id="model-id"[^>]*aria-invalid="true"/)
   assert.match(html, /Enter the provider’s exact model ID\./)

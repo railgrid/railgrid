@@ -1,0 +1,12 @@
+@import "../../portal/src/assets/main.css";
+@import "../../providers/agents/portal/src/style.css";
+@import "../../providers/agents/portal/src/activity.css";
+@import "../../provider-sdk/agentkit/agent-ui.css";
+@import "../../provider-sdk/agentkit/activity.css";
+@import "../../provider-sdk/agentkit/conversation.css";
+@source "../../providers/agents/portal/src/**/*.{vue,ts}";
+@source "../../provider-sdk/agentkit-vue/**/*.vue";
+
+.fixture { padding: 2rem; }
+.fixture-controls { display: flex; justify-content: flex-end; margin-bottom: 1rem; }
+@media (max-width: 600px) { .fixture { padding: 1rem; } }

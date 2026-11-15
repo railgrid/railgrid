@@ -34,6 +34,7 @@ const zoneLabel = computed(() => !drop.value ? 'Choose or drop a text file' : is
 
 const tabs = [{ id: 'models', label: 'Models', count: 2 }, { id: 'connections', label: 'Connections' }, { id: 'usage', label: 'Usage', disabled: true }]
 const tab = ref('models')
+const secondaryTab = ref('overview')
 const layout = ref('grid')
 const items = [
   { id: 'rename', label: 'Rename edge' },
@@ -108,6 +109,27 @@ function undoToast() {
   toast('ok', 'Connection removed from the list.', {
     scope: 'design-review', duration: 'persistent',
     action: { label: 'Undo', run: () => { notice.value = 'Connection restored in the fixture.' } },
+  })
+}
+
+function linkedToast() {
+  toast('info', 'Run queued.', {
+    scope: 'design-review',
+    link: { label: 'View run', href: '#toast-review-run' },
+  })
+}
+function retryToast() {
+  let attempts = 0
+  toast('error', 'Could not refresh the run.', {
+    scope: 'design-review',
+    action: {
+      label: 'Retry',
+      async run() {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        if (++attempts === 1) throw new Error('Simulated refresh failure')
+        notice.value = 'Run refreshed in the fixture.'
+      },
+    },
   })
 }
 
@@ -192,6 +214,14 @@ const sizes = ['xs', 'sm', 'md', 'lg', '2xl', '3xl']
     </div>
   </div>
 
+  <div v-else-if="stage === 'route-tabs'" class="spec-stack">
+    <h3>Provider navigation</h3>
+    <Tabs :tabs="tabs.map(item => ({ ...item, href: '#' + item.id }))" :active="tab" aria-label="Sample provider sections" @select="tab = $event" />
+    <h3>Secondary sections</h3>
+    <Tabs variant="secondary" :tabs="[{ id: 'overview', label: 'Overview' }, { id: 'usage', label: 'Usage & cost' }]" :active="secondaryTab" aria-label="Sample detail sections" @select="secondaryTab = $event" />
+    <p class="spec-note" role="status">{{ tab === 'models' ? 'Models' : 'Connections' }} · {{ secondaryTab === 'overview' ? 'Overview' : 'Usage & cost' }}</p>
+  </div>
+
   <div v-else-if="stage === 'navigation'" class="spec-stack">
     <Tabs :tabs="tabs" :active="tab" aria-label="Sample provider sections" @select="tab = $event" />
     <div class="spec-line"><p>{{ tab === 'models' ? '2 configured models' : '1 provider connection' }}</p><LayoutSelector v-model="layout" /></div>
@@ -233,9 +263,13 @@ const sizes = ['xs', 'sm', 'md', 'lg', '2xl', '3xl']
       <h3>Toasts</h3>
       <div class="spec-row">
         <button v-for="[kind, label] in [['ok', 'Success'], ['info', 'Info'], ['warning', 'Warning'], ['error', 'Error']]" :key="kind" class="k-btn k-btn--ghost" type="button" @click="notify(kind)">{{ label }}</button>
+        <button class="k-btn k-btn--ghost" type="button" @click="linkedToast">Show link</button>
+        <button class="k-btn k-btn--ghost" type="button" @click="retryToast">Show retry</button>
         <button class="k-btn k-btn--ghost" type="button" @click="undoToast">Remove with Undo</button>
         <button class="k-btn k-btn--text" type="button" @click="clearToasts('design-review')">Clear toasts</button>
       </div>
+      <p id="toast-review-run" class="spec-note">Sample run · Queue review</p>
+      <a class="review-source-link" href="./agents-toast.html">Open Agents notification fixture</a>
       <ToastHost />
     </section>
     <section class="spec-section">

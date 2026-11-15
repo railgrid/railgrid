@@ -9,10 +9,10 @@ test('resource page background reads leave recovery idle and queued retries anno
   const source = readFileSync(new URL('./ResourcePage.vue', import.meta.url), 'utf8')
   const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
   const parsed = ts.createSourceFile('ResourcePage.ts', script, ts.ScriptTarget.Latest, true)
-  const names = new Set(['explicitReadState', 'showInitialError', 'initialReadPending', 'retryRequested', 'retrying', 'refreshAnnouncement', 'ariaBusy'])
+  const names = new Set(['pageElement', 'explicitReadState', 'showInitialError', 'initialReadPending', 'retryRequested', 'retrying', 'refreshAnnouncement', 'ariaBusy'])
   const declarations = parsed.statements.filter(statement =>
     (ts.isVariableStatement(statement) && statement.declarationList.declarations.some(declaration => names.has(declaration.name.getText(parsed))))
-    || (ts.isFunctionDeclaration(statement) && statement.name?.text === 'requestRetry')
+    || (ts.isFunctionDeclaration(statement) && ['requestRetry', 'finishRetry'].includes(statement.name?.text))
     || statement.getText(parsed).startsWith('watch(() => props.loading,')
     || statement.getText(parsed).startsWith('watch(() => props.error,'),
   )
@@ -190,7 +190,7 @@ test('table retries keep useful errors, announce progress immediately, and seria
   const names = new Set(['explicitReadState', 'retryRequested', 'retrying', 'showInitialError', 'initialReadPending', 'ariaBusy', 'tableAriaLabel', 'refreshAnnouncement'])
   const declarations = parsed.statements.filter(statement =>
     (ts.isVariableStatement(statement) && statement.declarationList.declarations.some(declaration => names.has(declaration.name.getText(parsed))))
-    || (ts.isFunctionDeclaration(statement) && statement.name?.text === 'requestRetry')
+    || (ts.isFunctionDeclaration(statement) && ['requestRetry', 'finishRetry'].includes(statement.name?.text))
     || statement.getText(parsed).startsWith('watch(() => props.loading,')
     || statement.getText(parsed).startsWith('watch(() => props.error,'),
   )
@@ -201,7 +201,7 @@ test('table retries keep useful errors, announce progress immediately, and seria
   const emitted = []
   const scope = effectScope()
   const state = scope.run(() => runInNewContext(`${code}\n({ requestRetry, retrying, ariaBusy, showInitialError, initialReadPending, refreshAnnouncement })`, {
-    computed, ref, watch, props, filterPending: ref(false), emit: event => emitted.push(event),
+    computed, ref, watch, props, tableElement: ref(null), tableScrollRegion: ref(null), filterPending: ref(false), emit: event => emitted.push(event),
   }))
   try {
     state.requestRetry()
@@ -229,7 +229,7 @@ test('table retries keep useful errors, announce progress immediately, and seria
     assert.equal(state.refreshAnnouncement.value, 'Updating repositories…', 'timer refresh is not announced as a user retry')
     assert.equal(state.retrying.value, false, 'timer refresh does not spin or disable recovery actions')
   } finally { scope.stop() }
-  assert.equal((component.match(/:disabled="retrying" :aria-busy="retrying \|\| undefined" @click="requestRetry"/g) || []).length, 2)
+  assert.equal((component.match(/:aria-disabled="retrying \|\| undefined" :aria-busy="retrying \|\| undefined" @click="requestRetry"/g) || []).length, 2)
   assert.match(component, /class="k-table__empty-label" role="status" aria-live="polite"/)
 })
 
@@ -242,6 +242,7 @@ test('searchable table facets leave their teleported search field in source Tab 
   const code = ts.transpileModule(handler.getText(parsed), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   const events = []
   const keydown = runInNewContext(`${code}\nonSearchKeydown`, {
+    composing: { value: false },
     closeFilter: () => events.push('close'), trigger: { value: { focus: () => events.push('focus source trigger') } },
   })
   keydown({ key: 'Tab', preventDefault: () => events.push('blocked native navigation') })

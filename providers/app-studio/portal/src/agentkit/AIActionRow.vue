@@ -72,7 +72,7 @@ function stateLabel(): string {
       'k-ai-action-row--canceled': canceled,
     }"
   >
-    <div class="k-ai-action-row__line">
+    <div class="k-ai-action-row__line" :class="{ 'k-ai-action-row__line--wrap': $slots['after-outcome'] }">
       <Loader2 v-if="busy" class="k-ai-action-row__icon k-ai-action-row__icon--busy" :stroke-width="1.75" aria-hidden="true" />
       <Square v-else-if="attention" class="k-ai-action-row__icon k-ai-action-row__icon--attention" :stroke-width="2" fill="currentColor" aria-hidden="true" />
       <X v-else-if="error || canceled" class="k-ai-action-row__icon" :class="error ? 'k-ai-action-row__icon--error' : undefined" :stroke-width="1.75" aria-hidden="true" />
@@ -86,7 +86,7 @@ function stateLabel(): string {
         type="button"
         class="k-ai-action-row__toggle"
         :aria-expanded="expanded"
-        :aria-controls="detailsId || undefined"
+        :aria-controls="$slots.details && detailsId ? detailsId : undefined"
         @click="emit('toggle')"
       >
         <span class="k-ai-action-row__title">{{ title }}</span>
@@ -95,16 +95,19 @@ function stateLabel(): string {
       <span v-else class="k-ai-action-row__title">{{ title }}</span>
       <span v-if="target" class="k-ai-action-row__target">{{ target }}</span>
       <span v-if="outcome" class="k-ai-action-row__outcome">{{ outcome }}</span>
+      <slot name="after-outcome" />
     </div>
 
-    <Transition name="k-ai-disclosure">
-      <div v-if="expandable && expanded && $slots.details" class="k-ai-disclosure">
-        <div class="k-ai-disclosure__inner">
-          <div :id="detailsId || undefined" class="k-ai-action-row__details">
-            <slot name="details" />
+    <div v-if="expandable && $slots.details" :id="detailsId || undefined">
+      <Transition name="k-ai-disclosure">
+        <div v-if="expanded" class="k-ai-disclosure">
+          <div class="k-ai-disclosure__inner">
+            <div class="k-ai-action-row__details">
+              <slot name="details" />
+            </div>
           </div>
         </div>
-      </div>
-    </Transition>
+      </Transition>
+    </div>
   </div>
 </template>

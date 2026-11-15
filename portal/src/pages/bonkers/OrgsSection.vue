@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatFullTimestamp } from '@/portalkit/timestamp'
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { RotateCcw } from 'lucide-vue-next'
@@ -141,10 +142,7 @@ function rowString(row: Record<string, unknown>, key: string): string {
 // or workspace. The hub computes it from its own grace period, so the portal
 // never assumes a number of days.
 function purgeLabel(purgeAt: string | undefined): string {
-  if (!purgeAt) return ''
-  const at = new Date(purgeAt)
-  if (Number.isNaN(at.getTime())) return purgeAt
-  return at.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+  return formatFullTimestamp(purgeAt)
 }
 
 function restoreTitle(purgeAt: string | undefined): string {
@@ -230,7 +228,7 @@ function restoreWorkspace(org: AdminOrg, wsUUID: string) {
         </template>
         <template v-if="selectedOrg">
           <p v-if="actionError" class="mb-4 text-sm text-danger" role="alert">{{ actionError }}</p>
-          <p v-if="selectedOrg.deletionRequestedAt" class="mb-4 text-sm text-text-secondary">This organization is pending deletion. {{ selectedOrg.purgeAt ? `Recoverable until ${purgeLabel(selectedOrg.purgeAt)}.` : 'Restore it to cancel deletion.' }}</p>
+          <p v-if="selectedOrg.deletionRequestedAt" class="mb-4 text-sm text-text-secondary">This organization is pending deletion. <template v-if="purgeLabel(selectedOrg.purgeAt)">Recoverable until <time :datetime="selectedOrg.purgeAt">{{ purgeLabel(selectedOrg.purgeAt) }}</time>.</template><template v-else-if="selectedOrg.purgeAt">Recovery deadline unavailable. Restore it to cancel deletion.</template><template v-else>Restore it to cancel deletion.</template></p>
           <div class="space-y-4">
           <ResourceSectionCard id="organization-providers" title="Enabled providers" description="One row per provider binding, including its workspace and ownership.">
             <p v-if="unavailableWorkspaceBindings" class="mb-3 text-sm text-text-secondary" role="status">Provider bindings for {{ unavailableWorkspaceBindings }} workspaces could not be read. Refresh to try again.</p>
@@ -301,7 +299,7 @@ function restoreWorkspace(org: AdminOrg, wsUUID: string) {
               <div><dt class="text-text-muted">Workspace ID</dt><dd class="break-all font-mono text-text-primary">{{ selectedWorkspace.uuid }}</dd></div>
               <div><dt class="text-text-muted">Cluster</dt><dd class="break-all font-mono text-text-primary">{{ selectedWorkspace.clusterName || 'Unavailable' }}</dd></div>
               <div v-if="selectedWorkspace.deletionForced"><dt class="text-text-muted">Recovery</dt><dd>No recovery window</dd></div>
-              <div v-else-if="selectedWorkspace.purgeAt"><dt class="text-text-muted">Recoverable until</dt><dd>{{ purgeLabel(selectedWorkspace.purgeAt) }}</dd></div>
+              <div v-else-if="selectedWorkspace.purgeAt"><dt class="text-text-muted">Recoverable until</dt><dd><time v-if="purgeLabel(selectedWorkspace.purgeAt)" :datetime="selectedWorkspace.purgeAt">{{ purgeLabel(selectedWorkspace.purgeAt) }}</time><template v-else>Deadline unavailable</template></dd></div>
             </dl></ResourceSectionCard>
           </div>
         </template>

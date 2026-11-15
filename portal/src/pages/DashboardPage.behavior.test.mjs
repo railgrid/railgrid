@@ -79,6 +79,10 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
   ]) } }
   let welcomeSeen = dismissed
   const modules = {
+    'grid-layout-plus': {
+      GridLayout: { setup: (_, { slots }) => () => h('div', { id: 'provider-grid' }, slots.default?.()) },
+      GridItem: shell,
+    },
     '@/stores/auth': { useAuthStore: () => ({ user: { userId: 'test-user' } }) },
     '@/lib/firstWelcome': { welcomeIdentity: auth => auth.user?.userId || '', claimFirstWelcome: () => { if (welcomeSeen) return false; welcomeSeen = true; return true } },
     '@/composables/gettingStartedFocus': { useGettingStartedFocus() {} },
@@ -137,8 +141,26 @@ test('Add provider follows visual reading order and can be removed and restored 
   try {
     await nextTick()
     const rendered = nodes(s.root)
+    const provider = rendered.find(node => node.props?.id === 'provider-tile')
+    const usage = rendered.find(node => node.props?.id === 'usage-tile')
+    assert.ok(provider)
+    assert.ok(usage)
     assert.equal(shortcut().props.href, '/org/ws/providers')
-    assert.ok(rendered.indexOf(shortcut()) < rendered.findIndex(node => node.props?.id === 'provider-tile'))
+    assert.ok(rendered.indexOf(provider) < rendered.indexOf(shortcut()))
+    assert.ok(rendered.indexOf(shortcut()) < rendered.indexOf(usage))
+
+    s.remountContent(390)
+    await nextTick()
+    await nextTick()
+    const grid = nodes(s.root).find(node => node.props?.id === 'provider-grid')
+    assert.equal(grid.props['auto-size'], false)
+    const providerItem = nodes(grid).find(node => node.props?.i === bound.name)
+    const shortcutItem = nodes(grid).find(node => node.props?.i === layoutModule.ADD_PROVIDER_TILE_ID)
+    assert.equal(shortcutItem.props.x, 0)
+    assert.equal(shortcutItem.props.y, providerItem.props.y + providerItem.props.h)
+    const [ , gap ] = grid.props.margin
+    const rowStride = grid.props['row-height'] + gap
+    assert.equal(grid.props.style.height, `${(shortcutItem.props.y + shortcutItem.props.h) * rowStride + gap}px`)
 
     button(s, 'Customize').props.onClick()
     await nextTick()

@@ -7,6 +7,7 @@ import { Search, ChevronRight, ArrowDown, ArrowUpRight, MessageSquare, PanelLeft
 import { ResourceError } from '../resources'
 import { ApiError, type ApiClient, type SessionModelPreferences, type SSEEvent } from '../api'
 import InlineNotification from '../portalkit/InlineNotification.vue'
+import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { useUserLabels } from '../portalkit/useUserLabels'
 import AIModelReasoningPicker from '../agentkit/AIModelReasoningPicker.vue'
@@ -526,6 +527,38 @@ const mobileRailTrigger = ref<HTMLButtonElement | null>(null)
 const conversationRail = ref<ConversationRailHandle | null>(null)
 const conversationRailExpanded = computed(() => conversationRail.value?.expanded ?? true)
 const log = ref<HTMLElement | null>(null)
+const interruptDock = ref<HTMLElement | null>(null)
+const inlineInterruptIDs = computed(() => messages.value.flatMap(message => {
+  const approval = message.approval
+  if (!approval || approval.inboxID === dockedInterrupt.value?.inboxID) return []
+  if (pendingIsQuestion(approval) ? !approval.answerInThread : !approval.resolved) return [approval.inboxID]
+  return []
+}))
+watch(inlineInterruptIDs, async ids => {
+  const focused = document.activeElement
+  if (!(focused instanceof HTMLElement) || !log.value?.contains(focused)) return
+  const id = focused.closest<HTMLElement>('[data-chat-interrupt]')?.dataset.chatInterrupt
+  if (!id || ids.includes(id)) return
+  const authority = captureAuthority()
+  const session = sessionID.value
+  const agentName = props.name
+  await nextTick()
+  if (agentName === props.name && session === sessionID.value && authorityIsCurrent(authority) && (document.activeElement === focused || document.activeElement === document.body)) {
+    log.value?.focus({ preventScroll: true })
+  }
+})
+watch(() => dockedInterrupt.value?.inboxID, async (current, previous) => {
+  if (!previous || current === previous) return
+  const focused = document.activeElement
+  if (!(focused instanceof HTMLElement) || !interruptDock.value?.contains(focused)) return
+  const authority = captureAuthority()
+  const session = sessionID.value
+  const agentName = props.name
+  await nextTick()
+  if (agentName === props.name && session === sessionID.value && authorityIsCurrent(authority) && (document.activeElement === focused || document.activeElement === document.body)) {
+    log.value?.focus({ preventScroll: true })
+  }
+})
 let mounted = false
 let initializedFor = ''
 const sessionInputReady = computed(() => Boolean(sessionID.value) && !selectingSessionID.value)
@@ -3284,10 +3317,10 @@ defineExpose({
       <p v-if="sessionsLoading && !sessionsHasSnapshot" role="status">Loading chats…</p>
       <p v-else-if="!filteredOverlayChats.length" class="muted" role="status">{{ overlayChatSearch ? 'No chats match your search.' : 'No chats yet. Start a new chat above.' }}</p>
       <div v-for="group in overlayChatGroups" :key="group.label" class="agents-overlay-chats__group"><h3>{{ group.label }}</h3>
-      <button v-for="item in group.items" :key="item.id" type="button" class="agents-overlay-chats__row" :disabled="!!selectingSessionID" :aria-current="item.id === sessionID ? 'true' : undefined" @click="selectOverlayChat(item.id)">
-        <span class="agents-overlay-chats__text"><strong>{{ item.title }}</strong><span class="muted">{{ name }}<template v-if="item.updatedAt"> · {{ new Date(item.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) }}</template></span></span>
+      <div v-for="item in group.items" :key="item.id"><button type="button" class="agents-overlay-chats__row" :disabled="!!selectingSessionID" :aria-current="item.id === sessionID ? 'true' : undefined" @click="selectOverlayChat(item.id)">
+        <span class="agents-overlay-chats__text"><strong>{{ item.title }}</strong><span class="muted">{{ name }}</span></span>
         <span v-if="item.status === 'active'" class="agents-overlay-chats__status">Running</span><span v-else-if="item.id === sessionID" class="agents-overlay-chats__status">Last opened</span><ChevronRight :size="16" aria-hidden="true" />
-      </button>
+      </button><span v-if="item.updatedAt" class="muted"><ResourceTimestamp :value="item.updatedAt" label="Conversation updated" /></span></div>
       </div>
     </section>
     <AIConversationLayout v-show="!overlayChatsVisible || composerOnly" class="agents-chat" aria-label="Agent conversation">
@@ -3463,7 +3496,7 @@ defineExpose({
           </button>
         </div>
 
-        <div v-if="dockedQuestion" class="agents-question-dock k-ai-composer-dock">
+        <div v-if="dockedQuestion" ref="interruptDock" class="agents-question-dock k-ai-composer-dock">
           <AgentQuestionCard
             :question-id="dockedQuestion.inboxID"
             :prompt="dockedQuestion.question"
@@ -3473,7 +3506,7 @@ defineExpose({
             @answer="resolveApproval(dockedQuestion.inboxID, 'answer', $event)"
           />
         </div>
-        <div v-if="dockedApproval" class="agents-approval-dock k-ai-composer-dock">
+        <div v-if="dockedApproval" ref="interruptDock" class="agents-approval-dock k-ai-composer-dock">
           <AgentApprovalCard
             :tool="dockedApproval.tool"
             :args="dockedApproval.args"

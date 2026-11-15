@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 476" width="1200" height="476" role="img" aria-labelledby="t d">
+<title id="t">How a call reaches an edge</title>
+<desc id="d">A client calls the hub with the user's bearer. The hub forwards to kcp, which authorizes the verb and stamps the caller. The kcp shard forwards to the edges provider, which checks the caller can get the edge, finds its tunnel and sends the request over revdial to the agent, which serves it against the kube-apiserver or sshd. The verbs are k8s, ssh and mcp.</desc>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a0b12"/><stop offset="1" stop-color="#141329"/></linearGradient>
+
+<marker id="m0" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9a9cb8"/></marker>
+<marker id="m1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2fd6a0"/></marker>
+</defs>
+<rect width="1200" height="476" rx="18" fill="url(#bg)"/>
+
+<rect x="36" y="36" width="168" height="124" rx="12" fill="#111320" stroke="#9a9cb8" stroke-width="1.5"/>
+<text x="52" y="66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e9e9f2">Client</text>
+<text x="52" y="92" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">kubectl, railgrid ssh,</text>
+<text x="52" y="110" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">an MCP client</text>
+<text x="52" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">bearer: the user's own</text>
+<rect x="228" y="36" width="168" height="124" rx="12" fill="#111320" stroke="#8b6bff" stroke-width="1.5"/>
+<text x="244" y="66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e9e9f2">Hub</text>
+<text x="244" y="92" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">kcp front door</text>
+<text x="244" y="110" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">/clusters/&lt;id&gt;/…</text>
+<text x="244" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">forwards unchanged</text>
+<path d="M206,98.0 H225" fill="none" stroke="#9a9cb8" stroke-width="2" marker-end="url(#m0)"/>
+<rect x="420" y="36" width="168" height="124" rx="12" fill="#111320" stroke="#b7a4ff" stroke-width="1.5"/>
+<text x="436" y="66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e9e9f2">kcp shard</text>
+<text x="436" y="92" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">authorizes the verb</text>
+<text x="436" y="110" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">with workspace RBAC,</text>
+<text x="436" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">stamps the caller</text>
+<path d="M398,98.0 H417" fill="none" stroke="#9a9cb8" stroke-width="2" marker-end="url(#m0)"/>
+<rect x="612" y="36" width="168" height="124" rx="12" fill="#111320" stroke="#5aa9ff" stroke-width="1.5"/>
+<text x="628" y="66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e9e9f2">Edges provider</text>
+<text x="628" y="92" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">gate: can the caller</text>
+<text x="628" y="110" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">get this edge? then</text>
+<text x="628" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">finds its tunnel</text>
+<path d="M590,98.0 H609" fill="none" stroke="#9a9cb8" stroke-width="2" marker-end="url(#m0)"/>
+<rect x="804" y="36" width="168" height="124" rx="12" fill="#111320" stroke="#2fd6a0" stroke-width="1.5"/>
+<text x="820" y="66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e9e9f2">Agent</text>
+<text x="820" y="92" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">dialled out earlier;</text>
+<text x="820" y="110" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">serves /k8s and /ssh</text>
+<text x="820" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">over the tunnel</text>
+<path d="M782,98.0 H801" fill="none" stroke="#2fd6a0" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#m1)"/>
+<rect x="996" y="36" width="168" height="124" rx="12" fill="#111320" stroke="#f0a63a" stroke-width="1.5"/>
+<text x="1012" y="66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e9e9f2">Target</text>
+<text x="1012" y="92" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">kube-apiserver,</text>
+<text x="1012" y="110" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">or sshd on</text>
+<text x="1012" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#8a8ca6">localhost:22</text>
+<path d="M974,98.0 H993" fill="none" stroke="#9a9cb8" stroke-width="2" marker-end="url(#m0)"/>
+<text x="792" y="182" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#2fd6a0" text-anchor="middle">revdial over the agent's WebSocket</text>
+<rect x="36" y="212" width="1128" height="62" rx="10" fill="#0d0e18" stroke="#262a44" stroke-width="1"/>
+<text x="54" y="236" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" letter-spacing="1.5" fill="#6b6e8c">ONE URL SHAPE: A KCP CUSTOM SUBRESOURCE ON THE EDGE OBJECT</text>
+<text x="54" y="259" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#c9cbe0">https://&lt;hub&gt;/clusters/&lt;cluster-id&gt;/apis/edges.railgrid.ai/v1alpha1/</text>
+<text x="627.104" y="259" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#b7a4ff">&lt;resource&gt;/&lt;name&gt;/&lt;verb&gt;</text>
+<text x="54" y="316" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" letter-spacing="1.5" fill="#6b6e8c">VERB</text>
+<text x="150" y="316" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" letter-spacing="1.5" fill="#6b6e8c">ON</text>
+<text x="400" y="316" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" letter-spacing="1.5" fill="#6b6e8c">HOW YOU CALL IT</text>
+<text x="780" y="316" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" letter-spacing="1.5" fill="#6b6e8c">WHERE IT ENDS</text>
+<path d="M36,330 H1164" stroke="#262a44" stroke-width="1"/>
+<rect x="54" y="339" width="45" height="26" rx="6" fill="#0a0b12" stroke="#2fd6a0" stroke-width="1.2"/><text x="65" y="356.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#2fd6a0">k8s</text>
+<text x="150" y="357" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c9cbe0">kubernetesclusters</text>
+<text x="400" y="357" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c9cbe0">railgrid edge kubeconfig, then kubectl</text>
+<text x="780" y="357" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#8a8ca6">the cluster's kube-apiserver</text>
+<path d="M36,374 H1164" stroke="#262a44" stroke-width="1"/>
+<rect x="54" y="383" width="45" height="26" rx="6" fill="#0a0b12" stroke="#5aa9ff" stroke-width="1.2"/><text x="65" y="400.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5aa9ff">ssh</text>
+<text x="150" y="401" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c9cbe0">linuxservers</text>
+<text x="400" y="401" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c9cbe0">railgrid ssh &lt;name&gt; (WebSocket)</text>
+<text x="780" y="401" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#8a8ca6">sshd on the host, host key verified</text>
+<path d="M36,418 H1164" stroke="#262a44" stroke-width="1"/>
+<rect x="54" y="427" width="45" height="26" rx="6" fill="#0a0b12" stroke="#f0a63a" stroke-width="1.2"/><text x="65" y="444.55" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#f0a63a">mcp</text>
+<text x="150" y="445" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c9cbe0">kubernetesclusters</text>
+<text x="400" y="445" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c9cbe0">railgrid mcp url --edge &lt;name&gt;</text>
+<text x="780" y="445" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#8a8ca6">Kubernetes tools, run by the provider</text>
+</svg>

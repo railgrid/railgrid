@@ -39,7 +39,7 @@ const providers = useProvidersStore()
 const tenant = useTenantStore()
 const auth = useAuthStore()
 const dash = useDashboardLayoutStore()
-const { layout, addable, columns } = storeToRefs(dash)
+const { layout, catalogTile, addable, columns } = storeToRefs(dash)
 
 onMounted(() => {
   if (!providers.loaded) providers.load()
@@ -67,6 +67,7 @@ const candidateNames = computed(() => gated.value.map((p) => p.name))
 const pageRef = ref<HTMLElement | null>(null)
 const pageWidth = ref(1280)
 const TILE_GAP = 16
+const GRID_ROW_HEIGHT = 90
 const MIN_TILE_WIDTH = 320
 const MAX_DASHBOARD_COLUMNS = 8
 // The shell can mount this content after hydration or replace it on a
@@ -216,10 +217,16 @@ const providerFor = (name: string) => gated.value.find(provider => provider.name
 const editMode = ref(false)
 const addProviderLabel = 'Add provider'
 const catalogTileOptions: ActionMenuItem[] = [{ id: 'remove', label: 'Remove Add provider tile', tone: 'danger' }]
-// Follow the visible reading order, including positions updated by compaction.
-const gridItems = computed(() => editMode.value
-  ? layout.value
-  : [...layout.value].sort((a, b) => a.y - b.y || a.x - b.x))
+const gridItems = computed(() => {
+  // Follow visual reading order in browse mode, with the catalog link last.
+  const providers = editMode.value ? layout.value : [...layout.value].sort((a, b) => a.y - b.y || a.x - b.x)
+  return catalogTile.value ? [...providers, catalogTile.value] : providers
+})
+// Size the grid for both the provider layout and the display-only shortcut.
+const gridHeight = computed(() => {
+  const rows = gridItems.value.reduce((bottom, tile) => Math.max(bottom, tile.y + tile.h), 0)
+  return rows * (GRID_ROW_HEIGHT + TILE_GAP) + TILE_GAP
+})
 const addMenuItems = computed<ActionMenuItem[]>(() => addable.value.map((name) => ({
   id: name,
   label: name === ADD_PROVIDER_TILE_ID ? addProviderLabel : providerFor(name)?.displayName ?? name,
@@ -371,7 +378,7 @@ function onGridSelectStart(event: Event) {
              dashboard tile (addable === 0) — in which case there is nothing
              to "add", so point at the catalog instead of a dead control. -->
         <div
-          v-if="layout.length === 0"
+          v-if="gridItems.length === 0"
           class="flex items-start gap-3 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-[13px] text-text-muted"
         >
           <LayoutGrid class="mt-0.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
@@ -395,8 +402,10 @@ function onGridSelectStart(event: Event) {
           v-else
           :layout="layout"
           :class="editMode ? 'select-none' : undefined"
+          :style="{ height: `${gridHeight}px` }"
+          :auto-size="false"
           :col-num="columns"
-          :row-height="90"
+          :row-height="GRID_ROW_HEIGHT"
           :margin="[TILE_GAP, TILE_GAP]"
           :is-draggable="editMode"
           :is-resizable="editMode"
@@ -412,7 +421,7 @@ function onGridSelectStart(event: Event) {
             :w="item.w"
             :h="item.h"
             :i="item.i"
-            :static="item.static"
+            :static="item.i === ADD_PROVIDER_TILE_ID"
             :min-w="1"
             :min-h="1"
             drag-ignore-from=".tile-no-drag"
@@ -450,7 +459,7 @@ function onGridSelectStart(event: Event) {
              The grid already leaves TILE_GAP below its last row. -->
         <div
           v-if="tenant.workspaceUUID"
-          :style="{ marginInline: `${TILE_GAP}px`, marginTop: gated.length > 0 && layout.length === 0 ? `${TILE_GAP}px` : undefined }"
+          :style="{ marginInline: `${TILE_GAP}px`, marginTop: gated.length > 0 && gridItems.length === 0 ? `${TILE_GAP}px` : undefined }"
         >
           <DashboardUsageTile />
         </div>

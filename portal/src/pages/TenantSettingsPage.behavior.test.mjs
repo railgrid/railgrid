@@ -190,6 +190,9 @@ function workspaceBulkDeleteFixture() {
     workspaceDeleteBatchBusy: { value: false },
     workspaceDeleteProgress: { value: null },
     workspaceDeleteSummary: { value: null },
+    workspaceDeleteAnnouncement: { value: '' },
+    workspaceDeleteAnnouncementTimer: undefined,
+    setTimeout, clearTimeout,
     workspaceDeleteScopeGeneration: 1,
     workspaceSelectionRevision: 0,
     workspaceDeleteRunSequence: 0,
@@ -226,6 +229,9 @@ function workspaceBulkDeleteFixture() {
   }
 
   for (const name of [
+    'clearWorkspaceDeleteAnnouncement',
+    'scheduleWorkspaceDeleteAnnouncement',
+    'finishWorkspaceDeleteAnnouncement',
     'workspaceBulkDeleteDisabledReason',
     'workspaceDeleteContextIsCurrent',
     'workspaceDeleteDispatchIsAllowed',
@@ -239,12 +245,37 @@ function workspaceBulkDeleteFixture() {
   return { context, calls, confirmations, deletePlans }
 }
 
+test('bulk deletion coalesces progress announcements and final results cancel pending updates', () => {
+  const { context } = workspaceBulkDeleteFixture()
+  const timers = new Map()
+  let nextTimer = 0
+  context.setTimeout = (callback, delay) => { assert.equal(delay, 1000); const id = ++nextTimer; timers.set(id, callback); return id }
+  context.clearTimeout = id => timers.delete(id)
+  context.workspaceDeleteProgress.value = { completed: 1, total: 4, succeeded: 1, failed: 0 }
+  context.scheduleWorkspaceDeleteAnnouncement()
+  context.workspaceDeleteProgress.value = { completed: 2, total: 4, succeeded: 1, failed: 1 }
+  context.scheduleWorkspaceDeleteAnnouncement()
+  assert.equal(timers.size, 1)
+  const [id, callback] = [...timers][0]
+  timers.delete(id)
+  callback()
+  assert.equal(context.workspaceDeleteAnnouncement.value, '2 of 4 workspace deletion requests finished. 1 accepted; 1 failed.')
+  context.scheduleWorkspaceDeleteAnnouncement()
+  context.finishWorkspaceDeleteAnnouncement([{ ok: true }, { ok: false }])
+  assert.equal(timers.size, 0)
+  assert.equal(context.workspaceDeleteAnnouncement.value, 'Workspace deletion results: 1 accepted; 1 failed.')
+  context.scheduleWorkspaceDeleteAnnouncement()
+  context.clearWorkspaceDeleteAnnouncement()
+  assert.equal(timers.size, 0)
+  assert.equal(context.workspaceDeleteAnnouncement.value, '')
+})
+
 test('bulk delete confirmation includes names and IDs and cancels queued work after leaving and returning', async () => {
   const fixture = workspaceBulkDeleteFixture()
   const pending = fixture.context.requestWorkspaceDeletions(['workspace-a', 'workspace-b'], false)
   assert.equal(fixture.confirmations.length, 1)
   assert.equal(fixture.confirmations[0].options.title, 'Delete 2 workspaces?')
-  assert.match(fixture.confirmations[0].options.message, /recoverable 30-day grace period/)
+  assert.match(fixture.confirmations[0].options.message, /recovery window/)
   assert.match(fixture.confirmations[0].options.message, /Production \(UUID workspace-a\)/)
   assert.match(fixture.confirmations[0].options.message, /Staging \(UUID workspace-b\)/)
 
@@ -384,7 +415,7 @@ test('delete now says in plain words that the workspace cannot be restored and n
   assert.equal(fixture.confirmations[0].options.title, 'Delete "Production" now?')
   assert.equal(fixture.confirmations[0].options.confirmLabel, 'Delete now')
   assert.equal(fixture.confirmations[0].options.danger, true)
-  assert.match(fixture.confirmations[0].options.message, /skips the 30-day recovery window/)
+  assert.match(fixture.confirmations[0].options.message, /skips the recovery window/)
   assert.match(fixture.confirmations[0].options.message, /cannot be restored/)
   assert.match(fixture.confirmations[0].options.message, /Production \(UUID workspace-a\)/)
   fixture.confirmations[0].resolve(true)
@@ -461,3 +492,59 @@ test('bulk selection keeps explaining scheduled rows and names a forced row as d
   fixture.context.forceDeletingWorkspaceUUID.value = 'workspace-b'
   assert.match(fixture.context.workspaceBulkDeleteDisabledReason(fixture.context.workspaces.value[0]), /running deletion/)
 })
+
+for (const scenario of ['removed action', 'user moved focus', 'scope changed']) {
+  test(`workspace restore focus respects ${scenario}`, async () => {
+    class Element { constructor() { this.isConnected = true } }
+    const source = new Element()
+    const body = new Element()
+    const other = new Element()
+    const pendingRestore = deferred()
+    const calls = []
+    const context = {
+      HTMLElement: Element,
+      document: { activeElement: source, body },
+      workspaceInventoryVerified: { value: true }, activeOrg: { value: {} },
+      restoringWorkspaceUUID: { value: null }, forceDeletingWorkspaceUUID: { value: null }, workspaceDeleteBatchBusy: { value: false },
+      workspaceInventoryHeading: { value: { focus: () => calls.push('heading') } },
+      workspaceDeleteScopeGeneration: 1, pageDisposed: false,
+      tenant: { orgUUID: 'org-a', undeleteWorkspace: () => pendingRestore.promise },
+      toast: () => {}, nextTick: async () => {},
+    }
+    const restore = loadFunction('restoreWorkspace', context)
+    const operation = restore({ uuid: 'ws-a', orgUUID: 'org-a', role: 'admin', deletionRequestedAt: '2026-01-01' }, { currentTarget: source })
+    source.isConnected = false
+    context.document.activeElement = scenario === 'user moved focus' ? other : body
+    if (scenario === 'scope changed') context.workspaceDeleteScopeGeneration++
+    pendingRestore.resolve(true)
+    await operation
+    assert.deepEqual(calls, scenario === 'removed action' ? ['heading'] : [])
+  })
+}
+
+for (const scenario of ['removed action', 'user moved focus', 'scope changed']) {
+  test(`delete now focus respects ${scenario}`, async () => {
+    class Element { constructor() { this.isConnected = true } }
+    const fixture = workspaceForceDeleteFixture()
+    const source = new Element()
+    const body = new Element()
+    const other = new Element()
+    const action = deferred()
+    const focusCalls = []
+    Object.assign(fixture.context, {
+      HTMLElement: Element, document: { activeElement: source, body },
+      workspaceInventoryHeading: { value: { focus: () => focusCalls.push('heading') } },
+      nextTick: async () => {},
+    })
+    fixture.context.tenant.forceDeleteWorkspace = () => action.promise
+    const pending = fixture.context.forceDeleteWorkspace(fixture.workspace, { currentTarget: source })
+    fixture.confirmations[0].resolve(true)
+    await Promise.resolve()
+    source.isConnected = false
+    fixture.context.document.activeElement = scenario === 'user moved focus' ? other : body
+    if (scenario === 'scope changed') fixture.context.workspaceDeleteScopeGeneration++
+    action.resolve()
+    await pending
+    assert.deepEqual(focusCalls, scenario === 'removed action' ? ['heading'] : [])
+  })
+}

@@ -381,7 +381,7 @@ const announcement = computed(() => {
           <label v-for="option in HARNESS_PERMISSION_MODES" :key="option.id" class="edge-harness__mode k-checkbox-hit">
             <input
               v-model="permissionMode"
-              class="k-radio"
+              class="k-checkbox"
               type="radio"
               name="edges-harness-permission"
               :aria-labelledby="`edges-harness-permission-${option.id}-label`"

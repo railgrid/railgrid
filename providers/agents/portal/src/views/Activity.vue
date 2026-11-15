@@ -4,9 +4,10 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ArrowLeft, Check, ChevronRight, CircleHelp, Inbox, RefreshCw, ShieldCheck, X } from 'lucide-vue-next'
 import { ApiError, type ApiClient, type RunFilter } from '../api'
 import type { AppStore, ServerEvent } from '../store'
-import { fmtDuration, fmtTime, fmtTokens, fmtUSD, runHarnessBacked, type InboxItem, type RunPhase, type RunSummary } from '../types'
+import { fmtDuration, fmtTokens, fmtUSD, runHarnessBacked, type InboxItem, type RunPhase, type RunSummary } from '../types'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import AIWorkbenchPane from '../agentkit/AIWorkbenchPane.vue'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
 import type { TableFilterDefinition, TableFilterState } from '../portalkit/table'
@@ -70,6 +71,7 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const loaded = ref(false)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
+const refreshingInbox = ref(false)
 const resolvingInbox = ref(new Map<string, InboxDecision>())
 // bulkDismiss is the progress of a "Dismiss all" pass over the pending list;
 // null when none is running. While it runs every per-item control is locked,
@@ -231,6 +233,21 @@ const tableRows = computed(() => runs.value.map(run => ({
 })))
 const refreshingRuns = computed(() => loading.value && refreshMode.value === 'foreground')
 
+async function refreshHeader(): Promise<void> {
+  if (!viewingInbox.value) {
+    if (!refreshingRuns.value) await reload('foreground')
+    return
+  }
+  if (refreshingInbox.value) return
+  const authority = captureAuthority()
+  refreshingInbox.value = true
+  try {
+    await authority.store.load('inbox')
+  } finally {
+    if (authorityIsCurrent(authority)) refreshingInbox.value = false
+  }
+}
+
 function isWithinRange(createdAt: string, hours: number): boolean {
   const created = Date.parse(createdAt)
   return Number.isFinite(created) && created >= now.value - hours * 3_600_000
@@ -290,9 +307,9 @@ async function resolve(item: InboxItem, decision: InboxDecision, response?: Ques
   const answer = typeof response === 'string' ? response.trim() : response
   if (decision === 'answer' && !answer) return
   const authority = captureAuthority()
-  // The request disables its controls. Keep focus inside the pane so it can
-  // follow the next request even when the inbox event beats the HTTP reply.
-  if (viewingInbox.value && selectedInboxID.value === item.id && focusIsInInboxDetail(document.activeElement)) {
+  // Change-request controls still disable while pending. Approval and question
+  // cards retain their own action focus until the inbox item is removed.
+  if (item.kind === 'change' && viewingInbox.value && selectedInboxID.value === item.id && focusIsInInboxDetail(document.activeElement)) {
     inboxDetail.value?.focus({ preventScroll: true })
   }
   resolvingInbox.value = new Map(resolvingInbox.value).set(item.id, decision)
@@ -426,6 +443,7 @@ watch(() => [props.store, props.api, props.agent] as const, () => {
   loading.value = false
   error.value = null
   refreshMode.value = 'foreground'
+  refreshingInbox.value = false
   resolvingInbox.value = new Map()
   bulkDismiss.value = null
   void reload('foreground')
@@ -454,15 +472,15 @@ onBeforeUnmount(() => {
         class="k-btn k-btn--text agents-runs-refresh"
         type="button"
         :aria-label="viewingInbox ? 'Refresh inbox' : 'Refresh runs'"
-        :disabled="viewingInbox ? inboxSlice.loading : refreshingRuns"
-        :aria-busy="(viewingInbox ? inboxSlice.loading : refreshingRuns) || undefined"
-        @click="viewingInbox ? store.load('inbox') : reload('foreground')"
+        :aria-disabled="(viewingInbox ? refreshingInbox : refreshingRuns) || undefined"
+        :aria-busy="(viewingInbox ? refreshingInbox : refreshingRuns) || undefined"
+        @click="refreshHeader"
       >
-        <RefreshCw :class="{ 'k-spin': viewingInbox ? inboxSlice.loading : refreshingRuns }" :stroke-width="1.75" aria-hidden="true" />
-        {{ (viewingInbox ? inboxSlice.loading : refreshingRuns) ? 'Refreshing…' : 'Refresh' }}
+        <RefreshCw :class="{ 'k-spin': viewingInbox ? refreshingInbox : refreshingRuns }" :stroke-width="1.75" aria-hidden="true" />
+        {{ (viewingInbox ? refreshingInbox : refreshingRuns) ? 'Refreshing…' : 'Refresh' }}
       </button>
     </template>
-    <Tabs v-if="!agent" :tabs="activityTabs" :active="section" aria-label="Activity sections" @select="selectActivityTab" />
+    <Tabs v-if="!agent" variant="secondary" :tabs="activityTabs" :active="section" aria-label="Activity sections" @select="selectActivityTab" />
     <AgentUsage v-if="viewingUsage" :store="store" :api="api" />
     <template v-if="agent || viewingInbox">
       <div v-if="inboxSlice.error && !inboxSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
@@ -496,10 +514,11 @@ onBeforeUnmount(() => {
                   <component :is="item.kind === 'question' ? CircleHelp : ShieldCheck" :size="17" :stroke-width="1.75" aria-hidden="true" />
                   <span class="agents-inbox-row-copy">
                     <span class="agents-inbox-prompt">{{ inboxPreview(item) }}</span>
-                    <span class="agents-inbox-meta">{{ item.agentName }} · {{ inboxKindLabel(item) }} · {{ fmtTime(item.createdAt) }}</span>
+                    <span class="agents-inbox-meta">{{ item.agentName }} · {{ inboxKindLabel(item) }}</span>
                   </span>
                   <ChevronRight :size="14" aria-hidden="true" />
                 </button>
+                <span class="agents-inbox-meta"><ResourceTimestamp :value="item.createdAt" label="Request created" /></span>
               </li>
             </ul>
           </div>
@@ -529,7 +548,7 @@ onBeforeUnmount(() => {
                 <span class="agents-inbox-meta">Request {{ selectedInboxIndex + 1 }} of {{ pending.length }}</span>
               </div>
               <div :ref="el => inboxDetail = el as HTMLElement | null" class="agents-inbox-detail-heading" tabindex="-1">
-                <span class="agents-inbox-meta">{{ item.agentName }} · {{ inboxKindLabel(item) }} · {{ fmtTime(item.createdAt) }}</span>
+                <span class="agents-inbox-meta">{{ item.agentName }} · {{ inboxKindLabel(item) }} · <ResourceTimestamp :value="item.createdAt" label="Request created" /></span>
                 <h2 v-if="item.kind !== 'question' || !item.payload?.questions?.length">{{ item.prompt }}</h2>
               </div>
             </template>
@@ -540,7 +559,7 @@ onBeforeUnmount(() => {
                 <div class="agents-approval-meta">
                   <template v-if="!viewingInbox">
                     <span class="k-badge agents-badge">{{ item.agentName }}</span>
-                    <span class="muted">{{ fmtTime(item.createdAt) }}</span>
+                    <ResourceTimestamp :value="item.createdAt" label="Request created" />
                   </template>
                   <button v-if="item.runID" class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: item.runID! })">View run</button>
                 </div>
@@ -637,7 +656,7 @@ onBeforeUnmount(() => {
           <span v-if="agent" class="agents-run-compact-meta agents-run-secondary">
             <span>{{ row.trigger }} · {{ row.class }}<template v-if="row.parentRunID"> · delegated</template></span>
             <span v-if="row.durationMS">{{ fmtDuration(Number(row.durationMS)) }}</span>
-            <span>{{ fmtTime(String(row.when)) }}</span>
+            <ResourceTimestamp :value="String(row.when)" label="Run started" />
             <span v-if="ranOnHarness(row)" class="k-badge agents-badge" title="This run's turn ran on a coding harness on an edge machine.">harness</span>
           </span>
           <template v-else><br><span class="agents-run-secondary">{{ row.agent }}</span></template>
@@ -651,7 +670,7 @@ onBeforeUnmount(() => {
         <template #phase="{ row }"><span :class="{ 'agents-run-compact-phase': agent }"><StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta(row.phase as RunPhase).cls}`" :status="phaseMeta(row.phase as RunPhase).label" :tone="phaseMeta(row.phase as RunPhase).tone" /> <span v-if="Number(row.attempt) > 1" class="k-badge agents-badge">try {{ row.attempt }}</span></span></template>
         <template #duration="{ row }"><span class="muted">{{ row.durationMS ? fmtDuration(Number(row.durationMS)) : '—' }}</span></template>
         <template #usage="{ row }"><span class="agents-run-cell mono">{{ fmtTokens(Number(row.inputTokens) + Number(row.outputTokens)) }}<span class="agents-run-secondary">{{ fmtUSD(Number(row.usdMicros)) }}</span></span></template>
-        <template #when="{ row }"><span class="muted">{{ fmtTime(String(row.when)) }}</span></template>
+        <template #when="{ row }"><ResourceTimestamp :value="String(row.when)" label="Run started" /></template>
       </ResourceTable>
     </component>
   </component>

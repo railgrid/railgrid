@@ -514,4 +514,4 @@ A `default` `Kubernetes` object is auto-created in every tenant workspace. It se
 3. Builds a `MultiEdgeRailgridEdgeProvider` that dials each edge over its revdial tunnel.
 4. Passes control to `kubernetes-mcp-server` which implements the MCP protocol.
 
-See [DEVELOPERS.md](https://github.com/railgrid/railgrid/blob/main/DEVELOPERS.md#mcp-integration) for the full internals reference.
+See [DEVELOPERS.md](https://github.com/railgrid/railgrid/blob/main/DEVELOPERS.md#mcp) for the full internals reference.

@@ -376,6 +376,8 @@ export interface Credential {
   /** The key inside that Secret. */
   secretKey?: string
   /** Ready condition: the Secret resolved AND the endpoint answered. */
+  /** spec.default: the workspace's default chat model. */
+  default?: boolean
   ready?: boolean
   /** SecretResolved condition on its own, so the UI can say which half failed. */
   secretResolved?: boolean

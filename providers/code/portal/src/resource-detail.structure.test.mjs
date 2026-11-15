@@ -68,7 +68,7 @@ describe('Code repository resource detail cards', () => {
     expect(detail).toMatch(/<div class="repo-detail__actions" role="group" aria-label="Repository actions">/)
     expect(detail).toMatch(/<a[^>]*class="k-btn k-btn--primary"[^>]*>\s*Open repository/)
     expect(detail.match(/k-btn--primary/g)).toHaveLength(1)
-    expect(detail).toMatch(/class="k-btn k-btn--ghost"[\s\S]*@click="loadAll"/)
+    expect(detail).toMatch(/class="k-btn k-btn--ghost"[\s\S]*@click="refreshFromHeader"/)
     expect(detail).toContain("import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'")
     expect(detail).toContain('const actionItems = computed<ActionMenuItem[]>(() =>')
     expect(detail).toMatch(/<ActionMenu[\s\S]*label="More repository actions"[\s\S]*:items="actionItems"[\s\S]*:disabled="!repo \|\| repositoryActionBusy"[\s\S]*@select="selectAction"/)

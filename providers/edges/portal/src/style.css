@@ -47,6 +47,15 @@ railgrid-provider-edges .header-actions button { flex: 0 0 auto; white-space: no
   railgrid-provider-edges .wiz-actions { align-items: stretch; flex-direction: column-reverse; }
 }
 
+railgrid-provider-edges .services-table .service-mobile-status { display: none; }
+/* Keep service health with its name when the collection scrolls on a phone. */
+@media (max-width: 480px) {
+  railgrid-provider-edges .services-table .service-name { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  railgrid-provider-edges .services-table .service-mobile-status { display: inline-flex; }
+  railgrid-provider-edges .services-table thead th:nth-child(2),
+  railgrid-provider-edges .services-table tbody td:nth-child(2) { display: none; }
+}
+
 /* ── Inputs & labels ── */
 railgrid-provider-edges .lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .15em; color: var(--color-text-muted, #5d5f78); }
 /* Labelled form field: label stacked above its control with a small gap. */

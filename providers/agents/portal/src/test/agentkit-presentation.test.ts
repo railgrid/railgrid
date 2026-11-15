@@ -47,7 +47,7 @@ describe('AgentKit timestamp and chat presentation', () => {
       const view = await mountVue(AIMessage, { role: 'assistant', copyText: 'Response' })
       view.element.querySelector<HTMLButtonElement>('[aria-label="Copy response"]')!.click()
       await settleVue()
-      expect(text(view.element.querySelector('[role="status"]'))).toBe('Could not copy. Try again.')
+      expect(text(view.element.querySelector('[role="status"]'))).toBe('Could not copy. Select the text to copy it.')
       const empty = await mountVue(AIMessage, { role: 'user', copyText: '  ' })
       expect(empty.element.querySelector('.k-ai-message-copy')).toBeNull()
     } finally { write.mockRestore() }
@@ -103,16 +103,15 @@ describe('AgentKit timestamp and chat presentation', () => {
     expect(time.getAttribute('datetime')).toBe(value)
     expect(button.type).toBe('button')
     expect(text(time)).toBe(formatRelativeTime(value, 'always'))
-    expect(button.getAttribute('aria-label')).toBe(formatFullTime(value))
-    expect(button.getAttribute('title')).toBe(formatFullTime(value))
-    expect(view.element.querySelector('[role="tooltip"]')).not.toBeNull()
+    expect(button.getAttribute('aria-label')).toBe(`Message time: ${formatRelativeTime(value, 'always')} — ${formatFullTime(value)}`)
+    expect(button.getAttribute('aria-pressed')).toBe('false')
 
     button.focus()
     expect(document.activeElement).toBe(button)
     button.click()
     await settleVue()
     expect(text(time)).toBe(formatFullTime(value))
-    expect(view.element.querySelector('[role="tooltip"]')).toBeNull()
+    expect(button.getAttribute('aria-pressed')).toBe('true')
 
     button.click()
     await settleVue()

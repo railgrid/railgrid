@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Sparkles, X } from 'lucide-vue-next'
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import {
   DNS_LABEL_RE,
@@ -37,11 +37,15 @@ const instance = ref('')
 const size = ref<InstanceSize>('small')
 const errors = ref<Record<string, string>>({})
 const busy = ref(false)
+const agentSelect = ref<{ focus: () => void } | null>(null)
+const connectionInput = ref<HTMLInputElement | null>(null)
+const instanceInput = ref<HTMLInputElement | null>(null)
 const instanceTouched = ref(false)
 const dismissed = ref(assistDismissed(readTenant().workspaceUUID))
 
 const agents = computed(() => { revision.value; return props.store.agents.data })
 const selectedAgent = computed(() => agent.value || agents.value[0]?.metadata.name || '')
+const agentUnavailable = computed(() => !!agent.value && !agents.value.some(item => item.metadata.name === agent.value))
 const instanceName = computed(() => (instanceTouched.value ? instance.value : connName.value).trim())
 const agentOptions = computed(() => agents.value.map(item => ({
   value: item.metadata.name,
@@ -49,6 +53,15 @@ const agentOptions = computed(() => agents.value.map(item => ({
 })))
 const infrastructureEnabled = computed(() => { revision.value; return props.store.hasProvider('infrastructure') })
 const connectionSlice = computed(() => { revision.value; return { ...props.store.connections } })
+const retryButton = ref<HTMLButtonElement | null>(null)
+const pageHeading = ref<HTMLElement | null>(null)
+watch(() => connectionSlice.value.error, (error, previous) => {
+  if (error || !previous || typeof document === 'undefined' || document.activeElement !== retryButton.value) return
+  void nextTick(() => { if (document.activeElement === document.body) pageHeading.value?.focus({ preventScroll: true }) })
+}, { flush: 'pre' })
+function retryConnections(): void {
+  if (!connectionSlice.value.loading) void props.store.load('connections')
+}
 const configured = computed(() => selfHostedSearchConfigured(connectionSlice.value.data))
 const visibleCard = computed(() => {
   return infrastructureEnabled.value && agents.value.length > 0
@@ -70,7 +83,8 @@ function validate(conn: string, inst: string): Record<string, string> {
   else if (props.store.connections.data.some(c => c.metadata.name === conn)) next.connName = 'A connection with that name already exists.'
   if (!inst) next.instance = 'A name is required.'
   else if (!DNS_LABEL_RE.test(inst)) next.instance = 'Lowercase letters, digits and dashes only.'
-  if (agents.value.length > 1 && !agent.value) next.agent = 'Pick the agent that should do this.'
+  if (agentUnavailable.value) next.agent = 'This agent is no longer available. Pick another agent.'
+  else if (agents.value.length > 1 && !agent.value) next.agent = 'Pick the agent that should do this.'
   return next
 }
 
@@ -97,7 +111,13 @@ async function submit(): Promise<void> {
   const instanceValue = instanceName.value
   const agentName = selectedAgent.value
   errors.value = validate(connection, instanceValue)
-  if (Object.keys(errors.value).length) return
+  if (Object.keys(errors.value).length) {
+    await nextTick()
+    if (errors.value.agent) agentSelect.value?.focus()
+    else if (errors.value.connName) connectionInput.value?.focus()
+    else if (errors.value.instance) instanceInput.value?.focus()
+    return
+  }
   agent.value = agentName
   const authority = captureAuthority()
   const body: ConnectionWrite = { type: 'websearch', name: connection, config: { provider: 'searxng', instance: instanceValue } }
@@ -132,35 +152,35 @@ function dismiss(): void {
 
 <template>
   <template v-if="page">
-    <div v-if="!infrastructureEnabled" class="agents-panel k-card agents-route-panel"><p class="muted">Infrastructure is not enabled for this workspace.</p></div>
-    <div v-else-if="!agents.length" class="agents-panel k-card agents-route-panel"><p class="muted">Create an agent before using assisted search setup.</p></div>
+    <div v-if="!infrastructureEnabled" class="agents-panel k-card agents-route-panel"><p ref="pageHeading" tabindex="-1" class="muted">Infrastructure is not enabled for this workspace.</p></div>
+    <div v-else-if="!agents.length" class="agents-panel k-card agents-route-panel"><p ref="pageHeading" tabindex="-1" class="muted">Create an agent before using assisted search setup.</p></div>
     <div v-else-if="connectionSlice.error && !connectionSlice.hasSnapshot" class="agents-panel k-card agents-route-panel agents-state agents-state-error" role="alert">
       <p>Could not verify existing connections. {{ connectionSlice.error }}</p>
-      <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+      <button ref="retryButton" class="k-btn k-btn--ghost secondary" type="button" :aria-disabled="connectionSlice.loading || undefined" :aria-busy="connectionSlice.loading || undefined" @click="retryConnections">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
     </div>
     <div v-else-if="!connectionSlice.hasSnapshot" class="agents-panel k-card agents-route-panel k-loading-reveal" role="status"><p class="muted">Loading connections…</p></div>
     <div v-else-if="configured" class="agents-panel k-card agents-route-panel">
-      <div v-if="connectionSlice.error" class="agents-stale" role="status">Showing the last loaded connections. {{ connectionSlice.error }} <button class="k-dashboard-action" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button></div>
-      <p class="muted">Self-hosted search is already configured in this workspace.</p>
+      <div v-if="connectionSlice.error" class="agents-stale" role="status">Showing the last loaded connections. {{ connectionSlice.error }} <button ref="retryButton" class="k-dashboard-action" type="button" :aria-disabled="connectionSlice.loading || undefined" :aria-busy="connectionSlice.loading || undefined" @click="retryConnections">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button></div>
+      <p ref="pageHeading" tabindex="-1" class="muted">Self-hosted search is already configured in this workspace.</p>
     </div>
     <div v-else class="k-create-page">
       <ResourceBackLink :href="hashFor({ kind: 'menu', menu: 'connections' })" :disabled="busy" @back="cancel">Connections</ResourceBackLink>
-      <header class="k-create-header"><h1 class="k-create-title">Set up assisted search</h1><p class="k-create-description">Create a private search connection and let an agent provision the supporting service.</p></header>
-      <div v-if="connectionSlice.error" class="agents-stale" role="status">Showing the last loaded connections. {{ connectionSlice.error }} <button class="k-dashboard-action" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button></div>
+      <header class="k-create-header"><h1 ref="pageHeading" tabindex="-1" class="k-create-title">Set up assisted search</h1><p class="k-create-description">Create a private search connection and let an agent provision the supporting service.</p></header>
+      <div v-if="connectionSlice.error" class="agents-stale" role="status">Showing the last loaded connections. {{ connectionSlice.error }} <button ref="retryButton" class="k-dashboard-action" type="button" :aria-disabled="connectionSlice.loading || undefined" :aria-busy="connectionSlice.loading || undefined" @click="retryConnections">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button></div>
       <form class="agents-conn-form agents-guided-form k-create-surface" aria-label="Assisted search setup" novalidate :aria-busy="busy" @submit.prevent="submit">
         <div class="k-create-body">
           <p class="muted">We create the web-search connection pointing at an instance name, then your agent provisions the <code>searxng</code> instance itself. Nothing to paste back: agents reach it over the platform's internal path, so it is never published and has no token.</p>
-          <label v-if="agents.length > 1"><span id="assisted-search-agent-label">Agent *</span>
-            <FormSelect v-model="agent" :options="agentOptions" required :disabled="busy" :invalid="!!errors.agent" labelledby="assisted-search-agent-label" :describedby="errors.agent ? 'assisted-search-agent-error' : undefined" @update:model-value="clearError('agent')" />
+          <label v-if="agents.length > 1 || agent"><span id="assisted-search-agent-label">Agent *</span>
+            <FormSelect ref="agentSelect" v-model="agent" :options="agentOptions" required :disabled="busy" :invalid="!!errors.agent" labelledby="assisted-search-agent-label" :describedby="errors.agent ? 'assisted-search-agent-error' : undefined" @update:model-value="clearError('agent')" />
             <span v-if="errors.agent" id="assisted-search-agent-error" class="agents-fielderr" role="alert">{{ errors.agent }}</span>
           </label>
           <p v-else class="agents-hint">Driven by your agent <strong>{{ selectedAgent }}</strong>.</p>
           <label for="assisted-search-connection-name">Connection name *
-            <input id="assisted-search-connection-name" v-model="connName" class="k-input" name="connName" aria-label="Connection name" required aria-required="true" :disabled="busy" autocomplete="off" :aria-invalid="errors.connName ? 'true' : undefined" :aria-describedby="errors.connName ? 'assisted-search-connection-name-hint assisted-search-connection-name-error' : 'assisted-search-connection-name-hint'" @input="clearError('connName')" />
+            <input id="assisted-search-connection-name" ref="connectionInput" v-model="connName" class="k-input" name="connName" aria-label="Connection name" required aria-required="true" :disabled="busy" autocomplete="off" :aria-invalid="errors.connName ? 'true' : undefined" :aria-describedby="errors.connName ? 'assisted-search-connection-name-hint assisted-search-connection-name-error' : 'assisted-search-connection-name-hint'" @input="clearError('connName')" />
             <span id="assisted-search-connection-name-hint" class="agents-hint">What agents reference to search the web.</span><span v-if="errors.connName" id="assisted-search-connection-name-error" class="agents-fielderr" role="alert">{{ errors.connName }}</span>
           </label>
           <label for="assisted-search-instance-name">Instance name *
-            <input id="assisted-search-instance-name" class="k-input" name="instance" aria-label="Instance name" required aria-required="true" :value="instanceName" :disabled="busy" autocomplete="off" :aria-invalid="errors.instance ? 'true' : undefined" :aria-describedby="errors.instance ? 'assisted-search-instance-name-hint assisted-search-instance-name-error' : 'assisted-search-instance-name-hint'" @input="instanceTouched = true; instance = ($event.target as HTMLInputElement).value; clearError('instance')" />
+            <input id="assisted-search-instance-name" ref="instanceInput" class="k-input" name="instance" aria-label="Instance name" required aria-required="true" :value="instanceName" :disabled="busy" autocomplete="off" :aria-invalid="errors.instance ? 'true' : undefined" :aria-describedby="errors.instance ? 'assisted-search-instance-name-hint assisted-search-instance-name-error' : 'assisted-search-instance-name-hint'" @input="instanceTouched = true; instance = ($event.target as HTMLInputElement).value; clearError('instance')" />
             <span id="assisted-search-instance-name-hint" class="agents-hint">The infrastructure instance the agent provisions.</span><span v-if="errors.instance" id="assisted-search-instance-name-error" class="agents-fielderr" role="alert">{{ errors.instance }}</span>
           </label>
           <fieldset class="agents-cap-fs">
@@ -179,8 +199,8 @@ function dismiss(): void {
   </template>
   <div v-else-if="visibleCard" class="agents-assist">
     <span class="agents-assist-ic" aria-hidden="true"><Sparkles :stroke-width="1.75" aria-hidden="true" /></span>
-    <div class="agents-assist-body"><strong>Set up self-hosted search with an agent</strong><span class="muted">One of your agents can provision the SearXNG instance for you — instead of you hopping to Infrastructure and back.</span></div>
+    <div class="agents-assist-body"><strong>Set up self-hosted search with an agent</strong><span class="muted">An agent can provision SearXNG for you. You can also add a web-search connection yourself.</span></div>
     <button type="button" class="k-btn k-btn--ghost secondary" @click="emit('navigate', { kind: 'create', resource: 'connection', type: 'assisted-search' })">Set it up</button>
-    <button type="button" class="k-icon-action" aria-label="Dismiss this suggestion" data-k-tip="Dismiss — you can still add a web-search connection above" @click="dismiss"><X :stroke-width="1.75" aria-hidden="true" /></button>
+    <button type="button" class="k-icon-action agents-assist-dismiss" aria-label="Dismiss this suggestion" data-k-tip="Dismiss suggestion" @click="dismiss"><X :stroke-width="1.75" aria-hidden="true" /></button>
   </div>
 </template>

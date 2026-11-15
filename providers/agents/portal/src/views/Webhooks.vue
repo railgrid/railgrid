@@ -10,17 +10,19 @@
 // (#/webhooks/<name>/edit) that holds the URL handoff, the routed triggers,
 // the delivery log, a sample sender and the settings.
 import { AlertCircle, Check, Copy, Plus, Send, Trash2, Webhook as WebhookIcon } from 'lucide-vue-next'
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { confirmDialog } from '../portalkit/confirm'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
 import FormSelect from '../portalkit/FormSelect.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
@@ -82,12 +84,18 @@ const draftSource = ref('webhook')
 const draftDisplay = ref('')
 // v-model on a type="number" input hands back a number, or '' when cleared.
 const draftRetention = ref<string | number>('')
+const createNameInput = ref<HTMLInputElement | null>(null)
+const createRetentionInput = ref<HTMLInputElement | null>(null)
+const editRetentionInput = ref<HTMLInputElement | null>(null)
 const nameError = ref('')
 const retentionError = ref('')
 const editValuesFor = ref('')
 const busy = ref(false)
 const deletingName = ref('')
 const copied = ref(false)
+const copyError = ref('')
+let copyAttempt = 0
+let copyTimer: ReturnType<typeof setTimeout> | undefined
 const sampleHeaders = ref('')
 const sampleBody = ref('')
 const sampleFor = ref('')
@@ -99,19 +107,14 @@ watch(() => props.createSession, () => {
   nameError.value = ''; retentionError.value = ''; editValuesFor.value = ''
 })
 
-const guidanceValues = computed(() => {
-  const retention = parseRetention(draftRetention.value)
-  return [
-    { label: 'Railgrid name', value: draftName.value.trim() || 'Not entered yet', technical: true },
-    { label: 'Display name', value: draftDisplay.value.trim() || draftName.value.trim() || 'Not entered yet' },
-    { label: 'Sender', value: sourceLabel(draftSource.value) },
-    { label: 'Delivery history', value: retention.error ? 'Enter a valid retention limit' : retention.value === 0 ? 'Not retained' : `Last ${retention.value ?? DEFAULT_DELIVERY_RETENTION} deliveries` },
-    { label: 'Inbound URL', value: 'Available after creation' },
-  ]
-})
-
 const slice = computed(() => { revision.value; return { ...props.store.webhooks } })
-const showFirstRun = computed(() => slice.value.hasSnapshot && !slice.value.loading && !slice.value.error && slice.value.data.length === 0)
+const showFirstRun = computed(() => slice.value.hasSnapshot && slice.value.data.length === 0)
+const firstRunWarning = ref<HTMLElement | null>(null)
+const collectionHeading = ref<HTMLElement | null>(null)
+watch(() => showFirstRun.value && !!slice.value.error, visible => {
+  if (visible || typeof document === 'undefined' || !firstRunWarning.value?.contains(document.activeElement)) return
+  void nextTick(() => { if (document.activeElement === document.body) collectionHeading.value?.focus({ preventScroll: true }) })
+}, { flush: 'pre' })
 const current = computed(() => slice.value.data.find(item => item.metadata.name === props.editName))
 const editTitle = computed(() => current.value?.spec.displayName || current.value?.metadata.name || props.editName)
 const editReadError = computed(() => {
@@ -119,6 +122,14 @@ const editReadError = computed(() => {
   return slice.value.hasSnapshot ? slice.value.error : `Could not load this webhook. ${slice.value.error}`
 })
 const currentURL = computed(() => webhookURL(current.value))
+function resetCopy(): void {
+  copyAttempt++
+  if (copyTimer) clearTimeout(copyTimer)
+  copied.value = false
+  copyError.value = ''
+}
+watch([currentURL, () => props.editName, () => props.editRoute, () => props.authorityEpoch, () => props.store, () => props.api], resetCopy, { flush: 'sync' })
+onBeforeUnmount(resetCopy)
 const currentInvalid = computed(() => current.value ? invalidCondition(current.value) : undefined)
 
 // routedTriggers are the triggers routing from the open webhook: the ones in
@@ -184,7 +195,6 @@ function hydrateEdit(item: Webhook): void {
   draftDisplay.value = item.spec.displayName || ''
   draftRetention.value = item.spec.deliveryRetention === undefined ? '' : String(item.spec.deliveryRetention)
   retentionError.value = ''
-  copied.value = false
 }
 
 watch([() => props.editRoute, () => props.editName, () => revision.value], () => {
@@ -216,28 +226,46 @@ function openTrigger(agent: string | undefined): void {
   if (agent) emit('navigate', { kind: 'agent', name: agent, tab: 'automation' })
 }
 
-async function copyURL(url: string): Promise<void> {
+function followLink(event: MouseEvent, navigate: () => void): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  navigate()
+}
+
+async function copyURL(url: string, surface: 'detail' | 'row'): Promise<void> {
   if (!url) return
+  resetCopy()
+  const attempt = copyAttempt
+  const authority = captureAuthority()
   try {
     await navigator.clipboard.writeText(url)
-    copied.value = true
-    toast('ok', 'Webhook URL copied.')
+    if (attempt !== copyAttempt || !authorityIsCurrent(authority)) return
+    if (surface === 'row') toast('ok', 'Webhook URL copied.')
+    else {
+      copied.value = true
+      copyTimer = setTimeout(() => { copied.value = false }, 2000)
+    }
   } catch {
-    copied.value = false
-    toast('error', 'Could not copy. Check clipboard permission and try again.')
+    if (attempt !== copyAttempt || !authorityIsCurrent(authority)) return
+    if (surface === 'row') toast('error', 'Could not copy. Check clipboard permission and try again.')
+    else copyError.value = 'Could not copy. Select the URL or try again.'
   }
 }
 
 async function create(): Promise<void> {
   if (busy.value) return
   const name = draftName.value.trim()
-  if (!name) {
-    nameError.value = 'A name is required.'
+  if (!name || name.length > 253 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(name)) {
+    nameError.value = name ? 'Use up to 253 lowercase letters, numbers, and hyphens; start and end with a letter or number.' : 'A name is required.'
+    await nextTick()
+    createNameInput.value?.focus()
     return
   }
   const retention = parseRetention(draftRetention.value)
   if (retention.error) {
     retentionError.value = retention.error
+    await nextTick()
+    createRetentionInput.value?.focus()
     return
   }
   const authority = captureAuthority()
@@ -267,6 +295,8 @@ async function save(): Promise<void> {
   const retention = parseRetention(draftRetention.value)
   if (retention.error) {
     retentionError.value = retention.error
+    await nextTick()
+    editRetentionInput.value?.focus()
     return
   }
   const authority = captureAuthority()
@@ -367,26 +397,22 @@ function cancel(): void {
       <div class="k-create-body k-create-body--guided">
         <div class="k-create-fields">
           <label for="webhook-create-name">Name *
-            <input id="webhook-create-name" v-model="draftName" class="k-input" name="name" required aria-required="true" pattern="[a-z0-9-]+" placeholder="github-org" autocomplete="off" :disabled="busy" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? 'webhook-create-name-error' : undefined" @input="nameError = ''" />
+            <input id="webhook-create-name" ref="createNameInput" v-model="draftName" class="k-input" name="name" aria-label="Name" required aria-required="true" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" maxlength="253" placeholder="github-org" autocomplete="off" :disabled="busy" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? 'webhook-create-name-error' : 'webhook-create-name-hint'" @input="nameError = ''" />
             <span v-if="nameError" id="webhook-create-name-error" class="agents-fielderr" role="alert">{{ nameError }}</span>
+            <span v-else id="webhook-create-name-hint" class="agents-hint">Use up to 253 lowercase letters, numbers, and hyphens; start and end with a letter or number.</span>
           </label>
           <label>Display name<input v-model="draftDisplay" class="k-input" name="displayName" placeholder="optional" :disabled="busy" /></label>
         <label><span id="webhook-create-source-label">Sender</span><FormSelect v-model="draftSource" :options="SOURCE_OPTIONS" :disabled="busy" labelledby="webhook-create-source-label" describedby="webhook-create-source-hint" name="source" /><span id="webhook-create-source-hint" class="agents-hint">{{ draftSource === 'github' ? 'A repository or organization webhook on GitHub. Triggers routing from it get GitHub’s event catalog in their filter.' : 'Any sender that can POST JSON. Triggers routing from it filter on key=value lines.' }}</span></label>
         <label for="webhook-create-retention">Keep last N deliveries
-          <input id="webhook-create-retention" v-model="draftRetention" class="k-input" name="deliveryRetention" type="number" inputmode="numeric" min="0" :max="MAX_DELIVERY_RETENTION" step="1" :placeholder="String(DEFAULT_DELIVERY_RETENTION)" :disabled="busy" :aria-invalid="retentionError ? 'true' : undefined" :aria-describedby="retentionError ? 'webhook-create-retention-error' : 'webhook-create-retention-hint'" @input="retentionError = ''" />
+          <input id="webhook-create-retention" ref="createRetentionInput" v-model="draftRetention" class="k-input" name="deliveryRetention" aria-label="Keep last N deliveries" type="number" inputmode="numeric" min="0" :max="MAX_DELIVERY_RETENTION" step="1" :placeholder="String(DEFAULT_DELIVERY_RETENTION)" :disabled="busy" :aria-invalid="retentionError ? 'true' : undefined" :aria-describedby="retentionError ? 'webhook-create-retention-error' : 'webhook-create-retention-hint'" @input="retentionError = ''" />
           <span v-if="retentionError" id="webhook-create-retention-error" class="agents-fielderr" role="alert">{{ retentionError }}</span>
           <span v-else id="webhook-create-retention-hint" class="agents-hint">How many recent deliveries the provider keeps for the log and the trigger filter tester — fired, filtered or unrouted. Empty uses the provider default ({{ DEFAULT_DELIVERY_RETENTION }}); 0 keeps none.</span>
         </label>
         <p class="agents-hint">The URL is minted once the webhook exists; the next page shows it, ready to paste into the sender.</p>
         </div>
         <CreateGuidance
-          title="Name and configure your webhook"
-          description="Choose the sender and delivery history limit. Railgrid creates one inbound URL that triggers on your agents can share."
-          :prerequisites="draftSource === 'github'
-            ? ['Access to the repository or organization’s webhook settings in GitHub.', 'An agent with a trigger to act on matching deliveries.']
-            : ['A service that can send JSON to a webhook URL.', 'An agent with a trigger to act on matching deliveries.']"
-          :values="guidanceValues"
-          :next-steps="['Copy the inbound URL from the webhook details page.', 'Paste the URL into your sender’s webhook settings.', 'Add a trigger to an agent, select this webhook, and configure its filter.', 'Send a test event and review the delivery log.']"
+          title="Before you create"
+          :description="draftSource === 'github' ? 'After creation, add an agent trigger and configure the URL in GitHub’s webhook settings.' : 'After creation, add an agent trigger and configure the URL in your sender.'"
         />
       </div>
       <div class="k-create-actions">
@@ -431,9 +457,10 @@ function cancel(): void {
               <span class="agents-hint">{{ current.spec.source === 'github' ? 'On GitHub, under Settings → Webhooks → Add webhook: Payload URL is this URL, Content type is application/json, Secret stays empty (the URL carries the token), and under “Let me select individual events” tick the events your triggers listen to. ' : 'POST JSON deliveries here. ' }}The URL embeds this webhook’s secret token; treat it like a password.</span>
             </div>
             <div class="agents-secret-handoff-actions">
-              <button type="button" class="k-btn k-btn--ghost" @click="copyURL(currentURL)"><Check v-if="copied" aria-hidden="true" /><Copy v-else aria-hidden="true" /> {{ copied ? 'Copied' : 'Copy webhook URL' }}</button>
+              <button type="button" class="k-btn k-btn--ghost" @click="copyURL(currentURL, 'detail')"><Check v-if="copied" aria-hidden="true" /><Copy v-else aria-hidden="true" /> {{ copied ? 'Copied' : 'Copy webhook URL' }}</button>
             </div>
             <span class="sr-only" role="status" aria-live="polite">{{ copied ? 'Webhook URL copied.' : '' }}</span>
+            <p v-if="copyError" class="agents-fielderr" role="alert">{{ copyError }}</p>
           </section>
           <div v-else class="k-inline-notification k-inline-notification--info" role="status">
             <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
@@ -444,7 +471,7 @@ function cancel(): void {
           <ResourceSectionCard heading-id="webhook-routes-heading" title="Routed triggers" description="Every delivery is offered to each of these; a trigger fires when its own filter matches.">
             <ul v-if="routedTriggers.length" class="agents-webhook-routes" data-testid="webhook-routes">
               <li v-for="trigger in routedTriggers" :key="trigger.name">
-                <a v-if="trigger.agent" class="k-dashboard-action mono" :href="hashFor({ kind: 'agent', name: trigger.agent, tab: 'automation' })" @click.prevent="openTrigger(trigger.agent)">{{ trigger.name }}</a>
+                <a v-if="trigger.agent" class="k-dashboard-action mono" :href="hashFor({ kind: 'agent', name: trigger.agent, tab: 'automation' })" @click="followLink($event, () => openTrigger(trigger.agent))">{{ trigger.name }}</a>
                 <span v-else class="mono">{{ trigger.name }}</span>
                 <span v-if="trigger.agent" class="muted">on agent {{ trigger.agent }}</span>
               </li>
@@ -472,7 +499,7 @@ function cancel(): void {
                 <label>Display name<input v-model="draftDisplay" class="k-input" name="displayName" :placeholder="current.metadata.name" :disabled="busy" /></label>
                 <label><span id="webhook-edit-source-label">Sender</span><FormSelect v-model="draftSource" :options="SOURCE_OPTIONS" :disabled="busy" labelledby="webhook-edit-source-label" describedby="webhook-edit-source-hint" name="source" /><span id="webhook-edit-source-hint" class="agents-hint">Decides which filter fields the triggers routing from this webhook offer. The URL does not change.</span></label>
                 <label for="webhook-edit-retention">Keep last N deliveries
-                  <input id="webhook-edit-retention" v-model="draftRetention" class="k-input" name="deliveryRetention" type="number" inputmode="numeric" min="0" :max="MAX_DELIVERY_RETENTION" step="1" :placeholder="String(DEFAULT_DELIVERY_RETENTION)" :disabled="busy" :aria-invalid="retentionError ? 'true' : undefined" :aria-describedby="retentionError ? 'webhook-edit-retention-error' : 'webhook-edit-retention-hint'" @input="retentionError = ''" />
+                  <input id="webhook-edit-retention" ref="editRetentionInput" v-model="draftRetention" class="k-input" name="deliveryRetention" aria-label="Keep last N deliveries" type="number" inputmode="numeric" min="0" :max="MAX_DELIVERY_RETENTION" step="1" :placeholder="String(DEFAULT_DELIVERY_RETENTION)" :disabled="busy" :aria-invalid="retentionError ? 'true' : undefined" :aria-describedby="retentionError ? 'webhook-edit-retention-error' : 'webhook-edit-retention-hint'" @input="retentionError = ''" />
                   <span v-if="retentionError" id="webhook-edit-retention-error" class="agents-fielderr" role="alert">{{ retentionError }}</span>
                   <span v-else id="webhook-edit-retention-hint" class="agents-hint">Empty uses the provider default ({{ DEFAULT_DELIVERY_RETENTION }}); 0 keeps none.</span>
                 </label>
@@ -491,13 +518,16 @@ function cancel(): void {
   <div v-else class="agents-webhooks-page k-resource-page k-resource-page--collection">
     <header class="k-resource-page__header">
       <div class="k-resource-page__heading">
-        <h1 class="k-resource-page__title" tabindex="-1" data-webhooks-heading>Webhooks</h1>
+        <h1 ref="collectionHeading" class="k-resource-page__title" tabindex="-1" data-webhooks-heading>Webhooks</h1>
         <p class="k-resource-page__subtitle">Receive events from GitHub or other services and route matching deliveries to your agents.</p>
       </div>
       <div v-if="!showFirstRun" class="k-resource-page__actions">
         <button class="k-btn k-btn--primary" type="button" @click="openCreate"><Plus :stroke-width="1.75" aria-hidden="true" /> New webhook</button>
       </div>
     </header>
+    <div v-if="showFirstRun && slice.error" ref="firstRunWarning">
+      <InlineNotification tone="warning" message="Webhooks could not be refreshed. Showing the last successful empty result." action-label="Retry" action-busy-label="Retrying…" :action-busy="slice.loading" @action="store.load('webhooks')" />
+    </div>
     <FirstRunGuide
       v-if="showFirstRun"
       title="Create your first webhook"
@@ -528,7 +558,7 @@ function cancel(): void {
       @retry="store.load('webhooks')"
     >
       <template #name="{ row }">
-        <a class="k-table-resource-link" :href="hashFor({ kind: 'edit', resource: 'webhook', name: asWebhook(row).metadata.name })" :title="asWebhook(row).metadata.name" @click.prevent="openDetail(asWebhook(row))">{{ asWebhook(row).spec.displayName || asWebhook(row).metadata.name }}</a>
+        <a class="k-btn k-btn--ghost k-table-resource-link" :href="hashFor({ kind: 'edit', resource: 'webhook', name: asWebhook(row).metadata.name })" :title="asWebhook(row).metadata.name" @click="followLink($event, () => openDetail(asWebhook(row)))">{{ asWebhook(row).spec.displayName || asWebhook(row).metadata.name }}</a>
         <code v-if="asWebhook(row).spec.displayName" class="agents-resource-id">{{ asWebhook(row).metadata.name }}</code>
         <span v-if="invalidCondition(asWebhook(row))" class="k-badge agents-badge k-badge--warning agents-badge-warn" :title="invalidCondition(asWebhook(row))?.message">{{ invalidCondition(asWebhook(row))?.reason || 'Invalid' }}</span>
       </template>
@@ -537,12 +567,13 @@ function cancel(): void {
       <template #lastDelivery="{ row }">
         <span v-if="asWebhook(row).status?.lastDelivery" class="agents-webhook-last">
           <StatusBadge :status="deliveryOutcomeLabel(asWebhook(row).status!.lastDelivery!.outcome)" :tone="deliveryOutcomeTone(asWebhook(row).status!.lastDelivery!.outcome)" />
-          <span class="muted">{{ row.lastDelivery }}</span>
+          <span class="muted"><ResourceTimestamp :value="asWebhook(row).status?.lastDelivery?.time" label="Last delivery" /> · fired {{ asWebhook(row).status?.lastDelivery?.fired }} of {{ asWebhook(row).status?.lastDelivery?.routed }}<template v-if="asWebhook(row).status?.lastDelivery?.reason"> · {{ asWebhook(row).status?.lastDelivery?.reason }}</template></span>
         </span>
+        <span v-else-if="asWebhook(row).status?.lastReceived" class="muted">Received <ResourceTimestamp :value="asWebhook(row).status?.lastReceived" label="Last received" /></span>
         <span v-else class="muted">{{ row.lastDelivery }}</span>
       </template>
       <template #actions="{ row }">
-        <ResourceTableActionButton v-if="webhookURL(asWebhook(row))" :icon="Copy" :label="`Copy webhook URL for ${asWebhook(row).metadata.name}`" :disabled="!!deletingName" @click="copyURL(webhookURL(asWebhook(row)))" />
+        <ResourceTableActionButton v-if="webhookURL(asWebhook(row))" :icon="Copy" :label="`Copy webhook URL for ${asWebhook(row).metadata.name}`" :disabled="!!deletingName" @click="copyURL(webhookURL(asWebhook(row)), 'row')" />
         <ResourceTableEditButton :label="`Open webhook ${asWebhook(row).metadata.name}`" :disabled="!!deletingName" @click="openDetail(asWebhook(row))" />
         <ResourceTableDeleteButton :label="`Delete webhook ${asWebhook(row).metadata.name}`" :busy-label="`Deleting webhook ${asWebhook(row).metadata.name}…`" :busy="deletingName === asWebhook(row).metadata.name" :disabled="!!deletingName" @click="remove(asWebhook(row).metadata.name)" />
       </template>

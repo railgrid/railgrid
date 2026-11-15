@@ -1336,7 +1336,7 @@ defineExpose({
           :title="chip.error || attachmentStatusLabel(chip)"
         >
           <div class="flex min-w-0 items-center gap-1.5">
-            <Loader2 v-if="chip.status === 'uploading' || chip.status === 'deleting'" class="h-3 w-3 shrink-0 animate-spin" :stroke-width="1.75" />
+            <Loader2 v-if="chip.status === 'uploading' || chip.status === 'deleting'" class="h-3 w-3 shrink-0 animate-spin motion-reduce:animate-none" :stroke-width="1.75" />
             <Image v-else-if="(chip.receipt && assistantAttachmentContentTypeKind(chip.receipt.contentType, chip.receipt.sizeBytes) === 'image') || (chip.file && assistantAttachmentIsImage(chip.file))" class="h-3 w-3 shrink-0" :stroke-width="1.75" />
             <FileIcon v-else-if="attachmentKind(chip) === 'file'" class="h-3 w-3 shrink-0" :stroke-width="1.75" />
             <FileText v-else class="h-3 w-3 shrink-0" :stroke-width="1.75" />
@@ -1442,6 +1442,7 @@ defineExpose({
                 <Paperclip class="h-3.5 w-3.5" :stroke-width="1.75" />
                 Files
               </button>
+              <div class="px-2 pb-2 text-[11px] leading-4 text-text-secondary" role="note">Any file type. PNG, JPEG, WebP, .txt and .md contents can be analyzed; other files are stored only.</div>
               <button
                 type="button"
                 class="k-agentkit-touch-target flex w-full k-menu-item text-left"

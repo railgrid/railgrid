@@ -836,11 +836,12 @@ type decodedSyncFile struct {
 }
 
 type syncRequest struct {
-	Files          []syncFile `json:"files"`
-	DeletePaths    []string   `json:"deletePaths"`
-	Restart        string     `json:"restart"`
-	SourceRevision uint64     `json:"sourceRevision,omitempty"`
-	SourceDigest   string     `json:"sourceDigest,omitempty"`
+	Files                []syncFile `json:"files"`
+	DeletePaths          []string   `json:"deletePaths"`
+	ExplicitSourceDigest string     `json:"explicitSourceDigest,omitempty"`
+	Restart              string     `json:"restart"`
+	SourceRevision       uint64     `json:"sourceRevision,omitempty"`
+	SourceDigest         string     `json:"sourceDigest,omitempty"`
 }
 
 type syncResponse struct {
@@ -991,6 +992,14 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = root.Close() }()
+	explicitDeletes := req.ExplicitSourceDigest != ""
+	if explicitDeletes {
+		if req.SourceDigest != "" {
+			http.Error(w, "sourceDigest and explicitSourceDigest are mutually exclusive", http.StatusBadRequest)
+			return
+		}
+		req.SourceDigest = req.ExplicitSourceDigest
+	}
 	authoritative := req.SourceRevision != 0 || strings.TrimSpace(req.SourceDigest) != ""
 	if authoritative && (req.SourceRevision == 0 || strings.TrimSpace(req.SourceDigest) == "") {
 		http.Error(w, "sourceRevision and sourceDigest must be supplied together", http.StatusBadRequest)
@@ -1040,7 +1049,7 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			case req.SourceRevision == previous.SourceRevision && normalizeSourceDigest(previous.SourceDigest) != gotDigest:
 				http.Error(w, "workspace sync revision was already applied with a different digest", http.StatusConflict)
 				return
-			case req.SourceRevision == previous.SourceRevision && len(previous.PendingReloadCommands) == 0 && !previous.PendingRestart && verifyWorkspaceManifest(root, previous) == nil:
+			case req.SourceRevision == previous.SourceRevision && (!explicitDeletes || len(cleanDeletePaths) == 0) && len(previous.PendingReloadCommands) == 0 && !previous.PendingRestart && verifyWorkspaceManifest(root, previous) == nil:
 				writeJSON(w, http.StatusOK, syncResponse{Phase: "Synced", SourceRevision: previous.SourceRevision, SourceDigest: previous.SourceDigest})
 				return
 			}
@@ -1066,6 +1075,15 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 		autoStatusKnown = true
 	}
 
+	deleted := make([]string, 0, len(req.DeletePaths))
+	if explicitDeletes {
+		var err error
+		deleted, err = prepareExplicitSyncPaths(root, cleanDeletePaths, incomingPaths)
+		if err != nil {
+			http.Error(w, "prepare explicit workspace file transitions: "+err.Error(), http.StatusConflict)
+			return
+		}
+	}
 	changed := make([]string, 0, len(files))
 	written := make([]string, 0, len(files))
 	for _, f := range files {
@@ -1091,10 +1109,11 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 		}
 		changed = append(changed, clean)
 	}
-	deleted := make([]string, 0, len(req.DeletePaths))
 	if authoritative {
 		var err error
-		deleted, err = deleteAuthoritativeWorkspaceCandidates(root, previous, found, cleanDeletePaths, incomingPaths)
+		var remaining []string
+		remaining, err = deleteAuthoritativeWorkspaceCandidates(root, previous, found, cleanDeletePaths, incomingPaths, explicitDeletes)
+		deleted = append(deleted, remaining...)
 		if err != nil {
 			http.Error(w, "delete authoritative workspace files: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -1213,6 +1232,12 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			// package-lock.json (or fail after doing so), so restore the exact
 			// authoritative bundle and verify the original manifest before any
 			// restart or response is accepted.
+			if explicitDeletes {
+				if _, err := prepareExplicitSyncPaths(root, cleanDeletePaths, incomingPaths); err != nil {
+					http.Error(w, "restore explicit workspace file transitions: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
 			if err := restoreAuthoritativeWorkspaceFiles(root, files); err != nil {
 				http.Error(w, "restore authoritative workspace after reload: "+err.Error(), http.StatusInternalServerError)
 				return
@@ -1221,7 +1246,7 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "restore workspace manifest after reload: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-			if _, err := deleteAuthoritativeWorkspaceCandidates(root, previous, found, cleanDeletePaths, incomingPaths); err != nil {
+			if _, err := deleteAuthoritativeWorkspaceCandidates(root, previous, found, cleanDeletePaths, incomingPaths, explicitDeletes); err != nil {
 				http.Error(w, "re-delete authoritative workspace files after reload: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -1698,14 +1723,126 @@ func restoreAuthoritativeWorkspaceFiles(root *os.Root, files []decodedSyncFile) 
 	return nil
 }
 
-// deleteAuthoritativeWorkspaceCandidates removes only files that the previous
-// manifest managed or that the caller explicitly asked to delete. Runtime-only
-// files are never swept. The same bounded set is replayed after reload hooks so
-// a hook cannot recreate a source file that the authoritative sync removed.
-func deleteAuthoritativeWorkspaceCandidates(root *os.Root, previous workspaceManifest, found bool, deletePaths []string, incoming map[string]struct{}) ([]string, error) {
+// prepareExplicitSyncPaths handles file/directory transitions before writes.
+func prepareExplicitSyncPaths(root *os.Root, deletions []string, incoming map[string]struct{}) ([]string, error) {
+	files := map[string]bool{}
+	directories := map[string]bool{}
+	for _, deleted := range deletions {
+		blocking := false
+		for incomingPath := range incoming {
+			switch {
+			case strings.HasPrefix(incomingPath, deleted+"/"):
+				blocking = true
+			case strings.HasPrefix(deleted, incomingPath+"/"):
+				blocking = true
+				for dir := path.Dir(deleted); dir == incomingPath || strings.HasPrefix(dir, incomingPath+"/"); dir = path.Dir(dir) {
+					directories[dir] = true
+				}
+			}
+		}
+		if !blocking {
+			continue
+		}
+		info, err := root.Lstat(deleted)
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || err == nil && info.IsDir() {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := ensureExecPathNoSymlink(root, deleted, true); err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("managed path %q is not a regular file", deleted)
+		}
+		files[deleted] = true
+	}
+
+	// Check the entire removal and write plan before touching a listed file.
+	// A directory may contain runtime files outside the synchronization set.
+	var removeDirs []string
+	dirs := slices.Sorted(maps.Keys(directories))
+	slices.Reverse(dirs) // descendants sort after their parents
+	for _, dir := range dirs {
+		info, err := root.Lstat(dir)
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || err == nil && !info.IsDir() {
+			delete(directories, dir)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := ensureExecPathNoSymlink(root, dir, true); err != nil {
+			return nil, err
+		}
+		entries, err := fs.ReadDir(root.FS(), dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			child := path.Join(dir, entry.Name())
+			if !files[child] && !directories[child] {
+				return nil, fmt.Errorf("cannot replace directory %q: unlisted path %q would remain", dir, child)
+			}
+		}
+		removeDirs = append(removeDirs, dir)
+	}
+	if len(files) == 0 && len(removeDirs) == 0 {
+		return nil, nil
+	}
+	for _, target := range slices.Sorted(maps.Keys(incoming)) {
+		for parent := path.Dir(target); parent != "."; parent = path.Dir(parent) {
+			if _, exists := incoming[parent]; exists {
+				return nil, fmt.Errorf("cannot write %q: parent %q is also an incoming file", target, parent)
+			}
+		}
+		current := ""
+		for part := range strings.SplitSeq(target, "/") {
+			current = path.Join(current, part)
+			if files[current] || directories[current] {
+				break // the original path will be gone by the time we write
+			}
+			info, err := root.Lstat(current)
+			if errors.Is(err, fs.ErrNotExist) {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			if current == target && !info.Mode().IsRegular() || current != target && !info.IsDir() {
+				return nil, fmt.Errorf("cannot write %q: conflicting path %q", target, current)
+			}
+		}
+	}
+
+	var removed []string
+	for _, file := range slices.Sorted(maps.Keys(files)) {
+		didRemove, err := removeManagedWorkspaceFile(root, file)
+		if err != nil {
+			return nil, err
+		}
+		if didRemove {
+			removed = append(removed, file)
+		}
+	}
+	for _, dir := range removeDirs {
+		if err := root.Remove(dir); err != nil {
+			return nil, err
+		}
+	}
+	return removed, nil
+}
+
+// deleteAuthoritativeWorkspaceCandidates removes requested files and, in
+// replacement mode, prunes omitted paths from the previous manifest. The set
+// is replayed after reload hooks so they cannot recreate removed source.
+func deleteAuthoritativeWorkspaceCandidates(root *os.Root, previous workspaceManifest, found bool, deletePaths []string, incoming map[string]struct{}, explicit bool) ([]string, error) {
 	candidates := make(map[string]struct{}, len(previous.Files)+len(deletePaths))
-	for _, raw := range previous.Files {
-		candidates[raw] = struct{}{}
+	if !explicit {
+		for _, raw := range previous.Files {
+			candidates[raw] = struct{}{}
+		}
 	}
 	for _, raw := range deletePaths {
 		candidates[raw] = struct{}{}
@@ -1724,11 +1861,23 @@ func deleteAuthoritativeWorkspaceCandidates(root *os.Root, previous workspaceMan
 		if _, keep := incoming[raw]; keep {
 			continue
 		}
+		if explicit {
+			transition := false
+			for target := range incoming {
+				if strings.HasPrefix(target, raw+"/") || strings.HasPrefix(raw, target+"/") {
+					transition = true
+					break
+				}
+			}
+			if transition {
+				continue
+			}
+		}
 		// When a valid prior manifest exists, explicit deletion hints are
 		// advisory and may remove only paths that manifest managed. If the
 		// manifest was missing/corrupt, explicit hints still allow safe
 		// convergence without broad deletion of unknown runtime files.
-		if found {
+		if found && !explicit {
 			if _, ok := managed[raw]; !ok {
 				continue
 			}

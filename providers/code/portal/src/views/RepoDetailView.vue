@@ -142,7 +142,8 @@ const repositoryRefreshing = computed(() => repoLoading.value)
 const commandsURLShown = ref(false)
 const commandsWebhookURL = computed(() => repo.value?.commandsWebhookPath ? `${window.location.origin}${repo.value.commandsWebhookPath}` : '')
 const repositoryForegroundRefreshing = computed(() => repoLoading.value && repositoryRefreshMode.value === 'foreground')
-const repositoryActionBusy = computed(() => repositoryForegroundRefreshing.value || repositoryDeleting.value || operations.isLocked(operationKey('repository', props.name)))
+const repositoryActionUnavailable = computed(() => repositoryDeleting.value || operations.isLocked(operationKey('repository', props.name)))
+const repositoryActionBusy = computed(() => repositoryForegroundRefreshing.value || repositoryActionUnavailable.value)
 const actionItems = computed<ActionMenuItem[]>(() => [{
   id: 'delete',
   label: repositoryDeleting.value ? 'Deleting repository…' : 'Delete repository',
@@ -343,6 +344,10 @@ function loadAllMode(mode: ResourceRefreshMode = 'foreground') {
 
 function loadAll() {
   loadAllMode()
+}
+
+function refreshFromHeader(): void {
+  if (!repositoryActionBusy.value) loadAll()
 }
 
 function toggleAccess() {
@@ -859,11 +864,13 @@ onUnmounted(() => {
         <button
           type="button"
           class="k-btn k-btn--ghost"
-          :disabled="repositoryActionBusy"
+          aria-label="Refresh repository"
+          :disabled="repositoryActionUnavailable"
+          :aria-disabled="repositoryForegroundRefreshing || undefined"
           :aria-busy="repositoryRefreshing || undefined"
-          @click="loadAll"
+          @click="refreshFromHeader"
         >
-            <RefreshCw :size="14" :class="{ spin: repositoryForegroundRefreshing }" aria-hidden="true" />
+            <RefreshCw :size="14" :class="{ 'k-spin': repositoryForegroundRefreshing }" aria-hidden="true" />
           {{ repositoryForegroundRefreshing ? 'Refreshing…' : 'Refresh' }}
         </button>
         <ActionMenu

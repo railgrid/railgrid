@@ -2,6 +2,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import ResourceTable from './ResourceTable.vue'
+import ResourceTimestamp from './ResourceTimestamp.vue'
 import StatusBadge from './StatusBadge.vue'
 
 export interface ConditionInfo {
@@ -39,7 +40,7 @@ const rows = computed<Array<Record<string, unknown>>>(() =>
     ...condition,
     reasonLabel: condition.reason || '-',
     messageLabel: condition.message || '-',
-    sinceLabel: condition.lastTransitionTime || '-',
+    sinceLabel: condition.lastTransitionTime || '',
   })),
 )
 
@@ -48,6 +49,13 @@ function conditionTone(condition: Pick<ConditionInfo, 'type' | 'status'>): 'succ
   const semantics = props.semantics?.[condition.type]
   const healthy = semantics?.polarity === 'negative' ? condition.status === 'False' : condition.status === 'True'
   return healthy ? 'success' : semantics?.severity || 'warning'
+}
+
+function conditionStatusLabel(condition: Pick<ConditionInfo, 'type' | 'status'>): string {
+  const tone = conditionTone(condition)
+  if (tone === 'muted') return condition.status
+  const interpretation = tone === 'success' ? 'Healthy' : tone === 'danger' ? 'Danger' : 'Warning'
+  return `${condition.status} (${interpretation})`
 }
 </script>
 
@@ -68,12 +76,12 @@ function conditionTone(condition: Pick<ConditionInfo, 'type' | 'status'>): 'succ
       :rows="rows"
       aria-label="Resource conditions"
       :interactive="false"
-      :empty-text="emptyText || 'No conditions yet. The controller has not reconciled this resource.'"
+      :empty-text="emptyText || 'No conditions reported.'"
     >
       <template #type="{ value }"><span class="k-conditions__type">{{ value }}</span></template>
-      <template #status="{ value, row }"><StatusBadge :status="String(value)" :tone="conditionTone({ type: String(row.type), status: String(value) })" /></template>
+      <template #status="{ value, row }"><StatusBadge :status="conditionStatusLabel({ type: String(row.type), status: String(value) })" :tone="conditionTone({ type: String(row.type), status: String(value) })" /></template>
       <template #messageLabel="{ value }"><span class="k-conditions__message">{{ value }}</span></template>
-      <template #sinceLabel="{ value }"><span class="k-conditions__muted k-cell-mono">{{ value }}</span></template>
+      <template #sinceLabel="{ row }"><ResourceTimestamp :value="typeof row.lastTransitionTime === 'string' ? row.lastTransitionTime : null" :label="`Condition ${String(row.type)} last transitioned`" /></template>
     </ResourceTable>
   </div>
 </template>

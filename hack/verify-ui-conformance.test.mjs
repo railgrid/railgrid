@@ -213,7 +213,7 @@ test('keeps the responsive ResourcePage title canonical across provider detail v
   assert.match(resourcePage, /container-type:\s*inline-size;/)
   assert.match(title, /font-size:\s*18px;/)
   assert.match(title, /letter-spacing:\s*-\.02em/)
-  assert.match(title, /line-height:\s*1\.12/)
+  assert.match(title, /line-height:\s*1\.25;/)
   assert.match(title, /overflow-wrap:\s*anywhere/)
   assert.match(title, /word-break:\s*break-word/)
   assert.match(subtitle, /overflow-wrap:\s*anywhere/)
@@ -255,7 +255,7 @@ test('keeps the responsive ResourcePage title canonical across provider detail v
 test('keeps the ResourcePage title-first metadata and actions contract canonical', () => {
   const page = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourcePage.vue', import.meta.url), 'utf8')
   const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
-  const title = page.indexOf('<h1 class="k-resource-page__title">')
+  const title = page.search(/<h1\b[^>]*class="k-resource-page__title"[^>]*>/)
   const meta = page.indexOf('class="k-resource-page__meta"')
   const subtitle = page.indexOf('class="k-resource-page__subtitle"')
   const headerSide = page.indexOf('class="k-resource-page__header-side"')
@@ -302,7 +302,9 @@ test('keeps ResourcePage read-state announcements centralized and resilient', ()
 
   assert.match(page, /props\.loaded === false && !props\.error/)
   assert.match(page, /const showInitialLoading = useDelayedLoading\(initialReadPending\)/)
-  assert.match(page, /:aria-hidden="showInitialLoading \? undefined : 'true'"/)
+  assert.match(page, /<Teleport[^>]*>\s*<span[^>]*class="k-resource-page__live"[^>]*role="status"[^>]*>[\s\S]*?showInitialLoading && initialReadPending/)
+  const loadingPlaceholder = page.match(/<div[^>]*class="k-resource-page__loading k-delayed-loading"[^>]*>/)?.[0] ?? ''
+  assert.match(loadingPlaceholder, /aria-hidden="true"/)
   assert.match(page, /props\.refreshMode === 'foreground'[\s\S]*Refreshing \$\{props\.title\}[\s\S]*Updating \$\{props\.title\}/)
   assert.match(page, /const staleMessageRole = computed\([\s\S]*'background' \? 'status' : 'alert'/)
   assert.match(page, /function requestRetry\(\)[\s\S]*if \(retrying\.value\) return[\s\S]*retryRequested\.value = true[\s\S]*emit\('retry'\)/)
@@ -389,7 +391,7 @@ test('keeps resource-table controls and wide-table scrolling in the canonical re
   assert.match(table, /const clearActionLabel = computed\(\(\) => hasQuery\.value && hasFacetFilters\.value \? 'Clear all' : 'Clear filters'\)/)
   assert.match(table, /const noMatchText = computed\(\(\) => \{[\s\S]*props\.combinedFilterEmptyText[\s\S]*props\.searchEmptyText[\s\S]*props\.filterEmptyText/)
   assert.match(table, /<button v-if="hasFacetFilters" class="k-table__clear-filters"[^>]*>\{\{ clearActionLabel \}\}<\/button>/)
-  assert.match(table, /<div v-if="hasFacetFilters" class="shimmer k-table__loading-control k-table__loading-control--clear" \/>/)
+  assert.match(table, /<div v-if="hasFacetFilters" class="k-loading-shimmer k-table__loading-control k-table__loading-control--clear" \/>/)
   assert.match(table, /:aria-label="`Search \$\{tableAriaLabel\}`"/)
   assert.match(table, /const MAX_SKELETON_COLUMNS = 6/)
   assert.match(table, /visibleColumns\.value\.slice\(0, MAX_SKELETON_COLUMNS\)/)
@@ -484,7 +486,7 @@ test('keeps ResourceTable quiet color roles above their contrast floors in both 
   }
 })
 
-test('keeps inactive ResourceTable filter values above WCAG AA on the overlay in both themes', () => {
+test('keeps inactive ResourceTable filter values above WCAG AA on their raised surface in both themes', () => {
   const host = fs.readFileSync(new URL('../portal/src/assets/main.css', import.meta.url), 'utf8')
   const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
   const themes = [
@@ -513,17 +515,21 @@ test('keeps inactive ResourceTable filter values above WCAG AA on the overlay in
     return css.slice(start, end)
   }
 
-  assert.match(rule('.k-table__filter'), /background:\s*var\(--color-surface-overlay/)
+  assert.match(rule('.k-table__filter'), /background:\s*var\(--color-surface-raised[,)]/)
   assert.match(
     rule('.k-table__filter:not(.is-active) .k-table__filter-trigger'),
-    /color:\s*var\(--color-text-muted,\s*#8587a1\);/,
-    'the inactive filter value inherits semantic muted text on its overlay surface',
+    /color:\s*var\(--k-table-readable-muted,\s*var\(--color-text-secondary,[^;]+;/,
+    'the inactive filter value uses the table’s readable muted text',
   )
+  const mutedMix = css.match(/--k-table-readable-muted:\s*color-mix\(in srgb, var\(--color-text-secondary,[^)]+\)\s*(\d+)%, var\(--color-surface-raised,[^)]+\)\);/)
+  assert.ok(mutedMix, 'the muted token mixes secondary text with the raised surface')
+  const secondaryWeight = Number(mutedMix[1]) / 100
   for (const theme of themes) {
-    const muted = channels(token(theme, 'color-text-muted'))
-    const overlay = channels(token(theme, 'color-surface-overlay'))
-    const ratio = contrast(muted, overlay)
-    assert.ok(ratio >= 4.5, 'inactive filter text must meet WCAG AA on overlay (' + ratio.toFixed(2) + ':1)')
+    const raised = channels(token(theme, 'color-surface-raised'))
+    const secondary = channels(token(theme, 'color-text-secondary'))
+    const muted = secondary.map((channel, index) => channel * secondaryWeight + raised[index] * (1 - secondaryWeight))
+    const ratio = contrast(muted, raised)
+    assert.ok(ratio >= 4.5, 'inactive filter text must meet WCAG AA on its raised surface (' + ratio.toFixed(2) + ':1)')
   }
 })
 
@@ -566,7 +572,7 @@ test('keeps selected and tinted PortalKit controls readable in both themes', () 
   }
 
   assert.match(rule('.k-menu-item.is-selected'), /color:\s*var\(--color-accent-hover/)
-  assert.match(rule('.k-layout-selector__item.is-selected', true), /color:\s*var\(--color-accent-hover/)
+  assert.match(rule('.k-layout-selector__item.is-selected', true), /color:\s*var\(--color-text-primary/)
   assert.match(rule('.k-tab--active'), /color:\s*var\(--color-accent-hover/)
   assert.match(rule('.k-table__filter.is-active .k-table__filter-label'), /color:\s*var\(--color-accent-hover/)
   assert.match(rule('.k-table__filter-option[aria-selected="true"]'), /color:\s*var\(--color-accent-hover/)
@@ -579,6 +585,7 @@ test('keeps selected and tinted PortalKit controls readable in both themes', () 
     const accent = channels(token(theme, 'color-accent'))
     const accentHover = channels(token(theme, 'color-accent-hover'))
     const raised = channels(token(theme, 'color-surface-raised'))
+    assert.ok(contrast(channels(token(theme, 'color-text-primary')), raised) >= 4.5)
     const overlay = channels(token(theme, 'color-surface-overlay'))
     const subtle = rgbaToken(theme)
     const selectedSurface = mix(subtle.color, raised, subtle.alpha)
@@ -600,12 +607,16 @@ test('keeps PortalKit confirmations scoped, safe, and geometry-compatible', () =
   assert.match(vue, /confirmState\.danger \? cancelBtn\.value : confirmBtn\.value/)
   assert.match(vue, /target instanceof Node\).*modalRef\.value\?\.contains\(target\)/)
   assert.match(vue, /if \(e\.key === 'Tab'\)/)
-  assert.match(vue, /target\?\.isConnected && target\.focus\(\)/)
+  assert.match(vue, /<dialog\b[^>]*ref="dialogRef"[^>]*role="alertdialog"/)
+  assert.match(vue, /dialogRef\.value\?\.showModal\(\)/)
+  assert.match(vue, /if \(!open\) dialogRef\.value\?\.close\(\)/)
   assert.match(vue, /class="k-modal k-modal--confirm"/)
   assert.match(vanilla, /k-modal k-modal--confirm k-modal--vanilla/)
   assert.match(vanilla, /opts\.danger && showCancel \? '\[data-k-modal-cancel\]' : '\[data-k-modal-confirm\]'/)
   assert.match(vanilla, /overlay\.addEventListener\('keydown', onKey\)/)
-  assert.match(vanilla, /if \(previouslyFocused\?\.isConnected\) previouslyFocused\.focus\(\)/)
+  assert.match(vanilla, /const overlay = document\.createElement\('dialog'\)/)
+  assert.match(vanilla, /overlay\.showModal\(\)/)
+  assert.match(vanilla, /overlay\.close\(\)\s*overlay\.remove\(\)/)
   const confirmRule = css.match(/\.k-modal--confirm\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
   assert.match(confirmRule, /max-height:\s*min\(640px, calc\(100vh - 48px\)\)/)
   assert.match(confirmRule, /max-height:\s*min\(640px, calc\(100dvh - 48px\)\)/)
@@ -716,7 +727,7 @@ test('keeps platform-admin flat lists and navigation on shared host patterns', (
   const appLayout = fs.readFileSync(new URL('../portal/src/components/AppLayout.vue', import.meta.url), 'utf8')
   const navigationDock = fs.readFileSync(new URL('../portal/src/composables/useNavigationDock.ts', import.meta.url), 'utf8')
   assert.match(store, /const loaded = ref\(false\)/)
-  assert.match(store, /providers\.value = p\s+loaded\.value = true/)
+  assert.match(store, /seeds\.value = sd\s+loaded\.value = true/)
   assert.match(shell, /import \{ useSidebarExpansion \} from '@\/composables\/useSidebarExpansion'/)
   assert.match(shell, /:class="sidebarExpanded \? 'w-48' : 'w-14'"/)
   assert.match(appLayout, /const \{ sidebarExpanded, toggleSidebar \} = useSidebarExpansion\(\)/)
@@ -742,7 +753,8 @@ test('keeps dense checkboxes compact without decorative focus glow', () => {
   assert.match(checkbox, /padding:\s*0/)
   assert.match(checkbox, /accent-color:\s*var\(--color-accent/)
   assert.match(focus, /box-shadow:\s*none/)
-  assert.match(focusVisible, /0 0 0 3px var\(--color-accent-subtle/)
+  assert.match(focusVisible, /outline:\s*2px solid var\(--color-accent/)
+  assert.match(focusVisible, /box-shadow:\s*none/)
   assert.doesNotMatch(`${checkbox}\n${focus}\n${focusVisible}`, /accent-glow/)
 })
 

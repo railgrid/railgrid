@@ -154,8 +154,8 @@ test('organization settings use the org MemberList contract and lifecycle action
   assert.match(tenantSettingsPage, /tenant\.patchOrgDisplayName\(target, orgNameDraft\.value\.trim\(\)\)/)
   assert.match(tenantSettingsPage, /tenant\.deleteOrg\(target\)/)
   assert.match(tenantSettingsPage, /tenant\.undeleteOrg\(target\)/)
-  assert.match(tenantSettingsPage, /toast\('ok', 'Organization deletion requested\. Restore it within 30 days\.'/)
-  assert.match(orgSection, /recoverable 30-day grace window/)
+  assert.match(tenantSettingsPage, /toast\('ok', 'Organization deletion requested\. Restore it before the recovery window closes\.'/)
+  assert.match(orgSection, /recovery window/)
   assert.match(orgSection, /Restore organization/)
 })
 
@@ -305,7 +305,23 @@ test('one-time token copy exposes manual recovery instead of swallowing failure'
   assert.match(tenantSettingsPage, /id="issued-token-copy-error"/)
   assert.match(tenantSettingsPage, /role="alert"/)
   assert.match(tenantSettingsPage, /@focus="\(\$event\.target as HTMLTextAreaElement\)\.select\(\)"/)
+  assert.match(tenantSettingsPage, /v-if="tokenVisible"[\s\S]*:value="issuedToken\.token"/)
+  assert.match(tenantSettingsPage, /tokenVisible = !tokenVisible/)
+  assert.match(tenantSettingsPage, /Show the token, then select it/)
+  assert.match(tenantSettingsPage, /function dismissToken\(\)[\s\S]*tokenVisible\.value = false/)
   assert.match(tenantSettingsPage, /Close without copying/)
+})
+
+test('one-time token expiry is an explicit timestamp and invalid expiry is identified', () => {
+  const start = tenantSettingsPage.indexOf('id="issued-token-description"')
+  const end = tenantSettingsPage.indexOf('</p>', start)
+  const description = tenantSettingsPage.slice(start, end)
+  assert.match(description, /formatFullTimestamp\(issuedToken\.expiresAt\)/)
+  assert.match(description, /<time :datetime="issuedToken\.expiresAt">/)
+  assert.match(description, /Token expiry time unavailable/)
+  assert.doesNotMatch(description, /<ResourceTimestamp/)
+  assert.match(tenantSettingsPage, /Check the expiry when each token is issued/)
+  assert.doesNotMatch(tenantSettingsPage, /Issued bearer tokens are short-lived/)
 })
 
 test('organization inventory uses the canonical queryable resource table', () => {
@@ -442,17 +458,11 @@ test('workspace access reload generations invalidate stale reads and let mutatio
   assert.match(scopeWatch, /clearServiceAccountState\(\)/)
 })
 
-test('deleting workspace rows expose an honest live grace-period countdown', () => {
-  assert.match(tenantSettingsPage, /const WORKSPACE_GRACE_PERIOD_MS = 30 \* 24 \* 60 \* 60 \* 1000/)
-  assert.match(tenantSettingsPage, /const DAY_MS = 24 \* 60 \* 60 \* 1000/)
-  assert.match(tenantSettingsPage, /const requestedAtMs = Date\.parse\(deletionRequestedAt\)/)
-  assert.match(tenantSettingsPage, /const remainingMs = Math\.min\(WORKSPACE_GRACE_PERIOD_MS, requestedAtMs \+ WORKSPACE_GRACE_PERIOD_MS - deletionCountdownNow\.value\)/)
-  assert.match(tenantSettingsPage, /if \(remainingMs <= 0\) return 'Deletion window expired\.'/)
-  assert.match(tenantSettingsPage, /if \(remainingMs < DAY_MS\) return 'Deletion scheduled today \(under one day\)\.'/)
-  assert.match(tenantSettingsPage, /const days = Math\.ceil\(remainingMs \/ DAY_MS\)/)
-  assert.match(tenantSettingsPage, /days === 1 \? 'day' : 'days'/)
-  assert.match(tenantSettingsPage, /return `\$\{days\} \$\{days === 1 \? 'day' : 'days'\} until deletion\.`/)
-  assert.match(tenantSettingsPage, /return 'Deletion timing unavailable\.'/)
+test('deleting workspace rows do not invent a recovery deadline', () => {
+  assert.doesNotMatch(tenantSettingsPage, /WORKSPACE_GRACE_PERIOD_MS|30.day grace|30 days/)
+  assert.match(tenantSettingsPage, /formatFullTimestamp\(workspace\.recoveryDeadline\)/)
+  assert.match(tenantSettingsPage, /Recovery deadline: \$\{deadline\}/)
+  assert.match(tenantSettingsPage, /Pending deletion\. Recovery deadline unavailable\./)
 
   assert.match(tenantSettingsPage, /deletion: workspaceDeletionCountdown\(workspace\)/)
   // A forced deletion has no countdown to show and no Restore to offer.
@@ -463,20 +473,13 @@ test('deleting workspace rows expose an honest live grace-period countdown', () 
   assert.match(inventory, /<template #deletion="\{ row \}">/)
   assert.match(inventory, /\{\{ row\.deletion \}\}/)
   assert.match(inventory, /<StatusBadge :status="String\(row\.status\)"/)
-  assert.match(inventory, /@click="restoreWorkspace\(row as unknown as WorkspaceRow\)"/)
+  assert.match(inventory, /@click="restoreWorkspace\(row as unknown as WorkspaceRow, \$event\)"/)
   assert.match(inventory, /v-if="row\.deletionRequestedAt && !row\.deletionForced && row\.role === 'admin'"/)
   assert.match(inventory, /tone="danger"/)
   assert.match(inventory, /:disabled="!!workspaceForceDeleteDisabledReason\(row as unknown as WorkspaceRow\)"/)
-  assert.match(inventory, /@click="forceDeleteWorkspace\(row as unknown as WorkspaceRow\)"/)
+  assert.match(inventory, /@click="forceDeleteWorkspace\(row as unknown as WorkspaceRow, \$event\)"/)
 
-  assert.match(tenantSettingsPage, /const deletionCountdownNow = ref\(Date\.now\(\)\)/)
-  assert.match(tenantSettingsPage, /window\.setInterval\(\(\) => \{\s*deletionCountdownNow\.value = Date\.now\(\)\s*\}, WORKSPACE_COUNTDOWN_REFRESH_MS\)/s)
-  const cleanupStart = tenantSettingsPage.indexOf('onBeforeUnmount(() => {')
-  const cleanupEnd = tenantSettingsPage.indexOf('\n})', cleanupStart)
-  assert.ok(cleanupStart >= 0 && cleanupEnd > cleanupStart)
-  const cleanup = tenantSettingsPage.slice(cleanupStart, cleanupEnd)
-  assert.match(cleanup, /window\.removeEventListener\('keydown', onTokenDialogKeydown\)/)
-  assert.match(cleanup, /window\.clearInterval\(deletionCountdownTimer\)/)
+
 })
 
 function assertQueryableResourceTable(source, { columns, rows, rowKey, loading, loaded, error, emptyText }) {
@@ -541,6 +544,7 @@ test('settings teardown retires requests and mutation contexts even when tenant 
     selectedWorkspaceKeys: { value: [] },
     workspaceDeleteProgress: { value: null },
     workspaceDeleteSummary: { value: null },
+    clearWorkspaceDeleteAnnouncement() {},
     workspaceDeleteBatchBusy: { value: false },
     activeSection: { value: 'workspaces' },
     selWs: { value: { uuid: 'workspace-a' } },
@@ -553,6 +557,8 @@ test('settings teardown retires requests and mutation contexts even when tenant 
     sasLoading: { value: true },
     deletionCountdownTimer: null,
     onTokenDialogKeydown() {},
+    tokenDismissed: false,
+    dismissToken() { state.tokenDismissed = true },
     window: { removeEventListener() {}, clearInterval() {} },
     onBeforeUnmount(callback) { teardown = callback },
   }
@@ -566,6 +572,7 @@ test('settings teardown retires requests and mutation contexts even when tenant 
 
   teardown()
 
+  assert.equal(state.tokenDismissed, true, 'teardown clears the one-time token')
   for (const generation of generations) assert.ok(state[generation] > 7, `${generation} must retire outstanding work`)
   assert.ok(state.settingsBulkScopeGeneration.value > 0, 'settings bulk operations are retired at teardown')
   assert.ok(state.orgMemberBulkScopeGeneration.value > 0, 'organization member bulk operations are retired at teardown')
@@ -706,8 +713,8 @@ test('Workspace danger zone is recoverable, admin-only, and grouped in the Works
   assert.ok(headerStart >= 0 && lifecycleStart > headerStart && lifecycleEnd < headerEnd)
   const lifecycle = tenantSettingsPage.slice(lifecycleStart, lifecycleEnd)
   assert.match(lifecycle, /workspace-danger-zone-title[\s\S]*Danger zone/)
-  assert.match(lifecycle, /Deleting starts a recoverable 30-day grace window/)
-  assert.match(lifecycle, /This workspace is in its recoverable 30-day grace window/)
+  assert.match(lifecycle, /Deleting starts a recovery window/)
+  assert.match(lifecycle, /This workspace is pending deletion/)
   assert.match(lifecycle, /border border-danger\/20/)
   assert.match(lifecycle, /k-btn k-btn--danger[\s\S]*Delete workspace/)
   assert.match(lifecycle, /k-btn k-btn--ghost[\s\S]*Restore workspace/)

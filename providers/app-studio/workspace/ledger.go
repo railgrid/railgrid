@@ -68,12 +68,13 @@ type PendingCommit struct {
 	// restart without reading mutable workspace files again.
 	RequestID string
 	// RepositoryRef names the Repository the commit targets.
-	RepositoryRef string
-	RepositoryUID string
-	BundleRef     string
-	BundleDigest  string
-	Message       string
-	Branch        string
+	RepositoryRef             string
+	RepositoryUID             string
+	BundleRef                 string
+	BundleDigest              string
+	ExplicitDeletionsVerified bool
+	Message                   string
+	Branch                    string
 	// WorkspaceDigest and Paths are the workspace content the commit carried;
 	// they become the settlement receipt once the commit succeeds.
 	WorkspaceDigest string
@@ -121,6 +122,11 @@ type LedgerRecord struct {
 	SourcePathAttributions []SourcePathAttribution
 	// UncommittedPaths are the paths that differ from the last commit.
 	UncommittedPaths []string
+	SourceDeletions  []SourceDeletion
+	// Consumer topology is derived from the Project spec by its ledger.
+	SourceConsumersKnown  bool
+	HasDevelopmentSandbox bool
+	HasRepository         bool
 	// PendingCommit, when set, is the RepositoryCommit being followed up.
 	PendingCommit *PendingCommit
 	// Settlement, when set, is the receipt a landed commit left behind.
@@ -130,7 +136,7 @@ type LedgerRecord struct {
 // DeepCopy returns a record that shares nothing with the receiver, so a
 // Ledger implementation can hand callers a record it also caches.
 func (r LedgerRecord) DeepCopy() LedgerRecord {
-	out := LedgerRecord{SourceRevision: r.SourceRevision, SourceMutationID: r.SourceMutationID}
+	out := r
 	if r.LastSourceChange != nil {
 		change := *r.LastSourceChange
 		out.LastSourceChange = &change
@@ -145,6 +151,7 @@ func (r LedgerRecord) DeepCopy() LedgerRecord {
 	if r.UncommittedPaths != nil {
 		out.UncommittedPaths = append([]string(nil), r.UncommittedPaths...)
 	}
+	out.SourceDeletions = append([]SourceDeletion(nil), r.SourceDeletions...)
 	if r.PendingCommit != nil {
 		pending := *r.PendingCommit
 		pending.Paths = append([]string(nil), r.PendingCommit.Paths...)
@@ -568,6 +575,7 @@ func (s *FileStore) RecordPreviewCheckpoint(ctx context.Context, scope Scope, so
 	_, err = ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
 		copy := source
 		record.LastPreviewCheckpoint = &copy
+		pruneSourceDeletions(record)
 		return true, nil
 	})
 	return err

@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { portalHref } from '../portalkit/navigation'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { ChevronDown } from 'lucide-vue-next'
 
 import type { RailgridContext } from '../element'
 import type { ObjectResult, QuerySpec } from '../api'
 import {
-  buildElements, IMPACT_RELATIONS, mountGraph, relationColor, RELATION_DIR, RELATION_LABELS, RELATION_METADATA,
+  buildElements, IMPACT_RELATIONS, mountGraph, relationColor, relationMetadata, RELATION_DIR, RELATION_LABELS,
   themeStyle, type GraphHandle,
 } from '../graph'
-import { createKueryRequestContext, errorMessage, resourceLabel, useKueryApi } from '../kuery'
+import { createKueryRequestContext, resourceLabel, safeHTTPStatus, useKueryApi } from '../kuery'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 
@@ -20,11 +21,17 @@ const result = ref<ObjectResult | null>(null)
 const loaded = ref(false)
 const loading = ref(false)
 const error = ref('')
+const errorStatus = ref<number | null>(null)
 const responseTruncated = ref(false)
 const responseWarnings = ref<string[]>([])
-const representation = ref<'graph' | 'list'>('graph')
+// Fitted canvas labels become difficult to read on narrow screens. Choose the
+// grouped text view initially there, without overriding a later user choice.
+const representation = ref<'graph' | 'list'>(typeof window !== 'undefined' && window.matchMedia?.('(max-width: 600px)').matches ? 'list' : 'graph')
+const impactRoot = ref<HTMLElement | null>(null)
 const graphHost = ref<HTMLElement | null>(null)
 const graphError = ref('')
+const graphRetrying = ref(false)
+const graphReady = ref(false)
 let controller: AbortController | null = null
 let loadGeneration = 0
 let graph: GraphHandle | null = null
@@ -37,12 +44,18 @@ const title = computed(() => {
 })
 const subtitle = computed(() => `Declared impact on ${props.anchor.cluster?.split('/').pop() || 'this edge'}`)
 const relations = computed(() => Object.entries(result.value?.relations ?? {}).filter(([, rows]) => (rows ?? []).length > 0))
-const lightTheme = computed(() => props.context?.theme === 'light' || (
-  props.context?.theme === 'system' && typeof document !== 'undefined' && document.documentElement.classList.contains('light')
-))
-const legendRelations = computed(() => RELATION_METADATA
-  .filter(relation => (result.value?.relations?.[relation.name]?.length ?? 0) > 0)
-  .map(relation => ({ ...relation, displayColor: relationColor(relation, lightTheme.value) })))
+// Cytoscape reads the host's rendered CSS palette. Use the same document
+// theme for its legend, and track context changes so Vue recomputes it.
+const lightTheme = computed(() => {
+  void props.context?.theme
+  return typeof document !== 'undefined' && document.documentElement.classList.contains('light')
+})
+const legendRelations = computed(() => relations.value.map(([name]) => {
+  const relation = relationMetadata(name)
+  return relation
+    ? { ...relation, name, displayColor: relationColor(relation, lightTheme.value) }
+    : { name, legendLabel: name, description: 'Direction unknown - deletion impact is not established.', lineStyle: 'solid' as const, displayColor: 'var(--color-text-muted)' }
+}))
 const namespaceRelationBounded = computed(() => (result.value?.relations?.namespaced?.length ?? 0) >= 200)
 function spec(): QuerySpec {
   const metadata = props.anchor.object?.metadata ?? {}; const version = props.anchor.object?.apiVersion || ''; const group = version.includes('/') ? version.split('/')[0] : ''
@@ -57,46 +70,80 @@ async function load(): Promise<void> {
   const requestGeneration = ++loadGeneration
   const request = requestContext.value
   const requestIdentity = request.identity
+  const hostFetch = props.context?.fetch
+  const savedView = props.savedView
   controller = current
-  loading.value = true; error.value = ''
+  loading.value = true
   const isCurrent = (): boolean => {
     if (controller !== current || loadGeneration !== requestGeneration) return false
-    return requestContext.value.identity === requestIdentity
+    return requestContext.value.identity === requestIdentity && props.context?.fetch === hostFetch && props.savedView === savedView
   }
   try {
     const status = await query(spec(), current.signal)
     if (!isCurrent()) return
-    result.value = status.objects?.[0] ?? null
-    if (!result.value) throw new Error('The object was not found; synchronization may still be catching up')
+    const nextResult = status.objects?.[0] ?? null
+    if (!nextResult) { error.value = 'The object was not found; synchronization may still be catching up. Retry impact analysis or return to inventory.'; errorStatus.value = null; return }
+    result.value = nextResult
     responseTruncated.value = !!status.incomplete
     responseWarnings.value = status.warnings ?? []
     loaded.value = true
+    error.value = ''; errorStatus.value = null
   } catch (reason) {
     if (!isCurrent()) return
-    const message = errorMessage(reason, 'Retry impact analysis or return to inventory.')
-    if (message) error.value = message
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
+    error.value = 'Could not load impact analysis. Retry or return to inventory.'
+    errorStatus.value = safeHTTPStatus(reason)
   } finally {
     if (isCurrent()) loading.value = false
   }
 }
 
-function destroyGraph(): void { generation += 1; graph?.destroy(); graph = null }
-async function mount(): Promise<void> {
-  destroyGraph(); graphError.value = ''
+function destroyGraph(): void { generation += 1; graph?.destroy(); graph = null; graphReady.value = false }
+async function mount(preserveError = false): Promise<void> {
+  destroyGraph(); if (!preserveError) graphError.value = ''
   if (!result.value || !graphHost.value || representation.value !== 'graph') return
   const current = generation; const built = buildElements(result.value)
   try {
     const handle = await mountGraph(graphHost.value, built.elements, themeStyle(graphHost.value), id => { if (current !== generation) return; const row = built.nodeIndex[id]; if (row && id !== result.value?.id) emit('inspect', row) })
     if (current !== generation) return handle.destroy()
-    graph = handle; requestAnimationFrame(() => { if (current === generation && graph === handle) handle.fit() })
+    graph = handle; graphReady.value = true; graphError.value = ''
+    requestAnimationFrame(() => { if (current === generation && graph === handle) handle.fit() })
   } catch (reason) {
-    if (current === generation) graphError.value = errorMessage(reason, 'Retry the graph or use the List representation.')
+    if (current === generation) graphError.value = 'Could not display the graph. Retry the graph or use the List representation.'
   }
 }
 
-watch(() => props.anchor, () => { result.value = null; loaded.value = false; void load() }, { immediate: true })
-watch([api, requestContext], ([ready, current], [wasReady, previous]) => {
-  if (ready && (!wasReady || current.identity !== previous.identity)) void load()
+async function retryGraph(): Promise<void> {
+  if (graphRetrying.value) return
+  const focused = typeof document !== 'undefined' ? document.activeElement : null
+  graphRetrying.value = true
+  try {
+    await mount(true)
+    await nextTick()
+    if (focused && !focused.isConnected && document.activeElement === document.body) impactRoot.value?.querySelector<HTMLElement>('.k-resource-page__title')?.focus()
+  } finally {
+    graphRetrying.value = false
+  }
+}
+
+watch(() => props.anchor, () => {
+  const focused = typeof document !== 'undefined' ? document.activeElement : null
+  const moveFocus = !!focused && !!impactRoot.value?.contains(focused) && focused.classList.contains('kuery-related')
+  result.value = null; loaded.value = false; error.value = ''; errorStatus.value = null; void load()
+  if (moveFocus) void nextTick(() => {
+    if (!focused?.isConnected && document.activeElement === document.body) impactRoot.value?.querySelector<HTMLElement>('.k-resource-page__title')?.focus()
+  })
+}, { immediate: true })
+watch([api, requestContext, () => props.context?.fetch, () => props.savedView], ([ready, current, hostFetch, view], [wasReady, previous, previousFetch, previousView]) => {
+  const analysisIdentityChanged = view !== previousView || current.scopeIdentity !== previous.scopeIdentity || hostFetch !== previousFetch ||
+    (!hostFetch && current.token !== previous.token)
+  if (analysisIdentityChanged) {
+    // A new view or authority may produce a different result or have different access.
+    controller?.abort(); loadGeneration += 1
+    result.value = null; loaded.value = false; loading.value = false; error.value = ''; errorStatus.value = null
+    responseTruncated.value = false; responseWarnings.value = []
+  }
+  if (ready && (!wasReady || current.identity !== previous.identity || hostFetch !== previousFetch || view !== previousView)) void load()
 })
 watch([result, representation], () => nextTick(() => void mount()))
 watch(() => props.context?.theme, () => { if (graph && graphHost.value) graph.restyle(themeStyle(graphHost.value)) })
@@ -104,17 +151,17 @@ onBeforeUnmount(() => { loadGeneration += 1; controller?.abort(); destroyGraph()
 </script>
 
 <template>
-  <div class="kuery-impact">
+  <div ref="impactRoot" class="kuery-impact">
     <ResourceBackLink :href="portalHref('/providers/kuery')" @back="emit('back')">Back to Kuery</ResourceBackLink>
     <ResourcePage :title="title" :kind="anchor.object?.kind" :subtitle="subtitle" :loaded="loaded" :loading="loading" :error="error" :stale="loaded && !!error" retryable @retry="load">
       <template #actions><div class="kuery-view-switch" role="group" aria-label="Impact representation"><button v-for="value in ['graph','list']" :key="value" type="button" class="k-btn k-btn--ghost kuery-view-btn" :aria-pressed="representation === value" @click="representation = value as 'graph' | 'list'">{{ value === 'graph' ? 'Graph' : 'List' }}</button></div></template>
       <template #body>
-        <p class="meta">Arrows describe deletion impact: A→B means deleting A can break B. Activate a related graph node or list item to inspect it.</p>
-        <aside v-if="legendRelations.length" class="kuery-impact-legend" aria-labelledby="impact-legend-title">
+        <p v-if="representation === 'graph'" id="impact-help" class="meta">The highlighted node is the object named above. For directional relations, an arrow from A to B means deleting A can affect B. Lines without arrows show lateral associations or relationships with unknown direction; they do not imply deletion impact. Select a graph node to inspect it, or use List for named relationships and keyboard access.</p>
+        <aside v-if="representation === 'graph' && legendRelations.length" class="kuery-impact-legend" aria-labelledby="impact-legend-title">
           <h2 id="impact-legend-title" class="kuery-workbench-title">Relation legend</h2>
           <dl class="legend">
             <div v-for="relation in legendRelations" :key="relation.name" class="legend-item">
-              <dt><span class="legend-swatch" aria-hidden="true" :style="{ borderTopColor: relation.displayColor, borderTopStyle: relation.lineStyle }" />{{ relation.legendLabel }}</dt>
+              <dt><span class="legend-swatch" aria-hidden="true" :style="{ borderTopColor: relation.displayColor, borderTopStyle: relation.lineStyle }" /><span class="legend-label">{{ relation.legendLabel }}</span></dt>
               <dd>{{ relation.description }}</dd>
             </div>
           </dl>
@@ -123,15 +170,24 @@ onBeforeUnmount(() => { loadGeneration += 1; controller?.abort(); destroyGraph()
         <p v-if="responseTruncated" class="kuery-warning" role="status">Kuery reported response-level truncation for this query. That status does not identify relation-level bounds.</p>
         <p v-if="responseWarnings.length" class="kuery-warning" role="status">Kuery reported: {{ responseWarnings.join(' ') }} Relation-level bounds are listed above separately.</p>
         <p v-if="namespaceRelationBounded" class="kuery-warning" role="status">Namespace membership reached its 200-object relation bound. Additional members may be omitted.</p>
+        <p v-if="loaded && !relations.length" class="kuery-read-state" role="status">No declared relationships were found within these bounds.</p>
         <div v-if="representation === 'graph'">
-          <div v-if="graphError" class="kuery-inline-error" role="alert">{{ graphError }} <button type="button" class="k-btn k-btn--ghost" @click="mount">Retry graph</button></div>
-          <div ref="graphHost" class="kuery-graph" role="img" :aria-label="`Impact visualization for ${title}`" :aria-describedby="legendRelations.length ? 'impact-bounds impact-legend-title' : 'impact-bounds'" />
+          <div v-if="graphError" class="kuery-inline-error" role="alert">{{ graphError }} <button type="button" class="k-btn k-btn--ghost" :aria-disabled="graphRetrying || undefined" :aria-busy="graphRetrying || undefined" @click="retryGraph">{{ graphRetrying ? 'Retrying graph…' : 'Retry graph' }}</button></div>
+          <div class="kuery-graph-controls" role="group" aria-label="Graph zoom controls">
+            <button type="button" class="k-btn k-btn--ghost" :disabled="!graphReady" @click="graph?.zoomBy(1.25)">Zoom in</button>
+            <button type="button" class="k-btn k-btn--ghost" :disabled="!graphReady" @click="graph?.zoomBy(0.8)">Zoom out</button>
+            <button type="button" class="k-btn k-btn--ghost" :disabled="!graphReady" @click="graph?.fit()">Fit graph</button>
+          </div>
+          <div ref="graphHost" class="kuery-graph" role="img" :aria-label="`Impact visualization for ${title}`" :aria-describedby="legendRelations.length ? 'impact-help impact-bounds impact-legend-title' : 'impact-help impact-bounds'" />
         </div>
         <div v-else-if="relations.length" class="kuery-impact-list">
-          <section v-for="[relation, related] in relations" :key="relation"><h2>{{ RELATION_LABELS[relation] || relation }} <span class="k-badge">{{ RELATION_DIR[relation] === 'up' ? 'impacts this object' : RELATION_DIR[relation] === 'down' ? 'impacted by this object' : 'related' }}</span></h2><ul><li v-for="row in related" :key="row.id || resourceLabel(row)"><button type="button" class="kuery-related" @click="emit('inspect', row)">{{ resourceLabel(row) }}</button></li></ul></section>
+          <section v-for="[relation, related] in relations" :key="relation"><h2>{{ RELATION_LABELS[relation] || relation }} <span class="k-badge">{{ RELATION_DIR[relation] === 'up' ? 'impacts this object' : RELATION_DIR[relation] === 'down' ? 'impacted by this object' : RELATION_DIR[relation] === 'lateral' ? 'related' : 'direction unknown' }}</span></h2><ul><li v-for="row in related" :key="row.id || resourceLabel(row)"><button type="button" class="kuery-related" @click="emit('inspect', row)">{{ resourceLabel(row) }}</button></li></ul></section>
         </div>
-        <div v-else-if="loaded" class="kuery-read-state" role="status">No declared relationships were found for this object.</div>
       </template>
     </ResourcePage>
+    <details v-if="error && errorStatus !== null" class="k-resource-technical">
+      <summary class="k-resource-technical__summary"><span class="k-resource-technical__summary-label">Technical details</span><ChevronDown class="k-resource-technical__chevron" :size="14" aria-hidden="true" /></summary>
+      <div class="k-resource-technical__body"><div class="k-resource-technical__content">Impact request returned HTTP {{ errorStatus }}.</div></div>
+    </details>
   </div>
 </template>

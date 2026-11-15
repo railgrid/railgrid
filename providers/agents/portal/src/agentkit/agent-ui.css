@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 62;
+  --railgrid-agent-ui-version: 65;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
@@ -804,6 +804,9 @@ button.k-workbench-tab {
   text-align: left;
   transition: color .15s ease;
 }
+@media (pointer: coarse), (any-pointer: coarse) {
+  .k-ai-activity__trigger { min-height: 44px; min-width: 44px; }
+}
 .k-ai-activity__trigger:hover { color: var(--color-text-secondary, #8a8ca6); }
 .k-ai-activity__trigger:focus-visible,
 .k-ai-action-row__toggle:focus-visible {
@@ -844,6 +847,12 @@ button.k-workbench-tab {
   gap: 6px;
   color: var(--color-text-muted, #8587a1);
   line-height: 1.25rem;
+}
+.k-ai-action-row__line--wrap { flex-wrap: wrap; }
+.k-ai-action-row__line--wrap > .k-ai-action-row__toggle,
+.k-ai-action-row__line--wrap > .k-ai-action-row__title {
+  flex: 1 1 12rem;
+  min-width: min(12rem, calc(100% - 20px));
 }
 .k-ai-action-row__icon {
   width: 14px;
@@ -1850,6 +1859,9 @@ button.k-workbench-tab {
 .k-model-collection__search > svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--color-text-muted); pointer-events: none; }
 .k-model-collection__search > input { width: 100%; padding-left: 36px; }
 .k-model-collection__count { flex: 1; color: var(--color-text-muted); font-size: 12px; }
+.k-model-collection__connection { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; text-decoration: underline; text-decoration-color: var(--color-border-default); text-underline-offset: 3px; cursor: pointer; }
+.k-model-collection__connection:hover { text-decoration-color: currentColor; }
+.k-model-collection__connection:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; border-radius: 2px; }
 .k-model-collection__empty { padding: 24px; color: var(--color-text-muted); text-align: center; }
 @media (max-width: 480px) { .k-model-collection__search { flex-basis: 100%; } }
 
@@ -1933,6 +1945,13 @@ button.k-workbench-tab {
   .k-ai-message:focus-within .k-ai-message-hover-action {
     opacity: 1;
   }
+  .k-ai-message--copy-error .k-ai-message-hover-action { opacity: 1; }
+}
+/* A hybrid device can have a fine primary pointer and a touch screen. */
+@media (any-pointer: coarse) {
+  .k-ai-message .k-ai-message-author,
+  .k-ai-message .k-ai-timestamp,
+  .k-ai-message .k-ai-message-hover-action { opacity: 1; }
 }
 
 .k-ai-message-copy {
@@ -1949,6 +1968,7 @@ button.k-workbench-tab {
   cursor: pointer;
 }
 .k-ai-message-copy:hover { background: var(--color-surface-hover); color: var(--color-text-primary); }
+.k-ai-message-copy-feedback:not(:empty) { align-self: center; color: var(--color-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 .k-ai-message-copy:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 @media (hover: none), (any-pointer: coarse) {
   .k-ai-message-copy { min-width: 44px; min-height: 44px; }

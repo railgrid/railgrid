@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ArrowRight, Loader2 } from 'lucide-vue-next'
 import { authenticationApi as api, type ProjectAuthentication } from './authenticationApi'
 import {
@@ -32,6 +32,8 @@ const grantsLoading = ref(false)
 const saving = ref(false)
 const error = ref('')
 const grantsError = ref('')
+const grantsRetry = ref<HTMLButtonElement | null>(null)
+const accessSection = ref<HTMLElement | null>(null)
 const notice = ref('')
 const grantsLoaded = ref(false)
 const operation = ref<'enable' | 'disable' | 'approve' | 'revoke' | null>(null)
@@ -106,7 +108,7 @@ async function loadGrants(force = false) {
   const current = generation
   const key = contextKey()
   grantsLoading.value = true
-  grantsError.value = ''
+  const retryHadFocus = typeof document !== 'undefined' && grantsRetry.value === document.activeElement
   error.value = ''
   errorSource.value = null
   notice.value = ''
@@ -115,6 +117,12 @@ async function loadGrants(force = false) {
     if (isCurrent(current, key) && state.value === currentState) {
       grants.value = response.items || []
       grantsLoaded.value = true
+      const restoreFocus = retryHadFocus && grantsRetry.value === document.activeElement
+      grantsError.value = ''
+      if (restoreFocus) {
+        await nextTick()
+        if (isCurrent(current, key) && document.activeElement === document.body) accessSection.value?.querySelector<HTMLElement>('summary')?.focus()
+      }
     }
   } catch (e) {
     if (isCurrent(current, key) && state.value === currentState) {
@@ -354,6 +362,7 @@ onBeforeUnmount(() => { generation++ })
           </button>
         </div>
 
+        <div ref="accessSection">
         <AIWorkbenchSection title="Who can sign in" disclosure @update:open="onAccessToggle">
             <p class="max-w-[70ch] text-[12px] leading-5 text-text-muted">Workspace members can sign in. Approve additional Railgrid users for the Production app without adding them to your organization or workspace.</p>
 
@@ -376,12 +385,13 @@ onBeforeUnmount(() => { generation++ })
               </button>
             </form>
 
-            <div v-if="grantsLoading" role="status" class="flex items-center gap-2 text-[12px] text-text-muted">
+            <div v-if="grantsLoading && !grantsError" role="status" class="flex items-center gap-2 text-[12px] text-text-muted">
               <Loader2 class="h-4 w-4 animate-spin" aria-hidden="true" /> Loading sign-in approvals…
             </div>
             <div v-else-if="grantsError" class="grid justify-items-start gap-2" role="alert">
               <p class="text-[12px] leading-5 text-danger">Could not load Production sign-in approvals: {{ grantsError }}</p>
-              <button type="button" class="k-btn" :disabled="saving" @click="retry">Retry</button>
+              <button ref="grantsRetry" type="button" class="k-btn" :aria-disabled="grantsLoading || saving" @click="loadGrants(true)">{{ grantsLoading ? 'Retrying…' : 'Retry' }}</button>
+              <span v-if="grantsLoading" role="status" class="text-[12px] text-text-muted">Retrying sign-in approvals…</span>
             </div>
             <ul v-else-if="grants.length" class="grid gap-2" aria-label="Users approved to sign in to the Production app">
               <li v-for="grant in grants" :key="grant.name" class="flex flex-wrap items-center justify-between gap-3 text-[12px]">
@@ -394,6 +404,7 @@ onBeforeUnmount(() => { generation++ })
             </ul>
             <p v-else-if="grantsLoaded && productionRuntimeExists" role="status" class="text-[12px] leading-5 text-text-muted">No additional users are approved to sign in to the Production app.</p>
         </AIWorkbenchSection>
+        </div>
       </template>
     </template>
 

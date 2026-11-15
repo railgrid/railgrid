@@ -81,8 +81,8 @@ call. `fmcp` needs no token: the proxy reads and refreshes your login itself.
    authorized by workspace RBAC and needing only the bearer. Anything under
    `/services/providers/<p>/` other than `/mcp`, `/oauth`, `/webhooks` and
    the health paths is gone (404).
-3. **No TTY means explicit flags**: `railgrid use --org --workspace`,
-   `railgrid login --token`.
+3. **For a remote shell**, use `railgrid login --device` with a browser on another
+   device. Use `railgrid use --org --workspace` to select a workspace without a TTY.
 4. **Use kubectl** to read and write workspace resources.
 5. **Enumerate, don't trust lists.** Providers, their `scope`, and your MCP
    tools differ per hub and per org: `GET /api/providers` and MCP `tools/list`

@@ -40,5 +40,5 @@ not render a standalone component:
   `RAILGRID_UI_CORE_VERSION` style-handoff contract before the assets are synced.
 
 See the [resource reads pattern](../patterns/resource-reads.md) and
-[provider integration foundation](../foundations/provider-integration.md) for
+[provider integration foundation](../implementation/provider-integration.md) for
 the cross-surface invariants.

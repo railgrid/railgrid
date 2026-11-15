@@ -633,7 +633,7 @@ func TestResolveMember(t *testing.T) {
 
 func TestExecOIDCArgsAndJWT(t *testing.T) {
 	exec := &clientcmdapi.ExecConfig{Args: []string{"get-token", "--oidc-issuer-url=https://i", "--oidc-client-id", "cid", "--insecure-skip-tls-verify"}}
-	if iss, cid := execOIDCArgs(exec); iss != "https://i" || cid != "cid" {
+	if iss, cid, account := execOIDCArgs(exec); iss != "https://i" || cid != "cid" || account != "" {
 		t.Fatalf("execOIDCArgs = %q %q", iss, cid)
 	}
 	payload := `{"sub":"s","email":"e@x","exp":1700000000}`

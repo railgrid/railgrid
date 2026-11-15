@@ -1205,6 +1205,139 @@ func TestSyncRejectsEscapes(t *testing.T) {
 	}
 }
 
+func TestExplicitSyncFileDirectoryTransitions(t *testing.T) {
+	for _, tc := range []struct {
+		name, before, after string
+	}{
+		{"file to directory", "src", "src/main.go"},
+		{"directory to file", "src/nested/main.go", "src"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workdir := t.TempDir()
+			srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+			before := []syncFile{{Path: tc.before, Content: "old"}}
+			digest, err := digestSyncFiles(before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, _ := doSync(t, srv, syncRequest{Files: before, SourceRevision: 1, ExplicitSourceDigest: digest})
+			if first.Code != http.StatusOK {
+				t.Fatalf("seed: %d %s", first.Code, first.Body.String())
+			}
+			after := []syncFile{{Path: tc.after, Content: "new"}}
+			digest, err = digestSyncFiles(after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := syncRequest{Files: after, DeletePaths: []string{tc.before}, SourceRevision: 2, ExplicitSourceDigest: digest}
+			second, result := doSync(t, srv, request)
+			if second.Code != http.StatusOK || !slices.Equal(result.Deleted, request.DeletePaths) {
+				t.Fatalf("transition: %d %s", second.Code, second.Body.String())
+			}
+			retry, _ := doSync(t, srv, request)
+			if retry.Code != http.StatusOK {
+				t.Fatalf("retry: %d %s", retry.Code, retry.Body.String())
+			}
+			got, err := os.ReadFile(filepath.Join(workdir, tc.after))
+			if err != nil || string(got) != "new" {
+				t.Fatalf("new file = %q, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestExplicitSyncTransitionConflictPreservesFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name, conflict string
+		incoming       []syncFile
+	}{
+		{"unlisted sibling", "src/nested/unmanaged.txt", []syncFile{{Path: "src", Content: "new"}}},
+		{"unrelated write conflict", "other.txt", []syncFile{{Path: "src", Content: "new"}, {Path: "other.txt/child", Content: "new"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workdir := t.TempDir()
+			srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+			const managed = "src/nested/main.go"
+			before := []syncFile{{Path: managed, Content: "managed"}}
+			digest, err := digestSyncFiles(before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seed, _ := doSync(t, srv, syncRequest{Files: before, SourceRevision: 1, ExplicitSourceDigest: digest})
+			if seed.Code != http.StatusOK {
+				t.Fatalf("seed: %d %s", seed.Code, seed.Body.String())
+			}
+			if err := os.WriteFile(filepath.Join(workdir, tc.conflict), []byte("unmanaged"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			digest, err = digestSyncFiles(tc.incoming)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := syncRequest{Files: tc.incoming, DeletePaths: []string{managed}, SourceRevision: 2, ExplicitSourceDigest: digest}
+			result, _ := doSync(t, srv, req)
+			if result.Code != http.StatusConflict {
+				t.Fatalf("conflict: %d %s", result.Code, result.Body.String())
+			}
+			for file, want := range map[string]string{managed: "managed", tc.conflict: "unmanaged"} {
+				got, err := os.ReadFile(filepath.Join(workdir, file))
+				if err != nil || string(got) != want {
+					t.Fatalf("%s after rejected sync = %q, %v", file, got, err)
+				}
+			}
+			if err := os.Remove(filepath.Join(workdir, tc.conflict)); err != nil {
+				t.Fatal(err)
+			}
+			retry, response := doSync(t, srv, req)
+			if retry.Code != http.StatusOK || !slices.Equal(response.Deleted, req.DeletePaths) {
+				t.Fatalf("retry: %d %s", retry.Code, retry.Body.String())
+			}
+		})
+	}
+}
+
+func TestExplicitSyncKeepsOmittedFilesUntilDeletionIsRequested(t *testing.T) {
+	workdir := t.TempDir()
+	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+	files := []syncFile{{Path: "keep.txt", Content: "keep"}, {Path: "delete.txt", Content: "delete"}}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := doSync(t, srv, syncRequest{Files: files, SourceRevision: 1, SourceDigest: digest})
+	if first.Code != http.StatusOK {
+		t.Fatalf("seed: %d %s", first.Code, first.Body.String())
+	}
+
+	emptyDigest, err := digestSyncFiles(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := syncRequest{SourceRevision: 2, ExplicitSourceDigest: emptyDigest}
+	omitted, _ := doSync(t, srv, request)
+	if omitted.Code != http.StatusOK {
+		t.Fatalf("omit: %d %s", omitted.Code, omitted.Body.String())
+	}
+	for _, file := range files {
+		if _, err := os.Stat(filepath.Join(workdir, file.Path)); err != nil {
+			t.Fatalf("omitted %s: %v", file.Path, err)
+		}
+	}
+
+	request.SourceRevision++
+	request.DeletePaths = []string{"delete.txt"}
+	deleted, response := doSync(t, srv, request)
+	if deleted.Code != http.StatusOK || !slices.Equal(response.Deleted, request.DeletePaths) {
+		t.Fatalf("delete: %d %s", deleted.Code, deleted.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "delete.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("explicitly deleted file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "keep.txt")); err != nil {
+		t.Fatalf("unlisted file: %v", err)
+	}
+}
+
 func TestAuthoritativeSyncConvergesManagedDeletesAndReturnsEvidence(t *testing.T) {
 	workdir := t.TempDir()
 	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})

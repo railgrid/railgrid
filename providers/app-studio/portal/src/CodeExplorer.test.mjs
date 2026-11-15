@@ -57,6 +57,24 @@ function uploadHarness({ uploadProjectFiles, readProjectFile, confirm = async ()
   return { uploadFiles, notifications, refreshed, writeBusy, writeStatus, projectContext }
 }
 
+test('download failure announces politely and releases the busy state', async () => {
+  const notifications = []
+  const downloadBusy = { value: false }
+  const dependencies = {
+    props: { projectName: 'shop', ctx: {} },
+    selectedPath: { value: 'assets/image.png' },
+    downloadBusy,
+    api: { fetchProjectFileRaw: async () => { throw new Error('Download unavailable') } },
+    toast: (...args) => notifications.push(args),
+    errorMessage: (error, fallback) => error instanceof Error && error.message ? error.message : fallback,
+    projectFileBaseName: (path) => path.split('/').at(-1),
+  }
+  const downloadSelected = new Function(...Object.keys(dependencies), `${transpileFunction('downloadSelected')}\nreturn downloadSelected`)(...Object.values(dependencies))
+  await downloadSelected()
+  assert.deepEqual(notifications, [['error', 'Download unavailable', { announcement: 'polite' }]])
+  assert.equal(downloadBusy.value, false)
+})
+
 test('distinguishes initial tree hydration from refresh and does not show a false empty state', () => {
   assert.match(source, /class="shimmer h-4 rounded bg-surface-overlay"/)
   assert.match(source, /Loading workspace files…/)

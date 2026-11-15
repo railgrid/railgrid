@@ -252,3 +252,38 @@ func TestTakeYieldsNothingWhenAnotherReplicaWinsTheDelete(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotFound when another replica redeemed first", err)
 	}
 }
+
+func TestAllowIntervalAcrossReplicas(t *testing.T) {
+	now := time.Unix(1000, 0)
+	clientset := kubefake.NewClientset()
+	first := newTestStore(t, clientset, &now)
+	second := newTestStore(t, clientset, &now)
+	const key = "pending"
+	const interval = 5 * time.Second
+	ctx := t.Context()
+	if created, err := first.CreateIfAbsent(ctx, key, nil, now.Add(time.Minute)); !created || err != nil {
+		t.Fatalf("create: %v, %v", created, err)
+	}
+	if allowed, err := first.AllowInterval(ctx, key, interval); !allowed || err != nil {
+		t.Fatalf("first use: %v, %v", allowed, err)
+	}
+	if allowed, err := second.AllowInterval(ctx, key, interval); allowed || err != nil {
+		t.Fatalf("early use on another replica: %v, %v", allowed, err)
+	}
+	now = now.Add(interval)
+	if allowed, err := second.AllowInterval(ctx, key, interval); !allowed || err != nil {
+		t.Fatalf("use after interval: %v, %v", allowed, err)
+	}
+
+	clientset.PrependReactor("update", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "secrets"}, key, errors.New("resource version mismatch"))
+	})
+	now = now.Add(interval)
+	if allowed, err := first.AllowInterval(ctx, key, interval); allowed || err != nil {
+		t.Fatalf("use after concurrent update: %v, %v", allowed, err)
+	}
+	now = now.Add(time.Minute)
+	if allowed, err := first.AllowInterval(ctx, key, interval); allowed || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired entry: %v, %v", allowed, err)
+	}
+}

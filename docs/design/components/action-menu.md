@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.action-menu","title":"ActionMenu","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The current Vue implementation owns the overflow trigger, roving menu focus, dismissal, and typed selection event; callers own mutations."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/action-menu.md#actionmenu","role":"design"},{"path":"provider-sdk/portalkit-vue/ActionMenu.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ActionMenu.conformance.test.mjs","role":"reference"}],"verification":{"state":"verified","checks":[{"kind":"test","ref":"provider-sdk/portalkit-vue/ActionMenu.conformance.test.mjs","status":"passing"},{"kind":"browser","ref":"Core and provider rendered fixture matrices","status":"passing","evidence":"Six core and six provider dark/light desktop/mobile/hybrid cases passed; ActionMenu viewport placement, focus exit, and coarse targets were exercised in the shared fixtures."}]},"relatedDocuments":[{"id":"design.components.menu","relation":"see-also","path":"docs/design/components/menu.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.foundations.recipes","relation":"prerequisite","path":"docs/design/foundations/recipes.md"}]}
+{"schema":1,"id":"design.components.action-menu","title":"ActionMenu","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The current Vue implementation owns the overflow trigger, roving menu focus, dismissal, and typed selection event; callers own mutations."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/action-menu.md#actionmenu","role":"design"},{"path":"provider-sdk/portalkit-vue/ActionMenu.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ActionMenu.conformance.test.mjs","role":"reference"}],"verification":{"state":"verified","checks":[{"kind":"test","ref":"provider-sdk/portalkit-vue/ActionMenu.conformance.test.mjs","status":"passing"},{"kind":"browser","ref":"Core and provider rendered fixture matrices","status":"passing","evidence":"Six core and six provider dark/light desktop/mobile/hybrid cases passed; ActionMenu viewport placement, focus exit, and coarse targets were exercised in the shared fixtures."}]},"relatedDocuments":[{"id":"design.components.menu","relation":"see-also","path":"docs/design/components/menu.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.foundations.recipes","relation":"prerequisite","path":"docs/design/implementation/recipes.md"}]}
 ---
 
 # ActionMenu
@@ -45,7 +45,7 @@ close an open menu and prevent opening or selecting again until work settles.
 Keyboard behavior is complete and deterministic: closed `ArrowDown`, Enter, or
 Space opens on the first selectable item; closed `ArrowUp` opens on the last.
 Open ArrowUp/ArrowDown wrap over selectable items; Home/End jump to the first or
-last; Enter, Space, and Spacebar select. Escape closes and restores trigger
+last. Typing a character moves focus to the next matching enabled label and wraps when needed. Enter, Space, and Spacebar select. Escape closes and restores trigger
 focus. When Tab is pressed, the teleported menu closes and synchronously returns
 focus to its own trigger before the browser performs native adjacent focus
 movement. Pointer-down and focus-in outside the root close without stealing
@@ -69,7 +69,7 @@ The menu is teleported to `body` and positioned by the shared
 above the trigger when needed, updates on resize/scroll and panel measurement,
 and retains a minimum width of 180px; its tooltip is right-anchored and
 suppressed while open.
-The menu uses the [shared menu recipe](../foundations/recipes.md) and never
+The menu uses the [shared menu recipe](../implementation/recipes.md) and never
 glows.
 
 ## Accessibility
@@ -90,4 +90,4 @@ with behavior checked by
 ## Related guidance
 
 See the [dropdown and context menu](menu.md), [accessible interaction
-policy](../accessibility/interaction.md), and [shared k-* recipes](../foundations/recipes.md).
+policy](../accessibility/interaction.md), and [shared k-* recipes](../implementation/recipes.md).

@@ -1,32 +1,57 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   ShieldAlert, AlertCircle, RefreshCw, Puzzle, Building2, Users, Gauge,
-  Hexagon, ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen, Tag,
+  Hexagon, ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen, Tag, ServerCog, Sprout,
 } from 'lucide-vue-next'
 
 import { hubVersionDetails, hubVersionLabel, useHubVersion } from '@/composables/useHubVersion'
 import { useSidebarExpansion } from '@/composables/useSidebarExpansion'
 import { useAdminStore } from '@/stores/admin'
 import { useAuthStore } from '@/stores/auth'
+import { consumeAdminNavigation, rememberAdminNavigation } from './adminNavigationFocus'
 
 const admin = useAdminStore()
 const auth = useAuthStore()
 const router = useRouter()
-const { sidebarExpanded, toggleSidebar } = useSidebarExpansion()
+const route = useRoute()
+const { sidebarExpanded, narrow, toggleSidebar, closeNarrowSidebar } = useSidebarExpansion()
+watch(() => route.fullPath, () => { if (narrow.value) closeNarrowSidebar() })
+const sidebar = ref<HTMLElement | null>(null)
+const main = ref<HTMLElement | null>(null)
+async function focusDestination(previous: Element | null) {
+  await nextTick()
+  if (document.activeElement !== previous && document.activeElement !== document.body) return
+  const heading = main.value?.querySelector<HTMLElement>('h2')
+  if (!heading) return
+  heading.tabIndex = -1
+  heading.focus({ preventScroll: true })
+}
+watch(() => route.path, async path => {
+  const active = document.activeElement
+  const fromSidebar = active instanceof HTMLElement && !!sidebar.value?.contains(active)
+  const pending = consumeAdminNavigation(path)
+  if (!fromSidebar && !pending) return
+  await focusDestination(active)
+})
 const { hubVersion } = useHubVersion()
 const platformVersion = computed(() => hubVersionLabel(hubVersion.value))
 const platformVersionDetails = computed(() => hubVersionDetails(hubVersion.value))
 
 const sections = [
   { to: '/bonkers/providers', label: 'Providers', icon: Puzzle },
+  { to: '/bonkers/system-services', label: 'System services', icon: ServerCog },
+  { to: '/bonkers/workspace-seeds', label: 'Workspace seeds', icon: Sprout },
   { to: '/bonkers/organizations', label: 'Organizations', icon: Building2 },
   { to: '/bonkers/users', label: 'Users', icon: Users },
   { to: '/bonkers/metering', label: 'Metering', icon: Gauge },
 ]
 
-onMounted(() => admin.refresh())
+onMounted(() => {
+  void admin.refresh()
+  if (consumeAdminNavigation(route.path)) void focusDestination(document.body)
+})
 
 function handleLogout() {
   auth.logout()
@@ -37,11 +62,14 @@ function handleLogout() {
 <template>
   <!-- Platform-wide data must not inherit tenant/workspace navigation, but its
        shell follows the same rail geometry and visual states as AppLayout. -->
-  <div class="flex h-screen bg-surface text-text-primary">
+  <div class="relative flex h-screen bg-surface text-text-primary">
     <!-- Admin sidebar -->
+    <div v-if="narrow && sidebarExpanded" aria-hidden="true" class="w-14 flex-shrink-0" />
     <aside
-      class="relative z-50 flex h-full flex-shrink-0 flex-col border-r border-border-default bg-surface-raised px-2 py-3 transition-[width] duration-200"
-      :class="sidebarExpanded ? 'w-48' : 'w-14'"
+      ref="sidebar"
+      class="admin-sidebar relative z-50 flex h-full flex-shrink-0 flex-col border-r border-border-default bg-surface-raised px-2 py-3 transition-[width] duration-200"
+      :class="[sidebarExpanded ? 'w-48' : 'w-14', narrow && sidebarExpanded ? '!absolute inset-y-0 left-0' : '']"
+      @keydown.esc="narrow && sidebarExpanded && closeNarrowSidebar()"
     >
       <div class="mb-1 flex items-center gap-2 px-2" :class="sidebarExpanded ? '' : 'flex-col gap-1.5 px-0'">
         <div class="flex h-7 w-7 items-center justify-center rounded-lg border border-border-default bg-surface-overlay">
@@ -76,6 +104,7 @@ function handleLogout() {
             : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
           :aria-current="$route.path === s.to ? 'page' : undefined"
           :title="sidebarExpanded ? undefined : s.label"
+          @click="rememberAdminNavigation($event, s.to, route.path)"
         >
           <component :is="s.icon" class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
           <span v-if="sidebarExpanded">{{ s.label }}</span>
@@ -120,7 +149,7 @@ function handleLogout() {
     </aside>
 
     <!-- Main content -->
-    <main class="min-w-0 flex-1 overflow-y-auto" :aria-busy="admin.loading">
+    <main ref="main" class="min-w-0 flex-1 overflow-y-auto" :aria-busy="admin.loading">
       <div class="w-full px-4 py-5 sm:px-8">
         <header class="mb-6 flex items-center justify-between">
           <h1 class="flex items-center gap-2 text-[17px] font-bold">
@@ -157,3 +186,12 @@ function handleLogout() {
     </main>
   </div>
 </template>
+
+<style scoped>
+@media (pointer: coarse), (any-pointer: coarse) {
+  .admin-sidebar :where(a, button) {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+</style>

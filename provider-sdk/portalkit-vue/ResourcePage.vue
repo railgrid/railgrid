@@ -16,6 +16,7 @@ import type { ResourceReadState, ResourceRefreshMode } from '../portalkit/page-s
 import { useDelayedLoading } from './useDelayedLoading'
 
 ensureRailgridUIStyles()
+const pageElement = ref<HTMLElement | null>(null)
 
 const props = withDefaults(defineProps<{
   variant?: 'default' | 'collection'
@@ -93,38 +94,58 @@ function requestRetry() {
 // Retry is a caller-owned read transaction: once requested, keep the control
 // latched through delayed acknowledgement and release it only when the caller
 // reports a settled loading edge or clears the error.
+function finishRetry() {
+  // The Retry button is about to leave the DOM. Move focus only if it is
+  // still on this shell's button; do not pull a user back from another task.
+  // A later background read can recover after an earlier retry failed.
+  const focused = typeof document === 'undefined' ? null : document.activeElement
+  const page = pageElement.value
+  if (page && focused && focused.closest('.k-resource-page') === page
+    && focused.classList.contains('k-resource-page__retry')) {
+    const target = page.querySelector<HTMLElement>('.k-resource-page__title') ?? page
+    target.focus({ preventScroll: true })
+  }
+  retryRequested.value = false
+}
 watch(() => props.loading, (loading, wasLoading) => {
-  if (wasLoading && !loading) retryRequested.value = false
+  if (wasLoading && !loading) {
+    if (!props.error) finishRetry()
+    else retryRequested.value = false
+  }
 })
 watch(() => props.error, error => {
-  if (!error) retryRequested.value = false
+  if (!error) finishRetry()
 })
 </script>
 
 <template>
   <section
+    ref="pageElement"
     class="k-resource-page"
+    tabindex="-1"
     :class="{ 'k-resource-page--fill': fill, 'k-resource-page--collection': variant === 'collection' }"
     :aria-busy="ariaBusy"
   >
     <!-- Keep read announcements out of layout while preserving the
       caller-owned body. Foreground refreshes, background updates, and initial
       retries use distinct, truthful copy in one polite live region. -->
-    <span
-      class="k-resource-page__live"
-      role="status"
-      aria-live="polite"
-      aria-atomic="true"
-      style="block-size: 1px; clip: rect(0 0 0 0); clip-path: inset(50%); inline-size: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap;"
-    >
-      {{ refreshAnnouncement }}
-    </span>
+    <Teleport :to="pageElement?.closest('dialog, [aria-modal=true]') ?? 'body'">
+      <span
+        class="k-resource-page__live"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        style="block-size: 1px; clip: rect(0 0 0 0); clip-path: inset(50%); inline-size: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap;"
+      >
+        {{ showInitialLoading && initialReadPending ? `Loading ${title}` : refreshAnnouncement }}
+      </span>
+    </Teleport>
     <!-- A narrow header slot replaces only this inner heading/action content;
       the outer page header and all read-state surfaces remain authoritative. -->
     <header v-if="showHeader" class="k-resource-page__header" :class="{ 'k-resource-page__header--compact-actions': compactActions }">
       <slot name="header">
         <div class="k-resource-page__heading">
-          <h1 class="k-resource-page__title">{{ title }}</h1>
+          <h1 class="k-resource-page__title" tabindex="-1">{{ title }}</h1>
           <div v-if="kind || $slots.meta || $slots.status" class="k-resource-page__meta">
             <span v-if="kind" class="k-resource-page__kind">{{ kind }}</span>
             <span v-if="kind && ($slots.meta || $slots.status)" class="k-resource-page__separator" aria-hidden="true">·</span>
@@ -147,7 +168,7 @@ watch(() => props.error, error => {
         v-if="retryable"
         type="button"
         class="k-btn k-btn--ghost k-resource-page__retry"
-        :disabled="retrying"
+        :aria-disabled="retrying || undefined"
         :aria-busy="retrying || undefined"
         @click="requestRetry"
       >
@@ -158,17 +179,24 @@ watch(() => props.error, error => {
     <div
       v-else-if="initialReadPending"
       class="k-resource-page__loading k-delayed-loading"
-      :role="showInitialLoading ? 'status' : undefined"
-      :aria-live="showInitialLoading ? 'polite' : undefined"
-      :aria-label="showInitialLoading ? `Loading ${title}` : undefined"
-      :aria-hidden="showInitialLoading ? undefined : 'true'"
+      aria-hidden="true"
+      data-loading-visual
+      :data-pending-hidden="showInitialLoading ? undefined : 'true'"
     >
-      <!-- The shell owns the loading semantics; callers may replace only the
-        visual content when a resource needs a more specific placeholder. -->
+      <!-- The shell owns loading semantics; callers can replace the visual
+        placeholder when their page has a more specific layout. -->
       <slot name="loading">
-        <div class="shimmer k-resource-page__skeleton k-resource-page__skeleton--short" />
-        <div class="shimmer k-resource-page__skeleton k-resource-page__skeleton--wide" />
-        <div class="shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" />
+        <div v-if="variant !== 'collection' && $slots.summary" class="k-resource-page__loading-summary" aria-hidden="true">
+          <div v-for="n in 3" :key="n" class="k-resource-page__loading-stat"><span class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--short k-resource-page__skeleton--small" /><span class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" /><span class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--wide k-resource-page__skeleton--small" /></div>
+        </div>
+        <div v-if="variant === 'collection'" class="k-resource-page__loading-list" aria-hidden="true">
+          <div v-for="n in 4" :key="n" class="k-resource-page__loading-row"><span class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" /><span class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--short" /></div>
+        </div>
+        <div v-else class="k-resource-page__loading-section" aria-hidden="true">
+          <div class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--short" />
+          <div class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--wide" />
+          <div class="k-loading-shimmer k-resource-page__skeleton k-resource-page__skeleton--medium" />
+        </div>
       </slot>
     </div>
 
@@ -187,7 +215,7 @@ watch(() => props.error, error => {
           v-if="retryable"
           type="button"
           class="k-btn k-btn--ghost k-resource-page__retry"
-          :disabled="retrying"
+          :aria-disabled="retrying || undefined"
           :aria-busy="retrying || undefined"
           @click="requestRetry"
         >

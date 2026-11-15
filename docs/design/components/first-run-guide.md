@@ -25,9 +25,23 @@ meaningful step.
 
 ## Anatomy and variants
 
-The guide explains the value, offers the immediate primary action, and shows
-the shortest meaningful resource journey. The supported implementations are
-`FirstRunGuide.vue` and matching vanilla `k-first-run*` semantic markup.
+1. **Optional icon:** a small decorative cue for the resource or task.
+2. **Title and explanation:** state what can be created and why it helps.
+3. **Primary action:** names the immediate next step; an optional secondary
+   action can support it without competing for emphasis.
+4. **Journey:** an optional ordered list identifies current, completed, and
+   upcoming prerequisite steps.
+
+The supported implementations are `FirstRunGuide.vue` and matching vanilla
+`k-first-run*` semantic markup.
+For a single obvious next step, pass an empty steps list to use the centered
+invitation without a progress journey. A small contextual icon may accompany
+the concise title, explanation, and primary action. Use it only after a successful,
+authoritative empty read; filtered results and failed reads use their own states.
+The design-book fixture compares these cases with a prerequisite journey using
+the shared `FirstRunGuide` and `ResourceTable` components. Its sample actions
+and reads are illustrative; the Models and Edge Services fixtures show the
+patterns in page context.
 
 Step descriptions are optional when the labels explain the journey. The embedded
 variant renders just the progress list within an existing creation card, below
@@ -39,16 +53,22 @@ Missing prerequisites change the current step and action. The guide continues
 to offer a meaningful next step rather than leaving the user at an inert empty
 table.
 
+When the next step is a route, use the `actions` slot for a real link with the
+shared primary style. Preserve its destination and native modified-click
+behavior; an ordinary click may be handed to the in-app router. Keep the
+default button for actions that do not navigate.
+
 ## Content
 
-Use an eyebrow, a one-line explanation, and one primary action. The copy
+Use a concise title, a short explanation, and one primary action. The copy
 explains the value and shortest meaningful resource journey; the primary action
 is the immediate next step.
 
 ## Layout and responsive behavior
 
-The empty state is an invitation: use a restrained `.contour-grid` texture, an
-eyebrow, a one-line explanation, and one primary action. The primary action is
+The empty state is an invitation: use a concise title, an explanation, and one
+focused primary action. Add a journey only when it helps explain prerequisites.
+The primary action is
 the only solid accent action in the view and follows the shared glow rule.
 
 ## Accessibility
@@ -62,7 +82,16 @@ interaction policy.
 
 The canonical Vue component is [`FirstRunGuide.vue`](../../../provider-sdk/portalkit-vue/FirstRunGuide.vue),
 and shared styling lives in [`railgrid-ui.css`](../../../provider-sdk/portalkit/railgrid-ui.css).
-Distribution is checked by `make verify-portalkit`.
+The [four-state review fixture](http://127.0.0.1:5197/?entry=design.components.first-run-guide)
+links to the sample Models and Edge Services product fixtures. Distribution is
+checked by `make verify-portalkit`.
+
+Open [Edge Services with a connected edge](http://127.0.0.1:5199/empty-product.html)
+or [without a connected edge](http://127.0.0.1:5199/empty-product.html?scenario=no-edge)
+to compare a direct action with prerequisite guidance. The
+[Agents Models](http://127.0.0.1:5198/?provider=agents&scenario=first-model&route=%23%2Fmodels)
+and [App Studio Models](http://127.0.0.1:5198/?provider=app&route=~models)
+fixtures start with a saved provider connection and no model bindings.
 
 ## Related guidance
 

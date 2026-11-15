@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted, onActivated } from 'vue'
-import { RefreshCw, Plus, ChevronRight, ChevronDown, Boxes, Server } from 'lucide-vue-next'
+import { computed, ref, nextTick, onMounted, onUnmounted, onActivated } from 'vue'
+import { ArrowRight, RefreshCw, Plus, ChevronRight, ChevronDown, Boxes, Server } from 'lucide-vue-next'
 import { listWorkloads, listWorkloadsPage, deleteWorkload, listEdges } from './api'
 import type { Workload, Edge, ErrorResponse } from './types'
 import { confirmDialog } from './portalkit/confirm'
 import { toast } from './portalkit/toast'
+import { portalHref } from './portalkit/navigation'
+import { edgeConnectPath, workloadDeployPath } from './routes'
 import ResourceTable from './portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
+import InlineNotification from './portalkit/InlineNotification.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import { isCompleteFirstCursorPage, type ResourceTableChange, type TableFilterDefinition, type TablePageInfo } from './portalkit/table'
@@ -30,7 +33,12 @@ const workloads = ref<Workload[]>([])
 const edges = ref<Edge[]>([])
 const loading = ref(true)
 const loaded = ref(false)
+const currentSnapshot = ref(false)
+const collectionPage = ref<HTMLElement | null>(null)
 const error = ref<string | null>(null)
+const deletingWorkload = ref<string | null>(null)
+const deleteFailure = ref<{ name: string; message: string } | null>(null)
+const workloadsHeading = ref<HTMLElement | null>(null)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
 const workloadColumns = [
@@ -59,7 +67,7 @@ const workloadRows = computed<Array<Record<string, unknown>>>(() => workloads.va
 })))
 const kubernetesEdges = computed(() => edges.value.filter(edge => edge.type === 'kubernetes'))
 const hasKubernetesEdges = computed(() => kubernetesEdges.value.length > 0)
-const showFirstRun = computed(() => loaded.value && !error.value && workloads.value.length === 0 && isCompleteFirstCursorPage({
+const showFirstRun = computed(() => loaded.value && currentSnapshot.value && workloads.value.length === 0 && isCompleteFirstCursorPage({
   page: tablePage.value,
   cursor: tableCursor.value,
   pageInfo: tablePageInfo.value,
@@ -73,6 +81,22 @@ const workloadJourney = [
 function handleFirstRunPrimary(): void {
   if (hasKubernetesEdges.value) emit('create')
   else emit('connectEdge')
+}
+
+const firstRunHref = computed(() => portalHref(`/ui/providers/edges/${hasKubernetesEdges.value
+  ? workloadDeployPath('manual')
+  : edgeConnectPath(workloadDeployPath('manual'), { cancelPath: 'workloads', requiredType: 'kubernetes' })}`))
+
+function followFirstRunLink(event: MouseEvent): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  handleFirstRunPrimary()
+}
+
+function followCreateLink(event: MouseEvent): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  emit('create')
 }
 
 const WORKLOAD_STRATEGY_OPTIONS = [
@@ -189,12 +213,13 @@ const workloadRefresh = createLatestRefreshController(async (requestID, mode) =>
   const readGeneration = completeWorkloadRead.generation()
   refreshMode.value = mode
   loading.value = true
-  if (mode === 'foreground') error.value = null
+  // Retain a failed read until its retry settles, including for an empty snapshot.
   // Do not render an unfiltered page as though it matched a newly-entered
   // query/filter. Same-page polling keeps cached rows visible until the
   // replacement arrives.
   if (mode === 'foreground' && request.active && request.mode === 'server') {
     workloads.value = []
+    currentSnapshot.value = false
     tablePageInfo.value = null
   }
   try {
@@ -218,6 +243,7 @@ const workloadRefresh = createLatestRefreshController(async (requestID, mode) =>
         return
       }
       workloads.value = nextWorkloads
+      currentSnapshot.value = true
       edges.value = nextEdges
       tableMode.value = 'client'
       tablePage.value = 1
@@ -234,6 +260,7 @@ const workloadRefresh = createLatestRefreshController(async (requestID, mode) =>
       ])
       if (!workloadRequestIsCurrent(requestID, request)) return
       workloads.value = nextPage.items
+      currentSnapshot.value = true
       edges.value = nextEdges
       tableCursor.value = request.cursor
       tablePageInfo.value = makeTablePageInfo(nextPage.continue)
@@ -245,7 +272,14 @@ const workloadRefresh = createLatestRefreshController(async (requestID, mode) =>
       ? workloadClientReadIsCurrent(requestID, request, readGeneration)
       : workloadRequestIsCurrent(requestID, request)
     if (!current) return
+    const table = collectionPage.value?.querySelector?.<HTMLElement>('[data-resource-table]')
+    const focused = typeof document !== 'undefined' ? document.activeElement : null
+    const losesTableFocus = !currentSnapshot.value && !!focused && !!table?.contains(focused)
     error.value = (e as ErrorResponse)?.message ?? 'Failed to load workloads'
+    if (losesTableFocus) {
+      await nextTick()
+      if (!focused?.isConnected && document.activeElement === document.body) table?.querySelector<HTMLButtonElement>('.k-table__retry')?.focus()
+    }
   } finally {
     if (clientReadToken === readToken) clientReadPending.value = false
     if (!stopped && workloadRefresh.isCurrent(requestID)) loading.value = false
@@ -261,6 +295,14 @@ function refresh(mode: ResourceRefreshMode | Event = 'foreground', forceClientRe
     loading.value = true
   }
   return workloadRefresh.request(requestedMode)
+}
+
+async function refreshFromHeader(): Promise<void> {
+  if (foregroundLoading.value) return
+  const focused = typeof document !== 'undefined' ? document.activeElement : null
+  await refresh('foreground')
+  await nextTick()
+  if (focused && !focused.isConnected && document.activeElement === document.body) workloadsHeading.value?.focus()
 }
 
 function handleWorkloadTableChange(change: ResourceTableChange) {
@@ -292,6 +334,7 @@ function handleWorkloadTableChange(change: ResourceTableChange) {
     }
     completeWorkloadRead.clear()
     workloads.value = []
+    currentSnapshot.value = false
     void refresh()
     return
   }
@@ -327,20 +370,38 @@ function handleWorkloadTableChange(change: ResourceTableChange) {
   tableCursor.value = null
   tablePageInfo.value = null
   workloads.value = []
+  currentSnapshot.value = false
   void refresh()
 }
 
 async function onDelete(w: Workload) {
+  if (deletingWorkload.value) return
   const ns = w.targetNamespace || 'default'
   if (!(await confirmDialog({ title: `Delete workload "${w.name}"?`, message: `Its objects in namespace "${ns}" on every edge are removed. The namespace itself is kept.`, danger: true, confirmLabel: 'Delete' }))) return
+  if (deletingWorkload.value || stopped) return
+  deletingWorkload.value = w.name
   try {
     await deleteWorkload(w.name)
     if (stopped) return
+    deleteFailure.value = null
     toast('info', `Workload deletion requested for ${w.name}.`)
+    const focusedAction = typeof document !== 'undefined' ? document.activeElement : null
     await refresh('foreground', true)
+    await nextTick()
+    if (focusedAction && !focusedAction.isConnected && document.activeElement === document.body) workloadsHeading.value?.focus()
   } catch (e) {
-    error.value = (e as ErrorResponse)?.message ?? 'Delete failed'
+    if (!stopped) deleteFailure.value = { name: w.name, message: (e as ErrorResponse)?.message ?? 'The request failed.' }
+  } finally {
+    deletingWorkload.value = null
   }
+}
+
+async function retryFirstRun() {
+  if (loading.value) return
+  const focused = typeof document !== 'undefined' ? document.activeElement : null
+  await refresh('foreground')
+  await nextTick()
+  if (focused && !focused.isConnected && document.activeElement === document.body) workloadsHeading.value?.focus()
 }
 
 onMounted(() => { void refresh('foreground') })
@@ -379,23 +440,23 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
 </script>
 
 <template>
-  <div class="edges-app">
+  <div ref="collectionPage" class="edges-app">
     <header class="edges-header">
       <div>
-        <h1>Workloads</h1>
+        <h1 ref="workloadsHeading" tabindex="-1">Workloads</h1>
         <p>Deploy a workload across matching Kubernetes edges. Each edge's agent runs it locally.</p>
       </div>
       <div v-if="(loaded || error) && !showFirstRun" class="header-actions">
-        <button class="k-btn k-btn--ghost" :disabled="foregroundLoading" @click="refresh">
+        <button type="button" class="k-btn k-btn--ghost" aria-label="Refresh workloads" :aria-disabled="foregroundLoading || undefined" :aria-busy="foregroundLoading || undefined" @click="refreshFromHeader">
           <RefreshCw :size="14" :class="{ spin: foregroundLoading }" aria-hidden="true" /> {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
         </button>
-        <button
-          type="button"
+        <a
           class="k-btn k-btn--primary"
-          @click="emit('create')"
+          :href="portalHref(`/ui/providers/edges/${workloadDeployPath('manual')}`)"
+          @click="followCreateLink"
         >
           <Plus :size="14" aria-hidden="true" /> New workload
-        </button>
+        </a>
       </div>
     </header>
 
@@ -404,6 +465,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       <button type="button" class="k-btn k-btn--ghost compact-control" @click="emit('dismissResult')">Dismiss</button>
     </div>
 
+    <InlineNotification v-if="showFirstRun && error" tone="error" :announce="refreshMode === 'background' ? 'polite' : 'assertive'" title="Could not refresh workloads" :message="`Showing the last successful result. ${error}`" action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="retryFirstRun" />
     <FirstRunGuide
       v-if="showFirstRun"
       :title="hasKubernetesEdges ? 'Deploy your first workload' : 'Connect a Kubernetes edge first'"
@@ -414,10 +476,12 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       :steps="workloadJourney"
       :current-step="hasKubernetesEdges ? 1 : 0"
       journey-label="Workload deployment path"
-      @primary="handleFirstRunPrimary"
     >
       <template #icon><component :is="hasKubernetesEdges ? Boxes : Server" aria-hidden="true" /></template>
+      <template #actions><a class="k-btn k-btn--primary" :href="firstRunHref" @click="followFirstRunLink">{{ hasKubernetesEdges ? 'Create workload' : 'Connect edge' }} <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>
     </FirstRunGuide>
+
+    <InlineNotification v-if="deleteFailure && !showFirstRun" tone="error" :title="`Could not delete ${deleteFailure.name}`" :message="`${deleteFailure.message} Try again using the workload's delete action.`" />
 
     <ResourceTable
       v-if="!showFirstRun"
@@ -426,11 +490,11 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       aria-label="Workloads"
       row-key="name"
       :row-aria-label="workloadRowAriaLabel"
-      :loaded="loaded"
+      :loaded="loaded && (currentSnapshot || !error)"
       :loading="loading"
       :refresh-mode="refreshMode"
       :error="error"
-      :stale="loaded && !!error"
+      :stale="currentSnapshot && !!error"
       retryable
       searchable
       search-placeholder="Search workloads…"
@@ -465,7 +529,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       <template #placement="{ value }"><span class="muted">{{ value }}</span></template>
       <template #status="{ value }"><StatusBadge :status="String(value)" :tone="workloadTone(value)" /></template>
       <template #ready="{ value }"><span class="mono">{{ value }}</span></template>
-      <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete workload ${String(row.name)}`" @click="onDelete(row as unknown as Workload)" /></div></template>
+      <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete workload ${String(row.name)}`" :busy="deletingWorkload === row.name" :busy-label="`Deleting workload ${String(row.name)}…`" :disabled="!!deletingWorkload && deletingWorkload !== row.name" @click="onDelete(row as unknown as Workload)" /></div></template>
       <template #after-row="{ row, columnCount }">
         <tr v-if="expanded === row.name" class="detail-row">
           <td :colspan="columnCount">

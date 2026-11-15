@@ -1,15 +1,27 @@
+<p align="center">
+  <img src="docs/assets/images/contribution-flow.svg" alt="The contribution flow: fork and branch, change, regenerate, verify with make verify, open a pull request, Prow CI and review, merge." width="100%">
+</p>
+
 # Contributing to railgrid
 
-Thanks for your interest in contributing! This document covers building from source, running tests, understanding the architecture, and the PR workflow.
+Thanks for your interest in contributing. This document covers building from
+source, running a hub locally, the tests, and how a pull request gets merged.
 
-## Table of Contents
+| If you want to | Read |
+|---|---|
+| Build, run and test your change | this file |
+| Understand the internals: the workspace tree, how an edge joins, how a call reaches it | [DEVELOPERS.md](DEVELOPERS.md) |
+| Find your way around the code, the provider contract and the codegen pipeline | [AGENTS.md](AGENTS.md) |
+| Change the portal or a provider's UI | [docs/design/README.md](docs/design/README.md) |
+
+**Contents**
 
 - [Prerequisites](#prerequisites)
-- [Building from Source](#building-from-source)
-- [Local Development Stack](#local-development-stack)
-- [Running Tests](#running-tests)
-- [Architecture Overview](#architecture-overview)
-- [PR Workflow](#pr-workflow)
+- [Build](#build)
+- [Run it locally](#run-it-locally)
+- [Tests](#tests)
+- [Before you push](#before-you-push)
+- [Pull requests](#pull-requests)
 
 ---
 
@@ -17,61 +29,72 @@ Thanks for your interest in contributing! This document covers building from sou
 
 | Tool | Version | Notes |
 |------|---------|-------|
-| Go | 1.26+ | `go env GOVERSION`; `go.mod` pins the exact version |
+| Go | 1.26.10 or later | `go.mod` pins the exact version |
 | Docker | any recent | must be running |
-| kind | latest | for local clusters |
+| kind | latest | local clusters, e2e suites |
 | kubectl | 1.28+ | |
-| Helm | 3.x | for chart testing |
+| Helm | 3.x | chart testing, `railgrid dev init` |
+| Tilt | v0.35.0+ | only for `make tilt` |
+| Node.js | 22 | only for the portal; the version CI builds with |
 
----
+Everything else (controller-gen, kcp and its apigen, golangci-lint, dex) is
+version-pinned and installed into `hack/tools/` by the Makefile the first time
+a target needs it. Do not `go install` those globally.
 
-## Building from Source
+## Build
 
 ```bash
 git clone https://github.com/railgrid/railgrid.git
 cd railgrid
 
-# Build all binaries into bin/
-make build
-
-# Build just the CLI
-make build-railgrid
-
-# Build just the hub
-make build-hub
+make build            # everything, into bin/
+make build-railgrid   # the CLI only
+make build-hub        # the hub only
 ```
 
-Binaries produced:
+| Binary | What it is |
+|--------|------------|
+| `bin/railgrid` | The CLI. It is also the edge agent: `railgrid agent run` |
+| `bin/railgrid-hub` | The hub server |
 
-| Binary | Description |
-|--------|-------------|
-| `bin/railgrid` | User CLI (also runs as the agent via `railgrid agent run`) |
-| `bin/railgrid-hub` | Hub server |
+Providers are separate Go modules under `providers/`, each with its own
+`go.mod`. The root `make build`, `make test` and `make lint` do not cover them;
+build and test one from its own directory (`cd providers/kuery && go build
+./... && go test ./...`) or with its `make build-<name>-provider` target.
 
----
+## Run it locally
 
-## Local Development Stack
+There are three ways to get a hub on your machine. Pick by what you are
+changing.
 
-`railgrid dev init` spins up a local environment with a hub kind cluster (and
-optional worker kind clusters via `--worker-count N`), deploys the hub via
+| Loop | Command | What you get | Use it when |
+|---|---|---|---|
+| **Tilt** | `make tilt` | Hub with embedded kcp and static auth, the portal on a Vite dev server, providers, all rebuilt on change | Day-to-day work on the hub, the portal or a provider. See [DEVELOPERS.md](DEVELOPERS.md#local-development-with-tilt) |
+| **`railgrid dev`** | `railgrid dev init` | Hub deployed from the Helm chart into a kind cluster, the way a user installs it | Checking the charts, or working on the agent against real clusters |
+| **Bare hub** | `make run-hub-embedded-static` | The hub binary alone, no UI, one terminal per component | Debugging the hub or one provider in isolation |
+
+All three use the static token `dev-token`. `railgrid dev` and the bare hub
+serve at `https://console.127.0.0.1.sslip.io:9443`; `make tilt` allocates
+ports per checkout, and `make tilt-status` prints them.
+
+### `railgrid dev`
+
+`railgrid dev init` creates a kind cluster for the hub, deploys the hub with
 Helm, and wires everything together. The default is hub-only; pass
-`--worker-count 1` (or more) when you also need agent clusters.
+`--worker-count 1` (or more) to also get clusters to run agents on.
 
 ```bash
-# Build first
 make build
 
-# Create hub + 1 worker kind cluster and deploy the hub
+# Hub + 1 worker kind cluster, hub deployed from the local chart
 ./bin/railgrid dev init --worker-count 1 --chart-path deploy/charts/railgrid-hub
 
 # Log in with the static dev token
 ./bin/railgrid login --hub-url https://console.127.0.0.1.sslip.io:9443 \
   --insecure-skip-tls-verify --token dev-token
 
-# Register a dev edge
+# Register an edge and print the agent command for it
 ./bin/railgrid edge create dev-edge-1
-
-# Print the agent command
 ./bin/railgrid edge join-command dev-edge-1
 
 # Run the agent against a kind cluster (writes .kubeconfig-railgrid-agent)
@@ -88,216 +111,177 @@ hack/scripts/ensure-kind-cluster.sh railgrid-agent
 ./bin/railgrid dev delete
 ```
 
-### Make shortcuts
+### Bare hub and Make shortcuts
 
 ```bash
-make run-hub-embedded-static # run hub with embedded kcp and static token (no helm) (no UI)
-make dev-portal              # runs local intance of the portal pointing to the dev hub
-make dev-login-static        # log in with static token
-make dev-edge-create         # create dev-edge-kube-1 (kubernetes type)
-make dev-run-edge            # run kubernetes agent (reads .env.edge.kubernetes)
-make dev-edge-create TYPE=server                   # create dev-edge-server-1
-make dev-run-edge   TYPE=server                    # run server agent (reads .env.edge.server)
-make dev-edge-create TYPE=server DEV_EDGE_NAME=my-server  # custom name
+make run-hub-embedded-static   # hub with embedded kcp and a static token; no Helm, no UI
+make dev-portal                # a local portal pointed at the dev hub
+make dev-login-static          # log in with the static token
+make dev-edge-create           # create dev-edge-kube-1 (kubernetes type)
+make dev-run-edge              # run the kubernetes agent (reads .env.edge.kubernetes)
+make dev-edge-create TYPE=server                          # create dev-edge-server-1
+make dev-run-edge    TYPE=server                          # run the server agent (reads .env.edge.server)
+make dev-edge-create TYPE=server DEV_EDGE_NAME=my-server  # a custom name
 ```
 
-### Provider quickstart (local dev)
+### Trying a provider: quickstart
 
-The `providers/quickstart/` reference provider validates the platform's
-plugin surface end-to-end. After the hub is running, three commands wire
-everything up:
+`providers/quickstart/` is the reference provider: it exercises the whole
+plugin surface end to end. With the hub running, two more terminals wire it
+up:
 
 ```bash
-# Terminal 1 — the hub (gives you a kcp admin kubeconfig at .kcp/admin.kubeconfig)
+# Terminal 1: the hub (writes a kcp admin kubeconfig to .kcp/admin.kubeconfig)
 make run-hub-embedded-static
 
-# Terminal 2 — admin: register the CatalogEntry in root:railgrid:providers
+# Terminal 2, as admin: register the CatalogEntry in root:railgrid:providers
 make install-provider-quickstart
 
-# Terminal 3 — tenant: run the provider binary; it heartbeats to the hub
+# Terminal 3: run the provider binary; it heartbeats to the hub
 make run-provider-quickstart
 ```
 
-Now open the portal at `https://console.127.0.0.1.sslip.io:9443/ui/providers`, click
-**Enable** on Quickstart, confirm the permission claim dialog, and
-`kubectl get greetings.quickstart.providers.railgrid.ai` will work in
-your tenant workspace.
+Open the portal at `https://console.127.0.0.1.sslip.io:9443/ui/providers`,
+click **Enable** on Quickstart and confirm the permission-claim dialog. Then
+`kubectl get greetings.quickstart.providers.railgrid.ai` works in your tenant
+workspace.
 
-To iterate on the manifest, `make uninstall-provider-quickstart` removes
-the catalog entry; re-running `install-provider-quickstart` reapplies.
-
-Override the port/URL/token via env if you're running multiple instances:
+`make uninstall-provider-quickstart` removes the catalog entry; running
+`install-provider-quickstart` again reapplies it. If you run more than one
+instance, override the port, URL or token through the environment:
 
 ```bash
 QUICKSTART_PORT=8090 QUICKSTART_HUB_URL=https://console.127.0.0.1.sslip.io:9443 \
   make run-provider-quickstart
 ```
 
-### Lint
-
-```bash
-make lint        # golangci-lint (must be 0 issues before pushing)
-go build ./...   # must compile clean
-```
-
 ### Connecting Claude Code to a local MCP server
 
-The dev hub serves MCP endpoints over HTTPS with a self-signed cert (e.g.
-`https://console.127.0.0.1.sslip.io:9443/services/linux-mcp/.../mcp`). Claude Code's MCP client
-will refuse the connection with `SDK auth failed: self signed certificate`.
-
-For local dev, start Claude with TLS verification disabled:
+The dev hub serves MCP over HTTPS with a self-signed certificate, and Claude
+Code's MCP client refuses it with `SDK auth failed: self signed certificate`.
+For local development, start Claude with TLS verification off:
 
 ```bash
 NODE_TLS_REJECT_UNAUTHORIZED=0 claude
 ```
 
-Or alias it:
+> [!WARNING]
+> This turns off TLS verification for **all** HTTPS in that Claude session.
+> Use it for local development only. The scoped alternative is to point
+> `NODE_EXTRA_CA_CERTS` at the hub's CA file in `~/.claude/settings.json`.
 
-```bash
-alias claude-dev='NODE_TLS_REJECT_UNAUTHORIZED=0 claude'
-```
-
-Dev-only — this disables TLS verification for **all** HTTPS in that Claude
-session. For a scoped alternative, point `NODE_EXTRA_CA_CERTS` at the hub's
-CA file in `~/.claude/settings.json`.
-
----
-
-## Running Tests
+## Tests
 
 ### Unit tests
 
 ```bash
-make test          # all packages except /test/e2e
-# or target a subtree directly:
-go test ./pkg/...
+make test          # every package in the root module except test/e2e
+make test-util     # pkg/util only, fast
+go test ./pkg/...  # or one subtree directly
 ```
 
-### e2e tests
+### End-to-end suites
 
-e2e tests spin up real kind clusters and require Docker.
+The e2e suites live in `test/e2e/suites/`, one Make target each. Most start
+their own hub on fixed ports, so do not run two at once; the targets check for
+a busy port before they start.
+
+| Target | What it covers | Needs |
+|--------|----------------|-------|
+| `make e2e` / `make e2e-standalone` | Embedded kcp and a static token, no Dex. The default suite | Docker, kind |
+| `make e2e-ssh` | Server edges over SSH | Docker, kind |
+| `make e2e-oidc` | OIDC sign-in through Dex | Docker, kind |
+| `make e2e-external-kcp` | kcp installed with Helm in kind | Docker, kind |
+| `make e2e-provider` | Provider provisioning, with quickstart | local ports only |
+| `make e2e-infra-provider` | Infrastructure provider: init, reconcile, data-plane gates | local ports only |
+| `make e2e-kuery-provider` | Kuery provider: saved views and the `run` verb | local ports only |
+| `make e2e-agents-provider` | Agents provider: webhooks, triggers, delivery | local ports only |
+| `make e2e-identity` | The hub's scoped-identity service | local ports only |
+| `make e2e-edges` | Edges provider: provisioning, claims, authorization boundary | local ports only |
+| `make e2e-edges-connectivity` | kubectl and SSH over real tunnels | kind |
+| `make e2e-cli` | The `railgrid` CLI against a hub | kind optional |
+| `make e2e-all` | Builds the images and runs everything, about 30 minutes | Docker, kind |
+
+Three knobs save time while iterating:
 
 ```bash
-# Standalone suite (embedded kcp, static token) — also the default `make e2e`
-make e2e-standalone
-
-# SSH suite
-make e2e-ssh
-
-# OIDC suite (Dex)
-make e2e-oidc
-
-# External KCP suite
-make e2e-external-kcp
-
-# All suites
-make e2e-all
+RAILGRID_USE_EXISTING_CLUSTERS=true make e2e-standalone   # reuse the kind clusters from the last run
+make e2e-standalone E2E_FLAGS=--keep-clusters             # keep the clusters after the run, to debug
+make e2e-keep                                             # the same, as a shortcut
 ```
 
-**Reuse existing clusters** (faster iteration):
+`E2E_TIMEOUT` (20 minutes by default) bounds a suite.
+
+> [!NOTE]
+> The e2e suites and `make tilt` share ports and the `.kcp/` directory. Stop
+> one before starting the other.
+
+## Before you push
 
 ```bash
-RAILGRID_USE_EXISTING_CLUSTERS=true make e2e-standalone
+make codegen    # after changing a type under apis/: deepcopy, CRDs, kcp schemas
+make fix-lint   # goimports and the lint fixes that can be applied automatically
+make verify     # the gate CI runs: boilerplate, codegen, vet, lint, build, tests
 ```
 
-**Keep clusters after failure** (for debugging):
+| You changed | Also run |
+|---|---|
+| A Go type under `apis/` | `make codegen`, and commit the generated files |
+| A provider's `manifest.yaml` or its API types | `make codegen-<name>-provider`, then `make verify-provider-contract` |
+| A file under `provider-sdk/portalkit*` | `make sync-portalkit` |
+| The portal or a provider UI | `make verify-design-docs verify-portalkit verify-ui-conformance` |
+| A CLI command or flag | `make docs-cli` |
+| A standalone provider | `go build ./... && go test ./...` in its directory |
 
-```bash
-make e2e-standalone E2E_FLAGS=-keep-clusters
-# or the shortcut:
-make e2e-keep
-```
+Generated files (`zz_generated*`, `config/crds`, `config/kcp`) are never edited
+by hand: change the input and regenerate. New Go files need the license
+header; `make boilerplate` adds it.
 
----
+## Pull requests
 
-## Architecture Overview
+1. Fork the repository and branch from `main`.
+2. Make the change, with its tests. Keep a pull request to one concern.
+3. Run `make verify`.
+4. Open the pull request against `main`. Say what changed and why; link the
+   issue if there is one.
+5. Address review comments by pushing more commits to the same branch.
 
-### Components
+### What CI runs
 
-```
-                ┌──────────────────────────────────┐
-                │           railgrid hub               │
-                │                                   │
-                │  ┌─────────┐  ┌────────────────┐ │
-                │  │  kcp    │  │  agent-proxy   │ │
-                │  │  (API)  │  │  virtual WS    │ │
-                │  └────┬────┘  └───────┬────────┘ │
-                │       │               │           │
-                │  ┌────▼───────────────▼────────┐  │
-                │  │      hub controllers         │  │
-                │  │  token / edge / rbac / ssh  │  │
-                │  └─────────────────────────────┘  │
-                └──────────────┬───────────────────┘
-                               │  revdial reverse tunnel
-                    ┌──────────┴──────────┐
-                    │                     │
-             ┌──────▼──────┐     ┌────────▼──────┐
-             │ railgrid-agent │     │  railgrid-agent  │
-             │ (kubernetes)│     │   (server)    │
-             └─────────────┘     └───────────────┘
-```
+[Prow](https://prow-dev.railgrid.ai) is the pull-request gate; its jobs are
+declared in [`.prow.yaml`](.prow.yaml) and described in
+[`hack/ci/prow/README.md`](hack/ci/prow/README.md).
 
-### Key packages
+| Job group | Jobs |
+|---|---|
+| Always | `pull-railgrid-contracts` |
+| Code | `pull-railgrid-build`, `-lint`, `-test`, `-test-providers`, `-portals` |
+| End to end | `pull-railgrid-e2e-providers`, `-e2e-standalone`, `-e2e-ssh`, `-e2e-oidc`, `-e2e-external-kcp`, `-e2e-edges-connectivity`, `-e2e-cli` |
 
-| Package | Description |
-|---------|-------------|
-| `pkg/hub/controllers/edge/` | Edge lifecycle: token reconciler, RBAC, SSH credentials |
-| `pkg/hub/controllers/mcp/` | Kubernetes MCP controller — sets status URL, tracks connected edges |
-| `pkg/virtual/builder/` | Agent-proxy + MCP virtual workspaces — handles tunnel, status, MCP handler |
-| `pkg/agent/` | Agent core: registration, tunnel, edge_reporter |
-| `pkg/agent/tunnel/` | revdial tunnel client (`StartProxyTunnel`) |
-| `pkg/cli/cmd/` | CLI command implementations (including `railgrid mcp url`) |
-| `apis/railgrid/v1alpha1/` | Edge and KubernetesMCP CRD types (`railgrid.ai`) |
+A pull request that touches only `docs/` or Markdown files skips everything
+but the contracts job. No job is optional: a red one blocks the merge until it
+passes or an approver waives it with `/override`.
 
-### Join token bootstrap flow
+A few GitHub Actions workflows also run on pull requests: image builds on
+every one, and the macOS, infrastructure-template, release and
+provider-mirror workflows when the paths they watch change.
 
-1. `railgrid edge create <name>` creates an `Edge` resource.
-2. `TokenReconciler` generates a 44-char base64url token → `edge.status.joinToken`.
-3. Agent starts with `--token <join-token>` (via `railgrid agent run`).
-4. Hub validates the token in `authorizeByJoinToken`, calls `markEdgeConnected`.
-5. Hub sends the agent's kubeconfig back via `X-Railgrid-Agent-Kubeconfig` response header.
-6. Agent saves the kubeconfig to `~/.railgrid/agent-<name>.kubeconfig`; clears `--token`.
-7. On restart, agent loads the saved kubeconfig automatically — no token needed.
-8. Hub sets `Registered=True` on the Edge and clears `status.joinToken`.
+### Review and merge
 
-### revdial tunnel
+Approvers are listed in [`OWNERS`](OWNERS). An approver's `/approve` adds the
+`approved` label, and Tide merges the pull request once it carries that label
+and every check is green. Nobody presses a merge button.
 
-Agents establish a long-lived WebSocket connection to the hub's `/proxy` endpoint. The hub uses [revdial](https://github.com/bradfitz/revdial) to dial *back* to agents over this connection — the agent never needs an open port.
+### Commit messages
 
-### Edge proxy URL format
-
-Once an Edge is `Ready`, the hub exposes a virtual workspace endpoint:
+Write the subject in the imperative, as a sentence, and say what the commit
+does:
 
 ```
-https://<hub>/clusters/<workspace-id>/apis/railgrid.ai/v1alpha1/edges/<name>/proxy/k8s
+Add WorkspaceSeed: backend functionality in every tenant workspace
+
+Why the change was needed and anything a reviewer should know, if the
+subject does not already say it.
 ```
 
-`railgrid edge kubeconfig <name>` generates a kubeconfig that points to this URL.
-
----
-
-## PR Workflow
-
-1. Fork the repo and create a feature branch from `main`.
-2. Make your changes. All commits must pass:
-   ```bash
-   go build ./...   # must compile
-   make lint        # 0 issues
-   make test        # unit tests pass
-   ```
-3. Open a PR against `main`. CI runs build, lint, unit tests, and all four e2e suites.
-4. Address review comments. The bot (`@mjudeikis-bot`) monitors CI and posts status.
-5. A maintainer merges once CI is green and the PR is approved.
-
-### Commit style
-
-```
-<type>: <short description> (#issue)
-
-Longer explanation if needed.
-
-Co-authored-by: Your Name <you@example.com>
-```
-
-Types: `feat`, `fix`, `test`, `docs`, `refactor`, `chore`.
+There is no type prefix (`feat:`, `fix:`) and no sign-off requirement.

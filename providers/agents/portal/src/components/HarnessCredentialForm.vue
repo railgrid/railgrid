@@ -82,6 +82,9 @@ function copyFor(key: HarnessSecretKey) {
 function isLocked(): boolean {
   return Boolean(props.busy)
 }
+function submit(): void {
+  if (!props.busy) emit('save')
+}
 </script>
 
 <template>
@@ -91,7 +94,7 @@ function isLocked(): boolean {
     aria-label="Harness identity form"
     :aria-busy="isLocked()"
     novalidate
-    @submit.prevent="emit('save')"
+    @submit.prevent="submit"
   >
     <div class="k-create-body">
       <label for="model-display-name" class="k-model-form-field">
@@ -150,6 +153,7 @@ function isLocked(): boolean {
               :class="{ sel: key === secretKey }"
             >
               <input
+                class="k-checkbox"
                 type="radio"
                 name="harness-secret-key"
                 :value="key"
@@ -214,8 +218,8 @@ function isLocked(): boolean {
 
     <footer class="k-create-actions">
       <button type="button" class="k-btn k-btn--ghost" :disabled="isLocked()" @click="emit('cancel')">Cancel</button>
-      <button type="submit" class="k-btn k-btn--primary" :disabled="isLocked() || saveDisabled">
-        <Loader2 v-if="busy" :size="14" class="animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
+      <button type="submit" class="k-btn k-btn--primary" :disabled="!busy && saveDisabled" :aria-disabled="busy || undefined" :aria-busy="busy || undefined">
+        <Loader2 v-if="busy" :size="14" class="k-spin" :stroke-width="1.75" aria-hidden="true" />
         <Check v-else :size="14" :stroke-width="1.75" aria-hidden="true" />
         {{ busy ? (editing ? 'Saving changes…' : 'Saving identity…') : editing ? 'Save changes' : 'Add identity' }}
       </button>

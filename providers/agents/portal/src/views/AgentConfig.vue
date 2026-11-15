@@ -1219,14 +1219,14 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </summary>
       <div class="agents-setting-disclosure__body">
         <p class="agents-setting-disclosure__description">{{ policyDescription }}</p>
-        <fieldset class="agents-cap-fs">
+        <fieldset class="agents-cap-fs" :aria-describedby="harnessPolicyTarget ? domID('agent-harness-permission-policy') : undefined">
           <legend>Autonomy</legend>
           <p v-if="harnessPolicyTarget" :id="domID('agent-harness-permission-policy')" class="agents-hint" role="status">
             Coding harness permission prompts are configured by Claude Code or Codex on the machine. Railgrid cannot gate harness actions; Ask is the only supported Railgrid value for this backend.
           </p>
           <div class="agents-radiocards">
             <label v-for="mode in AUTONOMY_MODES" :key="mode.id" class="agents-radiocard k-checkbox-hit" :class="{ sel: mode.id === autonomy }">
-              <input v-model="autonomy" type="radio" :name="domID('autonomy')" :value="mode.id" :disabled="harnessPolicyTarget && mode.id !== 'ask'" />
+              <input class="k-checkbox" v-model="autonomy" type="radio" :name="domID('autonomy')" :value="mode.id" :disabled="harnessPolicyTarget && mode.id !== 'ask'" />
               <span class="agents-radiocard-t">{{ mode.label }}</span><span class="agents-radiocard-b">{{ autonomyBlurb(mode.id) }}</span>
             </label>
           </div>
@@ -1275,7 +1275,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <legend>Execution backend</legend>
           <div class="agents-radiocards">
             <label v-for="mode in BACKEND_MODES" :key="mode.id" class="agents-radiocard k-checkbox-hit" :class="{ sel: mode.id === backendType }">
-              <input v-model="backendType" type="radio" :name="domID('backend-type')" :value="mode.id" />
+              <input class="k-checkbox" v-model="backendType" type="radio" :name="domID('backend-type')" :value="mode.id" />
               <span class="agents-radiocard-t">{{ mode.label }}</span><span class="agents-radiocard-b">{{ mode.blurb }}</span>
             </label>
           </div>
@@ -1381,7 +1381,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         :is="workbenchSections ? AIWorkbenchPane : AgentsWorkbenchSection"
         :id="domID('agent-tools-heading')"
         title="Tools &amp; toolsets"
-        description="Allow tools in chat, then separately opt in to background runs from schedules, triggers, and heartbeats. Changes save automatically."
+        description="Choose tools for chat and background runs from schedules, triggers, and heartbeats. Changes save automatically."
       >
         <!-- A harness brings its own tools. Its API rejects agent tool grants. -->
         <p v-if="harnessStored" class="agents-hint agents-warn-inline" data-tools-disabled role="status">
@@ -1389,8 +1389,9 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         </p>
         <template v-else>
           <ConfigSaveFeedback :id="domID('agent-tools-save-feedback')" action="tool access" :status="feedbackStatus('tools')" :error="feedbackError('tools')" />
+          <p :id="domID('agent-background-permission-hint')" class="agents-hint">To grant background access, first allow the tool in chat. Existing background-only access can still be removed.</p>
           <AgentsWorkbenchSection title="Toolsets">
-            <fieldset class="agents-permission-group">
+            <fieldset class="agents-permission-group" :aria-describedby="domID('agent-background-permission-hint')">
               <legend class="sr-only">Toolsets</legend>
               <div v-if="toolsetSlice.error && !toolsetSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
                 <span>Could not load toolsets. {{ toolsetSlice.error }}</span>
@@ -1439,7 +1440,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           </AgentsWorkbenchSection>
 
           <AgentsWorkbenchSection title="Built-in capabilities">
-            <fieldset class="agents-permission-group">
+            <fieldset class="agents-permission-group" :aria-describedby="domID('agent-background-permission-hint')">
               <legend class="sr-only">Built-in capabilities</legend>
               <p class="muted">Tools the agent has on its own, with nothing to wire up. Reading the web needs no connection; <strong>searching</strong> it needs a websearch tool granted below, and without one the agent can only read pages it is given a link to. Turning on fan-out also teaches the agent how to use it — you do not need to write that into the prompt.</p>
               <table class="agents-permission-table" aria-label="Built-in capability permissions">
@@ -1530,7 +1531,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           </AgentsWorkbenchSection>
 
           <AgentsWorkbenchSection title="Direct tools">
-            <fieldset class="agents-permission-group">
+            <fieldset class="agents-permission-group" :aria-describedby="domID('agent-background-permission-hint')">
               <legend class="sr-only">Direct tools</legend>
               <div v-if="connectionSlice.error && !connectionSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
                 <span>Could not load tool connections. {{ connectionSlice.error }}</span>
@@ -1601,7 +1602,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <input class="k-input agents-chan-name" placeholder="primary" aria-label="Channel role name" :value="row.name || ''" :aria-invalid="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'name' ? 'true' : undefined" :aria-describedby="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'name' ? domID('agent-channels-error') : undefined" @input="patchChannelRow(row.key, { name: ($event.target as HTMLInputElement).value })" />
           <FormSelect class="agents-chan-conn" :model-value="row.connectionRef" :options="channelOptions" :labelledby="domID(`agent-channel-${row.key}-label`)" :invalid="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'connection'" :describedby="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'connection' ? domID('agent-channels-error') : undefined" @update:model-value="patchChannelRow(row.key, { connectionRef: $event })" />
           <span :id="domID(`agent-channel-${row.key}-label`)" class="sr-only">Channel connection</span>
-          <label class="agents-chan-primary k-checkbox-hit" title="Default channel for output with no channel set"><input type="radio" :name="domID('chan-primary')" :checked="Boolean(row.primary)" @change="setPrimaryChannel(row.key)" /> primary</label>
+          <label class="agents-chan-primary k-checkbox-hit" title="Default channel for output with no channel set"><input class="k-checkbox" type="radio" :name="domID('chan-primary')" :checked="Boolean(row.primary)" @change="setPrimaryChannel(row.key)" /> primary</label>
           <button class="k-icon-action agents-iconbtn-danger" type="button" :aria-label="`Remove channel ${row.name || ''}`" title="Remove channel" @click="removeChannel(row.key)"><Trash2 :stroke-width="1.75" aria-hidden="true" /></button>
         </div>
       </div>
@@ -1643,7 +1644,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
 
     <AgentsWorkbenchSection v-if="otherAgents.length" class="agents-config-sec" :heading-id="domID('agent-delegates-heading')" title="Delegates" description="Agents this one may hand work to. A delegated run bills against this agent’s budget.">
       <div class="agents-checkrow">
-        <label v-for="other in otherAgents" :key="other.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="(agent.spec?.delegates || []).includes(other.metadata.name)" @change="setDelegate(agent, other.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ other.spec?.displayName || other.metadata.name }}</label>
+        <label v-for="other in otherAgents" :key="other.metadata.name" class="agents-check k-checkbox-hit"><input class="k-checkbox" type="checkbox" :checked="(agent.spec?.delegates || []).includes(other.metadata.name)" @change="setDelegate(agent, other.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ other.spec?.displayName || other.metadata.name }}</label>
       </div>
       <ConfigSaveFeedback :id="domID('agent-delegates-save-feedback')" action="delegates" :status="feedbackStatus('delegates')" :error="feedbackError('delegates')" />
     </AgentsWorkbenchSection>
@@ -1661,12 +1662,12 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <p v-if="harnessStored" class="agents-hint" data-self-config-harness>
           The coding harness reaches these tools as an MCP server named <code>agent</code>, through the hub, with a token minted for each turn. It can also manage its schedules.
         </p>
-          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="selfConfigOf(agent).enabled" :disabled="saveState.selfConfiguration.status === 'pending'" @change="setSelfConfig(agent, { enabled: ($event.target as HTMLInputElement).checked })" /> Let this agent configure itself</label>
+          <label class="agents-check k-checkbox-hit"><input class="k-checkbox" type="checkbox" :checked="selfConfigOf(agent).enabled" :disabled="saveState.selfConfiguration.status === 'pending'" @change="setSelfConfig(agent, { enabled: ($event.target as HTMLInputElement).checked })" /> Let this agent configure itself</label>
           <template v-if="selfConfigOf(agent).enabled">
             <fieldset class="agents-permission-group">
               <legend>It may change</legend>
               <div class="agents-checkrow">
-                <label v-for="scope in selfConfigScopes" :key="scope.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="selfConfigOf(agent).scopes.includes(scope.name)" :disabled="saveState.selfConfiguration.status === 'pending' || (selfConfigOf(agent).scopes.length === 1 && selfConfigOf(agent).scopes.includes(scope.name))" @change="setSelfConfigScope(agent, scope.name, ($event.target as HTMLInputElement).checked)" /> {{ scope.label }}</label>
+                <label v-for="scope in selfConfigScopes" :key="scope.name" class="agents-check k-checkbox-hit"><input class="k-checkbox" type="checkbox" :checked="selfConfigOf(agent).scopes.includes(scope.name)" :disabled="saveState.selfConfiguration.status === 'pending' || (selfConfigOf(agent).scopes.length === 1 && selfConfigOf(agent).scopes.includes(scope.name))" @change="setSelfConfigScope(agent, scope.name, ($event.target as HTMLInputElement).checked)" /> {{ scope.label }}</label>
               </div>
             </fieldset>
             <div class="agents-grid2">

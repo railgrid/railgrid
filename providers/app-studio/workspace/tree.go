@@ -241,7 +241,7 @@ func (s *FileStore) ReplaceTree(ctx context.Context, scope Scope, opts ReplaceTr
 	// opts.ExpectedSourceRevision is re-checked inside it, so a foreign writer
 	// that moved the project between the fail-fast check above and here loses
 	// the race here instead of silently winning it.
-	mutation, err := s.advanceAndRecord(ctx, scope, opts.ExpectedSourceRevision, changedPaths, opts.Committed)
+	mutation, err := s.advanceAndRecord(ctx, scope, opts.ExpectedSourceRevision, changedPaths, deleted, opts.Committed)
 	if err != nil {
 		// Confirmation and rollback reconciliation belong to one bounded
 		// recovery window. The deadline starts only after the ledger write

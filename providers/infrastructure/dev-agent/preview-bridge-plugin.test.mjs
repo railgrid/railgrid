@@ -379,6 +379,8 @@ test("authenticated annotation mode captures bounded targets without activating 
     getAttribute(name) {
       return this.attributes.has(name) ? this.attributes.get(name) : null;
     }
+    focus() { document.activeElement = this; }
+    scrollIntoView() { this.scrolled = true; }
     closest() {
       return this;
     }
@@ -446,6 +448,7 @@ test("authenticated annotation mode captures bounded targets without activating 
     innerHeight: 768,
     scrollX: 0,
     scrollY: 0,
+    getComputedStyle(element) { return element.style; },
     addEventListener(type, listener) {
       windowListeners.set(type, listener);
     },
@@ -532,6 +535,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   target.setAttribute("onclick", "steal()");
   document.body.append(target);
   document.pointTarget = target;
+  target.focus();
   document.body.append(new FakeElement("button", "Duplicate label"));
   document.body.append(new FakeElement("button", "Duplicate label"));
 
@@ -547,6 +551,9 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(documentListeners.has("keydown"), true);
   assert.equal(document.documentElement.getAttribute("data-railgrid-annotation-mode"), "true");
   const cursorStyle = document.documentElement.children.find((child) => child.getAttribute("data-railgrid-annotation-cursor") === "true");
+  const keyboardHelp = document.documentElement.children.find((child) => child.getAttribute("data-railgrid-annotation-keyboard") === "true");
+  assert.equal(document.activeElement, keyboardHelp);
+  assert.match(keyboardHelp.getAttribute("aria-label"), /Arrow|arrow/);
   assert.ok(cursorStyle);
   assert.match(cursorStyle.textContent, /data:image\/svg\+xml/);
   assert.match(cursorStyle.textContent, /crosshair !important/);
@@ -713,7 +720,14 @@ test("authenticated annotation mode captures bounded targets without activating 
     .at(-1);
   assert.equal(acceptedRenderedPins.pins.length, 64);
 
+  const hoverTarget = new FakeElement("p", "Pointer target");
+  document.body.append(hoverTarget);
+  documentListeners.get("pointermove")({ target: hoverTarget });
+  assert.match(keyboardHelp.children[1].textContent, /Pointer target/);
+  assert.equal(hoverTarget.scrolled, undefined, "pointer hover must not scroll the page");
+  hoverTarget.remove();
   documentListeners.get("pointermove")({ target });
+  assert.match(keyboardHelp.children[1].textContent, /Open account settings/);
   const overlay = document.body.children.find((child) => child.getAttribute("data-railgrid-annotation-overlay") === "true");
   assert.equal(overlay.hidden, false);
   assert.equal(overlay.style.left, "12px");
@@ -751,6 +765,74 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(Object.hasOwn(selected.target, "value"), false);
   assert.equal(Object.hasOwn(selected.target, "style"), false);
   assert.equal(Object.hasOwn(selected.target, "onclick"), false);
+
+  const staticText = new FakeElement("p", "Static content");
+  const hiddenText = new FakeElement("p", "Hidden content");
+  hiddenText.hidden = true;
+  const inertText = new FakeElement("p", "Inert content");
+  inertText.setAttribute("inert", "");
+  const transparent = new FakeElement("p", "Transparent content");
+  transparent.style.opacity = "0";
+  const clip = new FakeElement("div", "Clip container");
+  clip.style.overflowX = "hidden";
+  clip.style.overflowY = "clip";
+  clip.rect = { left: 0, top: 0, width: 100, height: 100 };
+  const clipped = new FakeElement("p", "Clipped content");
+  clipped.rect = { left: 150, top: 10, width: 20, height: 20 };
+  const scroller = new FakeElement("div", "Scrollable container");
+  scroller.rect = { left: 0, top: 0, width: 100, height: 100 };
+  scroller.style.overflowX = "auto";
+  scroller.clientWidth = 100;
+  scroller.scrollWidth = 200;
+  const scrollableText = new FakeElement("p", "Scrollable content");
+  scrollableText.rect = { left: 150, top: 10, width: 20, height: 20 };
+  scroller.append(scrollableText);
+  clip.append(clipped, scroller);
+  document.body.append(hiddenText, inertText, transparent, clip, staticText);
+  const keyEvent = (key) => ({
+    key, prevented: false, stopped: false, immediateStopped: false,
+    preventDefault() { this.prevented = true; },
+    stopPropagation() { this.stopped = true; },
+    stopImmediatePropagation() { this.immediateStopped = true; },
+  });
+  // The first candidate is the account button. Skip the two other buttons,
+  // then the hidden element and bridge chrome to reach static content.
+  let sawScrollable = false;
+  for (let i = 0; i < 6; i++) {
+    const down = keyEvent("ArrowDown");
+    windowListeners.get("keydown")(down);
+    assert.equal(down.prevented && down.immediateStopped, true);
+    assert.doesNotMatch(keyboardHelp.children[1].textContent, /Transparent content|Clipped content/);
+    if (keyboardHelp.children[1].textContent.includes("Scrollable content")) sawScrollable = true;
+  }
+  assert.equal(sawScrollable, true, "offscreen scrollable content remains reachable");
+  assert.equal(staticText.scrolled, true);
+  assert.match(keyboardHelp.children[1].textContent, /Static content/);
+  const enter = keyEvent("Enter");
+  windowListeners.get("keydown")(enter);
+  assert.equal(enter.prevented && enter.immediateStopped, true);
+  const keyboardSelection = port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.selected").at(-1);
+  assert.equal(keyboardSelection.target.tag, "p");
+  assert.equal(keyboardSelection.target.text, "Static content");
+  assert.deepEqual(JSON.parse(JSON.stringify(keyboardSelection.anchor)), { x: 0.5, y: 0.5 });
+  const selectionCount = port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.selected").length;
+  const repeat = keyEvent("Enter");
+  repeat.repeat = true;
+  windowListeners.get("keydown")(repeat);
+  assert.equal(port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.selected").length, selectionCount);
+
+  // visibility is inherited but can be overridden: a visible child of a
+  // visibility:hidden parent is on screen and reachable; the parent is not.
+  const invisibleParent = new FakeElement("div", "Invisible parent");
+  invisibleParent.style.visibility = "hidden";
+  const visibleChild = new FakeElement("p", "Visible child");
+  visibleChild.style.visibility = "visible";
+  invisibleParent.append(visibleChild);
+  document.body.append(invisibleParent);
+  const visibleDown = keyEvent("ArrowDown");
+  windowListeners.get("keydown")(visibleDown);
+  assert.match(keyboardHelp.children[1].textContent, /Visible child/);
+  invisibleParent.remove();
 
   const editor = new FakeElement("div", "typed secret that must not cross the bridge");
   editor.setAttribute("contenteditable", "true");
@@ -842,6 +924,8 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(windowListeners.has("click"), true, "the early window guard remains installed while inactive");
   assert.equal(document.documentElement.getAttribute("data-railgrid-annotation-mode"), null);
   assert.equal(cursorStyle.removed, true);
+  assert.equal(keyboardHelp.removed, true);
+  assert.equal(document.activeElement, target);
   assert.equal(port.messages.at(-2).type, "railgrid.preview-bridge.annotation.mode");
   assert.equal(port.messages.at(-2).active, false);
   assert.equal(port.messages.at(-1).type, "railgrid.preview-bridge.annotation.cancelled");

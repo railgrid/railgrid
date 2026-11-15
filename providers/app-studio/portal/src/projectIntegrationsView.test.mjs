@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createServer } from 'vite'
+import { createRenderer, nextTick } from 'vue'
 
 const vite = await createServer({ appType: 'custom', logLevel: 'silent', server: { middlewareMode: true, hmr: false } })
 const {
@@ -11,6 +12,8 @@ const {
   projectIntegrationItemsAfterResponse,
   projectIntegrationMatchesSearch,
 } = await vite.ssrLoadModule('/src/ProjectIntegrations.vue')
+const { default: ProjectIntegrations } = await vite.ssrLoadModule('/src/ProjectIntegrations.vue')
+const { api } = await vite.ssrLoadModule('/src/api.ts')
 test.after(async () => vite.close())
 
 const resourceRef = {
@@ -22,6 +25,62 @@ const resourceRef = {
 const boundDigest = `sha256:${'b'.repeat(64)}`
 const catalogDigest = `sha256:${'c'.repeat(64)}`
 const otherDigest = `sha256:${'d'.repeat(64)}`
+
+test('ignores repeated integration refresh while a read is pending', async () => {
+  const original = api.listProjectIntegrations
+  let resolveRead
+  let rejectRead
+  let reads = 0
+  api.listProjectIntegrations = () => {
+    reads += 1
+    return new Promise((resolve, reject) => { resolveRead = resolve; rejectRead = reject })
+  }
+  const renderer = createRenderer({
+    createComment: () => ({}), insert() {}, remove() {}, parentNode: () => null, nextSibling: () => null,
+  })
+  const app = renderer.createApp(ProjectIntegrations, { ctx: null, projectName: 'review', providers: [] })
+  app._context.provides[Symbol.for('v-scx')] = { modules: new Set() }
+  try {
+    const instance = app.mount({}).$
+    await nextTick()
+    assert.equal(reads, 1)
+    instance.setupState.refreshIntegrations()
+    assert.equal(reads, 1)
+    resolveRead({ items: [], available: [], discovery: { state: 'available', issues: [] } })
+    await Promise.resolve()
+    await nextTick()
+    assert.equal(instance.setupState.integrationsLoaded, true)
+    instance.setupState.refreshIntegrations()
+    instance.setupState.refreshIntegrations()
+    assert.equal(reads, 2)
+    assert.equal(instance.setupState.integrationsLoaded, true)
+    rejectRead(new Error('Read failed'))
+    await Promise.resolve()
+    await nextTick()
+    assert.equal(instance.setupState.error, 'Read failed')
+    instance.setupState.refreshIntegrations()
+    assert.equal(instance.setupState.error, 'Read failed')
+    assert.equal(instance.setupState.loading, true)
+    resolveRead({ items: [], available: [], discovery: { state: 'available', issues: [] } })
+    await Promise.resolve()
+    await nextTick()
+    assert.equal(instance.setupState.error, null)
+    instance.setupState.refreshIntegrations()
+    resolveRead({ items: [], available: [], discovery: { state: 'partial', issues: [{ message: 'Incomplete discovery' }] } })
+    await Promise.resolve()
+    await nextTick()
+    assert.equal(instance.setupState.discoveryNotification.title, 'Provider resource discovery is incomplete')
+    instance.setupState.refreshIntegrations()
+    assert.equal(instance.setupState.discoveryNotification.title, 'Provider resource discovery is incomplete')
+    resolveRead({ items: [], available: [], discovery: { state: 'available', issues: [] } })
+    await Promise.resolve()
+    await nextTick()
+    assert.equal(instance.setupState.discoveryNotification, null)
+  } finally {
+    app.unmount()
+    api.listProjectIntegrations = original
+  }
+})
 
 const persistedIntegration = {
   environment: 'development',

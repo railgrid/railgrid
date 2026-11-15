@@ -1,14 +1,14 @@
 ---
-{"schema":1,"id":"design.components.tooltip","title":"Tooltip","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The CSS-only data-k-tip tooltip is implemented in the canonical stylesheet; native title remains acceptable for plain icon labels."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/tooltip.md#tooltip","role":"design"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.components.resource-table-actions","relation":"see-also","path":"docs/design/components/resource-table-actions.md"},{"id":"design.foundations.geometry","relation":"prerequisite","path":"docs/design/foundations/geometry.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.quality.review-checklist","relation":"see-also","path":"docs/design/quality/review-checklist.md"}]}
+{"schema":1,"id":"design.components.tooltip","title":"Tooltip","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The shared data-k-tip manager positions visual tooltips; CSS provides a fallback before initialization."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/tooltip.md#tooltip","role":"design"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"},{"path":"provider-sdk/portalkit/tooltip.ts","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"The canonical tooltip manager and shared styles passed distribution parity after the latest shared-style update."},{"kind":"browser","ref":"Tooltip in native dialog fixture","status":"passing","evidence":"The layering fixture was checked at 390px: Escape dismissed the tooltip before the enclosing dialog, with focus retained. This does not cover all product contexts or screen readers."},{"kind":"review","ref":"Product-wide tooltip and assistive-technology audit","status":"pending"}]},"relatedDocuments":[{"id":"design.components.resource-table-actions","relation":"see-also","path":"docs/design/components/resource-table-actions.md"},{"id":"design.foundations.geometry","relation":"prerequisite","path":"docs/design/foundations/geometry.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.quality.review-checklist","relation":"see-also","path":"docs/design/quality/review-checklist.md"},{"id":"design.foundations.layering","relation":"see-also","path":"docs/design/implementation/layering.md"}]}
 ---
 
 # Tooltip
 
 ## Purpose
 
-`Tooltip` supplies short supplemental help for a control without becoming a
-second surface of product content. The CSS-only `data-k-tip` variant is
-implemented in the canonical stylesheet.
+`Tooltip` supplies a short visual label for a control without becoming a
+second surface of product content. The `data-k-tip` recipe is managed by a
+shared document-level controller, with a CSS fallback before initialization.
 
 ## Use when
 
@@ -29,7 +29,13 @@ light theme).
 
 ## Behavior
 
-Show delay is 300ms, hide is immediate, and hover and focus both show it.
+Show delay is 150ms. Hover and keyboard focus reveal it; the pointer can move
+onto the visible bubble without dismissing it. Escape dismisses it
+without moving focus until the pointer and focus leave the trigger. The tooltip
+clamps to the viewport and moves below the trigger when there is no room above.
+When the trigger is inside an open native dialog, the shared tooltip is hosted
+inside that dialog. With focus on the trigger, Escape dismisses the tooltip
+without also closing the dialog; a subsequent Escape can dismiss the dialog.
 
 ## Content
 
@@ -44,17 +50,27 @@ tooltip has no arrow.
 ## Accessibility
 
 Hover and focus both reveal the tooltip, while the triggering control retains
-its own accessible label. Follow the [accessible interaction policy](../accessibility/interaction.md)
+its own accessible label. The managed bubble is hidden from assistive
+technology and touch does not reveal it. Do not put an explanation, disabled
+reason, or other information available only in `data-k-tip`: provide it as
+visible text or an accessible description that also works without hover.
+Follow the [accessible interaction policy](../accessibility/interaction.md)
 for naming and focus behavior.
 
 ## Code and evidence
 
 The canonical implementation is the `[data-k-tip]` recipe in
-`provider-sdk/portalkit/railgrid-ui.css`. Verify with `make verify-portalkit`.
+`provider-sdk/portalkit/railgrid-ui.css` and `provider-sdk/portalkit/tooltip.ts`.
+Verify distribution with `make verify-portalkit`.
+Open the [tooltip review](http://127.0.0.1:5197/?entry=design.components.tooltip)
+to compare an endpoint action and a resource table row action. The
+[Edge Services fixture](http://127.0.0.1:5199/) uses the shared row
+action implementation. Both fixtures use sample data.
 
 ## Related guidance
 
 Use the [resource table actions](resource-table-actions.md) contract for
 icon-only row actions, the [geometry foundation](../foundations/geometry.md)
 for the surface geometry, the [accessible interaction policy](../accessibility/interaction.md),
-and the [review checklist](../quality/review-checklist.md).
+and the
+[review checklist](../quality/review-checklist.md).

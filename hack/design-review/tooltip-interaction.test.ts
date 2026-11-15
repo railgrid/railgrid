@@ -1,0 +1,56 @@
+import { expect, it, vi } from 'vitest'
+import { ensureTooltips } from '../../provider-sdk/portalkit/tooltip'
+
+it('keeps the visual tooltip open while moving from its trigger to the bubble', () => {
+  vi.useFakeTimers()
+  const trigger = document.createElement('button')
+  trigger.setAttribute('data-k-tip', 'Copy endpoint')
+  trigger.getBoundingClientRect = () => ({ x: 40, y: 40, left: 40, top: 40, right: 80, bottom: 72, width: 40, height: 32, toJSON() {} })
+  document.body.append(trigger)
+  ensureTooltips()
+  const pointer = (target: Element, type: string, relatedTarget: Element | null = null) => {
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget }))
+  }
+  pointer(trigger, 'pointerover')
+  vi.advanceTimersByTime(150)
+  const bubble = document.querySelector('.k-tooltip-layer')!
+  expect(bubble.textContent).toBe('Copy endpoint')
+  pointer(trigger, 'pointerout')
+  vi.advanceTimersByTime(100)
+  pointer(bubble, 'pointerover')
+  vi.advanceTimersByTime(300)
+  expect(bubble.isConnected).toBe(true)
+  pointer(bubble, 'pointerout')
+  vi.advanceTimersByTime(200)
+  expect(bubble.isConnected).toBe(false)
+  pointer(trigger, 'pointerover')
+  vi.advanceTimersByTime(150)
+  expect(document.querySelector('.k-tooltip-layer')).not.toBeNull()
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(document.querySelector('.k-tooltip-layer')).toBeNull()
+  pointer(trigger, 'pointerout')
+  trigger.remove()
+
+  const dialog = document.createElement('dialog')
+  dialog.setAttribute('open', '')
+  const dialogTrigger = document.createElement('button')
+  dialogTrigger.setAttribute('data-k-tip', 'Inspect connection')
+  dialogTrigger.getBoundingClientRect = trigger.getBoundingClientRect
+  dialog.append(dialogTrigger)
+  document.body.append(dialog)
+  let dialogEscapes = 0
+  dialog.addEventListener('keydown', event => { if (event.key === 'Escape') dialogEscapes++ })
+  pointer(dialogTrigger, 'pointerover')
+  vi.advanceTimersByTime(150)
+  expect(dialog.querySelector('.k-tooltip-layer')?.textContent).toBe('Inspect connection')
+  dialogTrigger.focus()
+  dialogTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+  expect(dialog.querySelector('.k-tooltip-layer')).toBeNull()
+  expect(dialogEscapes).toBe(0)
+  expect(document.activeElement).toBe(dialogTrigger)
+  dialogTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+  expect(dialogEscapes).toBe(1)
+  pointer(dialogTrigger, 'pointerout')
+  dialog.remove()
+  vi.useRealTimers()
+})

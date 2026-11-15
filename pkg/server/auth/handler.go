@@ -67,7 +67,10 @@ type Handler struct {
 	devMode        bool
 	logger         klog.Logger
 	// rateLimiter protects auth endpoints against brute force attacks
-	rateLimiter *rateLimiter
+	rateLimiter        *rateLimiter
+	deviceStore        deviceStore
+	deviceLimiter      *rateLimiter
+	deviceStartLimiter *rateLimiter
 	// browserSessions is the hub-wide opaque portal session store.  It is
 	// shared by legacy OIDC, static-token bootstrap, and published-app SSO.
 	browserSessions *browsersession.Store
@@ -282,20 +285,40 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	code := r.URL.Query().Get("code")
 	stateParam := r.URL.Query().Get("state")
-	if code == "" || stateParam == "" {
-		http.Error(w, "missing code or state parameter", http.StatusBadRequest)
-		return
-	}
-
-	// Decode the state to get the CLI callback URL.
-	stateJSON, err := base64.URLEncoding.DecodeString(stateParam)
-	if err != nil {
-		http.Error(w, "invalid state parameter", http.StatusBadRequest)
-		return
-	}
 	var authCode tenancyv1alpha1.AuthCode
-	if err := json.Unmarshal(stateJSON, &authCode); err != nil {
-		http.Error(w, "invalid state payload", http.StatusBadRequest)
+	var device deviceBrowserState
+	var deviceFinished bool
+	isDevice := strings.HasPrefix(stateParam, deviceStatePrefix)
+	if isDevice {
+		state, ok := h.takeDeviceBrowserState(w, r, stateParam)
+		if !ok {
+			return
+		}
+		device = state
+		defer func() {
+			if !deviceFinished {
+				h.recordDeviceLoginFailure(ctx, device.deviceRequest)
+			}
+		}()
+		if r.URL.Query().Get("error") == "access_denied" {
+			deviceFinished = h.completeDeviceLogin(w, r, device.deviceRequest, deviceResult{Error: "access_denied"})
+			return
+		}
+		authCode.CodeVerifier = state.Verifier
+	} else {
+		// Decode the state to get the legacy browser callback URL.
+		stateJSON, err := base64.URLEncoding.DecodeString(stateParam)
+		if err != nil {
+			http.Error(w, "invalid state parameter", http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal(stateJSON, &authCode); err != nil {
+			http.Error(w, "invalid state payload", http.StatusBadRequest)
+			return
+		}
+	}
+	if code == "" {
+		http.Error(w, "missing authorization code", http.StatusBadRequest)
 		return
 	}
 
@@ -343,21 +366,24 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create or update User CRD. The legacy CreateTenantWorkspace call
-	// (which materialized root:railgrid:tenants:{userID} and patched
-	// User.spec.DefaultCluster) was removed when the new multi-org
-	// tenancy model took over: the organization bootstrap controller
-	// now creates the personal Org + its default child Workspace and
-	// patches User.spec.DefaultCluster itself once the Workspace is
-	// Ready. The auth handler just needs to write the User CR; the
-	// controller does the rest asynchronously.
-	userID, firstLogin, err := h.seedUser(ctx, oidcIdentity{
+	identity := oidcIdentity{
 		Issuer:        h.oidcConfig.IssuerURL,
 		Subject:       claims.Sub,
 		Email:         claims.Email,
 		EmailVerified: emailVerifiedClaim(claims.EmailVerified),
 		Name:          claims.Name,
-	})
+	}
+	if isDevice {
+		deviceFinished = h.showDeviceApproval(w, r, device, deviceApproval{
+			Identity: identity, IDToken: rawIDToken, RefreshToken: token.RefreshToken,
+			TokenExpiresAt: idToken.Expiry.Unix(),
+		})
+		return
+	}
+
+	// Create or update the User. The organization bootstrap controller creates
+	// the personal workspace and fills in its default cluster asynchronously.
+	userID, firstLogin, err := h.seedUser(ctx, identity)
 	if err != nil {
 		h.logger.Error(err, "failed to seed user")
 		http.Error(w, "failed to create user", http.StatusInternalServerError)
@@ -585,6 +611,16 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc(apiurl.PathAuthAuthorize, h.HandleAuthorize).Methods("GET")
 	router.HandleFunc(apiurl.PathAuthCallback, h.HandleCallback).Methods("GET")
 	router.HandleFunc(apiurl.PathAuthRefresh, h.rateLimiter.middleware(h.HandleRefresh)).Methods("POST")
+	if h.deviceStore != nil {
+		h.registerDeviceLoginLimits()
+		sameOrigin := http.NewCrossOriginProtection()
+		router.Handle(apiurl.PathAuthDeviceStart, sameOrigin.Handler(h.deviceStartLimiter.middleware(h.startDeviceLogin))).Methods("POST")
+		router.HandleFunc(apiurl.PathAuthDeviceVerify, h.showDeviceCodePage).Methods("GET")
+		router.Handle(apiurl.PathAuthDeviceVerify, sameOrigin.Handler(h.deviceLimiter.middleware(h.beginDeviceSignIn))).Methods("POST")
+		router.Handle(apiurl.PathAuthDeviceApprove, sameOrigin.Handler(h.deviceLimiter.middleware(h.decideDeviceLogin))).Methods("POST")
+		router.Handle(apiurl.PathAuthDevicePoll, sameOrigin.Handler(h.deviceLimiter.middleware(h.pollDeviceLogin))).Methods("POST")
+		router.Handle(apiurl.PathAuthDeviceAck, sameOrigin.Handler(h.deviceLimiter.middleware(h.ackDeviceLogin))).Methods("POST")
+	}
 	h.RegisterBrowserSessionRoutes(router)
 }
 
@@ -600,6 +636,10 @@ func (h *Handler) SetTrustedProxies(prefixes []netip.Prefix) {
 		h.rateLimiter = newRateLimiter(defaultRateLimit, defaultBurstDuration, klog.Background().WithName("auth-rate-limit"))
 	}
 	h.rateLimiter.trustedProxies = prefixes
+	if h.deviceLimiter != nil {
+		h.deviceLimiter.trustedProxies = prefixes
+		h.deviceStartLimiter.trustedProxies = prefixes
+	}
 }
 
 // RateLimitMiddleware exposes the auth rate limiter so auth-adjacent routes

@@ -9,14 +9,14 @@ describe('Infrastructure dashboard tile navigation affordances', () => {
     expect(source).toMatch(/Open Instances\s*<ArrowRight[^>]*aria-hidden="true"/)
     expect(source).not.toContain('Browse templates →')
     expect(source).not.toContain('Open Instances →')
-    expect(source.match(/k-dashboard-action/g)).toHaveLength(4)
+    expect(source.match(/k-dashboard-action/g)).toHaveLength(3)
   })
 
   it('uses the shared serial poller and navigation dispatcher', () => {
-    expect(source).toContain('createTilePoller(load)')
+    expect(source).toContain("createTilePoller(() => refresh.request('background'))")
     expect(source).toContain('poller?.stop()')
     expect(source).toContain('navigateFromTile(rootRef,')
     expect(source).not.toContain('window.setInterval')
-    expect(source).not.toContain('createLatestRefreshController')
+    expect(source).toContain('createLatestRefreshController')
   })
 })

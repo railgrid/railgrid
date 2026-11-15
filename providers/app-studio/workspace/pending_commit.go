@@ -385,6 +385,30 @@ func (s *FileStore) ClearPendingCommit(ctx context.Context, scope Scope, request
 	return cleared, nil
 }
 
+// DiscardUnverifiedReservation releases a legacy bundle before it can be
+// submitted through the new deletion rules. It leaves the source paths dirty.
+func (s *FileStore) DiscardUnverifiedReservation(ctx context.Context, scope Scope, requestID string) (bool, error) {
+	if requestID == "" {
+		return false, errors.New("pending commit request ID is required")
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
+		return false, err
+	}
+	discarded := false
+	_, err = ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		pending := record.PendingCommit
+		discarded = pending != nil && pending.RequestID == requestID && pending.Name == "" && !pending.ExplicitDeletionsVerified
+		if discarded {
+			record.PendingCommit = nil
+		}
+		return discarded, nil
+	})
+	return discarded, err
+}
+
 // FailPendingCommit clears a commit that did not land. If a path changed after
 // its pending snapshot, its current bytes now combine with source that was not
 // committed; discard that path's newer owner so a retry cannot falsely credit
@@ -532,7 +556,7 @@ func samePendingCommit(a, b *PendingCommit) bool {
 		return a == nil && b == nil
 	}
 	if a.RequestID != b.RequestID || a.Name != b.Name || a.RepositoryRef != b.RepositoryRef ||
-		a.RepositoryUID != b.RepositoryUID || a.BundleRef != b.BundleRef || a.BundleDigest != b.BundleDigest ||
+		a.RepositoryUID != b.RepositoryUID || a.BundleRef != b.BundleRef || a.BundleDigest != b.BundleDigest || a.ExplicitDeletionsVerified != b.ExplicitDeletionsVerified ||
 		a.Message != b.Message || a.Branch != b.Branch || a.WorkspaceDigest != b.WorkspaceDigest ||
 		a.SourceRevision != b.SourceRevision || a.BlockedReason != b.BlockedReason || a.BlockedMessage != b.BlockedMessage ||
 		a.RetryToken != b.RetryToken || !sameTime(a.BlockedAt, b.BlockedAt) ||
@@ -560,7 +584,7 @@ func samePendingIntent(a, b *PendingCommit) bool {
 		return a == nil && b == nil
 	}
 	if a.RequestID != b.RequestID || a.RepositoryRef != b.RepositoryRef || a.RepositoryUID != b.RepositoryUID ||
-		a.BundleRef != b.BundleRef || a.BundleDigest != b.BundleDigest || a.Message != b.Message || a.Branch != b.Branch ||
+		a.BundleRef != b.BundleRef || a.BundleDigest != b.BundleDigest || a.ExplicitDeletionsVerified != b.ExplicitDeletionsVerified || a.Message != b.Message || a.Branch != b.Branch ||
 		a.WorkspaceDigest != b.WorkspaceDigest || a.SourceRevision != b.SourceRevision || strings.Join(a.Paths, "\x00") != strings.Join(b.Paths, "\x00") {
 		return false
 	}

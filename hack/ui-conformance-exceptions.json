@@ -166,7 +166,7 @@
     {
       "rule": "raw-color",
       "path": "providers/kuery/portal/src/graph.ts",
-      "line": 371,
+      "line": 372,
       "column": 49,
       "match": "rgba(127,127,127,0.16)",
       "reference": "design.quality.exceptions",
@@ -175,7 +175,7 @@
     {
       "rule": "raw-color",
       "path": "providers/kuery/portal/src/graph.ts",
-      "line": 372,
+      "line": 373,
       "column": 47,
       "match": "rgba(127,127,127,0.45)",
       "reference": "design.quality.exceptions",
@@ -184,7 +184,7 @@
     {
       "rule": "raw-color",
       "path": "providers/kuery/portal/src/graph.ts",
-      "line": 373,
+      "line": 374,
       "column": 43,
       "match": "#e9e9f2",
       "reference": "design.quality.exceptions",
@@ -193,7 +193,7 @@
     {
       "rule": "raw-color",
       "path": "providers/kuery/portal/src/graph.ts",
-      "line": 374,
+      "line": 375,
       "column": 42,
       "match": "#5d5f78",
       "reference": "design.quality.exceptions",
@@ -202,7 +202,7 @@
     {
       "rule": "raw-color",
       "path": "providers/kuery/portal/src/graph.ts",
-      "line": 375,
+      "line": 376,
       "column": 39,
       "match": "#8b6bff",
       "reference": "design.quality.exceptions",

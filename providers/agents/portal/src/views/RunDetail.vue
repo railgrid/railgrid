@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import type { QuestionReply } from '../types'
+import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch } from 'vue'
 import {
   ChevronDown,
   Circle,
+  Check,
   Copy,
   LoaderCircle,
   RefreshCw,
@@ -25,7 +27,6 @@ import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import {
   fmtDuration,
-  fmtTime,
   fmtTokens,
   fmtUSD,
   prettyJSON,
@@ -47,6 +48,7 @@ import { skippedQuestionResponse } from '../question-presentation'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
 import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presentation'
 import { inboxResolutionFailureMessage, sanitizeTechnicalDiagnostic, technicalDiagnosticExcerpt } from '../failure-presentation'
+import { attachCodeCopy } from '../vue/chat'
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -62,6 +64,17 @@ const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 const root = ref<HTMLElement | null>(null)
 const run = ref<Run | null>(null)
+watch(() => run.value?.phase === 'PendingApproval' ? run.value.pending?.inboxID : undefined, async (current, previous) => {
+  if (!previous || previous === current) return
+  const focused = document.activeElement
+  if (!(focused instanceof HTMLElement) || !root.value?.querySelector('.agents-run-state-message')?.contains(focused)) return
+  const authority = captureAuthority()
+  const runID = props.runId
+  await nextTick()
+  if (runID === props.runId && authorityIsCurrent(authority) && (document.activeElement === focused || document.activeElement === document.body)) {
+    root.value?.querySelector<HTMLElement>('#agents-run-steps-heading')?.focus({ preventScroll: true })
+  }
+})
 const error = ref<string | null>(null)
 const loading = ref(false)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
@@ -84,6 +97,7 @@ const now = ref(Date.now())
 let pollHandle = 0
 let tickHandle = 0
 let requestGeneration = 0
+let activeRead: { queued?: ResourceRefreshMode; promise?: Promise<void> } | null = null
 let boundStore: AppStore | null = null
 
 const LIVE_PHASES = new Set<RunPhase>(['Pending', 'Running', 'PendingApproval'])
@@ -199,12 +213,10 @@ function syncLive(current: Run | null): void {
   if (!tickHandle) tickHandle = window.setInterval(() => { now.value = Date.now() }, 1000)
 }
 
-async function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
+async function readRun(): Promise<void> {
   const requestedRunID = props.runId
   const generation = ++requestGeneration
   const authority = captureAuthority()
-  loading.value = true
-  refreshMode.value = mode
   try {
     const next = await authority.api.getRun(requestedRunID)
     if (generation !== requestGeneration || requestedRunID !== props.runId || !authorityIsCurrent(authority)) return
@@ -224,9 +236,41 @@ async function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
     error.value = (cause as Error).message
   }
   if (generation === requestGeneration && requestedRunID === props.runId && authorityIsCurrent(authority)) {
-    loading.value = false
     syncLive(run.value)
   }
+}
+
+function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
+  if (activeRead) {
+    activeRead.queued = activeRead.queued === 'foreground' || mode === 'foreground' ? 'foreground' : 'background'
+    if (mode === 'foreground') refreshMode.value = 'foreground'
+    return activeRead.promise!
+  }
+  const cycle: { queued?: ResourceRefreshMode; promise?: Promise<void> } = {}
+  activeRead = cycle
+  loading.value = true
+  refreshMode.value = mode
+  cycle.promise = (async () => {
+    try {
+      do {
+        cycle.queued = undefined
+        await readRun()
+        if (activeRead !== cycle) return
+        if (cycle.queued) refreshMode.value = cycle.queued
+      } while (cycle.queued)
+    } finally {
+      if (activeRead === cycle) {
+        activeRead = null
+        loading.value = false
+      }
+    }
+  })()
+  return cycle.promise
+}
+
+function refreshFromHeader(): void {
+  if (loading.value && refreshMode.value === 'foreground') return
+  void load('foreground')
 }
 
 function toggle(id: string): void {
@@ -312,29 +356,6 @@ function markdownHTML(source: string): string {
   return template.innerHTML
 }
 
-function attachCodeCopy(container: ParentNode | null): void {
-  container?.querySelectorAll<HTMLPreElement>('.agents-body pre').forEach(pre => {
-    if (pre.dataset.copyWired) return
-    pre.dataset.copyWired = '1'
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'agents-code-copy'
-    button.textContent = 'Copy'
-    button.setAttribute('aria-label', 'Copy code block')
-    button.addEventListener('click', () => {
-      const text = pre.querySelector('code')?.textContent ?? pre.textContent ?? ''
-      void navigator.clipboard?.writeText(text).then(
-        () => {
-          button.textContent = 'Copied'
-          window.setTimeout(() => { button.textContent = 'Copy' }, 1500)
-        },
-        () => { button.textContent = 'Failed' },
-      )
-    })
-    pre.appendChild(button)
-  })
-}
-
 function stepClass(step: RunStep): 'ok' | 'err' | 'wait' | 'unknown' | 'audit' {
   const receipt = toolOutcome(step)
   if (receipt?.kind === 'exit') return 'ok'
@@ -365,7 +386,6 @@ function stepStatusLabel(step: RunStep): string {
 function stepOutcome(step: RunStep, label: string): string {
   const parts = [label || step.outcome]
   if (step.durationMS) parts.push(fmtDuration(step.durationMS))
-  if (step.at) parts.push(fmtTime(step.at))
   return parts.join(' · ')
 }
 
@@ -487,12 +507,26 @@ function navigateForFailure(target: FailureRecoveryTarget): void {
   if (agentName) emit('navigate', { kind: 'agent', name: agentName, tab: 'config' })
 }
 
+const copyState = ref<'idle' | 'copied' | 'error'>('idle')
+let copyTimer: ReturnType<typeof setTimeout> | undefined
+let copyGeneration = 0
+
+function resetCopyState(): void {
+  copyGeneration += 1
+  clearTimeout(copyTimer)
+  copyState.value = 'idle'
+}
+
 async function copyRunID(): Promise<void> {
+  resetCopyState()
+  const generation = copyGeneration
   try {
     await navigator.clipboard.writeText(props.runId)
-    toast('ok', 'Run ID copied.')
+    if (generation !== copyGeneration) return
+    copyState.value = 'copied'
+    copyTimer = setTimeout(() => { copyState.value = 'idle' }, 2000)
   } catch {
-    toast('error', 'Could not copy the run ID. Select and copy it from Run details.')
+    if (generation === copyGeneration) copyState.value = 'error'
   }
 }
 
@@ -504,9 +538,11 @@ onMounted(() => {
   bindStore(props.store)
   void load()
 })
-watch(() => [props.store, props.api, props.runId, props.embeddedAgent] as const, () => {
+watch(() => [props.store, props.api, props.runId, props.embeddedAgent, props.authorityEpoch] as const, () => {
   bindStore(props.store)
+  resetCopyState()
   requestGeneration += 1
+  activeRead = null
   resolvingInboxID.value = ''
   resolvingDecision.value = ''
   cancellingRuns.value = new Set()
@@ -523,11 +559,13 @@ watch(() => [props.store, props.api, props.runId, props.embeddedAgent] as const,
   inspectorOpen.value = true
   void load()
 }, { flush: 'post' })
-onUpdated(() => { void nextTick(() => attachCodeCopy(root.value)) })
+onUpdated(() => { void nextTick(() => { if (root.value) attachCodeCopy(root.value) }) })
 onBeforeUnmount(() => {
+  resetCopyState()
   boundStore?.removeEventListener('server', onServerEvent as EventListener)
   boundStore = null
   requestGeneration += 1
+  activeRead = null
   stopLive()
 })
 </script>
@@ -574,13 +612,13 @@ onBeforeUnmount(() => {
                 </span>
               </template>
             </div>
-            <p class="k-resource-page__subtitle">{{ run ? `${run.class} · ${fmtTime(run.startedAt || run.createdAt)}` : runId }}</p>
+            <p class="k-resource-page__subtitle"><template v-if="run">{{ run.class }} · <ResourceTimestamp :value="run.startedAt || run.createdAt" label="Run started" /></template><template v-else>{{ runId }}</template></p>
           </template>
         </div>
         <div v-if="run && (!isEmbedded || !runAgentMismatch)" class="k-resource-page__header-side">
           <div class="k-resource-page__actions agents-detail-actions" role="group" aria-label="Run actions">
             <button v-if="LIVE_PHASES.has(run.phase)" class="k-btn k-btn--ghost secondary" type="button" :disabled="cancellingRuns.has(runId)" :aria-busy="cancellingRuns.has(runId) || undefined" @click="cancel"><X :stroke-width="1.75" aria-hidden="true" /> {{ cancellingRuns.has(runId) ? 'Cancelling…' : 'Cancel run' }}</button>
-            <button class="k-btn k-btn--ghost secondary" type="button" :disabled="loading && refreshMode === 'foreground'" :aria-busy="loading && refreshMode === 'foreground' || undefined" @click="load('foreground')"><RefreshCw :class="{ 'k-spin': loading && refreshMode === 'foreground' }" :stroke-width="1.75" aria-hidden="true" /> {{ loading && refreshMode === 'foreground' ? 'Refreshing…' : 'Refresh' }}</button>
+            <button class="k-btn k-btn--ghost secondary" type="button" aria-label="Refresh run" :aria-disabled="loading && refreshMode === 'foreground' || undefined" :aria-busy="loading && refreshMode === 'foreground' || undefined" @click="refreshFromHeader"><RefreshCw :class="{ 'k-spin': loading && refreshMode === 'foreground' }" :stroke-width="1.75" aria-hidden="true" /> {{ loading && refreshMode === 'foreground' ? 'Refreshing…' : 'Refresh' }}</button>
           </div>
         </div>
       </template>
@@ -631,6 +669,16 @@ onBeforeUnmount(() => {
                 @decide="resolve(run!.pending!.inboxID, $event)"
               />
             </section>
+            <details v-if="run.input" class="agents-run-request k-resource-technical" :open="requestOpen" @toggle="requestOpen = ($event.target as HTMLDetailsElement).open">
+              <summary class="k-resource-technical__summary">
+                <span class="k-resource-technical__summary-label agents-run-request-label">
+                  <span>Original request</span>
+                  <span v-if="!requestOpen" class="agents-run-request-preview">{{ requestPreview }}</span>
+                </span>
+                <ChevronDown class="k-resource-technical__chevron" :size="14" :stroke-width="1.75" aria-hidden="true" />
+              </summary>
+              <div class="k-resource-technical__body"><pre class="k-resource-technical__pre">{{ run.input }}</pre></div>
+            </details>
             <button v-if="runFailurePhase && run.steps.some(step => step.outcome === 'error')" class="k-dashboard-action agents-run-failure-link" type="button" @click="inspectFailedSteps">Review step diagnostics</button>
             <section v-if="!runFailurePhase" class="agents-run-output-message agents-run-section" aria-labelledby="agents-run-output-heading">
               <h2 id="agents-run-output-heading">{{ run.phase === 'Succeeded' ? 'Result' : 'Output' }}</h2>
@@ -667,6 +715,9 @@ onBeforeUnmount(() => {
                 @toggle="toggleSteps"
                 @toggle-row="toggle"
               >
+                <template #row-after-outcome="{ row }">
+                  <ResourceTimestamp v-if="stepsByID.get(row.id)?.step.at" class="agents-step-timestamp" :value="stepsByID.get(row.id)?.step.at" label="Step recorded" />
+                </template>
                 <template #details="{ row }">
                   <template v-for="entry in [stepsByID.get(row.id)]" :key="row.id">
                     <template v-if="entry?.command">
@@ -676,7 +727,13 @@ onBeforeUnmount(() => {
                     <template v-else-if="entry">
                       <div v-if="entry.step.error" class="agents-kv"><span>Error</span><pre class="err">{{ sanitizeTechnicalDiagnostic(entry.step.error) }}</pre></div>
                       <details v-if="entry.step.args || entry.step.result" class="k-resource-technical">
-                        <summary class="k-resource-technical__summary"><span class="k-resource-technical__summary-label">Arguments and result</span><ChevronDown class="k-resource-technical__chevron" :size="14" :stroke-width="1.75" aria-hidden="true" /></summary>
+                        <summary class="k-resource-technical__summary">
+                          <span class="k-resource-technical__summary-copy">
+                            <span class="k-resource-technical__summary-label">{{ entry.step.args && entry.step.result ? 'Arguments and result' : entry.step.args ? 'Arguments' : 'Result' }}</span>
+                            <span class="k-resource-technical__summary-context">{{ entry.step.args && entry.step.result ? 'Tool inputs and response' : entry.step.args ? 'Tool inputs' : 'Tool response' }}</span>
+                          </span>
+                          <ChevronDown class="k-resource-technical__chevron" :size="16" :stroke-width="1.75" aria-hidden="true" />
+                        </summary>
                         <div class="k-resource-technical__body">
                           <div v-if="entry.step.args" class="agents-kv"><span>Arguments</span><pre>{{ prettyJSON(entry.step.args) }}</pre></div>
                           <div v-if="entry.step.result" class="agents-kv"><span>Result</span><pre>{{ prettyJSON(entry.step.result) }}</pre></div>
@@ -698,16 +755,6 @@ onBeforeUnmount(() => {
                 <ul><li v-for="source in run.sources" :key="source"><a :href="source" target="_blank" rel="noopener noreferrer">{{ source }}</a></li></ul>
               </div>
             </section>
-            <details v-if="run.input" class="agents-run-request k-resource-technical" :open="requestOpen" @toggle="requestOpen = ($event.target as HTMLDetailsElement).open">
-              <summary class="k-resource-technical__summary">
-                <span class="k-resource-technical__summary-label agents-run-request-label">
-                  <span>Original request</span>
-                  <span v-if="!requestOpen" class="agents-run-request-preview">{{ requestPreview }}</span>
-                </span>
-                <ChevronDown class="k-resource-technical__chevron" :size="14" :stroke-width="1.75" aria-hidden="true" />
-              </summary>
-              <div class="k-resource-technical__body"><pre class="k-resource-technical__pre">{{ run.input }}</pre></div>
-            </details>
           </main>
 
           <aside class="agents-run-inspector" :class="{ 'is-collapsed': !inspectorOpen }" aria-label="Run evidence">
@@ -724,7 +771,11 @@ onBeforeUnmount(() => {
               <section class="agents-run-inspector-section" aria-labelledby="agents-run-details-heading">
                 <h2 id="agents-run-details-heading" class="sr-only">Run details</h2>
                 <div class="agents-runmeta">
-                  <div class="agents-runmeta-cell"><span class="agents-runmeta-k">run ID</span><span class="agents-runmeta-v agents-run-id"><span>{{ run.id }}</span><button class="k-icon-action" type="button" aria-label="Copy run ID" @click="copyRunID"><Copy :size="14" :stroke-width="1.75" aria-hidden="true" /></button></span></div>
+                  <div class="agents-runmeta-cell">
+                    <span class="agents-runmeta-k">run ID</span>
+                    <span class="agents-runmeta-v agents-run-id"><span>{{ run.id }}</span><button class="k-icon-action" type="button" :aria-label="copyState === 'copied' ? 'Run ID copied' : 'Copy run ID'" :data-k-tip="copyState === 'copied' ? 'Copied' : 'Copy run ID'" @click="copyRunID"><Check v-if="copyState === 'copied'" :size="14" :stroke-width="1.75" aria-hidden="true" /><Copy v-else :size="14" :stroke-width="1.75" aria-hidden="true" /></button></span>
+                    <span class="agents-copy-feedback" :class="{ 'agents-copy-feedback--error': copyState === 'error' }" role="status" aria-live="polite">{{ copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Could not copy. Select the run ID to copy it.' : '' }}</span>
+                  </div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">agent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'agent', name: run.agent, tab: 'chat' })">{{ run.agent }}</button></span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">trigger</span><span class="agents-runmeta-v"><span class="mono">{{ run.trigger }}</span> <span class="muted">({{ run.class }})</span></span></div>
                   <div v-if="run.sessionID" class="agents-runmeta-cell"><span class="agents-runmeta-k">session</span><span class="agents-runmeta-v mono">{{ run.sessionID }}</span></div>
@@ -733,8 +784,8 @@ onBeforeUnmount(() => {
                   <div v-if="ranOnHarness" class="agents-runmeta-cell"><span class="agents-runmeta-k">ran on</span><span class="agents-runmeta-v mono">harness</span></div>
                   <div v-if="harnessCoordinates?.attemptID" class="agents-runmeta-cell"><span class="agents-runmeta-k">runner attempt</span><span class="agents-runmeta-v mono">{{ harnessCoordinates.attemptID }}</span></div>
                   <div v-if="harnessCoordinates?.sessionID" class="agents-runmeta-cell"><span class="agents-runmeta-k">harness session</span><span class="agents-runmeta-v mono">{{ harnessCoordinates.sessionID }}</span></div>
-                  <div class="agents-runmeta-cell"><span class="agents-runmeta-k">started</span><span class="agents-runmeta-v">{{ fmtTime(run.startedAt || run.createdAt) }}</span></div>
-                  <div v-if="run.finishedAt" class="agents-runmeta-cell"><span class="agents-runmeta-k">finished</span><span class="agents-runmeta-v">{{ fmtTime(run.finishedAt) }}</span></div>
+                  <div class="agents-runmeta-cell"><span class="agents-runmeta-k">started</span><span class="agents-runmeta-v"><ResourceTimestamp :value="run.startedAt || run.createdAt" label="Run started" /></span></div>
+                  <div v-if="run.finishedAt" class="agents-runmeta-cell"><span class="agents-runmeta-k">finished</span><span class="agents-runmeta-v"><ResourceTimestamp :value="run.finishedAt" label="Run finished" /></span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">duration</span><span class="agents-runmeta-v"><template v-if="run.durationMS">{{ fmtDuration(run.durationMS) }}</template><span v-else-if="LIVE_PHASES.has(run.phase)" class="agents-elapsed"><LoaderCircle class="k-spin" :size="13" :stroke-width="1.75" aria-hidden="true" />{{ elapsed(run) }}</span><template v-else>—</template></span></div>
                   <div v-if="turnProgressDuration(run)" class="agents-runmeta-cell"><span class="agents-runmeta-k">total model and tool time</span><span class="agents-runmeta-v">{{ turnProgressDuration(run) }}</span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">usage</span><span class="agents-runmeta-v">{{ fmtTokens(run.inputTokens) }} in · {{ fmtTokens(run.outputTokens) }} out · {{ fmtUSD(run.usdMicros) }}</span></div>

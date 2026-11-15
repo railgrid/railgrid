@@ -140,13 +140,18 @@ const benignReasons = new Set([
 export interface TileError {
   reason?: string
   message?: string
+  status?: number
 }
 
-// isBenignTileError reports whether a failed load should render as an empty
-// tile. Callers that get true must clear their error state, not set it.
+// isBenignTileError identifies an expected first-read absence. Once a
+// snapshot exists, a failed read still makes it stale and must be disclosed.
 export function isBenignTileError(err: unknown): boolean {
-  if (!err) return true
-  const reason = (err as TileError).reason
+  if (!err) return false
+  const { reason, status } = err as TileError
+  // A response that explicitly reports denied access, throttling, or a
+  // server failure must not become an empty state because of its message.
+  if (typeof status === 'number' && status !== 404 && !(status === 400 && reason === 'TenantMissing')) return false
+  if (reason === 'Unauthorized' || reason === 'Forbidden' || reason === 'TooManyRequests' || reason === 'ServiceUnavailable') return false
   if (reason && benignReasons.has(reason)) return true
   const message = ((err as TileError).message ?? String(err)).toLowerCase()
   // The hub answers a not-yet-bootstrapped workspace with a 404 whose body
@@ -155,11 +160,20 @@ export function isBenignTileError(err: unknown): boolean {
     || message.includes('no workspace selected')
 }
 
-// tileErrorText renders a failure for the tile's one-line error slot.
+// Only fixed, recognized categories may appear in a tile. Backend messages
+// can contain response bodies, credentials, or other arbitrary data.
 export function tileErrorText(err: unknown): string {
-  const reason = (err as TileError).reason
-  const message = (err as TileError).message ?? String(err)
-  return reason ? `${reason} — ${message}` : message
+  const { reason, status } = (err || {}) as TileError
+  if (status === 401) return 'Sign in again and retry.'
+  if (status === 403) return 'Check your workspace access.'
+  if (status === 429) return 'Wait a moment and retry.'
+  if (typeof status === 'number' && status >= 500 && status < 600) return 'The service is unavailable.'
+  if (reason === 'Unauthorized') return 'Sign in again and retry.'
+  if (reason === 'Forbidden') return 'Check your workspace access.'
+  if (reason === 'TooManyRequests') return 'Wait a moment and retry.'
+  if (reason === 'ServiceUnavailable') return 'The service is unavailable.'
+  if (reason === 'APIBindingMissing' || reason === 'TenantMissing') return 'The provider is unavailable in this workspace.'
+  return 'Try again.'
 }
 
 // mostRecent sorts by an ISO timestamp accessor, newest first, and caps the

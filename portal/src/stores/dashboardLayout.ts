@@ -48,7 +48,6 @@ export interface TileLayout {
   y: number
   w: number
   h: number
-  static?: boolean
 }
 
 interface PersistedLayout {
@@ -200,31 +199,13 @@ export function reconcile(
   return { layout, addable: names.filter((n) => hiddenLive.has(n)) }
 }
 
-// Find the first standard-size opening in row order. Scan each column's
-// occupied intervals so large gaps in saved layouts do not cost extra work.
-export function firstFreeSlot(tiles: readonly TileLayout[], cols: number): { x: number; y: number } {
-  const columns = cols > 0 ? cols : GRID_COLS
-  const byRow = [...tiles].sort((a, b) => a.y - b.y)
-  let first = { x: 0, y: Infinity }
-  for (let x = 0; x + DEFAULT_W <= columns; x++) {
-    let y = 0
-    for (const tile of byRow) {
-      if (x + DEFAULT_W <= tile.x || x >= tile.x + tile.w) continue
-      if (y + DEFAULT_H <= tile.y) break
-      y = Math.max(y, tile.y + tile.h)
-    }
-    if (y < first.y) first = { x, y }
-  }
-  return first
-}
-
 export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   // Active tenant/workspace. '_' is the fallback bucket before a workspace
   // is selected, so the dashboard is still usable pre-tenant-load.
   const ws = ref<string>('_')
   const org = ref<string | null>(null)
-  // The grid's v-model. The grid library mutates these entries in place
-  // as the user drags/resizes; we persist the result on layout-updated.
+  // The grid library mutates these entries in place as it compacts the
+  // layout and as the user drags/resizes. Only user edits are persisted.
   const layout = ref<TileLayout[]>([])
   // geometry is the AUTHORITATIVE remembered placement baseline (from the
   // hub, falling back to the localStorage cache). `layout` is derived from
@@ -246,6 +227,30 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   const lastNames = ref<string[]>([])
 
   const hasCatalogTile = computed(() => ws.value !== '_' && lastNames.value.length > 0)
+  const catalogTile = computed<TileLayout | null>(() => {
+    if (!hasCatalogTile.value || hidden.value.includes(ADD_PROVIDER_TILE_ID)) return null
+
+    // Use the live grid geometry, which changes as the grid compacts and as
+    // users move or resize providers. Keep the shortcut out of the grid's
+    // layout data so it cannot displace a provider during those operations.
+    let last: TileLayout | undefined
+    let bottom = 0
+    for (const tile of layout.value) {
+      if (!last || tile.y > last.y || (tile.y === last.y && tile.x > last.x)) last = tile
+      bottom = Math.max(bottom, tile.y + tile.h)
+    }
+
+    const slot = { i: ADD_PROVIDER_TILE_ID, x: 0, y: bottom, w: DEFAULT_W, h: DEFAULT_H }
+    if (!last) return slot
+
+    const x = last.x + last.w
+    const y = last.y
+    const fits = x + slot.w <= columns.value && layout.value.every(tile =>
+      x + slot.w <= tile.x || x >= tile.x + tile.w ||
+      y + slot.h <= tile.y || y >= tile.y + tile.h,
+    )
+    return fits ? { ...slot, x, y } : slot
+  })
   // The "Add tile" menu lists hidden tiles that are available in this workspace.
   const addable = computed(() => hidden.value.filter(name => name === ADD_PROVIDER_TILE_ID
     ? hasCatalogTile.value
@@ -278,10 +283,6 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
       candidates(),
       columns.value,
     )
-    if (hasCatalogTile.value && !hidden.value.includes(ADD_PROVIDER_TILE_ID)) {
-      const slot = firstFreeSlot(next, columns.value)
-      next.push({ ...slot, i: ADD_PROVIDER_TILE_ID, w: DEFAULT_W, h: DEFAULT_H, static: true })
-    }
     layout.value = next
   }
 
@@ -431,7 +432,7 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   // already mutated `layout` in place. Adopt that as the new baseline.
   function persist() {
     ++editRevision
-    geometry.value = layout.value.filter(tile => tile.i !== ADD_PROVIDER_TILE_ID).map(strip)
+    geometry.value = layout.value.map(strip)
     saveCache()
     pushRemote()
   }
@@ -461,6 +462,7 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
 
   return {
     layout,
+    catalogTile,
     columns,
     hidden,
     addable,

@@ -8,7 +8,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ChevronDown, ChevronRight, RefreshCw, RotateCcw } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import type { AppStore, ServerEvent } from '../store'
-import { fmtTime, type Webhook, type WebhookDelivery, type WebhookRunResult } from '../types'
+import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
+import { type Webhook, type WebhookDelivery, type WebhookRunResult } from '../types'
 import FormSelect from '../portalkit/FormSelect.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../ui/toast'
@@ -248,7 +249,7 @@ onBeforeUnmount(() => {
             <ChevronDown v-if="expanded.has(d.id)" :stroke-width="1.75" aria-hidden="true" />
             <ChevronRight v-else :stroke-width="1.75" aria-hidden="true" />
           </button>
-          <span class="agents-delivery-time mono" :title="d.receivedAt">{{ fmtTime(d.receivedAt) }}</span>
+          <span class="agents-delivery-time mono"><ResourceTimestamp :value="d.receivedAt" label="Delivery received" /></span>
           <span class="agents-delivery-what">
             <span class="mono">{{ deliveryWhat(d) }}</span>
             <span v-if="d.repository" class="muted"> · {{ d.repository }}</span>

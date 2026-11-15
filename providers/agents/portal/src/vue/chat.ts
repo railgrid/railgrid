@@ -114,22 +114,38 @@ export function attachCodeCopy(root: ParentNode): void {
     button.className = 'agents-code-copy'
     button.textContent = 'Copy'
     button.setAttribute('aria-label', 'Copy code block')
-    button.addEventListener('click', () => {
-      const text = pre.querySelector('code')?.textContent ?? pre.textContent ?? ''
-      const write = navigator.clipboard?.writeText(text)
-      if (!write) {
-        button.textContent = 'Failed'
-        return
+    const text = pre.querySelector('code')?.textContent ?? pre.textContent ?? ''
+    // Keep the action outside the scrolling <pre> so it remains reachable
+    // while long code lines move horizontally underneath it.
+    const frame = document.createElement('div')
+    frame.className = 'agents-code-frame'
+    pre.replaceWith(frame)
+    frame.appendChild(pre)
+    const feedback = document.createElement('span')
+    feedback.className = 'agents-code-copy-feedback'
+    feedback.setAttribute('role', 'status')
+    feedback.setAttribute('aria-live', 'polite')
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let attempt = 0
+    button.addEventListener('click', async () => {
+      const current = ++attempt
+      clearTimeout(timer)
+      button.textContent = 'Copy'
+      feedback.textContent = ''
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable')
+        await navigator.clipboard.writeText(text)
+        if (current !== attempt) return
+        button.textContent = 'Copied'
+        feedback.textContent = 'Copied'
+        timer = setTimeout(() => { button.textContent = 'Copy'; feedback.textContent = '' }, 2000)
+      } catch {
+        if (current !== attempt) return
+        feedback.textContent = 'Could not copy. Select the code to copy it.'
       }
-      void write.then(
-        () => {
-          button.textContent = 'Copied'
-          setTimeout(() => { button.textContent = 'Copy' }, 1500)
-        },
-        () => { button.textContent = 'Failed' },
-      )
     })
-    pre.appendChild(button)
+    pre.appendChild(feedback)
+    frame.appendChild(button)
   })
 }
 

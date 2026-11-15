@@ -532,6 +532,7 @@ onBeforeUnmount(() => { mounted = false })
     <template v-if="message.approval" #interrupt>
       <AgentQuestionCard
         v-if="message.approval && !message.approval.answerInThread && !questionDocked && pendingIsQuestion(message.approval)"
+        :data-chat-interrupt="message.approval.inboxID"
         :question-id="message.approval.inboxID"
         :prompt="message.approval.question"
         :questions="message.approval.questions"
@@ -543,6 +544,7 @@ onBeforeUnmount(() => { mounted = false })
 
       <AgentApprovalCard
         v-else-if="message.approval && !approvalDocked && !message.approval.resolved && !pendingIsQuestion(message.approval)"
+        :data-chat-interrupt="message.approval.inboxID"
         :tool="message.approval.tool"
         :args="message.approval.args"
         :busy="approvalBusy === 'approve' || approvalBusy === 'deny' ? approvalBusy : undefined"

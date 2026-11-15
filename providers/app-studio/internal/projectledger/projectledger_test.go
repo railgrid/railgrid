@@ -175,13 +175,14 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 		record.LastSourceChange = &workspace.SourceChange{ThreadID: "thread-source", RunID: "run-source", SourceRevision: 7}
 		record.LastPreviewCheckpoint = &workspace.SourceChange{ThreadID: "thread-preview", RunID: "run-preview", SourceRevision: 6}
 		record.UncommittedPaths = []string{"src/b.ts", "src/a.ts"}
+		record.SourceDeletions = []workspace.SourceDeletion{{Path: "src/b.ts", Revision: 5}}
 		record.SourcePathAttributions = []workspace.SourcePathAttribution{
 			{Path: "src/a.ts", ThreadID: "thread-source", RunID: "run-source", SourceRevision: 7},
 			{Path: "src/b.ts", SourceRevision: 5},
 		}
 		record.PendingCommit = &workspace.PendingCommit{
 			Name: "commit-1", RepositoryRef: "demo-repo", WorkspaceDigest: "sha256:abc", Paths: []string{"src/a.ts"},
-			SourceRevision: 7, Attributions: []workspace.SourceAttribution{{ThreadID: "thread-source", RunID: "run-source", Paths: []string{"src/a.ts"}}},
+			SourceRevision: 7, ExplicitDeletionsVerified: true, Attributions: []workspace.SourceAttribution{{ThreadID: "thread-source", RunID: "run-source", Paths: []string{"src/a.ts"}}},
 			BlockedReason: "ActionForbidden", BlockedMessage: "Check the repository permission.",
 			BlockedAt: timePtr(time.Date(2026, time.October, 11, 12, 0, 0, 0, time.UTC)), RetryToken: "retry-token-1",
 		}
@@ -194,6 +195,9 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	record, err := ledger.Read(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(record.SourceDeletions, []workspace.SourceDeletion{{Path: "src/b.ts", Revision: 5}}) {
+		t.Fatalf("source deletions = %+v", record.SourceDeletions)
 	}
 	if record.SourceRevision != 7 {
 		t.Fatalf("source revision = %d, want 7", record.SourceRevision)
@@ -216,7 +220,7 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	}
 	if record.PendingCommit == nil || record.PendingCommit.Name != "commit-1" ||
 		record.PendingCommit.RepositoryRef != "demo-repo" || record.PendingCommit.WorkspaceDigest != "sha256:abc" ||
-		record.PendingCommit.SourceRevision != 7 || len(record.PendingCommit.Attributions) != 1 ||
+		record.PendingCommit.SourceRevision != 7 || !record.PendingCommit.ExplicitDeletionsVerified || len(record.PendingCommit.Attributions) != 1 ||
 		record.PendingCommit.Attributions[0].ThreadID != "thread-source" ||
 		record.PendingCommit.BlockedReason != "ActionForbidden" || record.PendingCommit.BlockedMessage != "Check the repository permission." ||
 		record.PendingCommit.BlockedAt == nil || !record.PendingCommit.BlockedAt.Equal(time.Date(2026, time.October, 11, 12, 0, 0, 0, time.UTC)) ||
@@ -243,6 +247,7 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 		record.PendingCommit = nil
 		record.Settlement = nil
 		record.UncommittedPaths = nil
+		record.SourceDeletions = nil
 		record.SourcePathAttributions = nil
 		return true, nil
 	}); err != nil {
@@ -252,7 +257,7 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.PendingCommit != nil || record.Settlement != nil || len(record.UncommittedPaths) != 0 || len(record.SourcePathAttributions) != 0 {
+	if record.PendingCommit != nil || record.Settlement != nil || len(record.UncommittedPaths) != 0 || len(record.SourcePathAttributions) != 0 || len(record.SourceDeletions) != 0 {
 		t.Fatalf("cleared ledger = %#v", record)
 	}
 	if record.SourceRevision != 7 {
@@ -631,6 +636,118 @@ func TestLedgerWritesNothingWhenTheMutationChangesNothing(t *testing.T) {
 // derived from the 500-file tree cap, so overflowing it is a bug in some other
 // bound. Truncating would mean a file that never reaches git, so it is an
 // error instead.
+func TestSourceDeletionRetirementUsesProjectConsumers(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		repository, sandbox bool
+	}{
+		{"standalone", false, false},
+		{"repository", true, false},
+		{"development sandbox", false, true},
+		{"both consumers", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			projects := newFakeProjects()
+			if tc.repository {
+				projects.project.Spec.Repository = &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo"}
+			}
+			projects.project.Spec.Environments = []aiv1alpha1.ProjectEnvironmentSpec{
+				{Name: "development", Mode: aiv1alpha1.ProjectEnvironmentModeLive},
+			}
+			if tc.sandbox {
+				projects.project.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "simple-webapp"}
+			}
+			scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+			ledger := New(projects)
+			store := workspace.NewFileStore(t.TempDir())
+			store.SetLedger(ledger)
+			file, err := store.PutFile(ctx, scope, workspace.PutOptions{Path: "old.txt", Data: []byte("test")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.DeleteFile(ctx, scope, workspace.DeleteOptions{Path: "old.txt", ExpectedVersion: file.Version}); err != nil {
+				t.Fatal(err)
+			}
+			record, err := ledger.Read(ctx, scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantPending := tc.repository || tc.sandbox
+			if (len(record.SourceDeletions) != 0) != wantPending || (len(record.UncommittedPaths) != 0) != wantPending {
+				t.Fatalf("deletions=%v, dirty=%v, want pending=%t", record.SourceDeletions, record.UncommittedPaths, wantPending)
+			}
+			if tc.sandbox {
+				if err := store.RecordPreviewCheckpoint(ctx, scope, workspace.SourceChange{SourceRevision: record.SourceRevision}); err != nil {
+					t.Fatal(err)
+				}
+				record, err = ledger.Read(ctx, scope)
+				if err != nil || (len(record.SourceDeletions) != 0) != tc.repository || (len(record.UncommittedPaths) != 0) != tc.repository {
+					t.Fatalf("after sandbox checkpoint, record=%+v, err=%v", record, err)
+				}
+			}
+		})
+	}
+}
+
+func TestMutationBookkeepingPreservesOnlySurvivingWritesWithoutConsumers(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	store := workspace.NewFileStore(t.TempDir())
+	store.SetLedger(New(projects))
+	file, err := store.PutFile(ctx, scope, workspace.PutOptions{Path: "old.txt", Data: []byte("original")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddUncommittedPaths(ctx, scope, []string{"old.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := store.MoveFile(ctx, scope, workspace.MoveOptions{
+		SourcePath: "old.txt", DestinationPath: "new.txt", ExpectedVersion: file.Version,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := store.AddUncommittedPaths(ctx, scope, moved.Paths)
+	if err != nil || !reflect.DeepEqual(paths, []string{"new.txt"}) {
+		t.Fatalf("dirty paths after replayed move = %v, %v", paths, err)
+	}
+}
+
+func TestDeletionCapacityFailureRestoresSource(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	projects.project.Spec.Repository = &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo"}
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	store := workspace.NewFileStore(t.TempDir())
+	store.SetLedger(ledger)
+	file, err := store.PutFile(ctx, scope, workspace.PutOptions{Path: "old.txt", Data: []byte("original")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		for i := 0; i < MaxUncommittedPaths; i++ {
+			record.UncommittedPaths = append(record.UncommittedPaths, fmt.Sprintf("f%05d.ts", i))
+		}
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteFile(ctx, scope, workspace.DeleteOptions{Path: "old.txt", ExpectedVersion: file.Version}); !errors.Is(err, workspace.ErrLedgerCapacity) {
+		t.Fatalf("delete error=%v, want ledger capacity rejection", err)
+	}
+	got, err := store.ReadFileBytes(ctx, scope, "old.txt", 100)
+	if err != nil || string(got) != "original" {
+		t.Fatalf("bytes after rejected deletion=%q, err=%v", got, err)
+	}
+	record, err := ledger.Read(ctx, scope)
+	if err != nil || len(record.SourceDeletions) != 0 || len(record.UncommittedPaths) != MaxUncommittedPaths {
+		t.Fatalf("rejected deletion changed the ledger: paths=%d deletions=%v err=%v", len(record.UncommittedPaths), record.SourceDeletions, err)
+	}
+}
+
 func TestLedgerRefusesToSilentlyDropPathsPastTheBound(t *testing.T) {
 	ctx := context.Background()
 	projects := newFakeProjects()

@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const SIDEBAR_EXPANDED_KEY = 'railgrid-sidebar-expanded'
 
@@ -28,12 +28,28 @@ function writeSidebarExpansion(expanded: boolean): void {
  * consistent across navigation and reloads.
  */
 export function useSidebarExpansion() {
-  const sidebarExpanded = ref(readSidebarExpansion())
+  const desktopExpanded = ref(readSidebarExpansion())
+  const media = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(max-width: 640px)') : null
+  const narrow = ref(media?.matches ?? false)
+  const narrowExpanded = ref(false)
+  const sidebarExpanded = computed(() => narrow.value ? narrowExpanded.value : desktopExpanded.value)
+
+  function onViewportChange(event: MediaQueryListEvent) {
+    narrow.value = event.matches
+    narrowExpanded.value = false
+  }
+  onMounted(() => media?.addEventListener('change', onViewportChange))
+  onBeforeUnmount(() => media?.removeEventListener('change', onViewportChange))
 
   function toggleSidebar() {
-    sidebarExpanded.value = !sidebarExpanded.value
-    writeSidebarExpansion(sidebarExpanded.value)
+    if (narrow.value) narrowExpanded.value = !narrowExpanded.value
+    else {
+      desktopExpanded.value = !desktopExpanded.value
+      writeSidebarExpansion(desktopExpanded.value)
+    }
   }
+  function closeNarrowSidebar() { narrowExpanded.value = false }
 
-  return { sidebarExpanded, toggleSidebar }
+  return { sidebarExpanded, narrow, toggleSidebar, closeNarrowSidebar }
 }

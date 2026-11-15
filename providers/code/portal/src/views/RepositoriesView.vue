@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import ActionMenu from '../portalkit/ActionMenu.vue'
-import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
-import { ExternalLink, GitBranch, Link2 } from 'lucide-vue-next'
+import { computed, nextTick, onActivated, onMounted, onUnmounted, ref } from 'vue'
+import { ArrowRight, ExternalLink, GitBranch, Link2 } from 'lucide-vue-next'
 import { api } from '../api'
 import { CODE_JOURNEY_STEPS, codeFirstRunModel, type CodeJourneyAction } from '../journey'
 import type { Connection, ErrorResponse, Repository } from '../types'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { toast } from '../portalkit/toast'
+import { portalHref } from '../portalkit/navigation'
 import { isCompleteFirstCursorPage, type ResourceTableChange } from '../portalkit/table'
 import {
   FAST_REFRESH_MS,
@@ -90,9 +92,16 @@ const repositoryCollectionEmpty = computed(() => repositoryCollectionIsAuthorita
 }))
 const showFirstRun = computed(() => loaded.value
   && connectionsLoaded.value
-  && !error.value
-  && !connectionsError.value
   && repositoryCollectionEmpty.value)
+const pageTitle = ref<HTMLElement | null>(null)
+const repositoryWarning = ref<HTMLElement | null>(null)
+const connectionWarning = ref<HTMLElement | null>(null)
+function restoreWarningFocus(warning: HTMLElement | null): void {
+  if (typeof document === 'undefined' || !warning?.contains(document.activeElement)) return
+  void nextTick(() => {
+    if (document.activeElement === document.body) pageTitle.value?.focus({ preventScroll: true })
+  })
+}
 const firstRun = computed(() => codeFirstRunModel('repository', availableConnections.value.length > 0))
 
 function isDeleting(repository: Pick<Repository, 'name' | 'uid' | 'deletionTimestamp'>): boolean {
@@ -102,6 +111,16 @@ function isDeleting(repository: Pick<Repository, 'name' | 'uid' | 'deletionTimes
 function handleFirstRun(action: CodeJourneyAction): void {
   if (action === 'create-connection') emit('create-connection')
   else emit('create')
+}
+
+function repositoryCreateHref(mode: 'create' | 'import'): string {
+  return portalHref(`/ui/providers/code/${mode === 'import' ? 'import/repository' : 'create/repository'}`)
+}
+
+function followRepositoryCreateLink(event: MouseEvent, mode: 'create' | 'import'): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  emit('create', mode)
 }
 const repositoryFilterDefinitions = computed(() => repositoryFilters(connections.value))
 
@@ -156,6 +175,12 @@ function load(mode: ResourceRefreshMode = 'foreground') {
 function openRepository(row: Record<string, unknown>) {
   const resourceName = String(row.name)
   if (!row.deleting && !operations.isLocked(operationKey('repository', resourceName))) emit('open', resourceName)
+}
+
+function openRepositoryLink(event: MouseEvent, row: Record<string, unknown>): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  openRepository(row)
 }
 
 interface RepositoryRequest {
@@ -357,6 +382,7 @@ repoRefresh = createLatestRefreshController(async (requestID, mode) => {
       })) props.deletions.reconcile(deletionScope, next.items)
     }
     loaded.value = true
+    restoreWarningFocus(repositoryWarning.value)
     error.value = null
   } catch (e) {
     if (!repoRefresh.isCurrent(requestID)) return
@@ -380,6 +406,7 @@ connectionRefresh = createLatestRefreshController(async (requestID, mode) => {
     next.filter(item => item.deletionTimestamp).forEach(item => props.deletions.acknowledge('connection', item.name, item.uid))
     props.deletions.reconcile('connection', next)
     connectionsLoaded.value = true
+    restoreWarningFocus(connectionWarning.value)
     connectionsError.value = null
   } catch (e) {
     if (!connectionRefresh.isCurrent(requestID)) return
@@ -412,7 +439,7 @@ onUnmounted(() => {
   <section class="page">
     <header class="page-head">
       <div>
-        <h2 class="page-title">Repositories</h2>
+        <h2 ref="pageTitle" class="page-title" tabindex="-1">Repositories</h2>
         <p class="page-meta">Repositories the provider manages on the git host. Click one to manage deploy keys and collaborators.</p>
       </div>
       <ActionMenu v-if="!showFirstRun" label="Repository options" primary-label="New repository" :disabled="!loaded || !connectionsLoaded"
@@ -421,12 +448,14 @@ onUnmounted(() => {
     </header>
 
     <span v-if="connectionsLoading && !connectionsLoaded" class="sr-only" role="status" aria-live="polite">Loading connections…</span>
-    <div v-if="connectionsError" class="error read-error" role="alert" aria-live="assertive">
-      <span>{{ connectionsLoaded ? 'Showing cached connection choices. ' : '' }}{{ connectionsError }}</span>
-      <button class="k-btn k-btn--ghost" type="button" @click="loadConnections()">Retry connections</button>
+    <div v-if="connectionsError" ref="connectionWarning">
+      <InlineNotification :tone="connectionsLoaded ? 'warning' : 'error'" :message="connectionsLoaded ? 'Connections could not be refreshed. Showing the last successful connection choices.' : 'Connections could not be loaded.'" action-label="Retry connections" action-busy-label="Retrying connections…" :action-busy="connectionsLoading" @action="loadConnections()" />
     </div>
     <span v-else-if="connectionsLoading && connectionsLoaded" class="sr-only" role="status" aria-live="polite">Updating connections…</span>
     <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">{{ mutationError }}</p>
+    <div v-if="showFirstRun && error" ref="repositoryWarning">
+      <InlineNotification tone="warning" message="Repositories could not be refreshed. Showing the last successful empty result." action-label="Retry repositories" action-busy-label="Retrying repositories…" :action-busy="loading" @action="loadRepositories()" />
+    </div>
     <FirstRunGuide
       v-if="showFirstRun"
       :title="firstRun.title"
@@ -436,12 +465,15 @@ onUnmounted(() => {
       :steps="CODE_JOURNEY_STEPS"
       :current-step="firstRun.currentStep"
       journey-label="Code setup path"
-      @primary="handleFirstRun(firstRun.primary.action)"
-      @secondary="emit('create', 'import')"
     >
       <template #icon>
         <Link2 v-if="firstRun.currentStep === 0" :stroke-width="1.5" />
         <GitBranch v-else :stroke-width="1.5" />
+      </template>
+      <template #actions>
+        <button v-if="firstRun.primary.action === 'create-connection'" class="k-btn k-btn--primary" type="button" @click="handleFirstRun(firstRun.primary.action)">{{ firstRun.primary.label }} <ArrowRight :stroke-width="1.75" aria-hidden="true" /></button>
+        <a v-else class="k-btn k-btn--primary" :href="repositoryCreateHref('create')" @click="followRepositoryCreateLink($event, 'create')">{{ firstRun.primary.label }} <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a>
+        <a v-if="availableConnections.length" class="k-btn k-btn--ghost" :href="repositoryCreateHref('import')" @click="followRepositoryCreateLink($event, 'import')">Import repository</a>
       </template>
     </FirstRunGuide>
 
@@ -473,7 +505,7 @@ onUnmounted(() => {
       @change="handleRepositoryChange"
       @row-click="openRepository"
     >
-      <template #name="{ value, row }"><span v-if="row.deleting">{{ row.repo || value }}</span><button v-else class="k-btn k-btn--ghost k-table-resource-link" type="button" @click.stop="openRepository(row)">{{ row.repo || value }}</button></template>
+      <template #name="{ value, row }"><span v-if="row.deleting || operations.isLocked(operationKey('repository', String(row.name)))">{{ row.repo || value }}</span><a v-else class="k-btn k-btn--ghost k-table-resource-link" :href="portalHref(`/ui/providers/code/repositories/${encodeURIComponent(String(row.name))}`)" @click.stop="openRepositoryLink($event, row)">{{ row.repo || value }}</a></template>
       <template #connectionRef="{ value }">{{ value }}</template>
       <template #visibility="{ value }">{{ value }}</template>
       <template #url="{ row }"><a v-if="row.htmlURL && !row.deleting" :href="String(row.htmlURL)" :aria-label="`Open repository ${String(row.repo || row.name)} on the git host`" target="_blank" rel="noopener" @click.stop>Open <ExternalLink :size="12" aria-hidden="true" /></a><span v-else class="muted">—</span></template>

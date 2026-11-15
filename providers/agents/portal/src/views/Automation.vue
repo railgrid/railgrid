@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { Loader2, Pause, Play, Plus, Power, X } from 'lucide-vue-next'
+import { Loader2, Plus, X } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { hashFor, type Route } from '../router'
@@ -23,15 +23,15 @@ import FormSelect from '../portalkit/FormSelect.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
-import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
-import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
-import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
+import AutomationTimestampStatus from './AutomationTimestampStatus.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../ui/toast'
 import { useAgentDOMID, useAgentsRuntime, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import AgentsWorkbenchSection from './AgentsWorkbenchSection.vue'
 import TriggerFilterTester from './TriggerFilterTester.vue'
 import { deliveryOutcomeLabel } from './webhook-deliveries'
+import { knownTimeZone, validDigestCron } from '../agent-digest-cron'
+import { parseScheduleInstant } from '../schedule-time'
 
 export type AutomationKind = 'schedule' | 'trigger'
 type Automation = Schedule | Trigger
@@ -133,6 +133,10 @@ const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.s
 const editing = ref<string | null>(null)
 const draft = reactive<Draft>({ ...EMPTY })
 const nameError = ref('')
+const timeZoneError = ref('')
+const runAtError = ref('')
+const cronError = ref('')
+watch(() => draft.type, () => { timeZoneError.value = ''; runAtError.value = ''; cronError.value = '' })
 const filterError = ref('')
 const webhookError = ref('')
 const formError = ref('')
@@ -432,12 +436,36 @@ function selectWorkbenchAction(row: Automation, action: string): void {
   }
 }
 
+function rowActions(row: Automation): ActionMenuItem[] {
+  const items = workbenchActions(row)
+  items.splice(items.length - 1, 0, { id: 'run', label: 'Run now' })
+  return items
+}
+
+function selectRowAction(row: Automation, action: string): void {
+  if (actionBusy.value) return
+  switch (action) {
+    case 'run': void runNow(row.metadata.name); break
+    case 'edit': openEdit(row); break
+    case 'toggle': void toggleSuspend(row); break
+    case 'enable': void enable(row); break
+    case 'delete': void del(row.metadata.name); break
+  }
+}
+
 function openWebhook(name: string): void {
   if (name && !formBusy.value) emit('navigate', { kind: 'edit', resource: 'webhook', name })
 }
 
 function createWebhook(): void {
   if (!formBusy.value) emit('navigate', { kind: 'create', resource: 'webhook' })
+}
+
+function followWebhookLink(event: MouseEvent, navigate: () => void): void {
+  if (formBusy.value) { event.preventDefault(); return }
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  navigate()
 }
 
 function resetDraft(values: Draft = EMPTY): void {
@@ -473,6 +501,9 @@ function hydrateEdit(row: Automation): void {
     suspend: !!spec.suspend,
   })
   nameError.value = ''
+  timeZoneError.value = ''
+  runAtError.value = ''
+  cronError.value = ''
   filterError.value = ''
   webhookError.value = ''
   editing.value = row.metadata.name
@@ -505,7 +536,6 @@ onBeforeUnmount(() => {
 })
 
 function focusInvalidField(): void {
-  if (!showCreateModal.value) return
   void nextTick(() => {
     const field = formSurface.value?.querySelector<HTMLElement>('[aria-invalid="true"]')
       ?? formSurface.value?.querySelector<HTMLElement>('button[aria-describedby="automation-trigger-webhook-empty"]')
@@ -549,6 +579,21 @@ async function save(): Promise<void> {
   const one = META[kind].one
   if (!editingName && !draft.name.trim()) {
     nameError.value = 'A name is required.'
+    focusInvalidField()
+    return
+  }
+  if (kind === 'schedule' && draft.type === 'wakeup' && !parseScheduleInstant(draft.runAt)) {
+    runAtError.value = 'Enter a valid date and time with a UTC offset, such as 2026-07-13T09:00:00Z.'
+    focusInvalidField()
+    return
+  }
+  if (kind === 'schedule' && draft.type !== 'wakeup' && draft.timeZone.trim() && !knownTimeZone(draft.timeZone)) {
+    timeZoneError.value = 'Time zone not recognized. Enter an IANA name such as Europe/Vilnius, or leave blank for UTC.'
+    focusInvalidField()
+    return
+  }
+  if (kind === 'schedule' && draft.type !== 'wakeup' && !validDigestCron(draft.schedule)) {
+    cronError.value = 'Enter a valid cron expression, such as 0 9 * * *.'
     focusInvalidField()
     return
   }
@@ -657,7 +702,14 @@ async function del(name: string): Promise<void> {
   const confirmationLock = `confirm-delete:${name}`
   actionBusy.value = confirmationLock
   try {
-    const ok = await confirmDialog({ title: `Delete ${one} “${name}”?`, danger: true, confirmLabel: 'Delete' })
+    const ok = await confirmDialog({
+      title: `Delete ${one} “${name}”?`,
+      message: kind === 'schedule'
+        ? 'This schedule will no longer start runs. Pause it instead to stop it temporarily.'
+        : 'This trigger will no longer start runs when events match. Pause it instead to stop it temporarily.',
+      danger: true,
+      confirmLabel: 'Delete',
+    })
     if (!ok || !authorityIsCurrent(authority) || kind !== props.kind) return
     actionBusy.value = `delete:${name}`
     await mutate(authority.store, {
@@ -692,6 +744,9 @@ async function runNow(name: string): Promise<void> {
 watch(() => [props.kind, props.agent] as const, () => {
   editing.value = null
   nameError.value = ''
+  timeZoneError.value = ''
+  runAtError.value = ''
+  cronError.value = ''
   filterError.value = ''
   webhookError.value = ''
   formError.value = ''
@@ -709,6 +764,9 @@ watch([() => props.createRoute, () => props.editName, () => revision.value], () 
 		if (editing.value !== '') {
 			resetDraft()
 			nameError.value = ''
+			timeZoneError.value = ''
+			runAtError.value = ''
+			cronError.value = ''
 			filterError.value = ''
 			webhookError.value = ''
 			formError.value = ''
@@ -772,13 +830,13 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
                 v-if="row.webhook"
                 class="k-dashboard-action"
                 :href="hashFor({ kind: 'edit', resource: 'webhook', name: String(row.webhook) })"
-                @click.prevent="openWebhook(String(row.webhook))"
+                @click="followWebhookLink($event, () => openWebhook(String(row.webhook)))"
               >{{ row.when }}</a>
               <span v-else class="mono">{{ row.when }}</span>
             </span>
             <span class="agents-automation-status">
               <StatusBadge :status="String(row.workbenchStatus)" :tone="row.workbenchTone as ReturnType<typeof workbenchStatus>['tone']" />
-              <span v-if="row.workbenchDetail">{{ row.workbenchDetail }}</span>
+              <span v-if="row.workbenchDetail"><template v-if="automationStatus(row.resource as Automation)?.disabledReason || invalidCondition(row.resource as Automation) || automationSpec(row.resource as Automation).suspend">{{ row.workbenchDetail }}</template><template v-else><AutomationTimestampStatus :kind="kind" :status="automationStatus(row.resource as Automation)" /></template></span>
               <button
                 v-if="row.lastRun"
                 class="k-dashboard-action"
@@ -789,7 +847,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
           </template>
         </template>
         <template #when="{ row }">
-          <a v-if="kind === 'trigger' && automationSpec(row.resource as Automation).webhookRef" class="mono k-dashboard-action" :href="hashFor({ kind: 'edit', resource: 'webhook', name: automationSpec(row.resource as Automation).webhookRef })" @click.prevent="openWebhook(automationSpec(row.resource as Automation).webhookRef)">{{ row.when }}</a>
+          <a v-if="kind === 'trigger' && automationSpec(row.resource as Automation).webhookRef" class="mono k-dashboard-action" :href="hashFor({ kind: 'edit', resource: 'webhook', name: automationSpec(row.resource as Automation).webhookRef })" @click="followWebhookLink($event, () => openWebhook(automationSpec(row.resource as Automation).webhookRef))">{{ row.when }}</a>
           <span v-else class="mono">{{ row.when }}</span>
         </template>
         <template #status="{ row }">
@@ -797,7 +855,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
             <span v-if="automationStatus(row.resource as Automation)?.disabledReason" class="k-badge agents-badge k-badge--warning agents-badge-warn">{{ automationStatus(row.resource as Automation)?.disabledReason }}</span>
             <span v-else-if="invalidCondition(row.resource as Automation)" class="k-badge agents-badge k-badge--warning agents-badge-warn" :title="invalidCondition(row.resource as Automation)?.reason">{{ conditionText(invalidCondition(row.resource as Automation)!) }}</span>
             <span v-else-if="automationSpec(row.resource as Automation).suspend" class="k-badge agents-badge">paused</span>
-            <template v-else>{{ statusText(row.resource as Automation) }}</template>
+            <AutomationTimestampStatus v-else :kind="kind" :status="automationStatus(row.resource as Automation)" />
             <button v-if="automationStatus(row.resource as Automation)?.lastRunID" class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: automationStatus(row.resource as Automation)!.lastRunID! })">last run</button>
           </span>
         </template>
@@ -821,11 +879,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
             />
           </template>
           <template v-else>
-            <ResourceTableActionButton v-if="automationStatus(row.resource as Automation)?.disabledReason" :icon="Power" tone="accent" :label="`Enable ${row.name}`" :busy-label="`Enabling ${row.name}…`" :busy="actionBusy === `enable:${row.name}`" :disabled="!!actionBusy" @click="enable(row.resource as Automation)" />
-            <ResourceTableActionButton :icon="Play" :label="`Run ${row.name} now`" :busy="actionBusy === `run:${row.name}`" :disabled="!!actionBusy" @click="runNow(String(row.name))" />
-            <ResourceTableEditButton :label="`Edit ${row.name}`" :disabled="!!actionBusy" @click="openEdit(row.resource as Automation)" />
-            <ResourceTableActionButton :icon="automationSpec(row.resource as Automation).suspend ? Play : Pause" :label="`${automationSpec(row.resource as Automation).suspend ? 'Resume' : 'Pause'} ${row.name}`" :busy="actionBusy === `toggle:${row.name}`" :disabled="!!actionBusy" @click="toggleSuspend(row.resource as Automation)" />
-            <ResourceTableDeleteButton :label="`Delete ${row.name}`" :busy="actionBusy === `delete:${row.name}`" :disabled="!!actionBusy" @click="del(String(row.name))" />
+            <ActionMenu :label="`More actions for ${row.name}`" :items="rowActions(row.resource as Automation)" :disabled="!!actionBusy" :busy="!!actionBusy && actionBusy.endsWith(`:${row.name}`)" :busy-label="`Updating ${row.name}…`" @select="selectRowAction(row.resource as Automation, $event)" />
           </template>
         </template>
       </ResourceTable>
@@ -885,17 +939,17 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         <template v-if="kind === 'schedule'">
           <div class="agents-grid2">
             <label><span :id="`automation-${kind}-type-label`">Type</span><FormSelect v-model="draft.type" :options="typeOptions" :disabled="formBusy" :labelledby="`automation-${kind}-type-label`" /></label>
-            <label>Timezone<input v-model="draft.timeZone" class="k-input" name="timeZone" placeholder="Europe/Vilnius" :disabled="formBusy" /></label>
+            <label v-if="draft.type !== 'wakeup'">Time zone<input v-model="draft.timeZone" class="k-input" name="timeZone" aria-label="Time zone" placeholder="Europe/Vilnius" :disabled="formBusy" :aria-invalid="timeZoneError ? 'true' : undefined" :aria-describedby="timeZoneError ? `automation-${kind}-timezone-hint automation-${kind}-timezone-error` : `automation-${kind}-timezone-hint`" @input="timeZoneError = ''" /><span v-if="timeZoneError" :id="`automation-${kind}-timezone-error`" class="agents-fielderr" role="alert">{{ timeZoneError }}</span><span :id="`automation-${kind}-timezone-hint`" class="agents-hint">Use an IANA time zone. Blank defaults to UTC; a TZ= or CRON_TZ= prefix in the cron expression can override it.</span></label>
           </div>
-          <label v-if="draft.type === 'wakeup'">Run at (RFC3339)<input v-model="draft.runAt" class="k-input mono" name="runAt" placeholder="2026-01-01T09:00:00Z" :disabled="formBusy" /></label>
-          <label v-else>Cron<input v-model="draft.schedule" class="k-input mono" name="schedule" aria-label="Cron" :aria-describedby="`automation-${kind}-cron-hint`" placeholder="0 9 * * *" :disabled="formBusy" /><span :id="`automation-${kind}-cron-hint`" class="agents-hint">5-field cron · crontab.guru</span></label>
+          <label v-if="draft.type === 'wakeup'">Run at (RFC3339)<input v-model="draft.runAt" class="k-input mono" name="runAt" aria-label="Run at (RFC3339)" placeholder="2026-01-01T09:00:00Z" :disabled="formBusy" :aria-invalid="runAtError ? 'true' : undefined" :aria-describedby="runAtError ? `automation-${kind}-run-at-error` : `automation-${kind}-run-at-hint`" @input="runAtError = ''" /><span v-if="runAtError" :id="`automation-${kind}-run-at-error`" class="agents-fielderr" role="alert">{{ runAtError }}</span><span v-else :id="`automation-${kind}-run-at-hint`" class="agents-hint">Include Z for UTC or an offset, such as -05:00.</span></label>
+          <label v-else>Cron *<input v-model="draft.schedule" class="k-input mono" name="schedule" aria-label="Cron" required aria-required="true" :aria-invalid="cronError ? 'true' : undefined" :aria-describedby="cronError ? `automation-${kind}-cron-hint automation-${kind}-cron-error` : `automation-${kind}-cron-hint`" placeholder="0 9 * * *" :disabled="formBusy" @input="cronError = ''" /><span v-if="cronError" :id="`automation-${kind}-cron-error`" class="agents-fielderr" role="alert">{{ cronError }}</span><span :id="`automation-${kind}-cron-hint`" class="agents-hint">5-field cron · crontab.guru. Daylight saving changes can skip or repeat a local time.</span></label>
         </template>
         <template v-else>
           <label v-if="webhooks.length || draft.webhookRef"><span :id="`automation-${kind}-webhook-label`">Webhook *</span><FormSelect v-model="draft.webhookRef" :options="webhookOptions" placeholder="Choose a webhook" :disabled="formBusy" required :invalid="!!webhookError" :labelledby="`automation-${kind}-webhook-label`" :describedby="webhookError ? `automation-${kind}-webhook-error` : `automation-${kind}-webhook-hint`" name="webhookRef" @update:model-value="webhookError = ''" /><span v-if="webhookError" :id="`automation-${kind}-webhook-error`" class="agents-fielderr" role="alert">{{ webhookError }}</span><span v-else :id="`automation-${kind}-webhook-hint`" class="agents-hint">{{ draft.github ? 'A GitHub webhook. Pick the events below; GitHub’s ping on setup is acknowledged and ignored.' : 'Deliveries to this webhook’s URL are offered to every trigger routing from it; this trigger fires on the ones its filter matches.' }}</span></label>
           <p v-if="webhooks.length || draft.webhookRef" class="agents-webhook-links">
             <span v-if="selectedWebhook" class="agents-hint">The URL to give the sender and the delivery log live on the webhook.</span>
-            <a v-if="selectedWebhook" class="k-dashboard-action" :href="hashFor({ kind: 'edit', resource: 'webhook', name: draft.webhookRef })" :aria-disabled="formBusy || undefined" @click.prevent="openWebhook(draft.webhookRef)">Open webhook {{ draft.webhookRef }}</a>
-            <a class="k-dashboard-action" :href="hashFor({ kind: 'create', resource: 'webhook' })" :aria-disabled="formBusy || undefined" @click.prevent="createWebhook">New webhook</a>
+            <a v-if="selectedWebhook" class="k-dashboard-action" :href="formBusy ? undefined : hashFor({ kind: 'edit', resource: 'webhook', name: draft.webhookRef })" :aria-disabled="formBusy || undefined" :tabindex="formBusy ? -1 : undefined" @click="followWebhookLink($event, () => openWebhook(draft.webhookRef))">Open webhook {{ draft.webhookRef }}</a>
+            <a class="k-dashboard-action" :href="formBusy ? undefined : hashFor({ kind: 'create', resource: 'webhook' })" :aria-disabled="formBusy || undefined" :tabindex="formBusy ? -1 : undefined" @click="followWebhookLink($event, createWebhook)">New webhook</a>
           </p>
           <div v-else class="agents-webhook-empty" role="status">
             <span id="automation-trigger-webhook-empty" class="agents-hint">{{ webhookSlice.hasSnapshot ? 'A trigger routes from a webhook, and this workspace has none yet. Create one — it gives you the URL to paste into GitHub or any sender — then come back.' : webhookSlice.error ? `Could not load webhooks. ${webhookSlice.error}` : 'Loading webhooks…' }}</span>
@@ -907,30 +961,30 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
             <fieldset class="agents-fieldset" :aria-describedby="`automation-${kind}-events-hint`">
               <legend class="agents-fieldset-legend">Events</legend>
               <div class="agents-checkgrid">
-                <label v-for="event in GITHUB_EVENTS" :key="event.name" class="agents-check k-checkbox-hit"><input v-model="draft.ghEvents" type="checkbox" name="ghEvents" :value="event.name" :disabled="formBusy" /><span class="agents-check-copy"><span>{{ event.label }}</span><span class="agents-hint">{{ event.hint }}</span></span></label>
+                <label v-for="event in GITHUB_EVENTS" :key="event.name" class="agents-check k-checkbox-hit"><input class="k-checkbox" v-model="draft.ghEvents" type="checkbox" name="ghEvents" :value="event.name" :disabled="formBusy" /><span class="agents-check-copy"><span>{{ event.label }}</span><span class="agents-hint">{{ event.hint }}</span></span></label>
               </div>
               <span :id="`automation-${kind}-events-hint`" class="agents-hint">The event names this trigger fires on. Nothing selected fires on every event the webhook sends.</span>
             </fieldset>
             <div class="agents-grid2">
-              <label>Other events<input v-model="draft.ghOtherEvents" class="k-input mono" name="ghOtherEvents" placeholder="deployment_status, create" :aria-describedby="`automation-${kind}-other-events-hint`" :disabled="formBusy" /><span :id="`automation-${kind}-other-events-hint`" class="agents-hint">Comma-separated event names not listed above.</span></label>
-              <label>Actions<input v-model="draft.ghActions" class="k-input mono" name="ghActions" placeholder="opened, synchronize, reopened" :aria-describedby="`automation-${kind}-actions-hint`" :disabled="formBusy" /><span :id="`automation-${kind}-actions-hint`" class="agents-hint">Comma-separated payload actions. Empty fires on every action.</span></label>
+              <label>Other events<input v-model="draft.ghOtherEvents" class="k-input mono" name="ghOtherEvents" aria-label="Other events" placeholder="deployment_status, create" :aria-describedby="`automation-${kind}-other-events-hint`" :disabled="formBusy" /><span :id="`automation-${kind}-other-events-hint`" class="agents-hint">Comma-separated event names not listed above.</span></label>
+              <label>Actions<input v-model="draft.ghActions" class="k-input mono" name="ghActions" aria-label="Actions" placeholder="opened, synchronize, reopened" :aria-describedby="`automation-${kind}-actions-hint`" :disabled="formBusy" /><span :id="`automation-${kind}-actions-hint`" class="agents-hint">Comma-separated payload actions. Empty fires on every action.</span></label>
             </div>
-            <label>Repositories<input v-model="draft.ghRepos" class="k-input mono" name="ghRepos" placeholder="octo-org/api, octo-org/web" :aria-describedby="`automation-${kind}-repos-hint`" :disabled="formBusy" /><span :id="`automation-${kind}-repos-hint`" class="agents-hint">Comma-separated owner/repo. Empty accepts every repository that delivers here — the usual choice for an organization webhook.</span></label>
-            <label>More filters<textarea v-model="draft.filter" class="k-input mono" name="filter" rows="2" :aria-describedby="filterError ? `automation-${kind}-filter-error` : `automation-${kind}-filter-hint`" :aria-invalid="filterError ? 'true' : undefined" placeholder="match=needs-review" :disabled="formBusy" @input="filterError = ''"></textarea><span v-if="filterError" :id="`automation-${kind}-filter-error`" class="agents-fielderr" role="alert">{{ filterError }}</span><span v-else :id="`automation-${kind}-filter-hint`" class="agents-hint">Optional, one key=value per line: match is a substring of the payload, header.&lt;name&gt; matches a request header.</span></label>
+            <label>Repositories<input v-model="draft.ghRepos" class="k-input mono" name="ghRepos" aria-label="Repositories" placeholder="octo-org/api, octo-org/web" :aria-describedby="`automation-${kind}-repos-hint`" :disabled="formBusy" /><span :id="`automation-${kind}-repos-hint`" class="agents-hint">Comma-separated owner/repo. Empty accepts every repository that delivers here — the usual choice for an organization webhook.</span></label>
+            <label>More filters<textarea v-model="draft.filter" class="k-input mono" name="filter" :aria-label="draft.github ? 'More filters' : 'Filter'" rows="2" :aria-describedby="filterError ? `automation-${kind}-filter-error` : `automation-${kind}-filter-hint`" :aria-invalid="filterError ? 'true' : undefined" placeholder="match=needs-review" :disabled="formBusy" @input="filterError = ''"></textarea><span v-if="filterError" :id="`automation-${kind}-filter-error`" class="agents-fielderr" role="alert">{{ filterError }}</span><span v-else :id="`automation-${kind}-filter-hint`" class="agents-hint">Optional, one key=value per line: match is a substring of the payload, header.&lt;name&gt; matches a request header.</span></label>
           </template>
-          <label v-else>Filter<textarea v-model="draft.filter" class="k-input mono" name="filter" rows="2" :aria-describedby="filterError ? `automation-${kind}-filter-error` : `automation-${kind}-filter-hint`" :aria-invalid="filterError ? 'true' : undefined" placeholder="eventType=deployment.created" :disabled="formBusy" @input="filterError = ''"></textarea><span v-if="filterError" :id="`automation-${kind}-filter-error`" class="agents-fielderr" role="alert">{{ filterError }}</span><span v-else :id="`automation-${kind}-filter-hint`" class="agents-hint">One key=value per line. eventType matches the X-Event-Type header or the body’s type/action, action matches the body’s action, match is a substring of the payload, header.&lt;name&gt; matches a request header. eventType and action take a comma-separated list. Empty fires on every delivery.</span></label>
+          <label v-else>Filter<textarea v-model="draft.filter" class="k-input mono" name="filter" :aria-label="draft.github ? 'More filters' : 'Filter'" rows="2" :aria-describedby="filterError ? `automation-${kind}-filter-error` : `automation-${kind}-filter-hint`" :aria-invalid="filterError ? 'true' : undefined" placeholder="eventType=deployment.created" :disabled="formBusy" @input="filterError = ''"></textarea><span v-if="filterError" :id="`automation-${kind}-filter-error`" class="agents-fielderr" role="alert">{{ filterError }}</span><span v-else :id="`automation-${kind}-filter-hint`" class="agents-hint">One key=value per line. eventType matches the X-Event-Type header or the body’s type/action, action matches the body’s action, match is a substring of the payload, header.&lt;name&gt; matches a request header. eventType and action take a comma-separated list. Empty fires on every delivery.</span></label>
           <TriggerFilterTester v-if="editing && currentEdit" :api="api" :store="store" :trigger="currentEdit as Trigger" :filter="liveFilter.filter" :filter-error="liveFilter.error || filterError" :draft-webhook="draft.webhookRef" @navigate="emit('navigate', $event)" />
         </template>
         <label>Task{{ kind === 'trigger' ? ' on fire' : '' }}<textarea v-model="draft.task" class="k-input" name="task" rows="3" :placeholder="meta.taskPlaceholder" :disabled="formBusy"></textarea></label>
         <label><span :id="`automation-${kind}-channel-label`">Channel</span><FormSelect v-model="draft.channelRef" :options="channelOptions" :disabled="formBusy" :labelledby="`automation-${kind}-channel-label`" :describedby="`automation-${kind}-channel-hint`" /><span :id="`automation-${kind}-channel-hint`" class="agents-hint">Where output is delivered</span></label>
-        <label class="agents-check k-checkbox-hit"><input v-model="draft.suspend" type="checkbox" name="suspend" :disabled="formBusy" /> Paused</label>
+        <label class="agents-check k-checkbox-hit"><input class="k-checkbox" v-model="draft.suspend" type="checkbox" name="suspend" :disabled="formBusy" /> Paused</label>
       </div>
       <div class="k-create-actions" :class="{ 'agents-automation-dialog__actions': showCreateModal }">
         <div v-if="showCreateModal && formError" class="k-inline-notification k-inline-notification--error agents-automation-dialog__error" role="alert">
           Could not create this {{ meta.one }}. {{ formError }}
         </div>
         <button type="button" class="k-btn k-btn--ghost secondary" :disabled="formBusy" @click="returnToAutomation">Cancel</button>
-        <button class="k-btn k-btn--primary" type="submit" :disabled="formBusy">{{ formBusy ? (editing ? 'Saving…' : 'Creating…') : editing ? 'Save' : `Create ${meta.one}` }}</button>
+        <button class="k-btn k-btn--primary" type="submit" :aria-disabled="formBusy || undefined" :aria-busy="formBusy || undefined">{{ formBusy ? (editing ? 'Saving…' : 'Creating…') : editing ? 'Save' : `Create ${meta.one}` }}</button>
       </div>
     </form>
   </component>
