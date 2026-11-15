@@ -4,7 +4,7 @@ import type { ResourceRefreshMode } from './portalkit/page-state'
 export type { ResourceRefreshMode } from './portalkit/page-state'
 
 export interface LatestRefreshController {
-  request(mode?: ResourceRefreshMode): void
+  request(mode?: ResourceRefreshMode): Promise<void>
   invalidate(): void
   stop(): void
   isCurrent(requestID: number): boolean
@@ -137,13 +137,16 @@ export function createLatestRefreshController(
   let active = false
   let queuedMode: ResourceRefreshMode | undefined
   let stopped = false
+  let waiters: Array<() => void> = []
 
-  const request = (mode: ResourceRefreshMode = 'foreground') => {
-    if (stopped) return
-    if (active) {
-      queuedMode = queuedMode === 'foreground' || mode === 'foreground' ? 'foreground' : 'background'
-      return
-    }
+  const settleWaiters = () => {
+    const pending = waiters
+    waiters = []
+    for (const resolve of pending) resolve()
+  }
+
+  const start = (mode: ResourceRefreshMode) => {
+    if (stopped || active) return
     const requestID = ++generation
     active = true
     void task(requestID, mode).catch(() => {
@@ -153,13 +156,21 @@ export function createLatestRefreshController(
       if (queuedMode && !stopped) {
         const nextMode = queuedMode
         queuedMode = undefined
-        request(nextMode)
+        start(nextMode)
+      } else {
+        settleWaiters()
       }
     })
   }
 
   return {
-    request,
+    request(mode = 'foreground') {
+      if (stopped) return Promise.resolve()
+      const complete = new Promise<void>(resolve => waiters.push(resolve))
+      if (active) queuedMode = queuedMode === 'foreground' || mode === 'foreground' ? 'foreground' : 'background'
+      else start(mode)
+      return complete
+    },
     invalidate() {
       if (stopped) return
       // Unlike an ordinary queued request, invalidation fences the active
@@ -173,6 +184,7 @@ export function createLatestRefreshController(
       stopped = true
       generation += 1
       queuedMode = undefined
+      settleWaiters()
     },
     isCurrent(requestID) {
       return !stopped && requestID === generation
