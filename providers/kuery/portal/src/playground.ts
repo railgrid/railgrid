@@ -97,7 +97,7 @@ export interface EditorHandle {
 
 // createEditor builds a JSON CodeMirror instance with prefix autocomplete over
 // the schema vocabulary. Hint fires as you type a word and on Ctrl/Cmd-Space.
-export function createEditor(CM: CMFactory, host: HTMLElement, doc: string, words: string[]): EditorHandle {
+export function createEditor(CM: CMFactory, host: HTMLElement, doc: string, words: string[], onChange: (value: string) => void): EditorHandle {
   const hint = (editor: CMInstance) => {
     const cur = editor.getCursor()
     const line = editor.getLine(cur.line)
@@ -120,6 +120,7 @@ export function createEditor(CM: CMFactory, host: HTMLElement, doc: string, word
     extraKeys: { 'Ctrl-Space': 'autocomplete', 'Cmd-Space': 'autocomplete' },
   })
 
+  cm.on('change', () => onChange(cm.getValue()))
   cm.on('inputRead', (...args: unknown[]) => {
     const change = args[1] as { text?: string[] }
     const first = change.text?.[0] ?? ''

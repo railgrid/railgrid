@@ -151,6 +151,38 @@ test('mountGraph focuses the labeled container on pointer use and removes the li
   }
 })
 
+test('resizing preserves the centered graph point and zoom', async () => {
+  const previous = { factory: globalThis.__kueryCytoscape, observer: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, cancel: globalThis.cancelAnimationFrame }
+  let callback
+  let width = 1000
+  let height = 600
+  const pans = []
+  let disconnected = false
+  globalThis.ResizeObserver = class {
+    constructor(fn) { callback = fn }
+    observe() {}
+    disconnect() { disconnected = true }
+  }
+  globalThis.requestAnimationFrame = fn => { fn(); return 1 }
+  globalThis.cancelAnimationFrame = () => {}
+  globalThis.__kueryCytoscape = () => ({
+    on() {}, destroy() {}, nodes: () => ({ length: 0 }), layout: discreteLayoutStub,
+    width: () => width, height: () => height, resize() {}, panBy: pan => pans.push(pan),
+  })
+  try {
+    const handle = await graphModule.mountGraph({ addEventListener() {}, removeEventListener() {} }, [], [], () => {})
+    width = 400; height = 800; callback()
+    assert.deepEqual(pans, [{ x: -300, y: 100 }])
+    handle.destroy()
+    assert.equal(disconnected, true)
+  } finally {
+    globalThis.__kueryCytoscape = previous.factory
+    globalThis.ResizeObserver = previous.observer
+    globalThis.requestAnimationFrame = previous.raf
+    globalThis.cancelAnimationFrame = previous.cancel
+  }
+})
+
 test('graph additions enforce a hard node limit while retaining parallel relation edges', async () => {
   const previousFactory = globalThis.__kueryCytoscape
   const stored = new Map([['root', { data: { id: 'root' } }]])
@@ -225,6 +257,9 @@ test('graph keyboard routing is focus-scoped and fullscreen uses the shared laye
 
 test('relation metadata is the shared source for labels, direction, and graph colors', () => {
   const metadata = graphModule.RELATION_METADATA
+  const theme = readFileSync(new URL('../../../portal/src/assets/main.css', import.meta.url), 'utf8')
+  const surfaces = [...theme.matchAll(/--color-surface:\s*(#[0-9a-f]{6})\s*;/giu)].map(match => match[1])
+  assert.equal(surfaces.length, 2, 'expected dark and light page surfaces')
   const luminance = (color) => {
     const channels = [1, 3, 5].map(index => Number.parseInt(color.slice(index, index + 2), 16) / 255)
       .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
@@ -241,7 +276,8 @@ test('relation metadata is the shared source for labels, direction, and graph co
     assert.equal(graphModule.RELATION_LABELS[relation.name], relation.label)
     assert.equal(graphModule.RELATION_DIR[relation.name], relation.direction)
     assert.match(relation.lightColor, /^#[0-9a-f]{6}$/iu)
-    assert.ok(contrast(relation.lightColor, '#f1f1f6') >= 3, `${relation.name} needs 3:1 contrast on the light graph surface`)
+    assert.ok(contrast(relation.color, surfaces[0]) >= 3, `${relation.name} needs 3:1 contrast on the dark graph surface`)
+    assert.ok(contrast(relation.lightColor, surfaces[1]) >= 3, `${relation.name} needs 3:1 contrast on the light graph surface`)
     assert.ok(['solid', 'dashed', 'dotted'].includes(relation.lineStyle))
     assert.ok(relation.description.length > 0)
   }
@@ -298,12 +334,53 @@ test('CSS fullscreen fallback has a deterministic exit after rejected native req
 
 test('impact view exposes a semantic relation legend from shared metadata', () => {
   const source = readFileSync(new URL('./src/components/ImpactView.vue', import.meta.url), 'utf8')
-  assert.match(source, /RELATION_METADATA/u)
+  assert.match(source, /relationMetadata/u)
   assert.match(source, /<aside[^>]+aria-labelledby="impact-legend-title"/u)
   assert.match(source, /<dl class="legend">/u)
   assert.match(source, /v-for="relation in legendRelations"/u)
   assert.match(source, /class="legend-swatch"[^>]+borderTopColor: relation\.displayColor[^>]+borderTopStyle: relation\.lineStyle/u)
+  assert.match(source, /use List for named relationships and keyboard access/u)
+  assert.match(source, /aria-describedby="legendRelations\.length \? 'impact-help impact-bounds impact-legend-title' : 'impact-help impact-bounds'"/u)
   assert.doesNotMatch(source, /kuery-impact-legend kuery-panel k-card/u)
+})
+
+test('impact graph distinguishes directional and lateral relationships without color', () => {
+  const original = globalThis.getComputedStyle
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' })
+  try {
+    const styles = graphModule.themeStyle({})
+    for (const relation of graphModule.RELATION_METADATA) {
+      const rule = styles.find(style => style.selector === `edge[rel = "${relation.name}"]`)
+      assert.equal(rule.style['target-arrow-shape'], relation.direction === 'lateral' ? 'none' : 'triangle', relation.name)
+    }
+    assert.equal(styles.find(style => style.selector === 'edge[rel = "linked"]').style['target-arrow-shape'], 'none')
+    assert.equal(styles.find(style => style.selector === 'edge[rel = "descendants"]').style['target-arrow-shape'], 'triangle')
+    for (const [alias, canonical] of [['linked', 'linked+'], ['descendants', 'descendants+']]) {
+      assert.deepEqual(styles.find(style => style.selector === `edge[rel = "${alias}"]`).style, styles.find(style => style.selector === `edge[rel = "${canonical}"]`).style, `${alias} must match its legend`)
+    }
+    assert.equal(styles.find(style => style.selector === 'edge').style['target-arrow-shape'], 'none', 'unknown relations must not imply impact direction')
+  } finally {
+    if (original) globalThis.getComputedStyle = original
+    else delete globalThis.getComputedStyle
+  }
+})
+
+test('only the Impact anchor omits its canvas label', () => {
+  const impact = graphModule.buildElements({ id: 'anchor', relations: { owners: [member('owner', 'Deployment', 'owner')] } })
+  const nodes = impact.elements.filter(element => !element.data.source)
+  assert.equal(nodes.find(node => node.data.id === 'anchor').data.impactAnchor, 'true')
+  assert.equal(nodes.find(node => node.data.id === 'owner').data.impactAnchor, 'false')
+  const topologyAnchor = graphModule.buildTopologyElements(topology).elements.find(element => element.data.tier === 'cluster')
+  assert.equal(topologyAnchor.data.impactAnchor, undefined)
+  const original = globalThis.getComputedStyle
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' })
+  try {
+    const style = graphModule.themeStyle({}).find(rule => rule.selector === 'node[impactAnchor = "true"]')
+    assert.equal(style.style.label, '')
+  } finally {
+    if (original) globalThis.getComputedStyle = original
+    else delete globalThis.getComputedStyle
+  }
 })
 
 test('graph rendering provides theme contrast, relation labels, resize handling, and bounded expansion control', () => {

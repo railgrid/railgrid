@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { Braces, ChevronDown, Inbox, Network, TableProperties } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { ArrowRight, Braces, ChevronDown, Inbox, Network, TableProperties } from 'lucide-vue-next'
 
 import type { ObjectResult } from './api'
 import type { RailgridContext } from './element'
-import { createKueryRequestContext } from './kuery'
+import { createKueryRequestContext, safeHTTPStatus } from './kuery'
 import { ensurePlaygroundView, kubeClientFor, listEdges, playgroundViewName } from './savedviews'
 import ImpactView from './components/ImpactView.vue'
 import InventoryView from './components/InventoryView.vue'
@@ -32,6 +32,7 @@ const loaded = ref(false)
 const loading = ref(false)
 const error = ref('')
 const errorDetail = ref('')
+const shell = ref<HTMLElement | null>(null)
 let requestID = 0
 
 const edgeStatus = computed(() => `${edges.value.length} connected Kubernetes edge${edges.value.length === 1 ? '' : 's'}`)
@@ -59,10 +60,6 @@ function openEdgeConnection(): void {
   window.location.assign(portalHref('/providers/edges/connect/edge'))
 }
 
-function errorDetailText(reason: unknown): string {
-  return reason instanceof Error ? reason.message : String(reason)
-}
-
 /**
  * load reads connected KubernetesCluster CRs from the edges provider's own
  * binding. It also makes sure the caller's scratch view exists, because every
@@ -71,7 +68,8 @@ function errorDetailText(reason: unknown): string {
 async function load(): Promise<void> {
   const current = ++requestID
   const request = requestContext.value
-  const isCurrent = (): boolean => requestID === current
+  const hostFetch = context.value?.fetch
+  const isCurrent = (): boolean => requestID === current && requestContext.value.identity === request.identity && context.value?.fetch === hostFetch
   const kube = kubeClientFor(request)
   if (!kube) {
     // No host transport or no workspace yet. Not an error: the shell renders
@@ -80,8 +78,6 @@ async function load(): Promise<void> {
     return
   }
   loading.value = true
-  error.value = ''
-  errorDetail.value = ''
   try {
     const name = await playgroundViewName(request.user)
     await ensurePlaygroundView(kube, name, request.user)
@@ -90,36 +86,48 @@ async function load(): Promise<void> {
     scratchView.value = name
     edges.value = discovered
     loaded.value = true
+    error.value = ''; errorDetail.value = ''
   } catch (reason) {
     if (!isCurrent()) return
     error.value = 'Could not check this workspace.'
-    errorDetail.value = errorDetailText(reason)
+    const status = safeHTTPStatus(reason)
+    errorDetail.value = status === null ? '' : `Workspace request returned HTTP ${status}.`
   } finally {
     if (isCurrent()) loading.value = false
   }
 }
 
-watch(identity, () => {
-  impact.value = null
-  edges.value = []
-  scratchView.value = ''
-  loaded.value = false
-  loading.value = false
-  error.value = ''
-  errorDetail.value = ''
-  void load()
-}, { immediate: true })
+async function retryLoad(): Promise<void> {
+  if (loading.value) return
+  const focused = typeof document === 'undefined' ? null : document.activeElement
+  await load()
+  await nextTick()
+  if (focused && !focused.isConnected && document.activeElement === document.body) {
+    ;(shell.value?.querySelector<HTMLElement>('.k-first-run__actions button') ?? shell.value?.querySelector<HTMLElement>('.k-tabs [aria-current="page"]'))?.focus()
+  }
+}
 
-// A token refresh on an older host changes nothing the kube client cares
-// about, but it does fence an in-flight read, so re-run once it settles.
-watch([identity, token], ([currentIdentity, currentToken], [previousIdentity, previousToken]) => {
-  if (currentIdentity === previousIdentity && currentToken !== previousToken) void load()
-})
+watch([identity, token, () => context.value?.fetch], ([currentIdentity, currentToken, hostFetch], previous) => {
+  const [previousIdentity, previousToken, previousFetch] = previous ?? []
+  const authorityChanged = currentIdentity !== previousIdentity || hostFetch !== previousFetch ||
+    (!hostFetch && currentToken !== previousToken)
+  if (authorityChanged) {
+    requestID += 1
+    impact.value = null
+    edges.value = []
+    scratchView.value = ''
+    loaded.value = false
+    loading.value = false
+    error.value = ''
+    errorDetail.value = ''
+  }
+  if (authorityChanged || currentToken !== previousToken) void load()
+}, { immediate: true })
 onBeforeUnmount(() => { requestID += 1 })
 </script>
 
 <template>
-  <div class="kuery-shell">
+  <div ref="shell" class="kuery-shell">
     <ImpactView v-if="impact" :key="`${identity}:impact`" :context="context" :anchor="impact" :saved-view="scratchView" @back="impact = null" @inspect="impact = $event" />
     <div v-show="!impact" class="kuery-collection-surfaces">
       <div class="kuery-topbar">
@@ -131,7 +139,7 @@ onBeforeUnmount(() => { requestID += 1 })
       <div v-if="error && loaded" class="kuery-inline-error" role="alert">
         <div class="kuery-error-copy">
           <span>Could not refresh workspace setup. The last loaded state is still shown.</span>
-          <details class="k-resource-technical">
+          <details v-if="errorDetail" class="k-resource-technical">
             <summary class="k-resource-technical__summary">
               <span class="k-resource-technical__summary-label">Technical details</span>
               <ChevronDown class="k-resource-technical__chevron" :size="14" aria-hidden="true" />
@@ -144,14 +152,14 @@ onBeforeUnmount(() => { requestID += 1 })
             </div>
           </details>
         </div>
-        <button type="button" class="k-btn k-btn--ghost" :disabled="loading" :aria-busy="loading" @click="load">{{ loading ? 'Retrying…' : 'Retry' }}</button>
+        <button v-if="edges.length > 0" type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
       <div v-if="!requestContext.ready" class="kuery-read-state" role="status">Waiting for workspace context…</div>
-      <div v-else-if="loading && !loaded" class="kuery-read-state" role="status">Checking workspace setup…</div>
+      <div v-else-if="loading && !loaded && !error" class="kuery-read-state" role="status">Checking workspace setup…</div>
       <div v-else-if="error && !loaded" class="kuery-read-state kuery-error" role="alert">
         <div class="kuery-error-copy">
           <span>{{ error }}</span>
-          <details class="k-resource-technical">
+          <details v-if="errorDetail" class="k-resource-technical">
             <summary class="k-resource-technical__summary">
               <span class="k-resource-technical__summary-label">Technical details</span>
               <ChevronDown class="k-resource-technical__chevron" :size="14" aria-hidden="true" />
@@ -164,20 +172,18 @@ onBeforeUnmount(() => { requestID += 1 })
             </div>
           </details>
         </div>
-        <button type="button" class="k-btn k-btn--ghost" :disabled="loading" :aria-busy="loading" @click="load">{{ loading ? 'Retrying…' : 'Retry' }}</button>
+        <button type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
       <FirstRunGuide
         v-else-if="loaded && edges.length === 0"
         title="Connect your first Kubernetes edge"
         description="Kuery builds a searchable inventory and topology from Kubernetes resources in this workspace."
         primary-label="Connect edge"
-        secondary-label="Check again"
         :steps="firstRunSteps"
         journey-label="Kuery setup"
-        @primary="openEdgeConnection"
-        @secondary="load"
       >
         <template #icon><Inbox :size="24" :stroke-width="1.5" aria-hidden="true" /></template>
+        <template #actions><button class="k-btn k-btn--primary" type="button" @click="openEdgeConnection">Connect edge <ArrowRight :stroke-width="1.75" aria-hidden="true" /></button><button class="k-btn k-btn--ghost" type="button" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Checking…' : 'Check again' }}</button></template>
       </FirstRunGuide>
       <template v-else-if="loaded">
         <TopologyView v-show="active === 'topology'" :key="`${identity}:topology`" :context="context" :edges="edges" :saved-view="scratchView" :active="!impact && active === 'topology'" @inspect="impact = $event" />
