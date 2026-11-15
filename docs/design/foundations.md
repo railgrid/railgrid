@@ -27,8 +27,8 @@
   "relatedDocuments": [
     { "id": "design.foundations.principles", "relation": "see-also", "path": "docs/design/foundations/principles.md" },
     { "id": "design.quality.review-checklist", "relation": "see-also", "path": "docs/design/quality/review-checklist.md" },
-    { "id": "design.foundations.provider-integration", "relation": "see-also", "path": "docs/design/foundations/provider-integration.md" },
-    { "id": "design.foundations.theming", "relation": "see-also", "path": "docs/design/foundations/theming.md" },
+    { "id": "design.foundations.provider-integration", "relation": "see-also", "path": "docs/design/implementation/provider-integration.md" },
+    { "id": "design.foundations.theming", "relation": "see-also", "path": "docs/design/implementation/theming.md" },
     { "id": "design.quality.exceptions", "relation": "see-also", "path": "docs/design/quality/exceptions.md" }
   ]
 }
@@ -36,12 +36,20 @@
 
 # Violet Circuit system map
 
-The system is one contract with several layers. [Principles](foundations/principles.md)
-state what must remain true. [Tokens and geometry](foundations/colors.md) and
-[typography](foundations/typography.md) provide the vocabulary. [Recipes](foundations/recipes.md)
-and [components](components/) provide reusable implementation contracts.
-[Patterns](patterns/) explain how components compose into complete journeys.
-[Quality](quality/) is the review and conformance boundary.
+Foundations describe how Railgrid looks and feels:
+
+1. [Principles](foundations/principles.md) — the design decisions that guide the system.
+2. [Color and materials](foundations/colors.md) — the palette and the surfaces it creates.
+3. [Typography](foundations/typography.md) — typefaces and the hierarchy of text.
+4. [Spacing and shape](foundations/geometry.md) — relationships between elements and their geometry.
+5. [Iconography](foundations/iconography.md) — the shared visual vocabulary for icons.
+6. [Motion](foundations/motion.md) — transitions, activity, and reduced motion.
+
+The material roles and spacing observations remain open for review; grouping
+them here does not make them new enforced tokens. [Components](components/)
+and [patterns](patterns/) show how the foundations are used in tasks.
+Implementation details such as [theme mechanics](implementation/theming.md), [provider integration](implementation/provider-integration.md),
+and [CSS recipes](implementation/recipes.md) live in developer guidance.
 
 The host portal and every provider micro-frontend share one visual language.
 Provider implementation status is intentionally explicit in each entry's

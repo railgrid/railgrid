@@ -102,7 +102,7 @@ export function reviewCatalog() {
   })
   const tokens = [...new Set([...read(foundations).matchAll(/^\s*(--(?:color|font|radius)-[\w-]+):/gm)].map(match => match[1]))]
     .map(name => ({ name, source: source(foundations, name + ':') }))
-  const recipeRows = rows(read(bookRoot + 'foundations/recipes.md'))
+  const recipeRows = rows(read(bookRoot + 'implementation/recipes.md'))
     .filter(line => line.startsWith('| `'))
     .map(line => {
       const [label, description] = line.split('|').slice(1, 3).map(part => part.trim().replace(/\x60/g, ''))
