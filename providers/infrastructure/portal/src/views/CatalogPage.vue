@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ArrowRight } from 'lucide-vue-next'
 import TemplateCard from '../components/TemplateCard.vue'
 import { api, isContextChangedError } from '../api'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import { readLayoutPreference, writeLayoutPreference, type LayoutMode } from '../portalkit/layoutPreference'
+import { portalHref } from '../portalkit/navigation'
 import { useDelayedLoading } from '../portalkit/useDelayedLoading'
 import type { Template } from '../types'
 
@@ -16,9 +17,11 @@ const emit = defineEmits<{
 
 const loading = ref(true)
 const loaded = ref(false)
-const initialReadPending = computed(() => !loaded.value && loading.value)
-const showInitialLoading = useDelayedLoading(initialReadPending)
 const error = ref<string | null>(null)
+const initialReadPending = computed(() => !loaded.value && loading.value && !error.value)
+const showInitialLoading = useDelayedLoading(initialReadPending)
+const heading = ref<HTMLElement | null>(null)
+const gridRetry = ref<HTMLButtonElement | null>(null)
 const templates = ref<Template[]>([])
 const category = ref('')
 const cloud = ref('')
@@ -60,14 +63,20 @@ const tableRows = computed<Array<Record<string, unknown>>>(() => filtered.value.
 watch(layout, mode => writeLayoutPreference(layoutPreferenceKey, mode))
 
 async function load() {
+  if (loading.value && requestSerial > 0) return
   const serial = ++requestSerial
   loading.value = true
-  error.value = null
   try {
     const r = await api.listTemplates()
     if (serial !== requestSerial) return
+    const restoreFocus = document.activeElement === gridRetry.value && !!gridRetry.value
     templates.value = r.items || []
     loaded.value = true
+    error.value = null
+    if (restoreFocus) {
+      await nextTick()
+      if (document.activeElement === document.body) heading.value?.focus()
+    }
   } catch (e: unknown) {
     if (serial !== requestSerial || isContextChangedError(e)) return
     error.value = (e as { message?: string }).message ?? 'failed to load templates'
@@ -91,16 +100,32 @@ function exposureLabel(exposure: Template['exposure']): string {
 function selectTemplateRow(row: Record<string, unknown>) {
   if (typeof row.name === 'string') emit('select', row.name)
 }
+
+function templateHref(name: string): string {
+  return portalHref(`/ui/providers/infrastructure/templates/${encodeURIComponent(name)}`)
+}
+
+function followTemplateLink(event: MouseEvent, row: Record<string, unknown>): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  selectTemplateRow(row)
+}
+
+function followInstancesLink(event: MouseEvent): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  emit('navigate', 'instances')
+}
 </script>
 
 <template>
   <section class="page" :aria-busy="loading">
     <header class="page-head">
       <div>
-        <h2 class="page-title">Templates</h2>
+        <h2 ref="heading" class="page-title" tabindex="-1">Templates</h2>
         <p class="page-meta">Choose a template to provision resources in this workspace.</p>
       </div>
-      <button type="button" class="k-btn k-btn--ghost" @click="emit('navigate', 'instances')">My instances <ArrowRight :size="14" aria-hidden="true" /></button>
+      <a class="k-btn k-btn--ghost" :href="portalHref('/ui/providers/infrastructure/instances')" @click="followInstancesLink">My instances <ArrowRight :size="14" aria-hidden="true" /></a>
     </header>
 
     <div class="filters">
@@ -119,7 +144,7 @@ function selectTemplateRow(row: Record<string, unknown>) {
       <span v-if="loaded && loading" class="sr-only" role="status" aria-live="polite">Updating template catalog…</span>
       <div v-if="loaded && error" class="stale-banner" role="alert" aria-live="assertive">
         <span>Showing the last successful result. {{ error }}</span>
-        <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
+        <button ref="gridRetry" type="button" class="k-btn k-btn--ghost" :aria-disabled="loading" @click="load">{{ loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
       <div
         v-if="initialReadPending"
@@ -138,7 +163,7 @@ function selectTemplateRow(row: Record<string, unknown>) {
       </div>
       <div v-else-if="!loaded && error" class="read-error" role="alert" aria-live="assertive">
         <span>{{ error }}</span>
-        <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
+        <button ref="gridRetry" type="button" class="k-btn k-btn--ghost" :aria-disabled="loading" @click="load">{{ loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
       <div v-else-if="templates.length === 0" class="empty-state" role="status">
         <span>No infrastructure templates are available in this workspace.</span>
@@ -153,6 +178,7 @@ function selectTemplateRow(row: Record<string, unknown>) {
           v-for="t in filtered"
           :key="t.name"
           :template="t"
+          :href="templateHref(t.name)"
           @select="emit('select', $event)"
         />
       </div>
@@ -176,11 +202,11 @@ function selectTemplateRow(row: Record<string, unknown>) {
         @row-click="selectTemplateRow"
       >
         <template #identity="{ value, row }">
-          <button class="k-btn k-btn--ghost k-table-resource-link text-left" type="button" @click.stop="selectTemplateRow(row)">
+          <a class="k-btn k-btn--ghost k-table-resource-link text-left" :href="templateHref(String(row.name))" @click.stop="followTemplateLink($event, row)">
             <span class="template-card-title">{{ value }}</span>
             <span class="cell-mono">{{ row.name }}</span>
             <span class="template-card-desc">{{ row.description }}</span>
-          </button>
+          </a>
         </template>
         <template #kind="{ value }"><span class="cell-mono">{{ value }}</span></template>
         <template #version="{ value }"><span class="cell-mono">{{ value }}</span></template>
