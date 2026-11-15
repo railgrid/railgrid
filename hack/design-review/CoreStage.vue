@@ -112,6 +112,27 @@ function undoToast() {
   })
 }
 
+function linkedToast() {
+  toast('info', 'Run queued.', {
+    scope: 'design-review',
+    link: { label: 'View run', href: '#toast-review-run' },
+  })
+}
+function retryToast() {
+  let attempts = 0
+  toast('error', 'Could not refresh the run.', {
+    scope: 'design-review',
+    action: {
+      label: 'Retry',
+      async run() {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        if (++attempts === 1) throw new Error('Simulated refresh failure')
+        notice.value = 'Run refreshed in the fixture.'
+      },
+    },
+  })
+}
+
 const steps = [
   { label: 'Connect an edge', description: 'Connect a Linux server or Kubernetes cluster.' },
   { label: 'Enable a provider', description: 'Add a capability to the workspace.' },
@@ -242,9 +263,13 @@ const sizes = ['xs', 'sm', 'md', 'lg', '2xl', '3xl']
       <h3>Toasts</h3>
       <div class="spec-row">
         <button v-for="[kind, label] in [['ok', 'Success'], ['info', 'Info'], ['warning', 'Warning'], ['error', 'Error']]" :key="kind" class="k-btn k-btn--ghost" type="button" @click="notify(kind)">{{ label }}</button>
+        <button class="k-btn k-btn--ghost" type="button" @click="linkedToast">Show link</button>
+        <button class="k-btn k-btn--ghost" type="button" @click="retryToast">Show retry</button>
         <button class="k-btn k-btn--ghost" type="button" @click="undoToast">Remove with Undo</button>
         <button class="k-btn k-btn--text" type="button" @click="clearToasts('design-review')">Clear toasts</button>
       </div>
+      <p id="toast-review-run" class="spec-note">Sample run · Queue review</p>
+      <a class="review-source-link" href="./agents-toast.html">Open Agents notification fixture</a>
       <ToastHost />
     </section>
     <section class="spec-section">

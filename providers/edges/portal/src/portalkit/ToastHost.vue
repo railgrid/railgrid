@@ -65,7 +65,9 @@ const assertive = (toast: ToastView): boolean => {
 const announcementFor = (toast: ToastView): string => {
   if (toast.announcement === 'off') return ''
   const title = toast.title ? `${toast.title}: ` : ''
-  const action = toast.actionLabel ? ` ${toast.actionLabel} available.` : ''
+  const action = toast.actionBusy && toast.actionLabel
+    ? ` ${toast.actionLabel} in progress.`
+    : toast.actionLabel || toast.link?.label ? ` ${toast.actionLabel || toast.link?.label} available.` : ''
   const actionError = toast.actionError ? ` ${toast.actionError}` : ''
   return `${title}${toast.message}${action}${actionError}`
 }
@@ -211,8 +213,13 @@ function onCommands(commands: readonly ToastCommand[], isActive: boolean, handof
   const nextVisible = activeToast.value
   if (focusedToastID.value !== null && previousVisible?.id !== nextVisible?.id) {
     const origin = focusOrigins.get(previousVisible?.id ?? focusedToastID.value) ?? previousFocusedOrigin
+    const previousControl = document.activeElement
     focusedToastID.value = null
     void nextTick(() => {
+      // A user may have moved focus, or another command may have replaced the
+      // next toast, before Vue completes this render. Do not reclaim focus.
+      if (document.activeElement !== previousControl && document.activeElement !== document.body) return
+      if (activeToast.value?.id !== nextVisible?.id) return
       const nextControl = nextVisible && focusControl(nextVisible.id)
       if (nextControl) nextControl.focus()
       else if (origin?.isConnected) origin.focus()
@@ -223,7 +230,7 @@ function onCommands(commands: readonly ToastCommand[], isActive: boolean, handof
 function focusControl(id: number): HTMLElement | null {
   const card = root.value?.querySelector<HTMLElement>(`[data-toast-id="${id}"]`)
   if (!card) return null
-  return card.querySelector<HTMLElement>('.k-toast__action:not(:disabled), .k-toast__dismiss') ?? card
+  return card.querySelector<HTMLElement>('.k-toast__action, .k-toast__link, .k-toast__dismiss') ?? card
 }
 
 function rememberFocus(id: number): void {
@@ -437,13 +444,14 @@ onBeforeUnmount(() => {
               v-if="activeToast.hasAction"
               type="button"
               class="k-toast__action"
-              :disabled="activeToast.actionBusy"
+              :aria-disabled="activeToast.actionBusy ? 'true' : undefined"
               :aria-busy="activeToast.actionBusy ? 'true' : undefined"
               @click.stop="handleAction"
             >
               <Loader2 v-if="activeToast.actionBusy" class="k-toast__action-spinner" :stroke-width="2" aria-hidden="true" />
               {{ activeToast.actionBusy ? `${activeToast.actionLabel}…` : activeToast.actionLabel }}
             </button>
+            <a v-else-if="activeToast.link" class="k-toast__link" :href="activeToast.link.href">{{ activeToast.link.label }}</a>
             <button
               type="button"
               class="k-toast__dismiss"

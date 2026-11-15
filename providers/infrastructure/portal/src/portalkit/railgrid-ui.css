@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 62;
+  --railgrid-ui-core-version: 63;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1182,10 +1182,8 @@ html.light .k-form-select__panel.k-form-select__portal {
   color: var(--color-text-secondary, #8a8ca6);
 }
 
-/* ── Tooltip (CSS-only) ───────────────────────────────────────────────────
- * <button data-k-tip="Restart the pod">…</button> — shows after 300ms on
- * hover AND keyboard focus. Two lines max by convention; longer content is a
- * popover, not a tooltip. Never glows. */
+/* ── Tooltip ──────────────────────────────────────────────────────────────
+ * The CSS fallback remains available before the shared manager starts. */
 [data-k-tip] { position: relative; }
 [data-k-tip]::after {
   content: attr(data-k-tip);
@@ -1233,8 +1231,31 @@ html.light [data-k-tip]::after {
 [data-k-tip]:hover::after,
 [data-k-tip]:focus-visible::after {
   opacity: 1;
-  transition-delay: 0.3s;
+  transition-delay: 0.15s;
 }
+.k-tooltips-managed [data-k-tip]::after { content: none !important; }
+.k-tooltip-layer {
+  position: fixed;
+  visibility: hidden;
+  z-index: 1100;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(260px, calc(100vw - 16px));
+  padding: 4px 8px;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 4px;
+  background: var(--color-surface-overlay, #171927);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-surface, #0a0b12) 35%, transparent);
+  color: var(--color-text-primary, #e9e9f2);
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+}
+html.light .k-tooltip-layer { box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-primary) 10%, transparent); }
 
 /* ── Progress bar ─────────────────────────────────────────────────────────*/
 .k-progress {
@@ -1512,6 +1533,19 @@ html.light [data-k-tip]::after {
   backdrop-filter: blur(2px);
   animation: k-modal-fade 0.14s ease;
 }
+/* Confirmation overlays use the native top layer so independently mounted
+ * dialogs share the browser's focus stack. Keep the existing full-screen veil. */
+dialog.k-modal-overlay {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+}
+dialog.k-modal-overlay:not([open]) { display: none; }
+dialog.k-modal-overlay::backdrop { background: transparent; }
 .k-modal {
   width: min(440px, 100%);
   padding: 22px 22px 18px;
@@ -1584,12 +1618,12 @@ html.light [data-k-tip]::after {
   font-size: 13.5px;
 }
 .k-modal-btn--cancel {
-  background: var(--color-surface-overlay, #171927);
-  color: var(--color-text-secondary, #8a8ca6);
+  background: transparent;
+  color: var(--color-text-primary, #e9e9f2);
   border-color: var(--color-border-default, rgba(255, 255, 255, 0.11));
 }
 .k-modal-btn--cancel:hover {
-  background: var(--color-surface-hover, #1e2033);
+  background: color-mix(in srgb, var(--color-text-primary, #e9e9f2) 6%, transparent);
   color: var(--color-text-primary, #e9e9f2);
 }
 .k-modal-btn--confirm {
@@ -1641,10 +1675,44 @@ html.light [data-k-tip]::after {
 .k-modal--confirm .k-modal__message:last-child {
   margin-bottom: 0;
 }
+.k-modal--confirm.k-modal--danger .k-modal__head {
+  padding: 24px 24px 6px;
+}
+.k-modal--confirm.k-modal--danger .k-modal__title { font-size: 20px; }
+.k-modal--confirm.k-modal--danger .k-modal__body { padding: 4px 24px; }
+.k-modal--confirm.k-modal--danger .k-modal__icon { display: none; }
+.k-modal__irreversible {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 16px 24px 0;
+  padding: 12px;
+  border-radius: 4px;
+  background: var(--color-danger-subtle, rgba(255, 93, 93, .12));
+  color: var(--color-danger, #ff5d5d);
+  overflow-wrap: anywhere;
+}
+.k-modal__irreversible svg { flex: none; margin-top: 2px; }
+.k-modal__verification {
+  display: grid;
+  gap: 8px;
+  padding: 20px 24px 0;
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.k-modal__verification .k-input { width: 100%; min-width: 0; }
+.k-modal-btn:disabled { cursor: not-allowed; opacity: .5; }
 .k-modal--confirm .k-modal__foot {
   flex: 0 0 auto;
   flex-wrap: wrap;
   min-width: 0;
+}
+.k-modal--confirm.k-modal--danger .k-modal__foot {
+  justify-content: space-between;
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07));
+  margin-top: 20px;
+  padding: 16px 24px;
 }
 .k-modal--confirm .k-modal-btn {
   max-width: 100%;
@@ -1670,6 +1738,8 @@ html.light [data-k-tip]::after {
   align-items: flex-end;
   gap: 8px;
   max-width: 360px;
+  max-height: calc(100dvh - var(--k-toast-bottom-offset, 16px) - 16px);
+  overflow-y: auto;
 }
 .k-toast {
   display: flex;
@@ -1693,13 +1763,11 @@ html.light [data-k-tip]::after {
 .k-toast--warning .k-toast__icon { color: var(--color-warning, #f0a63a); }
 .k-toast--error .k-toast__icon { color: var(--color-danger, #ff5d5d); }
 .k-toast--info .k-toast__icon { color: var(--color-accent, #8b6bff); }
-.k-toast--warning { border-color: var(--color-warning, #f0a63a); }
-.k-toast--error { border-color: var(--color-danger, #ff5d5d); }
 .k-toast__message { flex: 1; overflow-wrap: anywhere; }
 .k-toast__action {
   flex: none;
-  border: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 35%, transparent);
-  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--color-accent-hover, #a18aff);
   border-radius: 4px;
   min-height: 24px;
@@ -1709,6 +1777,18 @@ html.light [data-k-tip]::after {
   font-weight: 600;
   cursor: pointer;
 }
+.k-toast__link {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--color-accent-hover, #a18aff);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 4px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.k-toast__link:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
 .k-toast__action:hover {
   background: color-mix(in srgb, var(--color-accent, #8b6bff) 22%, transparent);
   color: var(--color-accent-hover, #a18aff);
@@ -1728,6 +1808,7 @@ html.light [data-k-tip]::after {
 }
 .k-toast__dismiss svg { width: 12px; height: 12px; }
 .k-toast__dismiss:hover { background: var(--color-surface-hover, #1e2033); color: inherit; }
+.k-toast__dismiss:focus-visible, .k-toast__action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 
 /* ── Vue toast host and contextual notifications ──────────────────────────
  * Vue providers share a document-level queue. The host owns one visual stack;
@@ -2550,6 +2631,7 @@ railgrid-resource-table-filter { display: contents; }
 .k-table__primary-tooltip--positioned { visibility: visible; }
 .k-table-action-tooltip {
   font-family: var(--font-sans, "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif);
+  pointer-events: auto;
 }
 .k-table.k-table--resource .k-table__heading--start,
 .k-table.k-table--resource .k-table__cell--start { text-align: start; }
@@ -3509,6 +3591,7 @@ railgrid-resource-table-filter { display: contents; }
   .k-toast-host .k-toast,
   .k-inline-notification { gap: 7px; padding: 9px 10px; }
   .k-toast-host .k-toast__action,
+  .k-toast-host .k-toast__link,
   .k-inline-notification__action { max-inline-size: 38%; overflow-wrap: anywhere; }
 }
 @media (pointer: coarse), (any-pointer: coarse) {
@@ -3525,6 +3608,7 @@ railgrid-resource-table-filter { display: contents; }
   }
   .k-toast__action,
   .k-toast-host .k-toast__action,
+  .k-toast-host .k-toast__link,
   .k-toast-host .k-toast__dismiss,
   .k-inline-notification__action,
   .k-inline-notification__dismiss {
