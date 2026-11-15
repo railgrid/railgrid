@@ -2,8 +2,9 @@
 import { ref, computed, nextTick, onUnmounted, watch } from 'vue'
 import { ArrowLeft, Boxes, Laptop, Server, ArrowRight, Copy, Check, Loader2, PartyPopper } from 'lucide-vue-next'
 import { createEdge, probeEdge } from './api'
+import { parseEdgeLabelPairs } from './edgeLabels'
 import { MACOS_MASKED_JOIN_TOKEN, hubURLForCluster, macosJoinSnippet } from './macos'
-import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
+import CreateGuidance from './portalkit/CreateGuidance.vue'
 import { edgeTypeLabel, type EdgeType, type ErrorResponse } from './types'
 
 const props = withDefaults(defineProps<{
@@ -37,6 +38,7 @@ const elapsed = ref(0)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let elapsedTimer: ReturnType<typeof setInterval> | null = null
 let copyTimer: ReturnType<typeof setTimeout> | null = null
+let copyGeneration = 0
 let active = true
 
 function stopPolling(): void {
@@ -47,7 +49,11 @@ function stopPolling(): void {
 }
 
 function clearSetupSecret(): void {
+  copyGeneration += 1
+  if (copyTimer) clearTimeout(copyTimer)
+  copyTimer = null
   joinToken.value = null
+  copied.value = null
   failedCopyField.value = null
   copyFeedback.value = ''
 }
@@ -60,8 +66,15 @@ onUnmounted(() => {
 })
 
 const trimmed = computed(() => name.value.trim())
+const nameError = computed(() => {
+  if (!trimmed.value) return ''
+  return trimmed.value.length > 253 || !/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$/.test(trimmed.value)
+    ? 'Use up to 253 lowercase letters, numbers, hyphens, or dots. Each part must start and end with a letter or number.'
+    : ''
+})
 const edgeTypeLocked = computed(() => props.requiredType !== undefined)
-const canContinue = computed(() => trimmed.value.length > 0 && !saving.value && (!props.requiredType || edgeType.value === props.requiredType))
+const labelResult = computed(() => parseEdgeLabelPairs(labels.value, 'label'))
+const canContinue = computed(() => trimmed.value.length > 0 && !nameError.value && !labelResult.value.error && !saving.value && (!props.requiredType || edgeType.value === props.requiredType))
 const stepLabels = ['Configure', 'Install agent', 'Connected'] as const
 const connectionAnnouncement = computed(() => {
   if (step.value === 1) return 'Step 1 of 3: Configure.'
@@ -73,6 +86,7 @@ const connectionAnnouncement = computed(() => {
 })
 async function focusCurrentStepHeading(): Promise<void> {
   await nextTick()
+  if (!active || typeof document === 'undefined') return
   document.getElementById('edge-wizard-step-heading')?.focus()
 }
 watch(step, (current) => {
@@ -82,22 +96,6 @@ watch(step, (current) => {
 watch(() => props.requiredType, (requiredType) => {
   if (requiredType) edgeType.value = requiredType
 }, { immediate: true })
-const edgeGuidanceValues = computed<CreateGuidanceValue[]>(() => [
-  { label: 'Edge name', value: trimmed.value || 'Not entered yet', technical: true },
-  { label: 'Resource type', value: edgeType.value === 'kubernetes' ? 'KubernetesCluster' : edgeType.value === 'server' ? 'LinuxServer' : 'MacOSServer', technical: true },
-  { label: 'Scheduling labels', value: labels.value.trim() || 'None', technical: true },
-])
-const edgePrerequisites = [
-  'Access to the target cluster with Helm, or to the Linux or MacOS host with the Railgrid CLI.',
-  'A unique Kubernetes-compatible name in this workspace.',
-  'Optional key=value labels if Workloads will target this edge.',
-]
-const edgeNextSteps = [
-  'Railgrid creates a KubernetesCluster, LinuxServer, or MacOSServer resource and mints a one-time join token.',
-  'Run the generated command on the target; the token is masked here and copied only when requested.',
-  'The agent exchanges the token for an edge-scoped credential and opens its outbound tunnel.',
-]
-
 const hubURL = computed(() => {
   return hubURLForCluster(props.cluster)
 })
@@ -128,6 +126,7 @@ function copyControlLabel(field: string, label: string): string {
 
 async function copy(build: (t: string) => string, field: string, label: string) {
   if (!joinToken.value) return
+  const generation = ++copyGeneration
   if (copyTimer) {
     clearTimeout(copyTimer)
     copyTimer = null
@@ -136,6 +135,7 @@ async function copy(build: (t: string) => string, field: string, label: string) 
   failedCopyField.value = null
   try {
     await navigator.clipboard.writeText(build(joinToken.value))
+    if (!active || generation !== copyGeneration) return
     copied.value = field
     failedCopyField.value = null
     copyFeedback.value = `${label} copied to clipboard.`
@@ -145,24 +145,16 @@ async function copy(build: (t: string) => string, field: string, label: string) 
       copyTimer = null
     }, 2000)
   } catch {
+    if (!active || generation !== copyGeneration) return
     failedCopyField.value = field
     copyFeedback.value = `Could not copy the ${label.toLowerCase()}. The join token remains masked; try copying again.`
   }
 }
 
-function parseLabels(): Record<string, string> {
-  const out: Record<string, string> = {}
-  if (labels.value.trim()) {
-    for (const pair of labels.value.split(',')) {
-      const [k, v] = pair.split('=').map((s) => s.trim())
-      if (k) out[k] = v ?? ''
-    }
-  }
-  return out
-}
-
 async function handleCreate() {
   if (!trimmed.value) { error.value = 'Name is required'; return }
+  if (nameError.value) return
+  if (labelResult.value.error) return
   if (props.requiredType && edgeType.value !== props.requiredType) {
     error.value = `This flow requires a ${props.requiredType === 'kubernetes' ? 'KubernetesCluster' : props.requiredType === 'server' ? 'LinuxServer' : 'MacOSServer'} edge.`
     edgeType.value = props.requiredType
@@ -171,7 +163,7 @@ async function handleCreate() {
   saving.value = true
   error.value = null
   try {
-    await createEdge(trimmed.value, edgeType.value, parseLabels())
+    await createEdge(trimmed.value, edgeType.value, labelResult.value.value)
     if (!active) return
     step.value = 2
     startPolling()
@@ -186,17 +178,22 @@ async function handleCreate() {
 function startPolling() {
   const edgeName = trimmed.value
   const type = edgeType.value
-  const tokenDeadline = Date.now() + 30000
+  const startedAt = Date.now()
   elapsed.value = 0
-  elapsedTimer = setInterval(() => (elapsed.value += 1), 1000)
+  elapsedTimer = setInterval(() => {
+    elapsed.value = Math.floor((Date.now() - startedAt) / 1000)
+    if (elapsed.value >= 30 && !joinToken.value) {
+      tokenError.value = `Could not retrieve join token. Run: railgrid edge join-command ${edgeName}`
+    }
+  }, 1000)
   pollTimer = setInterval(async () => {
     if (!active || step.value !== 2) return
     try {
       const p = await probeEdge(edgeName, type)
       if (!active || step.value !== 2 || !p) return
-      if (!joinToken.value && p.joinToken) joinToken.value = p.joinToken
-      if (!joinToken.value && Date.now() > tokenDeadline) {
-        tokenError.value = `Could not retrieve join token. Run: railgrid edge join-command ${edgeName}`
+      if (!joinToken.value && p.joinToken) {
+        joinToken.value = p.joinToken
+        tokenError.value = null
       }
       if (p.connected) {
         agentVersion.value = p.agentVersion ?? null
@@ -247,7 +244,9 @@ function fmt(s: number) {
       <div class="k-create-body k-create-body--guided">
         <div class="k-create-fields">
           <label for="edge-name" class="lbl">Edge name</label>
-          <input id="edge-name" v-model="name" class="k-input" placeholder="e.g. prod-us-east-1" required :disabled="saving" />
+          <input id="edge-name" v-model="name" class="k-input" placeholder="e.g. prod-us-east-1" required maxlength="253" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? 'edge-name-error' : 'edge-name-help'" :disabled="saving" />
+          <p v-if="nameError" id="edge-name-error" class="banner error" role="alert">{{ nameError }}</p>
+          <p v-else id="edge-name-help" class="muted">Use a unique name with lowercase letters, numbers, hyphens, or dots. Each part must start and end with a letter or number.</p>
 
           <fieldset class="types">
             <legend class="lbl">Type</legend>
@@ -267,14 +266,13 @@ function fmt(s: number) {
           <p v-if="edgeTypeLocked" class="muted">This edge type is required to continue the originating {{ props.requiredType === 'kubernetes' ? 'workload' : 'resource' }} flow.</p>
 
           <label for="edge-labels" class="lbl">Labels <span class="muted">(optional)</span></label>
-          <input id="edge-labels" v-model="labels" class="k-input" placeholder="env=prod, region=us-east" :disabled="saving" />
+          <input id="edge-labels" v-model="labels" class="k-input" placeholder="env=prod, region=us-east" :aria-invalid="labelResult.error ? 'true' : undefined" :aria-describedby="labelResult.error ? 'edge-labels-help edge-labels-error' : 'edge-labels-help'" :disabled="saving" />
+          <p id="edge-labels-help" class="muted">{{ edgeType === 'kubernetes' ? 'Use key=value pairs to target this edge with workloads.' : 'Use key=value pairs to label this edge. Workloads target Kubernetes edges only.' }}</p>
+          <p v-if="labelResult.error" id="edge-labels-error" class="banner error" role="alert">{{ labelResult.error }}</p>
         </div>
         <CreateGuidance
-          title="Configure the edge"
-          description="Choose how Railgrid will identify and manage this target. After creation, install the agent from the generated command."
-          :prerequisites="edgePrerequisites"
-          :values="edgeGuidanceValues"
-          :next-steps="edgeNextSteps"
+          title="Before you create"
+          :description="edgeType === 'kubernetes' ? 'You will need access to the cluster and Helm or the Railgrid CLI to install the agent.' : 'You will need access to this host and the Railgrid CLI to install the agent.'"
         />
       </div>
       <div class="k-create-actions">
