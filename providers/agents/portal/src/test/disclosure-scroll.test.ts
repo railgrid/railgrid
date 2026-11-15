@@ -117,7 +117,7 @@ describe('user disclosure scroll compensation', () => {
     expect(button.getAttribute('aria-expanded')).toBe('true')
     const details = document.getElementById('nested-tool-details')!
     details.getBoundingClientRect = () => rect(324 - scroller.scrollTop, 1000 - scroller.scrollTop)
-    const disclosure = details.closest<HTMLElement>('.k-ai-disclosure')!
+    const disclosure = details.querySelector<HTMLElement>(':scope > .k-ai-disclosure')!
     disclosure.getBoundingClientRect = () => rect(324 - scroller.scrollTop, 440 - scroller.scrollTop)
     // Vue's Transition also owns a double animation frame; let it settle.
     frame()
