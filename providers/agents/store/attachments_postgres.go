@@ -302,22 +302,12 @@ func (p *PostgresStore) ReconcileAgentAttachmentBindings(ctx context.Context) er
 }
 
 func (p *PostgresStore) CreateAgentChatRun(ctx context.Context, scope Scope, agentUID string, msg Message, run Run, receipts []AgentAttachmentReceipt, actorID string, now time.Time) error {
-	return p.createAgentChatRun(ctx, scope, agentUID, msg, run, receipts, actorID, "", now)
-}
-
-func (p *PostgresStore) CreateOwnedAgentChatRun(ctx context.Context, scope Scope, agentUID string, msg Message, run Run, receipts []AgentAttachmentReceipt, actorID, ownerSubject string, now time.Time) error {
-	return p.createAgentChatRun(ctx, scope, agentUID, msg, run, receipts, actorID, ownerSubject, now)
-}
-
-func (p *PostgresStore) createAgentChatRun(ctx context.Context, scope Scope, agentUID string, msg Message, run Run, receipts []AgentAttachmentReceipt, actorID, ownerSubject string, now time.Time) error {
 	scope = p.normalizeScope(ctx, scope)
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
-	if len(receipts) > 0 {
-		if err := validateAgentAttachmentAdmission(receipts, scope, agentUID, msg.SessionID, actorID, run.ID); err != nil {
-			return err
-		}
+	if err := validateAgentAttachmentAdmission(receipts, scope, agentUID, msg.SessionID, actorID, run.ID); err != nil {
+		return err
 	}
 	if msg.ID == "" || msg.Role != "user" || msg.RunID != run.ID || msg.SessionID != run.SessionID || run.AgentName != scope.AgentName || run.Phase == "" || msg.CreatedAt.IsZero() {
 		return fmt.Errorf("atomic chat admission needs a matching user message and run")
@@ -340,27 +330,6 @@ func (p *PostgresStore) createAgentChatRun(ctx context.Context, scope Scope, age
 	}
 	if err := lockTranscriptSession(ctx, mutation.executor, scope, msg.SessionID); err != nil {
 		return err
-	}
-	if ownerSubject != "" && validateSessionAccess(agentUID, msg.SessionID, ownerSubject) == nil {
-		var ownerExists, transcriptExists bool
-		if err := mutation.executor.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agents_session_access WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND session_id=$5 AND is_owner=TRUE)`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, msg.SessionID).Scan(&ownerExists); err != nil {
-			return err
-		}
-		if !ownerExists {
-			if err := mutation.executor.QueryRowContext(ctx, `SELECT EXISTS (
-				SELECT 1 FROM agents_messages WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4
-				UNION ALL SELECT 1 FROM agents_session_titles WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4
-				UNION ALL SELECT 1 FROM agents_session_models WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4
-				UNION ALL SELECT 1 FROM agents_session_summaries WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4
-			)`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, msg.SessionID).Scan(&transcriptExists); err != nil {
-				return err
-			}
-			if !transcriptExists {
-				if _, err := mutation.executor.ExecContext(ctx, `INSERT INTO agents_session_access (org_uuid,workspace_uuid,agent_name,agent_uid,session_id,subject,is_owner,created_at) VALUES ($1,$2,$3,$4,$5,$6,TRUE,$7)`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, msg.SessionID, ownerSubject, now.UTC()); err != nil {
-					return err
-				}
-			}
-		}
 	}
 	items := make([]AgentAttachment, 0, len(receipts))
 	for _, receipt := range receipts {
@@ -455,5 +424,4 @@ func insertAgentChatRun(ctx context.Context, executor scopedExecutor, scope Scop
 
 var _ AgentAttachmentStore = (*PostgresStore)(nil)
 var _ AgentChatAdmissionStore = (*PostgresStore)(nil)
-var _ AgentChatOwnerAdmissionStore = (*PostgresStore)(nil)
 var _ AgentAttachmentQuotaConfigurer = (*PostgresStore)(nil)

@@ -48,11 +48,7 @@ type MemoryStore struct {
 	// mirroring the org/workspace columns the Postgres rows carry.
 	runScopes map[string]Scope // key: scope|runID
 	// mcpSessions are harness MCP sessions by token hash.
-	mcpSessions          map[string]HarnessMCPSession
-	sessionOwners        map[string]string
-	sessionGrants        map[string]map[string]bool
-	sessionNotifications map[string][]SessionNotification
-	notificationKeys     map[string]SessionNotification
+	mcpSessions map[string]HarnessMCPSession
 }
 
 type memorySessionModel struct {
@@ -63,30 +59,26 @@ type memorySessionModel struct {
 // NewMemoryStore returns an empty in-memory store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		sessionModels:        map[string]memorySessionModel{},
-		messages:             map[string][]Message{},
-		sessionTitles:        map[string]sessionTitle{},
-		runs:                 map[string]Run{},
-		memories:             map[string]Memory{},
-		inbox:                map[string]InboxItem{},
-		toolCalls:            map[string][]ToolCall{},
-		usage:                map[string]Usage{},
-		tenants:              map[string]TenantRef{},
-		summaries:            map[string]SessionSummary{},
-		summaryGenerations:   map[string]int64{},
-		harness:              map[string]HarnessSession{},
-		idempotencyPrimary:   map[string]bool{},
-		artifacts:            map[string]runArtifactRow{},
-		agentArtifacts:       map[string]AgentArtifact{},
-		agentAttachments:     map[string]AgentAttachment{},
-		attachmentQuota:      DefaultAgentAttachmentQuota(),
-		deliveries:           map[string][]WebhookDelivery{},
-		mcpSessions:          map[string]HarnessMCPSession{},
-		runScopes:            map[string]Scope{},
-		sessionOwners:        map[string]string{},
-		sessionGrants:        map[string]map[string]bool{},
-		sessionNotifications: map[string][]SessionNotification{},
-		notificationKeys:     map[string]SessionNotification{},
+		sessionModels:      map[string]memorySessionModel{},
+		messages:           map[string][]Message{},
+		sessionTitles:      map[string]sessionTitle{},
+		runs:               map[string]Run{},
+		memories:           map[string]Memory{},
+		inbox:              map[string]InboxItem{},
+		toolCalls:          map[string][]ToolCall{},
+		usage:              map[string]Usage{},
+		tenants:            map[string]TenantRef{},
+		summaries:          map[string]SessionSummary{},
+		summaryGenerations: map[string]int64{},
+		harness:            map[string]HarnessSession{},
+		idempotencyPrimary: map[string]bool{},
+		artifacts:          map[string]runArtifactRow{},
+		agentArtifacts:     map[string]AgentArtifact{},
+		agentAttachments:   map[string]AgentAttachment{},
+		attachmentQuota:    DefaultAgentAttachmentQuota(),
+		deliveries:         map[string][]WebhookDelivery{},
+		mcpSessions:        map[string]HarnessMCPSession{},
+		runScopes:          map[string]Scope{},
 	}
 }
 
@@ -472,59 +464,6 @@ func (m *MemoryStore) migrateUnmappedScope(clusterID string, ref TenantRef) {
 		}
 		delete(m.agentAttachments, key)
 	}
-	migratedOwners := make(map[string]string)
-	for key, owner := range m.sessionOwners {
-		if !hasPrefix(key, fromPrefix) {
-			continue
-		}
-		target := moveKey(key)
-		migratedOwners[key] = owner
-		if m.sessionOwners[target] == "" {
-			m.sessionOwners[target] = owner
-		}
-		delete(m.sessionOwners, key)
-	}
-	for key, grants := range m.sessionGrants {
-		if !hasPrefix(key, fromPrefix) {
-			continue
-		}
-		target := moveKey(key)
-		if m.sessionOwners[target] != "" && m.sessionOwners[target] == migratedOwners[key] {
-			if m.sessionGrants[target] == nil {
-				m.sessionGrants[target] = map[string]bool{}
-			}
-			for subject := range grants {
-				m.sessionGrants[target][subject] = true
-			}
-		}
-		delete(m.sessionGrants, key)
-	}
-	for key, items := range m.sessionNotifications {
-		if !hasPrefix(key, fromPrefix) {
-			continue
-		}
-		target := moveKey(key)
-		if m.sessionOwners[target] == migratedOwners[key] {
-			for _, item := range items {
-				dedupKey := target + "|" + item.Producer + "|" + item.Key
-				if _, exists := m.notificationKeys[dedupKey]; !exists {
-					m.sessionNotifications[target] = append(m.sessionNotifications[target], item)
-					m.notificationKeys[dedupKey] = item
-				}
-			}
-		}
-		delete(m.sessionNotifications, key)
-	}
-	for key := range m.notificationKeys {
-		if !hasPrefix(key, fromPrefix) {
-			continue
-		}
-		target := moveKey(key)
-		if _, exists := m.notificationKeys[target]; !exists {
-			m.notificationKeys[target] = m.notificationKeys[key]
-		}
-		delete(m.notificationKeys, key)
-	}
 	for key, rows := range m.deliveries {
 		if !hasPrefix(key, fromPrefix) {
 			continue
@@ -624,21 +563,6 @@ func (m *MemoryStore) hasUnmappedRows(tenant, prefix string) bool {
 		}
 	}
 	for key := range m.agentAttachments {
-		if hasPrefix(key, prefix) {
-			return true
-		}
-	}
-	for key := range m.sessionOwners {
-		if hasPrefix(key, prefix) {
-			return true
-		}
-	}
-	for key := range m.sessionGrants {
-		if hasPrefix(key, prefix) {
-			return true
-		}
-	}
-	for key := range m.sessionNotifications {
 		if hasPrefix(key, prefix) {
 			return true
 		}
@@ -982,27 +906,6 @@ func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID st
 	// The summary stands for messages that no longer exist; keeping it would
 	// replay a wiped conversation back into the model after "/new".
 	delete(m.sessionModels, sessionKey(scope, sessionID))
-	accessPrefix := sessionKey(scope, sessionID) + "|"
-	for key := range m.sessionOwners {
-		if hasPrefix(key, accessPrefix) {
-			delete(m.sessionOwners, key)
-		}
-	}
-	for key := range m.sessionGrants {
-		if hasPrefix(key, accessPrefix) {
-			delete(m.sessionGrants, key)
-		}
-	}
-	for key := range m.sessionNotifications {
-		if hasPrefix(key, accessPrefix) {
-			delete(m.sessionNotifications, key)
-		}
-	}
-	for key := range m.notificationKeys {
-		if hasPrefix(key, accessPrefix) {
-			delete(m.notificationKeys, key)
-		}
-	}
 	for key, attachment := range m.agentAttachments {
 		if attachment.AgentName == scope.AgentName && attachment.SessionID == sessionID && hasPrefix(key, tenantKey(scope)+"|") {
 			delete(m.agentAttachments, key)
@@ -2107,26 +2010,6 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 	for k := range m.harness {
 		if hasPrefix(k, msgPrefix) {
 			delete(m.harness, k)
-		}
-	}
-	for k := range m.sessionOwners {
-		if hasPrefix(k, msgPrefix) {
-			delete(m.sessionOwners, k)
-		}
-	}
-	for k := range m.sessionGrants {
-		if hasPrefix(k, msgPrefix) {
-			delete(m.sessionGrants, k)
-		}
-	}
-	for k := range m.sessionNotifications {
-		if hasPrefix(k, msgPrefix) {
-			delete(m.sessionNotifications, k)
-		}
-	}
-	for k := range m.notificationKeys {
-		if hasPrefix(k, msgPrefix) {
-			delete(m.notificationKeys, k)
 		}
 	}
 	for k, run := range m.runs {

@@ -371,9 +371,6 @@ func (e *requestError) Error() string { return e.msg }
 
 func errBadRequest(msg string) error { return &requestError{http.StatusBadRequest, "BadRequest", msg} }
 func errConflict(msg string) error   { return &requestError{http.StatusConflict, "Conflict", msg} }
-func errUnavailable(msg string) error {
-	return &requestError{http.StatusServiceUnavailable, "ServiceUnavailable", msg}
-}
 
 // writeUpdateError maps requestError to its own class before falling back to
 // the tenant-API mapping.
@@ -560,10 +557,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 
 	frame := s.chatTurn(runCtx, taskRun{
 		CallerUser: id.user,
-		// On a verb id.user is the X-Remote-User kcp stamped, the same kcp
-		// username the MCP path resolves with a SelfSubjectReview.
-		SessionOwnerSubject: id.user,
-		Creds:               c, CR: clientCR{c}, Scope: id.scope(name), Agent: agent,
+		Creds:      c, CR: clientCR{c}, Scope: id.scope(name), Agent: agent,
 		RunID:     runID,
 		SessionID: req.SessionID, Task: req.Message, Trigger: agentsv1alpha1.RunTriggerChat,
 		// No EdgesEndpoint and no HubToken: a verb carries no caller

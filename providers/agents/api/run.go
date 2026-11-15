@@ -523,14 +523,10 @@ func resumeArtifactReferences(checkpoint runCheckpoint, callerUser string) (stri
 type taskRun struct {
 	// CallerUser attributes only this attended task, never inherited child tasks.
 	CallerUser string
-	// SessionOwnerSubject is set only by an attended chat transport with a
-	// trusted caller identity; internal/model runs leave notification ownership
-	// untouched.
-	SessionOwnerSubject string
-	Creds               llm.CredentialResolver
-	CR                  tools.CRAccess
-	Scope               store.Scope
-	Agent               *agentsv1alpha1.Agent
+	Creds      llm.CredentialResolver
+	CR         tools.CRAccess
+	Scope      store.Scope
+	Agent      *agentsv1alpha1.Agent
 
 	// RunID pre-assigns the run's ID (async run-now, chat's SSE start event,
 	// resume). Empty → generated.
@@ -1068,18 +1064,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			Role: "user", Content: run.Task, CreatedAt: startedAt,
 			Metadata: agentChatTranscriptMetadata(run),
 		}
-		if run.Trigger == agentsv1alpha1.RunTriggerChat && run.SessionOwnerSubject != "" {
-			admission, ok := s.store.(store.AgentChatOwnerAdmissionStore)
-			if !ok {
-				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, errors.New("atomic Agent chat admission is not configured"))
-			}
-			if err := admission.CreateOwnedAgentChatRun(ctx, scope, string(agent.UID), message, running, run.AttachmentRefs, run.AttachmentOwner, run.SessionOwnerSubject, startedAt); err != nil {
-				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("accepting Agent chat input: %w", err))
-			}
-			// The transaction writes the Run and transcript anchor together; ownership
-			// is attached only when this is the first transcript in the session.
-			s.projectRun(ctx, scope, running)
-		} else if len(run.AttachmentRefs) > 0 {
+		if len(run.AttachmentRefs) > 0 {
 			admission, ok := s.store.(store.AgentChatAdmissionStore)
 			if !ok {
 				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, errors.New("atomic Agent chat attachment admission is not configured"))

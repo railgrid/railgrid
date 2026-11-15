@@ -467,17 +467,14 @@ func init() {
 			&CancelRequest{},
 			&ChatRequest{},
 			&DiscoverRequest{},
-			&DeliverRequest{},
 			&EnableInboundRequest{},
 			&EventsRequest{},
 			&InboxRequest{},
 			&InboxResolveRequest{},
 			&InboxAnswerRequest{},
 			&MessagesRequest{},
-			&NotificationsRequest{},
 			&RunRequest{},
 			&SessionRequest{},
-			&SessionAccessRequest{},
 			&SessionsRequest{},
 			&SkillCatalogRequest{},
 			&SkillDetailRequest{},
@@ -488,54 +485,6 @@ func init() {
 		)
 		return nil
 	})
-}
-
-// DeliverRequest carries the notification-only delivery custom subresource.
-// +kubebuilder:object:root=true
-// +kubebuilder:storageversion
-// +kubebuilder:resource:path=deliver,scope=Cluster
-// +kubebuilder:resource:singular=deliver
-type DeliverRequest struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Input runtime.RawExtension `json:"input,omitempty"`
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Result runtime.RawExtension `json:"result,omitempty"`
-}
-
-// NotificationsRequest carries the exact-session notification feed subresource.
-// +kubebuilder:object:root=true
-// +kubebuilder:storageversion
-// +kubebuilder:resource:path=notifications,scope=Cluster
-// +kubebuilder:resource:singular=notifications
-type NotificationsRequest struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Input runtime.RawExtension `json:"input,omitempty"`
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Result runtime.RawExtension `json:"result,omitempty"`
-}
-
-// SessionAccessRequest carries a grant or revocation for one exact session.
-// +kubebuilder:object:root=true
-// +kubebuilder:storageversion
-// +kubebuilder:resource:path=session-access,scope=Cluster
-// +kubebuilder:resource:singular=session-access
-type SessionAccessRequest struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Input runtime.RawExtension `json:"input,omitempty"`
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
 // SkillCatalogRequest carries the skill-catalog custom subresource.

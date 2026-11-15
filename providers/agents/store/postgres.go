@@ -86,21 +86,6 @@ func OpenPostgres(ctx context.Context, dsn string) (*PostgresStore, error) {
 func (p *PostgresStore) Close() error { return p.db.Close() }
 
 var agentsSchema = []string{
-	`CREATE TABLE IF NOT EXISTS agents_session_access (
-	 org_uuid TEXT NOT NULL, workspace_uuid TEXT NOT NULL, agent_name TEXT NOT NULL,
-	 agent_uid TEXT NOT NULL, session_id TEXT NOT NULL, subject TEXT NOT NULL,
-	 is_owner BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL,
-	 PRIMARY KEY (org_uuid,workspace_uuid,agent_name,agent_uid,session_id,subject))`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS agents_session_access_one_owner_idx
-	 ON agents_session_access (org_uuid,workspace_uuid,agent_name,agent_uid,session_id) WHERE is_owner=TRUE`,
-	`CREATE TABLE IF NOT EXISTS agents_session_notifications (
-	 id TEXT PRIMARY KEY, org_uuid TEXT NOT NULL, workspace_uuid TEXT NOT NULL,
-	 agent_name TEXT NOT NULL, agent_uid TEXT NOT NULL, session_id TEXT NOT NULL,
-	 subject TEXT NOT NULL, idempotency_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
-	 payload TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL,
-	 UNIQUE (org_uuid,workspace_uuid,agent_name,agent_uid,session_id,subject,idempotency_key))`,
-	`CREATE INDEX IF NOT EXISTS agents_session_notifications_feed_idx
-	 ON agents_session_notifications (org_uuid,workspace_uuid,agent_name,agent_uid,session_id,created_at DESC,id DESC)`,
 	`CREATE TABLE IF NOT EXISTS agents_session_models (
  org_uuid TEXT NOT NULL, workspace_uuid TEXT NOT NULL, agent_name TEXT NOT NULL,
  session_id TEXT NOT NULL, settings JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -744,11 +729,6 @@ func (p *PostgresStore) DeleteSession(ctx context.Context, scope Scope, sessionI
 	}
 	if _, err := mutation.executor.ExecContext(ctx, `DELETE FROM agents_session_models WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID); err != nil {
 		return err
-	}
-	for _, table := range []string{"agents_session_access", "agents_session_notifications"} {
-		if _, err := mutation.executor.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`, table), scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID); err != nil {
-			return err
-		}
 	}
 	// The summary stands for messages that no longer exist; keeping it would
 	// replay a wiped conversation back into the model after "/new".
@@ -2576,8 +2556,6 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 			EXISTS (SELECT 1 FROM agents_run_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_agent_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_agent_attachments WHERE org_uuid=$1 AND workspace_uuid=$2) OR
-			EXISTS (SELECT 1 FROM agents_session_access WHERE org_uuid=$1 AND workspace_uuid=$2) OR
-			EXISTS (SELECT 1 FROM agents_session_notifications WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_webhook_deliveries WHERE org_uuid=$1 AND workspace_uuid=$2)`,
 		fromOrg, fromWorkspace).Scan(&hasSource); err != nil {
 		return fmt.Errorf("check legacy scope for cluster %s: %w", clusterID, err)
@@ -2628,51 +2606,6 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_session_models WHERE org_uuid=$1 AND workspace_uuid=$2`, fromOrg, fromWorkspace); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO agents_session_access (org_uuid,workspace_uuid,agent_name,agent_uid,session_id,subject,is_owner,created_at)
-		SELECT $3,$4,agent_name,agent_uid,session_id,subject,TRUE,created_at FROM agents_session_access
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND is_owner=TRUE ON CONFLICT DO NOTHING`, fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
-		return fmt.Errorf("migrate exact-session access for cluster %s: %w", clusterID, err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO agents_session_access (org_uuid,workspace_uuid,agent_name,agent_uid,session_id,subject,is_owner,created_at)
-		SELECT $3,$4,grant_row.agent_name,grant_row.agent_uid,grant_row.session_id,grant_row.subject,FALSE,grant_row.created_at
-		FROM agents_session_access AS grant_row
-		JOIN agents_session_access AS source_owner ON source_owner.org_uuid=grant_row.org_uuid AND source_owner.workspace_uuid=grant_row.workspace_uuid
-		 AND source_owner.agent_name=grant_row.agent_name AND source_owner.agent_uid=grant_row.agent_uid AND source_owner.session_id=grant_row.session_id AND source_owner.is_owner=TRUE
-		JOIN agents_session_access AS target_owner ON target_owner.org_uuid=$3 AND target_owner.workspace_uuid=$4
-		 AND target_owner.agent_name=grant_row.agent_name AND target_owner.agent_uid=grant_row.agent_uid AND target_owner.session_id=grant_row.session_id
-		 AND target_owner.subject=source_owner.subject AND target_owner.is_owner=TRUE
-		WHERE grant_row.org_uuid=$1 AND grant_row.workspace_uuid=$2 AND grant_row.is_owner=FALSE
-		ON CONFLICT DO NOTHING`, fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
-		return fmt.Errorf("migrate exact-session grants for cluster %s: %w", clusterID, err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_session_notifications AS source_notice
-		WHERE source_notice.org_uuid=$1 AND source_notice.workspace_uuid=$2 AND NOT EXISTS (
-			SELECT 1 FROM agents_session_access AS source_owner
-			JOIN agents_session_access AS target_owner ON target_owner.org_uuid=$3 AND target_owner.workspace_uuid=$4
-			 AND target_owner.agent_name=source_owner.agent_name AND target_owner.agent_uid=source_owner.agent_uid
-			 AND target_owner.session_id=source_owner.session_id AND target_owner.subject=source_owner.subject AND target_owner.is_owner=TRUE
-			WHERE source_owner.org_uuid=$1 AND source_owner.workspace_uuid=$2 AND source_owner.agent_name=source_notice.agent_name
-			 AND source_owner.agent_uid=source_notice.agent_uid AND source_owner.session_id=source_notice.session_id AND source_owner.is_owner=TRUE
-		)`, fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
-		return fmt.Errorf("discard notifications for superseded session owners during scope migration: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_session_notifications AS source_notice
-		USING agents_session_notifications AS target_notice
-		WHERE source_notice.org_uuid=$1 AND source_notice.workspace_uuid=$2 AND target_notice.org_uuid=$3 AND target_notice.workspace_uuid=$4
-		 AND source_notice.agent_name=target_notice.agent_name AND source_notice.agent_uid=target_notice.agent_uid
-		 AND source_notice.session_id=target_notice.session_id AND source_notice.subject=target_notice.subject
-		 AND source_notice.idempotency_key=target_notice.idempotency_key`, fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
-		return fmt.Errorf("deduplicate session notifications during scope migration: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agents_session_notifications SET org_uuid=$3,workspace_uuid=$4 WHERE org_uuid=$1 AND workspace_uuid=$2`, fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
-		return fmt.Errorf("migrate session notifications for cluster %s: %w", clusterID, err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_session_access WHERE org_uuid=$1 AND workspace_uuid=$2`, fromOrg, fromWorkspace); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_session_notifications WHERE org_uuid=$1 AND workspace_uuid=$2`, fromOrg, fromWorkspace); err != nil {
 		return err
 	}
 
@@ -3088,7 +3021,7 @@ func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentN
 		}
 		mutation.tx, mutation.executor = tx, tx
 	}
-	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_session_models", "agents_session_titles", "agents_session_access", "agents_session_notifications", "agents_harness_sessions", "agents_run_artifacts", "agents_agent_artifacts", "agents_agent_attachments"} {
+	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_session_models", "agents_session_titles", "agents_harness_sessions", "agents_run_artifacts", "agents_agent_artifacts", "agents_agent_attachments"} {
 		if _, err := mutation.executor.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, agentName); err != nil {
