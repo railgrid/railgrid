@@ -7,7 +7,7 @@
   operation. Toasts remain for transient success and context-free feedback.
 -->
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { Check, Info, TriangleAlert, X } from 'lucide-vue-next'
 import { ensureRailgridUIStyles } from '../portalkit/styles'
 
@@ -57,6 +57,16 @@ const liveMode = () => {
 const actionButtonLabel = computed(() => props.actionBusy
   ? props.actionBusyLabel || `${props.actionLabel}…`
   : props.actionLabel)
+const actionRequested = ref(false)
+function requestAction() {
+  if (props.actionBusy || actionRequested.value) return
+  actionRequested.value = true
+  emit('action')
+  // Allow synchronous actions to run again, while blocking duplicate events
+  // until an async caller's busy prop has had a chance to arrive.
+  void nextTick(() => { if (!props.actionBusy) actionRequested.value = false })
+}
+watch(() => props.actionBusy, busy => { if (!busy) actionRequested.value = false })
 </script>
 
 <template>
@@ -79,10 +89,10 @@ const actionButtonLabel = computed(() => props.actionBusy
       v-if="actionLabel"
       type="button"
       class="k-inline-notification__action"
-      :disabled="actionBusy"
+      :aria-disabled="actionBusy ? 'true' : undefined"
       :aria-label="actionButtonLabel"
       :aria-busy="actionBusy ? 'true' : undefined"
-      @click="emit('action')"
+      @click="requestAction"
     >
       {{ actionButtonLabel }}
     </button>

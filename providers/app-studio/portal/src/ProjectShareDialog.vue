@@ -262,12 +262,16 @@ async function editChannel(channel: ShareChannel) {
     restoreChannelDraft(current)
   }
   editingChannel.value = channel
+  await nextTick()
+  dialogRef.value?.querySelector<HTMLElement>(`#project-share-${channel}-title`)?.focus()
 }
 
-function cancelChannel(channel: ShareChannel) {
+async function cancelChannel(channel: ShareChannel) {
   if (props.busy) return
   restoreChannelDraft(channel)
   editingChannel.value = null
+  await nextTick()
+  dialogRef.value?.querySelector<HTMLElement>(`[data-manage-channel="${channel}"]`)?.focus()
 }
 
 function saveProductionAccess() {
@@ -485,7 +489,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                     <Rocket class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
                   </div>
                   <div class="min-w-0">
-                    <h3 id="project-share-production-title" class="text-[14px] font-semibold text-text-primary">Production app</h3>
+                    <h3 id="project-share-production-title" tabindex="-1" class="text-[14px] font-semibold text-text-primary">Production app</h3>
                     <p class="mt-1 text-[12px] leading-4 text-text-muted">Stable release for customers and external users.</p>
                   </div>
                 </div>
@@ -512,6 +516,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                 </div>
                 <button
                   type="button"
+                  data-manage-channel="production"
                   class="k-btn k-btn--ghost app-studio-touch-target h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                   :disabled="busy"
                   @click="editChannel('production')"
@@ -644,7 +649,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                     <MonitorPlay class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
                   </div>
                   <div class="min-w-0">
-                    <h3 id="project-share-preview-title" class="text-[14px] font-semibold text-text-primary">Development preview</h3>
+                    <h3 id="project-share-preview-title" tabindex="-1" class="text-[14px] font-semibold text-text-primary">Development preview</h3>
                     <p class="mt-1 text-[12px] leading-4 text-text-muted">Mutable environment for reviewing in-progress work.</p>
                   </div>
                 </div>
@@ -656,7 +661,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                   <p class="text-[12px] font-medium text-text-secondary">{{ previewAudienceSummary }}</p>
                   <p v-if="previewLink" class="mt-1 truncate font-mono text-[11px] text-text-muted">{{ previewLink }}</p>
                 </div>
-                <button type="button" class="k-btn k-btn--ghost app-studio-touch-target h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="busy" @click="editChannel('preview')">Manage preview access</button>
+                <button type="button" data-manage-channel="preview" class="k-btn k-btn--ghost app-studio-touch-target h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="busy" @click="editChannel('preview')">Manage preview access</button>
               </div>
 
               <div v-else class="grid gap-3 border-t border-border-subtle px-4 pb-4 pt-3 pl-[3.75rem] max-sm:pl-4">

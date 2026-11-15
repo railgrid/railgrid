@@ -398,6 +398,25 @@ function clearErrors(): void {
   for (const key of Object.keys(errors)) delete errors[key]
 }
 
+// A changed field has a new value to validate; keep unrelated errors visible.
+for (const [value, key] of [
+  [name, 'name'], [modelCredential, 'modelCredential'], [harnessEdge, 'harnessEdge'],
+  [harnessCredential, 'harnessCredential'], [harnessReasoningEffort, 'harnessReasoningEffort'],
+  [harnessGitHubConnection, 'harnessGitHubConnection'], [channel, 'channel'],
+] as const) watch(value, () => { delete errors[key] }, { flush: 'sync' })
+watch(() => ({ ...parameters.value }), (current, previous) => {
+  for (const key of new Set([...Object.keys(current), ...Object.keys(previous)])) {
+    if (current[key] !== previous[key]) delete errors[`param-${key}`]
+  }
+}, { flush: 'sync' })
+watch(() => ({ ...slotWiring.value }), (current, previous) => {
+  for (const key of new Set([...Object.keys(current), ...Object.keys(previous)])) {
+    if (current[key] !== previous[key]) delete errors[`slot-${key}`]
+  }
+}, { flush: 'sync' })
+watch(researchSpecialist, () => { delete errors['param-domain'] }, { flush: 'sync' })
+watch(digestTimeMissing, () => { delete errors['param-digestTime'] }, { flush: 'sync' })
+
 function addCredential(family: AgentCredentialFamily): void {
   if (busy.value) return
   emit('add-credential', {
@@ -641,7 +660,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
         <button class="k-btn k-btn--ghost" type="button" :disabled="credentials.loading" @click="store.load('credentials')">Retry</button>
       </div>
 
-      <form ref="form" class="agents-create-form agents-guided-form k-create-surface k-create-surface--guided" aria-label="Create agent" :aria-busy="busy" @submit.prevent="submit">
+      <form ref="form" class="agents-create-form agents-guided-form k-create-surface k-create-surface--guided" aria-label="Create agent" novalidate :aria-busy="busy" @submit.prevent="submit">
         <div class="k-create-body k-create-body--guided">
           <div class="k-create-fields" :class="{ 'agents-template-fields': selectedTemplate }">
             <div v-if="selectedTemplate" class="agents-template-selection">
@@ -721,6 +740,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                     :placeholder="isCodeReviewer && param.key === 'reviewFocus' ? 'Use template default' : param.default || (param.type === 'list' ? 'One per line' : '')"
                     :disabled="busy"
                     :aria-labelledby="`agent-create-param-${param.key}-label`"
+                    :aria-required="param.required || (isResearcher && param.key === 'domain') ? 'true' : undefined"
                     :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
                     :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
                   />
@@ -733,6 +753,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                     :disabled="busy"
                     autocomplete="off"
                     :aria-labelledby="`agent-create-param-${param.key}-label`"
+                    :aria-required="param.required || (isResearcher && param.key === 'domain') ? 'true' : undefined"
                     :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
                     :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
                   />
@@ -914,7 +935,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                       :disabled="busy"
                       :invalid="Boolean(errors.modelCredential)"
                       labelledby="agent-create-model-label"
-                      :describedby="['agent-create-model-hint', errors.modelCredential ? 'agent-create-model-error' : ''].filter(Boolean).join(' ')"
+                      :describedby="['agent-create-model-hint', credentialOptions.length === 0 ? 'agent-create-model-empty' : '', errors.modelCredential ? 'agent-create-model-error' : ''].filter(Boolean).join(' ')"
                     />
                     <span v-if="errors.modelCredential" id="agent-create-model-error" class="agents-fielderr" role="alert">{{ errors.modelCredential }}</span>
                     <span id="agent-create-model-hint" class="agents-hint">{{ selectedTemplate && !hasOption(credentialOptions, modelCredential) ? 'Choose a model to create this agent.' : chatCredentials.some(model => model.name === modelCredential && model.ready === true) ? 'Ready to use' : 'The default model for this agent.' }}</span>

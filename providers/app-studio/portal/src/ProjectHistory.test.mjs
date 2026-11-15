@@ -66,6 +66,8 @@ test('renders distinct initial loading, empty, and failed history states', async
     assert.doesNotMatch(selected, /class="k-btn k-btn--danger ml-auto" disabled/)
     const loading = await render({ refreshing: true })
     assert.match(loading, /Loading saved commits/)
+    assert.match(loading, /<button[^>]*aria-disabled="true"[^>]*aria-busy="true"[^>]*aria-label="Refresh Git history"/)
+    assert.doesNotMatch(loading, /<button[^>]* disabled[^>]*aria-label="Refresh Git history"/)
     assert.doesNotMatch(loading, /No saved commits|Selected commit|Restore project files/)
     const empty = await render()
     assert.match(empty, /No saved commits yet/)

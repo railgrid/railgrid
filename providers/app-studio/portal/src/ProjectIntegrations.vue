@@ -218,7 +218,7 @@ export function projectIntegrationMatchesSearch(
 <script setup lang="ts">
 import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
 import AIWorkbenchSection from './agentkit/AIWorkbenchSection.vue'
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   ChevronRight,
   KeyRound,
@@ -233,6 +233,7 @@ import { api } from './api'
 import { confirmDialog } from './portalkit/confirm'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
+import ResourceTimestamp from './portalkit/ResourceTimestamp.vue'
 import {
   buildProjectIntegrationRevokePayload,
   projectIntegrationsAuthorityKey,
@@ -263,6 +264,9 @@ const integrationsLoaded = ref(false)
 const loading = ref(false)
 const busy = ref(false)
 const error = ref<string | null>(null)
+const refreshButton = ref<HTMLButtonElement | null>(null)
+const readErrorNotice = ref<InstanceType<typeof InlineNotification> | null>(null)
+const discoveryNotice = ref<InstanceType<typeof InlineNotification> | null>(null)
 const formError = ref<string | null>(null)
 const notice = ref<string | null>(null)
 const search = ref('')
@@ -306,8 +310,8 @@ const discoveryNotification = computed(() => {
 })
 const integrationsErrorMessage = computed(() => (
   integrationsLoaded.value
-    ? `Could not refresh provider access. Showing the last confirmed results. ${projectIntegrationErrorMessage(error.value, 'The request returned no error details.')}`
-    : `Could not load provider access. ${projectIntegrationErrorMessage(error.value, 'The request returned no error details.')}`
+    ? `Showing the last confirmed results. ${projectIntegrationErrorMessage(error.value, 'The request returned no error details.')}`
+    : projectIntegrationErrorMessage(error.value, 'The request returned no error details.')
 ))
 const integrationsErrorTitle = computed(() => integrationsLoaded.value
   ? 'Could not refresh provider access'
@@ -357,14 +361,23 @@ async function loadIntegrations(requestAuthority = integrationsAuthority.value) 
   if (!projectName) return
   const requestSerial = ++integrationsRequestSerial
   loading.value = true
-  error.value = null
   try {
     const result = await api.listProjectIntegrations(context, projectName)
     if (!isCurrentIntegrationsRequest(requestSerial, requestAuthority)) return
+    const focusedRetry = typeof document !== 'undefined' &&
+      (readErrorNotice.value?.$el?.contains(document.activeElement) || discoveryNotice.value?.$el?.contains(document.activeElement))
+      ? document.activeElement as HTMLElement
+      : null
     integrations.value = projectIntegrationItemsAfterResponse(integrations.value, result)
     availableIntegrations.value = result.available
     discovery.value = result.discovery
     integrationsLoaded.value = true
+    error.value = null
+    if (focusedRetry) {
+      await nextTick()
+      if (isCurrentIntegrationsRequest(requestSerial, requestAuthority) && !focusedRetry.isConnected &&
+          (document.activeElement === document.body || !document.activeElement)) refreshButton.value?.focus()
+    }
   } catch (err) {
     if (!isCurrentIntegrationsRequest(requestSerial, requestAuthority)) return
     error.value = projectIntegrationErrorMessage(err, 'The provider access request failed. Retry to check again.')
@@ -374,6 +387,7 @@ async function loadIntegrations(requestAuthority = integrationsAuthority.value) 
 }
 
 function refreshIntegrations(): void {
+  if (loading.value || busy.value || !props.projectName) return
   void loadIntegrations()
 }
 
@@ -544,12 +558,6 @@ function actionDisplayName(entry: ProjectIntegrationCardEntry, action: ProviderA
     : action.displayName) || id
 }
 
-function formatTimestamp(value?: string): string {
-  if (!value) return 'Not recorded'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
-}
-
 onBeforeUnmount(() => {
   // Prevent a deferred read from committing after this resource view leaves
   // the document. The same serial guard handles project and authority swaps.
@@ -562,11 +570,13 @@ onBeforeUnmount(() => {
   <AIWorkbenchPane title="Integrations" description="Manage what this project can access." :aria-busy="loading || busy">
     <template #actions>
       <button
+        ref="refreshButton"
         type="button"
         class="k-btn k-btn--ghost"
-        :disabled="loading || busy || !projectName"
+        :disabled="busy || !projectName"
+        :aria-disabled="loading || undefined"
         :aria-busy="loading ? 'true' : undefined"
-        title="Refresh integrations"
+        aria-label="Refresh integrations"
         @click="refreshIntegrations"
       >
         <Loader2 v-if="loading" class="h-3.5 w-3.5 motion-safe:animate-spin" :stroke-width="1.75" aria-hidden="true" />
@@ -578,6 +588,7 @@ onBeforeUnmount(() => {
 
     <InlineNotification
       v-if="error"
+      ref="readErrorNotice"
       tone="error"
       :title="integrationsErrorTitle"
       :message="integrationsErrorMessage"
@@ -588,6 +599,7 @@ onBeforeUnmount(() => {
     />
     <InlineNotification
       v-if="discoveryNotification"
+      ref="discoveryNotice"
       :tone="discoveryNotification.tone"
       :title="discoveryNotification.title"
       :message="discoveryNotification.message"
@@ -619,7 +631,7 @@ onBeforeUnmount(() => {
         ><X :size="14" :stroke-width="1.75" aria-hidden="true" /></button>
       </div>
 
-      <div v-if="loading && !hasIntegrationCards" class="grid gap-2" role="status" aria-live="polite">
+      <div v-if="loading && !integrationsLoaded" class="grid gap-2" role="status" aria-live="polite">
         <p class="text-[12px] text-text-muted">Loading integrations…</p>
         <div v-for="i in 3" :key="i" aria-hidden="true" class="grid gap-2 border-t border-border-subtle py-3">
           <div class="shimmer h-3.5 w-32 rounded bg-surface-overlay" />
@@ -632,7 +644,7 @@ onBeforeUnmount(() => {
       <p v-else-if="hasIntegrationCards && !visibleIntegrationCards.length" class="py-2 text-[13px] text-text-secondary" role="status">
         No resources match your search.
       </p>
-      <div v-else-if="integrationsLoaded && !hasIntegrationCards && !error && discovery?.state === 'available'" class="py-2" role="status">
+      <div v-else-if="integrationsLoaded && !hasIntegrationCards && discovery?.state === 'available'" class="py-2" role="status">
         <h3 class="text-[13px] font-semibold text-text-primary">No resources available yet</h3>
         <p class="mt-1 max-w-[68ch] text-[13px] leading-5 text-text-secondary">Create a resource in a provider or ask your workspace administrator for access, then refresh this list.</p>
       </div>
@@ -800,8 +812,8 @@ onBeforeUnmount(() => {
             <div v-for="grant in entry.allowedActions" :key="`${grant.name}/${grant.version}`" class="mt-3 grid gap-1 text-[11px] [overflow-wrap:anywhere]">
               <p class="font-medium text-text-secondary">{{ grant.name }}/{{ grant.version }}</p>
               <code class="break-all">{{ grant.schemaDigest }}</code>
-              <p>Granted by {{ grant.grantedBy || 'server' }} · {{ formatTimestamp(grant.grantedAt) }}</p>
-              <p v-if="grant.revoked">Revoked by {{ grant.revokedBy || 'server' }} · {{ formatTimestamp(grant.revokedAt) }}</p>
+              <p>Granted by {{ grant.grantedBy || 'server' }} · <ResourceTimestamp :value="grant.grantedAt" label="Granted" /></p>
+              <p v-if="grant.revoked">Revoked by {{ grant.revokedBy || 'server' }} · <ResourceTimestamp :value="grant.revokedAt" label="Revoked" /></p>
             </div>
             <div v-for="action in entry.catalogActions" :key="action.id" class="mt-3 grid gap-1 text-[11px] [overflow-wrap:anywhere]">
               <p>{{ action.id }} · Risk {{ action.risk || 'unspecified' }} · {{ action.consent?.required ? 'Approval required' : 'No approval required' }}</p>

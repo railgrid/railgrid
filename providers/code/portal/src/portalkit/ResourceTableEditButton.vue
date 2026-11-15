@@ -1,42 +1,12 @@
-<!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies
-     under providers/*/portal/src/portalkit/; edit here and run
-     `make sync-portalkit`.
-
-     Compact, accessible edit trigger for ResourceTable action cells. -->
+<!-- CANONICAL SOURCE — edit here, then run make sync-portalkit. -->
 <script setup lang="ts">
-import { ref } from 'vue'
 import { Pencil } from 'lucide-vue-next'
-import ResourceTableActionTooltip from './ResourceTableActionTooltip.vue'
-import { ensureRailgridUIStyles } from '../portalkit/styles'
+import ResourceTableActionButton from './ResourceTableActionButton.vue'
 
-// Standalone provider portals load the exact canonical recipe through the
-// shared helper; the host portal already imports the same railgrid-ui.css file.
-ensureRailgridUIStyles()
-const button = ref<HTMLButtonElement | null>(null)
-
-withDefaults(defineProps<{
-  /** Accessible resource-specific action, for example "Edit table orders". */
-  label: string
-  disabled?: boolean
-}>(), {
-  disabled: false,
-})
-
-const emit = defineEmits<{
-  click: [event: MouseEvent]
-}>()
+withDefaults(defineProps<{ label: string; disabled?: boolean }>(), { disabled: false })
+const emit = defineEmits<{ click: [event: MouseEvent] }>()
 </script>
 
 <template>
-  <button
-    ref="button"
-    class="k-table-action k-table-action--edit"
-    type="button"
-    :aria-label="label"
-    :disabled="disabled"
-    @click.stop="emit('click', $event)"
-  >
-    <Pencil class="k-table-action__icon" :stroke-width="1.75" aria-hidden="true" />
-    <ResourceTableActionTooltip :anchor="button" :label="label" />
-  </button>
+  <ResourceTableActionButton class="k-table-action--edit" :icon="Pencil" :label="label" :disabled="disabled" @click="emit('click', $event)" />
 </template>
