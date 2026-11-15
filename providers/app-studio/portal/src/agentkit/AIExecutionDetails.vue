@@ -8,7 +8,7 @@
   component only escapes text and applies the same-origin link guard.
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, Copy, CircleHelp, ExternalLink, Loader2, Terminal, X } from 'lucide-vue-next'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import {
@@ -56,22 +56,34 @@ const statusIcon = computed(() => {
 const expandedOutput = ref(false)
 const wrapOutput = ref(false)
 const copyState = ref('')
+let copyTimer: ReturnType<typeof setTimeout> | undefined
+let copyGeneration = 0
+function resetCopy(): void {
+  copyGeneration += 1
+  clearTimeout(copyTimer)
+  copyState.value = ''
+}
+onBeforeUnmount(resetCopy)
 watch(
   [() => view.value?.command, () => view.value?.input],
   () => {
     expandedOutput.value = false
-    copyState.value = ''
+    resetCopy()
   },
 )
 const fullOutput = computed(() => outputLines(view.value).join('\n'))
 const previewOutput = computed(() => fullOutput.value.split('\n').slice(0, 12).map(line => line.slice(0, 2000)).join('\n'))
 const hasMoreOutput = computed(() => previewOutput.value !== fullOutput.value)
 async function copyExecution(): Promise<void> {
+  resetCopy()
+  const generation = copyGeneration
   try {
     await navigator.clipboard.writeText([view.value?.command || view.value?.input, fullOutput.value].filter(Boolean).join('\n\n'))
+    if (generation !== copyGeneration) return
     copyState.value = 'Copied'
+    copyTimer = setTimeout(() => { copyState.value = '' }, 2000)
   } catch {
-    copyState.value = 'Could not copy'
+    if (generation === copyGeneration) copyState.value = 'Could not copy. Select the text to copy it.'
   }
 }
 
@@ -126,7 +138,7 @@ function outputLines(execution?: AIExecutionView): readonly string[] {
     <template v-else>
       <div class="k-ai-execution-details__toolbar">
         <span>{{ view.heading || 'Shell' }}</span>
-        <div class="k-ai-execution-details__controls">
+        <div class="k-ai-execution-details__controls" :class="{ 'is-error': copyState.startsWith('Could not copy') }">
           <button type="button" :aria-pressed="wrapOutput" @click="wrapOutput = !wrapOutput">Wrap lines</button>
           <button type="button" aria-label="Copy command and output" @click="copyExecution"><Copy :size="14" aria-hidden="true" /> Copy</button>
           <span role="status">{{ copyState }}</span>

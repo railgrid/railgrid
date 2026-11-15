@@ -1945,6 +1945,13 @@ button.k-workbench-tab {
   .k-ai-message:focus-within .k-ai-message-hover-action {
     opacity: 1;
   }
+  .k-ai-message--copy-error .k-ai-message-hover-action { opacity: 1; }
+}
+/* A hybrid device can have a fine primary pointer and a touch screen. */
+@media (any-pointer: coarse) {
+  .k-ai-message .k-ai-message-author,
+  .k-ai-message .k-ai-timestamp,
+  .k-ai-message .k-ai-message-hover-action { opacity: 1; }
 }
 
 .k-ai-message-copy {
@@ -1961,6 +1968,7 @@ button.k-workbench-tab {
   cursor: pointer;
 }
 .k-ai-message-copy:hover { background: var(--color-surface-hover); color: var(--color-text-primary); }
+.k-ai-message-copy-feedback:not(:empty) { align-self: center; color: var(--color-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 .k-ai-message-copy:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 @media (hover: none), (any-pointer: coarse) {
   .k-ai-message-copy { min-width: 44px; min-height: 44px; }
