@@ -293,3 +293,49 @@ func TestTenantAdminPreservesOnlySupportedBoundUseGrants(t *testing.T) {
 		t.Fatal("unbound use granted")
 	}
 }
+
+// A binding the hub seeded bounds what members get on its groups; an
+// annotation nobody recognises gives nothing rather than everything.
+func TestTenantAdminRulesHonourSeededTenantAccess(t *testing.T) {
+	annotated := func(group, resource, access string) unstructured.Unstructured {
+		binding := tenantAdminBinding(group, resource)
+		binding.SetAnnotations(map[string]string{"admin.railgrid.ai/tenant-access": access})
+		return binding
+	}
+	rules := tenantAdminRules([]unstructured.Unstructured{
+		annotated("switchboard.railgrid.ai", "requests", "ReadOnly"),
+		annotated("hidden.example", "things", "None"),
+		annotated("typo.example", "things", "readonly"),
+		annotated("open.example", "things", "ReadWrite"),
+		// Two bindings serve one group: the narrower access holds, whatever
+		// the order.
+		tenantAdminBinding("shared.example", "widgets"),
+		annotated("shared.example", "gadgets", "ReadOnly"),
+		annotated("agents.railgrid.ai", "modelproviderconnections", "ReadOnly"),
+		tenantAdminBinding("planner.example", "boards"),
+	})
+	for _, tc := range []struct {
+		group, resource, verb string
+		allowed               bool
+	}{
+		{"switchboard.railgrid.ai", "requests", "get", true},
+		{"switchboard.railgrid.ai", "requests", "watch", true},
+		{"switchboard.railgrid.ai", "requests", "create", false},
+		{"switchboard.railgrid.ai", "requests", "delete", false},
+		{"switchboard.railgrid.ai", "requests", "deletecollection", false},
+		{"switchboard.railgrid.ai", "requests/status", "update", false},
+		{"hidden.example", "things", "get", false},
+		{"typo.example", "things", "get", false},
+		{"open.example", "things", "delete", true},
+		{"shared.example", "widgets", "get", true},
+		{"shared.example", "widgets", "update", false},
+		{"shared.example", "gadgets", "create", false},
+		{"agents.railgrid.ai", "modelproviderconnections", "get", true},
+		{"agents.railgrid.ai", "modelproviderconnections", "use", false},
+		{"planner.example", "boards", "create", true},
+	} {
+		if got := tenantAdminAllows(rules, tc.group, tc.resource, tc.verb); got != tc.allowed {
+			t.Errorf("%s %s/%s = %v, want %v", tc.verb, tc.group, tc.resource, got, tc.allowed)
+		}
+	}
+}

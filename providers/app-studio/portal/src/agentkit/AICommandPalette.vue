@@ -48,6 +48,8 @@ const resourceWarnings = ref<string[]>([])
 const resourceLoading = ref(false)
 let resourceLoadSerial = 0
 let focusing = false
+let committing = false
+let focusSerial = 0
 let alive = true
 let paletteOpener: HTMLElement | null = null
 let externalFocusOwner: HTMLElement | null = null
@@ -89,6 +91,18 @@ const optionCount = computed(() => {
 })
 const activeOptionID = computed(() => optionCount.value ? optionID(activeIndex.value) : undefined)
 const selectedResourceKeys = computed(() => new Set(props.selectedResources.map(agentKitResourceSelectionKey)))
+// Keep the live region mounted while the palette is open so changes are
+// announced, including the asynchronous transition from loading to empty.
+const readStatus = computed(() => {
+  if (view.value === 'commands' && !commands.value.length) return 'No commands match.'
+  if (view.value === 'skills' && !skills.value.length) return 'No enabled skills match.'
+  if (view.value === 'providers' && !providers.value.length) return 'No Ready providers publish usable actions.'
+  if (view.value === 'resources') {
+    if (resourceLoading.value) return 'Loading resources…'
+    if (!resources.value.length) return 'No accessible resources match.'
+  }
+  return ''
+})
 
 watch(() => props.open, (open) => {
   if (!open) {
@@ -156,11 +170,12 @@ function bindExternalFocusOwner(owner: HTMLElement) {
 }
 
 async function focusCurrentOwner() {
+  const serial = ++focusSerial
   focusing = true
   releaseExternalFocusOwner()
   await nextTick()
   focusing = false
-  if (!alive || !props.open) return
+  if (!alive || !props.open || serial !== focusSerial) return
   if (view.value !== 'commands') {
     searchRef.value?.focus({ preventScroll: true })
     return
@@ -208,9 +223,10 @@ function enterView(next: PaletteView) {
 }
 
 function commitSelection(commit: () => void) {
+  committing = true
   focusing = true
   try { commit(); emit('close') }
-  finally { focusing = false }
+  finally { focusing = false; committing = false }
 }
 
 function chooseCommand(command: AgentKitSlashCommand) {
@@ -265,7 +281,12 @@ function back() {
 
 function handleFocusOut(event: FocusEvent) {
   const target = event.relatedTarget
-  if (props.open && !focusing && !(target instanceof Node && (panelRef.value?.contains(target) || target === externalFocusOwner))) emit('close', false)
+  if (!props.open || committing || target instanceof Node && (panelRef.value?.contains(target) || target === externalFocusOwner)) return
+  // A null target can be the transient gap while a view is being replaced.
+  // A concrete outside target is a deliberate move, even during that gap.
+  if (focusing && !(target instanceof Node)) return
+  focusSerial++
+  emit('close', false)
 }
 
 function isEditableKeyboardOwner(target: EventTarget | null): boolean {
@@ -380,6 +401,7 @@ onBeforeUnmount(() => {
         </label>
       </div>
 
+      <span class="sr-only" role="status" aria-live="polite">{{ readStatus }}</span>
       <div
         :id="listboxID"
         ref="listboxRef"
@@ -391,7 +413,7 @@ onBeforeUnmount(() => {
         @keydown="handleKeydown"
       >
         <template v-if="view === 'commands'">
-          <p v-if="!commands.length" :class="emptyClass" role="status">No commands match.</p>
+          <p v-if="!commands.length" :class="emptyClass" aria-hidden="true">No commands match.</p>
           <button v-for="(command, index) in commands" :id="optionID(index)" :key="command.id" type="button" role="option" tabindex="-1" :aria-selected="activeIndex === index" :class="[optionClass, activeIndex === index ? 'bg-surface-hover text-text-primary' : 'text-text-secondary hover:bg-surface-hover']" @mousedown.prevent @mouseenter="hoverOption(index)" @click="chooseCommand(command)">
             <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface">
               <Plug v-if="command.id === 'skill'" class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
@@ -409,7 +431,7 @@ onBeforeUnmount(() => {
             <span class="min-w-0 flex-1"><span class="block truncate text-[13px] font-medium text-text-primary">{{ skill.name }}</span><span class="block truncate text-[11px] text-text-muted">{{ skill.description || skill.scope }}</span></span>
             <span class="font-mono text-[9px] uppercase text-text-muted">{{ selectedSkillIDs.includes(skill.id) ? 'Added' : skill.scope }}</span>
           </button>
-          <p v-if="!skills.length" :class="emptyClass">No enabled skills match.</p>
+          <p v-if="!skills.length" :class="emptyClass" aria-hidden="true">No enabled skills match.</p>
         </template>
 
         <template v-else-if="view === 'providers'">
@@ -418,11 +440,11 @@ onBeforeUnmount(() => {
             <span class="min-w-0 flex-1"><span class="block truncate text-[13px] font-medium text-text-primary">{{ provider.displayName || provider.name }}</span><span class="block text-[11px] text-text-muted">{{ provider.resourceTypes.length }} resource {{ provider.resourceTypes.length === 1 ? 'type' : 'types' }}</span></span>
             <ChevronRight class="h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" />
           </button>
-          <p v-if="!providers.length" :class="emptyClass">No Ready providers publish usable actions.</p>
+          <p v-if="!providers.length" :class="emptyClass" aria-hidden="true">No Ready providers publish usable actions.</p>
         </template>
 
         <template v-else>
-          <div v-if="resourceLoading" class="flex items-center justify-center gap-2 px-3 py-8 text-[12px] text-text-muted"><Loader2 class="h-4 w-4 k-spin" :stroke-width="1.75" aria-hidden="true" />Loading resources…</div>
+          <div v-if="resourceLoading" aria-hidden="true" class="flex items-center justify-center gap-2 px-3 py-8 text-[12px] text-text-muted"><Loader2 class="h-4 w-4 k-spin" :stroke-width="1.75" aria-hidden="true" />Loading resources…</div>
           <template v-else>
             <template v-for="({ item, kind }, index) in resources" :key="agentKitResourceSelectionKey(item)">
               <div v-if="index === 0 || resources[index - 1]?.kind !== kind" class="px-2.5 pb-1 pt-2 font-mono text-[9px] font-semibold uppercase tracking-wide text-text-muted">{{ kind }}</div>
@@ -432,7 +454,7 @@ onBeforeUnmount(() => {
                 <span v-if="selectedResourceKeys.has(agentKitResourceSelectionKey(item))" class="font-mono text-[9px] uppercase text-text-muted">Added</span>
               </button>
             </template>
-            <p v-if="!resources.length" :class="emptyClass">No accessible resources match.</p>
+            <p v-if="!resources.length" :class="emptyClass" aria-hidden="true">No accessible resources match.</p>
             <div v-for="warning in resourceWarnings" :key="warning" role="status" class="mx-2 mt-2 flex gap-2 rounded-md border border-warning/30 bg-warning-subtle px-2.5 py-2 text-[11px] text-warning"><TriangleAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />{{ warning }}</div>
           </template>
         </template>

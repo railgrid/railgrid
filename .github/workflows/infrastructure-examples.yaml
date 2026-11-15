@@ -3,15 +3,11 @@ name: Infrastructure Example Apps
 # Builds the example frontend + backend images for the infrastructure provider's
 # "application" 3-tier demo template. The template's sampleValues point the
 # provision form at these images on :latest, so a one-click demo always pulls a
-# current build. On PRs the images are built (single-arch) but NOT pushed, so a
-# broken Dockerfile/app is caught before it reaches :latest.
+# current build. Pull requests build both images (without pushing) in the Prow job
+# pull-railgrid-images (/.prow.yaml), so a broken Dockerfile/app is caught
+# before it reaches :latest; this workflow only publishes.
 on:
   push:
-    branches: [main]
-    paths:
-      - 'providers/infrastructure/examples/application/apps/**'
-      - '.github/workflows/infrastructure-examples.yaml'
-  pull_request:
     branches: [main]
     paths:
       - 'providers/infrastructure/examples/application/apps/**'

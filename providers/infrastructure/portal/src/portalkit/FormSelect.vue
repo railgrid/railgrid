@@ -6,7 +6,8 @@
      k-input/k-menu recipes. Its teleported panel carries a generic PortalKit
      scope class because it is rendered outside the component root. -->
 <script setup lang="ts">
-import { AlertCircle, Check, ChevronDown } from 'lucide-vue-next'
+import { usePopupHosting } from './useAnchoredPopover'
+import { Check, ChevronDown } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref, useId, watch } from 'vue'
 import { ensureRailgridUIStyles } from '../portalkit/styles'
 
@@ -52,11 +53,13 @@ const listboxID = computed(() => `${triggerID.value}-listbox`)
 const valueID = computed(() => `${triggerID.value}-value`)
 const errorID = computed(() => `${triggerID.value}-error`)
 const accessibleDescribedby = computed(() => [props.describedby, props.invalid && props.errorMessage ? errorID.value : ''].filter(Boolean).join(' '))
-const accessibleLabelledby = computed(() => [props.labelledby, valueID.value].filter(Boolean).join(' '))
+const accessibleLabelledby = computed(() => props.labelledby ? `${props.labelledby} ${valueID.value}` : undefined)
 const optionID = (index: number): string => `${listboxID.value}-option-${index}`
 
 const root = ref<HTMLElement | null>(null)
 const trigger = ref<HTMLButtonElement | null>(null)
+const { host: popupHost, modalPopover, reset: resetPopupHost, promote: promotePopup } = usePopupHosting(trigger)
+const nativeLabelID = ref('')
 const panel = ref<HTMLElement | null>(null)
 const open = ref(false)
 const activeIndex = ref(-1)
@@ -140,9 +143,16 @@ function scrollActiveOption(): void {
 
 async function openSelect(): Promise<void> {
   if (open.value || props.disabled) return
+  const label = !props.labelledby ? trigger.value?.labels?.[0] : undefined
+  if (label && !label.id) label.id = `${triggerID.value}-native-label`
+  nativeLabelID.value = label?.id || ''
   setInitialActive()
+  resetPopupHost()
   open.value = true
   await nextTick()
+  if (!open.value) return
+  if (!promotePopup(panel.value)) await nextTick()
+  if (!open.value) return
   updatePanelPosition()
   scrollActiveOption()
 }
@@ -186,13 +196,26 @@ function selectActive(): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  if (event.isComposing || event.keyCode === 229) return
   if (event.key === 'Tab') {
     if (open.value) closeSelect()
     return
   }
+  if (event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+    if (event.key === 'ArrowDown' && !open.value) {
+      event.preventDefault()
+      void openSelect()
+    } else if (event.key === 'ArrowUp' && open.value) {
+      event.preventDefault()
+      closeSelect(true)
+    }
+    return
+  }
+  if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return
   if (event.key === 'Escape') {
     if (!open.value) return
     event.preventDefault()
+    event.stopPropagation()
     closeSelect(true)
     return
   }
@@ -247,12 +270,14 @@ function focus(): void {
 
 defineExpose({ focus })
 
-watch(() => props.options, () => {
+watch(() => props.options.map(option => ({ value: option.value, disabled: option.disabled })), (options, previous) => {
   if (!open.value) return
-  if (!isSelectable(activeIndex.value)) setInitialActive()
-  else activeIndex.value = Math.min(activeIndex.value, props.options.length - 1)
+  const activeValue = previous[activeIndex.value]?.value
+  const retained = activeValue === undefined ? -1 : options.findIndex(option => option.value === activeValue && !option.disabled)
+  if (retained < 0) setInitialActive()
+  else activeIndex.value = retained
   scrollActiveOption()
-}, { deep: true })
+})
 
 watch(() => props.modelValue, () => {
   if (open.value) setInitialActive()
@@ -316,8 +341,7 @@ onBeforeUnmount(() => {
       <span :id="valueID" class="k-form-select__value" :class="{ 'is-placeholder': !modelValue }">{{ selectedLabel }}</span>
       <ChevronDown class="k-form-select__chevron" :size="15" :stroke-width="1.75" aria-hidden="true" />
     </button>
-    <p v-if="invalid && errorMessage" :id="errorID" class="k-form-select__error" role="alert">
-      <AlertCircle :size="15" :stroke-width="1.75" aria-hidden="true" />
+    <p v-if="invalid && errorMessage" :id="errorID" class="k-form-select__error">
       <span>{{ errorMessage }}</span>
     </p>
     <input
@@ -332,14 +356,15 @@ onBeforeUnmount(() => {
 
     <!-- Open the enclosing dialog before opening the select. A native modal
          makes content outside the dialog inert. -->
-    <Teleport v-if="open" :to="trigger?.closest('dialog[open]') ?? 'body'">
+    <Teleport v-if="open" :to="popupHost">
       <div
         ref="panel"
         class="k-menu k-form-select__panel k-form-select__portal"
-        :style="panelStyle"
+        :style="[modalPopover ? { inset: 'auto', margin: '0' } : {}, panelStyle]"
+        :popover="modalPopover ? 'manual' : undefined"
         role="listbox"
         :id="listboxID"
-        :aria-labelledby="accessibleLabelledby"
+        :aria-labelledby="accessibleLabelledby || nativeLabelID || valueID"
         @keydown="onKeydown"
       >
         <button

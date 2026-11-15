@@ -9,13 +9,19 @@ micro-frontends, PortalKit, and the Dex login page. Its one-sentence character
 is near-black violet-tinted ground, hairline borders, sharp corners, dense
 mono-heavy type, and one violet accent that glows only on things that are alive.
 
+[Vercel's Geist](https://vercel.com/geist/introduction) is an external reference for exploring component design and
+interaction. It informs the work but is not Railgrid's specification: apply
+Violet Circuit's own tokens, component contracts, and product needs when making
+or reviewing a design. A resemblance to a Geist example does not establish
+conformance.
+
 1. **Both themes are first-class.** The portal and provider themes use a dark
    token base (`@theme` in `portal/src/assets/main.css`) with an `html.light`
    override; every supported component must hold up on both grounds. Light is
    the default and hard fallback in every degraded portal/provider path
    (JavaScript off, `matchMedia` missing, or storage errors). Dex auth is a
    separate fixed-dark standalone surface, documented in
-   [theme mechanics](theming.md).
+   [theme mechanics](../implementation/theming.md).
 2. **Sharp, not soft.** The [radius law](geometry.md) separates this system
    from template-grade SaaS. Never reintroduce a softer radius for one card.
 3. **Glow means alive.** Light is a signal, not decoration. Only the active nav

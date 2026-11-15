@@ -1,6 +1,12 @@
 import type { EdgeType } from './types'
 
 export type EdgeCollectionPage = 'edges' | 'services' | 'workloads'
+
+/** A host-supplied scoped URL is required for native links. */
+export function edgeCollectionHref(base: string | undefined, page: EdgeCollectionPage): string | undefined {
+  if (!base) return undefined
+  return `${base.replace(/\/$/, '')}${page === 'edges' ? '' : `/${page}`}`
+}
 export type ServiceCreateRoute = {
   resource: 'service'
   edgeType?: EdgeType

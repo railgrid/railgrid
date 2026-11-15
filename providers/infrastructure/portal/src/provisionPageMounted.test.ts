@@ -63,6 +63,34 @@ describe('mounted Infrastructure provisioning workflow', () => {
     vi.clearAllMocks()
   })
 
+  it('keeps retry focused during an initial read and moves focus to the recovered heading', async () => {
+    let resolveRead!: (value: Awaited<ReturnType<typeof api.getTemplate>>) => void
+    vi.mocked(api.getTemplate).mockRejectedValueOnce(new Error('Template unavailable'))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveRead = resolve }))
+    app = createApp(ProvisionPage, { templateName: 'demo-template' })
+    app.mount(host)
+    await flush()
+
+    const retry = host.querySelector<HTMLButtonElement>('.read-error button')!
+    retry.focus()
+    retry.click()
+    retry.click()
+    await flush()
+    expect(api.getTemplate).toHaveBeenCalledTimes(2)
+    expect(document.activeElement).toBe(retry)
+    expect(retry.getAttribute('aria-disabled')).toBe('true')
+    expect(host.textContent).toContain('Template unavailable')
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Retrying template')
+
+    resolveRead({ template: {
+      name: 'demo-template', version: 'v1', displayName: 'Demo', description: '', kind: 'Demo',
+      inputsSchema: { type: 'object', properties: {} }, sampleValues: {},
+    } })
+    await flush()
+    expect(document.activeElement).toBe(host.querySelector('h2'))
+    expect(host.querySelector('.read-error')).toBeNull()
+  })
+
   it('keeps nested and boolean edits in the create-instance payload', async () => {
     const provisioned = vi.fn()
     app = createApp(ProvisionPage, {

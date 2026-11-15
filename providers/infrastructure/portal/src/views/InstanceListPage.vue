@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import ViewValue from '../components/ViewValue.vue'
 import { api, isContextChangedError } from '../api'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
-import { Package } from 'lucide-vue-next'
+import InlineNotification from '../portalkit/InlineNotification.vue'
+import { ArrowRight, Package } from 'lucide-vue-next'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { toast } from '../portalkit/toast'
+import { portalHref } from '../portalkit/navigation'
 import {
   createAdaptiveRefreshTimer,
   createLatestRefreshController,
@@ -34,6 +37,12 @@ const error = ref<string | null>(null)
 const loading = ref(false)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const loaded = ref(false)
+// A prior page does not establish a snapshot for a newly requested page.
+const currentSnapshot = ref(false)
+const pageRef = ref<HTMLElement | null>(null)
+const pageHeading = ref<HTMLElement | null>(null)
+const firstRunWarning = ref<HTMLElement | null>(null)
+const firstRunRetryPending = ref(false)
 const deletingInstanceKey = ref<string | null>(null)
 const deleteError = ref<string | null>(null)
 const viewByTemplate = ref<Map<string, TemplateView>>(new Map())
@@ -44,7 +53,14 @@ const page = ref(1)
 const pageSize = ref(10)
 const query = ref('')
 const filterValues = ref<TableFilterState>({ template: '', status: '' })
-const firstRun = computed(() => loaded.value && items.value.length === 0 && !hasActiveFilters(query.value, filterValues.value))
+const firstRun = computed(() => loaded.value && currentSnapshot.value && items.value.length === 0 && !hasActiveFilters(query.value, filterValues.value)
+  && (paginationMode.value === 'client'
+    ? clientAuthorityReady.value
+    : isCompleteFirstCursorPage({ page: page.value, cursor: cursor.value, pageInfo: pageInfo.value })))
+watch(() => firstRun.value && !!error.value, visible => {
+  if (visible || typeof document === 'undefined' || !firstRunWarning.value?.contains(document.activeElement)) return
+  void nextTick(() => { if (document.activeElement === document.body) pageHeading.value?.focus({ preventScroll: true }) })
+}, { flush: 'pre' })
 const firstRunSteps = [
   { label: 'Choose a template', description: 'Browse the infrastructure templates available in this workspace.' },
   { label: 'Configure your instance', description: 'Name the instance and set the template inputs.' },
@@ -133,7 +149,7 @@ const rows = computed<Array<Record<string, unknown>>>(() => items.value.map(inst
     rowKey: `${instanceKey(instance)}/${instance.uid ?? ''}`,
     template: instance.template,
     status: instanceIsDeleting(instance) ? 'Deleting' : instance.phase,
-    age: formatAge(instance.createdAt),
+    age: instance.createdAt || null,
     actions: '',
     instance,
   }
@@ -268,6 +284,7 @@ const refresh = createLatestRefreshController(async (requestID, mode) => {
       if (instance.deletionTimestamp) tombstones.add(instanceKey(instance), instance.uid)
     }
     items.value = nextItems
+    currentSnapshot.value = true
     if (request.active || request.mode === 'client') {
       // Complete cursor walks are the only full absence proofs. This remains
       // safe even while the ResourceTable is showing a client-side subset.
@@ -285,7 +302,14 @@ const refresh = createLatestRefreshController(async (requestID, mode) => {
     error.value = null
   } catch (caught) {
     if (!requestIsCurrent(requestID, request) || isContextChangedError(caught)) return
+    const table = pageRef.value?.querySelector<HTMLElement>('[data-resource-table]')
+    const focused = typeof document !== 'undefined' ? document.activeElement : null
+    const losesTableFocus = !currentSnapshot.value && !!focused && !!table?.contains(focused)
     error.value = errorMessage(caught, 'failed to list instances')
+    if (losesTableFocus) {
+      await nextTick()
+      if (!focused?.isConnected && document.activeElement === document.body) table?.querySelector<HTMLButtonElement>('.k-table__retry')?.focus()
+    }
   } finally {
     if (pendingReadMode === request.mode) pendingReadMode = null
     if (refresh.isCurrent(requestID)) {
@@ -298,6 +322,12 @@ const refresh = createLatestRefreshController(async (requestID, mode) => {
 function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
   if (mode === 'foreground' && loading.value) refreshMode.value = 'foreground'
   return refresh.request(mode)
+}
+
+async function retryFirstRun(): Promise<void> {
+  if (firstRunRetryPending.value || loading.value) return
+  firstRunRetryPending.value = true
+  try { await load('foreground') } finally { firstRunRetryPending.value = false }
 }
 
 function resetToFirstServerPage() {
@@ -328,6 +358,7 @@ function handleTableChange(change: ResourceTableChange) {
     clientAuthorityReady.value = false
     if (wasClientMode || change.reason === 'query' || change.reason === 'filter') resetToFirstServerPage()
     items.value = []
+    currentSnapshot.value = false
     void load()
     return
   }
@@ -341,6 +372,7 @@ function handleTableChange(change: ResourceTableChange) {
     if (pendingReadMode === 'server' || change.reason === 'page-size') {
       clientAuthorityReady.value = false
       items.value = []
+      currentSnapshot.value = false
       void load()
     }
     return
@@ -357,6 +389,7 @@ function handleTableChange(change: ResourceTableChange) {
   }
   clientAuthorityReady.value = false
   items.value = []
+  currentSnapshot.value = false
   void load()
 }
 
@@ -365,10 +398,13 @@ async function deleteInstance(instance: Instance) {
   const expectedInstance = instance
   deleteError.value = null
   const confirmed = await confirmDialog({
-    title: `Delete instance "${instance.name}"?`,
-    message: `This permanently deletes "${instance.name}" (${instance.template}) and the resources it provisioned.`,
+    title: 'Delete instance',
+    message: `"${instance.name}" (${instance.template}) and the resources it provisioned will be permanently deleted.`,
+    irreversibleMessage: `Deleting "${instance.name}" cannot be undone.`,
     confirmLabel: 'Delete instance',
     danger: true,
+    verificationText: instance.name,
+    verificationLabel: 'the instance name',
   })
   if (!confirmed || !active || deletingInstanceKey.value !== null) return
   const currentInstance = items.value.find(item => item.name === expectedInstance.name)
@@ -401,17 +437,16 @@ function selectInstance(row: Record<string, unknown>) {
   emit('select', instance.name)
 }
 
-function formatAge(timestamp?: string): string {
-  if (!timestamp) return '-'
-  const then = new Date(timestamp).getTime()
-  if (Number.isNaN(then)) return '-'
-  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h`
-  return `${Math.floor(hours / 24)}d`
+function openInstanceLink(event: MouseEvent, row: Record<string, unknown>): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  selectInstance(row)
+}
+
+function followCatalogLink(event: MouseEvent): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  emit('navigate', 'catalog')
 }
 
 onMounted(() => {
@@ -427,15 +462,15 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="page">
+  <section ref="pageRef" class="page">
     <header class="page-head">
       <div>
-        <h2 class="page-title">My instances</h2>
+        <h2 ref="pageHeading" class="page-title" tabindex="-1">My instances</h2>
         <p class="page-meta">Provisioned into the active workspace.</p>
       </div>
       <div class="instance-list-actions">
         <span class="refresh-cadence">auto-refresh {{ refreshCadence() / 1000 }}s</span>
-        <button v-if="!firstRun" type="button" class="k-btn k-btn--primary" @click="emit('navigate', 'catalog')">Browse templates</button>
+        <a v-if="!firstRun" class="k-btn k-btn--primary" :href="portalHref('/ui/providers/infrastructure/templates')" @click="followCatalogLink">Browse templates</a>
       </div>
     </header>
 
@@ -446,9 +481,8 @@ onUnmounted(() => {
 
     <template v-if="firstRun">
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating infrastructure instances…</span>
-      <div v-if="error" class="stale-banner" role="alert">
-        <span>Showing the last successful result. {{ error }}</span>
-        <button type="button" class="k-btn k-btn--ghost" @click="load('foreground')">Retry</button>
+      <div v-if="error" ref="firstRunWarning">
+        <InlineNotification tone="warning" :message="`Showing the last successful result. ${error}`" action-label="Retry" action-busy-label="Retrying…" :action-busy="loading || firstRunRetryPending" @action="retryFirstRun" />
       </div>
       <FirstRunGuide
         title="Provision your first instance"
@@ -456,9 +490,9 @@ onUnmounted(() => {
         primary-label="Browse templates"
         :steps="firstRunSteps"
         journey-label="Infrastructure provisioning"
-        @primary="emit('navigate', 'catalog')"
       >
         <template #icon><Package :size="24" :stroke-width="1.5" aria-hidden="true" /></template>
+        <template #actions><a class="k-btn k-btn--primary" :href="portalHref('/ui/providers/infrastructure/templates')" @click="followCatalogLink">Browse templates <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>
       </FirstRunGuide>
     </template>
 
@@ -478,28 +512,28 @@ onUnmounted(() => {
       :cursor="cursor"
       :page-info="pageInfo"
       row-key="rowKey"
-      :loaded="loaded"
+      :loaded="loaded && (currentSnapshot || !error)"
       :loading="loading"
       :refresh-mode="refreshMode"
       :error="error"
-      :stale="loaded && !!error"
+      :stale="currentSnapshot && !!error"
       interactive
       retryable
-      empty-text="No instances in this workspace yet."
+      empty-text="No instances on this page."
       :row-aria-label="(row) => `Open instance ${String(rowInstance(row).name)}`"
       @retry="load('foreground')"
       @change="handleTableChange"
       @row-click="selectInstance"
     >
       <template #name="{ value, row }">
-        <button
-          type="button"
+        <span v-if="instanceIsDeleting(rowInstance(row)) || deletingInstanceKey === instanceKey(rowInstance(row))">{{ value }}</span>
+        <a
+          v-else
           class="k-btn k-btn--ghost k-table-resource-link"
-          :disabled="instanceIsDeleting(rowInstance(row)) || deletingInstanceKey === instanceKey(rowInstance(row))"
+          :href="portalHref(`/ui/providers/infrastructure/instances/${encodeURIComponent(rowInstance(row).name)}`)"
           :aria-label="`Open instance ${String(value)}`"
-          @click.stop="selectInstance(row)"
-          @keydown.space.prevent.stop="selectInstance(row)"
-        >{{ value }}</button>
+          @click.stop="openInstanceLink($event, row)"
+        >{{ value }}</a>
       </template>
       <template #template="{ value }"><code>{{ value }}</code></template>
       <template v-for="column in dynamicColumns" :key="column.key" v-slot:[column.key]="{ value, row }">
@@ -513,7 +547,7 @@ onUnmounted(() => {
       <template #status="{ row }">
         <StatusBadge :status="String(row.status)" :tone="String(row.status) === 'Deleting' ? 'warning' : null" />
       </template>
-      <template #age="{ value }"><span class="cell-mono">{{ value }}</span></template>
+      <template #age="{ value }"><ResourceTimestamp :value="value ? String(value) : null" label="Instance created" /></template>
       <template #actions="{ row }">
         <div class="row-actions">
           <ResourceTableDeleteButton
@@ -527,9 +561,5 @@ onUnmounted(() => {
       </template>
     </ResourceTable>
 
-    <div v-if="loaded && !firstRun && items.length === 0" class="empty-followup">
-      <span>Each workspace has its own instances.</span>
-      <button type="button" class="k-btn k-btn--ghost" @click="emit('navigate', 'catalog')">Browse templates</button>
-    </div>
   </section>
 </template>

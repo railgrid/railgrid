@@ -19,6 +19,7 @@ import InlineNotification from './portalkit/InlineNotification.vue'
 import { toast } from './portalkit/toast'
 import { api, ProjectAPIRequestError } from './api'
 import { llmProviderSelection, type LLMProviderPreset } from './llmDiscovery'
+import { validateLLMBaseURL } from './llmSettingsValidation'
 import type {
   ProjectLLMDiscoveredModel,
   ProjectLLMModelSettings,
@@ -48,6 +49,7 @@ const props = withDefaults(defineProps<{
   usageRoute?: boolean
   providerDetourActive?: boolean
   connections?: ProjectModelProviderConnection[]
+  connectionsLoaded?: boolean
   connectionsLoading?: boolean
   connectionsError?: string | null
   connectionStatusChecking?: boolean
@@ -86,6 +88,7 @@ const props = withDefaults(defineProps<{
   usageRoute: false,
   providerDetourActive: false,
   connections: () => [],
+  connectionsLoaded: false,
   connectionsLoading: false,
   connectionsError: null,
   modelTests: () => ({}),
@@ -126,6 +129,17 @@ const setupTabs = [
   { id: 'usage', label: 'Usage & cost' },
 ]
 const providerConnectionsHeading = ref<HTMLHeadingElement | null>(null)
+const settingsRoot = ref<HTMLElement | null>(null)
+function focusAfterRecovery(kind: 'models' | 'connections') {
+  const root = settingsRoot.value
+  const focused = typeof document === 'undefined' ? null : document.activeElement
+  if (!root || !focused || !root.contains(focused) || !focused.classList.contains('k-inline-notification__action')) return
+  if (focused.closest('[data-model-recovery]')?.getAttribute('data-model-recovery') !== kind) return
+  const target = kind === 'connections' ? providerConnectionsHeading.value : root.querySelector<HTMLElement>('.k-resource-page__title')
+  ;(target ?? root).focus({ preventScroll: true })
+}
+watch(() => props.loadError, (error, previous) => { if (previous && !error) focusAfterRecovery('models') })
+watch(() => props.connectionsError, (error, previous) => { if (previous && !error) focusAfterRecovery('connections') })
 const modelDetailsPrefix = useId()
 const expandedModel = ref<string | null>(null)
 const pendingConnection = ref<ProjectModelProviderConnection | null>(null)
@@ -218,7 +232,7 @@ const connectionTableRows = computed(() => connectionRows.value.map(connection =
 const providerConnectionColumns = [
   { key: 'name', label: 'Provider', primary: true, sortable: true },
   { key: 'endpoint', label: 'Endpoint' },
-  { key: 'bindingCount', label: 'Model bindings', sortable: true },
+  { key: 'bindingCount', label: 'Models', sortable: true },
   { key: 'status', label: 'Readiness', sortable: true },
   { key: 'actions', label: '', ariaLabel: 'Actions', align: 'end' as const },
 ]
@@ -284,13 +298,9 @@ const connectionHasReusableKey = computed(() => {
 })
 const connectionBaseURLError = computed(() => {
   if (!connectionEndpoint.value) return 'Enter an API endpoint.'
-  try {
-    const parsed = new URL(connectionEndpoint.value)
-    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? '' : 'Use an HTTP or HTTPS endpoint.'
-  } catch {
-    return 'Enter a valid API endpoint.'
-  }
+  return validateLLMBaseURL(connectionProvider.value, connectionEndpoint.value)
 })
+const visibleConnectionBaseURLError = computed(() => connectionBaseURL.value.trim() ? connectionBaseURLError.value : '')
 const connectionCanContinue = computed(() => !connectionBusy.value && (connectionNameOnlyEdit.value
   || (!connectionBaseURLError.value && (Boolean(connectionAPIKey.value.trim()) || connectionHasReusableKey.value))))
 const connectionDraftFingerprint = computed(() => String(connectionDraftRevision.value))
@@ -676,8 +686,11 @@ const createActions = computed(() => [
   { id: 'model', label: 'Add model', description: 'Use a saved provider connection', disabled: modelLimitReached.value },
   { id: 'provider', label: 'Connect provider', description: 'Save API access for models' },
 ])
-const showFirstRun = computed(() => !props.loading && !props.loadError && !props.connectionsLoading
-  && !props.connectionsError && !modelRows.value.length && !connectionRows.value.length)
+const showFirstRun = computed(() => !!props.settings && props.connectionsLoaded
+  && !modelRows.value.length && !connectionRows.value.length)
+const showFirstModel = computed(() => !!props.settings && !props.loading && !props.loadError
+  && !props.connectionsLoading && !props.connectionsError
+  && !modelRows.value.length && modelConnectionOptions.value.length > 0)
 
 function selectCreateAction(id: string) {
   if (id === 'provider') openConnectionEditor()
@@ -708,26 +721,26 @@ watch(
 </script>
 
 <template>
-  <section class="grid gap-4" :aria-label="providerConnectionsRoute ? 'Provider connections' : creationRoute ? 'Add model' : 'Models'">
+  <section ref="settingsRoot" class="grid gap-4" tabindex="-1" :aria-label="providerConnectionsRoute ? 'Provider connections' : creationRoute ? 'Add model' : 'Models'">
     <template v-if="routePage && !creationRoute && !editorOpen && !connectionEditorOpen">
       <header class="k-resource-page__header">
         <div class="k-resource-page__heading">
-          <h2 class="k-resource-page__title">Setup</h2>
+          <h2 class="k-resource-page__title" tabindex="-1">Setup</h2>
           <p class="k-resource-page__subtitle">Manage the models and provider access App Studio uses.</p>
         </div>
       </header>
-      <PortalTabs class="k-tabs--compact" :tabs="setupTabs" :active="usageRoute ? 'usage' : 'models'" aria-label="Setup sections" @select="emit('navigate', $event === 'usage' ? USAGE_ROUTE : MODELS_ROUTE)" />
+      <PortalTabs variant="secondary" :tabs="setupTabs" :active="usageRoute ? 'usage' : 'models'" aria-label="Setup sections" @select="emit('navigate', $event === 'usage' ? USAGE_ROUTE : MODELS_ROUTE)" />
     </template>
 
-    <InlineNotification v-if="loadError" tone="error" :message="loadError" action-label="Retry" :action-busy="loading" action-busy-label="Retrying models…" @action="emit('retry')" />
+    <InlineNotification v-if="loadError" data-model-recovery="models" :tone="settings ? 'warning' : 'error'" :message="settings ? `Models could not be refreshed. Showing the last successful result. ${loadError}` : loadError" action-label="Retry" :action-busy="loading" action-busy-label="Retrying models…" @action="emit('retry')" />
     <InlineNotification v-if="actionError" tone="error" :message="actionError" />
 
-    <div v-if="onboarding && connectionsLoading && !connectionRef && !connectionEditorOpen" role="status" class="k-inline-notification">
+    <div v-if="onboarding && connectionsLoading && !connectionsError && !connectionRef && !connectionEditorOpen" role="status" class="k-inline-notification">
       <Loader2 class="h-4 w-4 animate-spin text-accent" /> Loading provider connections…
     </div>
     <InlineNotification
       v-else-if="onboarding && connectionsError && !connectionRef && !connectionEditorOpen"
-      tone="error" :message="connectionsError" action-label="Retry" @action="emit('retryConnections')"
+      data-model-recovery="connections" tone="error" :message="connectionsError" action-label="Retry" :action-busy="connectionsLoading" action-busy-label="Retrying connections…" @action="emit('retryConnections')"
     />
     <template v-else-if="usageRoute">
       <ModelUsageSection provider="App Studio" />
@@ -752,9 +765,10 @@ watch(
                 <select id="model-provider" class="k-input" :value="connectionPreset" aria-labelledby="connection-provider-label" :disabled="connectionBusy" @change="chooseConnectionProvider(($event.target as HTMLSelectElement).value)"><option v-for="option in providerOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select>
                 <span v-if="connectionPreset === 'custom'" class="k-model-form-hint">Use an OpenAI-compatible API endpoint.</span>
               </label>
-              <label v-if="connectionPreset === 'custom' || connectionCredentialMode === 'service-account-json'" class="k-model-form-field">API endpoint
-                <input id="model-base-url" class="k-input min-w-0 font-mono text-[12px]" type="url" autocomplete="url" :value="connectionBaseURL" placeholder="https://your-provider.example/v1" :disabled="connectionBusy" :required="connectionPreset === 'custom'" :aria-required="connectionPreset === 'custom'" :aria-invalid="Boolean(connectionBaseURLError)" aria-describedby="model-base-url-help" @input="updateConnectionBaseURL(($event.target as HTMLInputElement).value)">
+              <label v-if="connectionPreset === 'custom' || connectionCredentialMode === 'service-account-json'" class="k-model-form-field"><span id="model-base-url-label">API endpoint{{ connectionPreset === 'custom' ? ' (required)' : '' }}</span>
+                <input id="model-base-url" class="k-input min-w-0 font-mono text-[12px]" type="url" autocomplete="url" :value="connectionBaseURL" placeholder="https://your-provider.example/v1" :disabled="connectionBusy" :required="connectionPreset === 'custom'" :aria-required="connectionPreset === 'custom'" :aria-invalid="Boolean(visibleConnectionBaseURLError)" aria-labelledby="model-base-url-label" :aria-describedby="visibleConnectionBaseURLError ? 'model-base-url-help model-base-url-error' : 'model-base-url-help'" @input="updateConnectionBaseURL(($event.target as HTMLInputElement).value)">
                 <span id="model-base-url-help" class="k-model-form-hint">{{ connectionCredentialMode === 'service-account-json' ? 'Use the Vertex AI endpoint for this service account.' : 'Use the provider API endpoint.' }}</span>
+                <span v-if="visibleConnectionBaseURLError" id="model-base-url-error" class="k-model-form-hint text-danger" role="alert">{{ visibleConnectionBaseURLError }}</span>
               </label>
             </section>
             <section class="k-model-form-section" aria-labelledby="provider-key-heading">
@@ -786,7 +800,7 @@ watch(
             <section v-if="connectionStage === 'verify'" class="k-model-form-section" aria-labelledby="provider-model-heading">
               <div class="k-model-form-row"><h2 id="provider-model-heading" class="k-model-form-heading">Verify provider access</h2><button type="button" class="k-btn k-btn--ghost" :disabled="connectionBusy || !connectionCanContinue || connectionCredentialMode === 'service-account-json'" @click="continueConnection"><RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" /> Refresh models</button></div>
               <label for="model-id" class="k-model-form-field">Verification model (optional for providers with model discovery)
-                <ModelIDSelector :model-value="connectionVerificationModel" :models="connectionDiscoveredModels" :disabled="connectionBusy" described-by="provider-model-help" @update:model-value="setConnectionVerificationModel($event)" @select="selectConnectionDiscoveryModel" />
+                <ModelIDSelector :required="connectionCredentialMode === 'service-account-json' && !connectionNameOnlyEdit" :model-value="connectionVerificationModel" :models="connectionDiscoveredModels" :disabled="connectionBusy" described-by="provider-model-help" @update:model-value="setConnectionVerificationModel($event)" @select="selectConnectionDiscoveryModel" />
               </label>
               <p id="provider-model-help" class="k-model-form-hint">{{ connectionOriginal && activeConnectionBindings(connectionOriginal.name).length ? `Saving changes will verify all ${activeConnectionBindings(connectionOriginal.name).length} model bindings that use this connection.` : connectionCredentialMode === 'service-account-json' ? 'Enter an exact Vertex AI model ID to send a short verification request.' : 'Discovery checks provider access. You can also select a model to send a short request before saving.' }}</p>
               <p v-if="connectionVerificationWillCallModel" class="k-model-form-hint">The provider may charge for each model verification request.</p>
@@ -806,11 +820,11 @@ watch(
     <template v-else-if="!editorOpen && !creationRoute">
       <header class="k-resource-page__header">
         <div class="k-resource-page__heading">
-          <h3 class="k-resource-page__title">Available models</h3>
-          <p class="k-resource-page__subtitle">Models you can use to create and chat in projects.</p>
+          <h3 class="k-resource-page__title" tabindex="-1">Available models</h3>
+          <p class="k-resource-page__subtitle">Use models in projects. Each model shows its provider connection or direct credential.</p>
         </div>
-        <div class="k-resource-page__actions">
-          <ActionMenu label="Create" primary-menu :items="createActions" :disabled="saving || connectionsLoading" @select="selectCreateAction" />
+        <div v-if="!showFirstRun" class="k-resource-page__actions">
+          <ActionMenu label="Create" :primary-menu="!showFirstModel" :show-label="showFirstModel" :items="createActions" :disabled="saving || connectionsLoading" @select="selectCreateAction" />
         </div>
       </header>
 
@@ -819,6 +833,7 @@ watch(
         { label: 'Add a model', description: 'Choose a model on the saved connection.' },
         { label: 'Use it in projects', description: 'Select a model when creating or chatting.' },
       ]" @primary="openConnectionEditor()"><template #icon><Cpu :stroke-width="1.75" /></template></FirstRunGuide>
+      <FirstRunGuide v-else-if="showFirstModel" title="Add a model" description="Choose a model from a connected provider to create projects and chat in App Studio." primary-label="Add model" :primary-disabled="saving || modelLimitReached" :steps="[]" @primary="emit('openEditor')"><template #icon><Cpu :stroke-width="1.75" /></template></FirstRunGuide>
       <div v-else-if="loading && !settings && !loadError" class="grid min-h-48 content-start gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-live="polite" aria-busy="true">
         <div class="shimmer h-4 w-36 rounded bg-surface-overlay" /><div class="shimmer h-24 w-full rounded bg-surface-overlay" /><div class="text-[12px] text-text-muted">Loading models…</div>
       </div>
@@ -835,6 +850,10 @@ watch(
               :controls="`${modelDetailsPrefix}-${row.id}`"
               @click="toggleModelDetails(row.id)"
             />
+          </template>
+          <template #provider-connection="{ row }">
+            <button v-if="row.saved.connectionRef && connectionRows.some(connection => connection.name === row.saved.connectionRef)" type="button" class="k-model-collection__connection" :aria-label="`View provider connections for ${row.name}`" @click="focusProviderConnections">{{ row.providerConnection }}</button>
+            <span v-else>{{ row.providerConnection }}</span>
           </template>
           <template #after-row="{ row, columnCount }">
             <tr v-if="expandedModel === row.id" :id="`${modelDetailsPrefix}-${row.id}`">
@@ -856,7 +875,7 @@ watch(
             <ResourceTableDeleteButton :label="`Delete ${saved.name}`" :disabled="saving" @click="emit('delete', saved.id)" />
           </template>
         </ModelCollection>
-        <p v-else-if="!loadError && !loading && !showFirstRun" class="text-[13px] text-text-muted">No models configured</p>
+        <p v-else-if="settings && !loadError && !loading && !showFirstRun && !showFirstModel" class="text-[13px] text-text-muted">No models configured</p>
       </div>
 
       <section class="k-resource-page k-resource-page--collection app-studio-provider-connections k-table-stack-actions" aria-labelledby="app-studio-provider-connections-title">
@@ -867,10 +886,10 @@ watch(
           </div>
         </header>
         <InlineNotification v-if="pendingConnection" tone="warning" message="Provider changes are saved and waiting for revision space. Existing model bindings keep their previous configuration." action-label="Dismiss" @action="pendingConnection = null" />
-        <div v-if="connectionsLoading && !connections.length" class="grid gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-busy="true">
+        <div v-if="connectionsLoading && !connectionsLoaded && !connectionsError" class="grid gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-busy="true">
           <Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" /> Loading provider connections…
         </div>
-        <InlineNotification v-else-if="connectionsError" tone="error" :message="connectionsError" action-label="Retry" :action-busy="connectionsLoading" action-busy-label="Retrying connections…" @action="emit('connectionsChanged')" />
+        <InlineNotification v-else-if="connectionsError" data-model-recovery="connections" :tone="connectionsLoaded ? 'warning' : 'error'" :message="connectionsLoaded ? `Provider connections could not be refreshed. Showing the last successful result. ${connectionsError}` : connectionsError" action-label="Retry" :action-busy="connectionsLoading" action-busy-label="Retrying connections…" @action="emit('connectionsChanged')" />
         <ResourceTable v-if="connectionRows.length" :rows="connectionTableRows" :columns="providerConnectionColumns" row-key="id" :interactive="false" searchable search-placeholder="Search provider connections…" :search-keys="['name', 'endpoint', 'status']" aria-label="Provider connections" loaded empty-text="No provider connections match your search.">
           <template #name="{ row }">
             <div class="grid min-w-0 gap-1"><span class="font-medium">{{ row.name }}</span><span class="text-[10px] text-text-muted">{{ connectionFromTableRow(row).provider === 'google-ai-studio' ? 'Google AI Studio / Vertex' : providerOptions.find(option => option.value === providerPresetFor(connectionFromTableRow(row).provider, connectionFromTableRow(row).baseURL))?.label || 'OpenAI-compatible' }}</span></div>
@@ -884,7 +903,7 @@ watch(
             <ResourceTableDeleteButton :label="`Delete provider connection ${row.name}`" :disabled="saving || connectionBusy || connectionBindingCount(row) > 0 || connectionFromTableRow(row).deleting" @click="emit('deleteConnection', connectionFromTableRow(row))" />
           </template>
         </ResourceTable>
-        <p v-else-if="!connectionsLoading && !connectionsError && !showFirstRun" class="text-[13px] text-text-muted">No provider connections</p>
+        <p v-else-if="connectionsLoaded && !connectionsError && !showFirstRun" class="text-[13px] text-text-muted">No provider connections</p>
       </section>
     </template>
 
@@ -921,7 +940,7 @@ watch(
             <section class="k-model-form-section" :aria-labelledby="onboarding ? undefined : 'binding-model-heading'">
               <h2 v-if="!onboarding" id="binding-model-heading" class="k-model-form-heading">Model</h2>
               <label for="model-id" class="k-model-form-field">Model ID
-                <ModelIDSelector :model-value="model" :models="selectedModelRows" :invalid="Boolean(modelError)" :disabled="saving || testing || !connectionRef" :described-by="modelError ? 'model-id-error binding-model-help' : 'binding-model-help'" @update:model-value="emit('update:model', $event)" @select="emit('selectDiscoveredModel', $event)">
+                <ModelIDSelector required :model-value="model" :models="selectedModelRows" :invalid="Boolean(modelError)" :disabled="saving || testing || !connectionRef" :described-by="modelError ? 'model-id-error binding-model-help' : 'binding-model-help'" @update:model-value="emit('update:model', $event)" @select="emit('selectDiscoveredModel', $event)">
                   <template #search-action>
                     <button
                       type="button"
@@ -950,9 +969,9 @@ watch(
               <summary v-if="onboarding" class="text-[13px] font-medium">Model settings</summary>
               <div class="grid gap-3" :class="{ 'mt-3': onboarding }">
                 <label v-if="onboarding || model.trim() || editingModelID" for="model-display-name" class="k-model-form-field">Display name (optional)
-              <input id="model-display-name" class="k-input" :class="nameError ? 'border-danger focus:border-danger focus:ring-danger/20' : ''" :value="name" :placeholder="model.split('/').pop() || 'Model name'" maxlength="80" :disabled="saving || testing" :aria-invalid="Boolean(nameError)" :aria-describedby="nameError ? 'model-display-name-error' : undefined" @input="emit('update:name', ($event.target as HTMLInputElement).value)">
+              <input id="model-display-name" class="k-input" :class="nameError ? 'border-danger focus:border-danger focus:ring-danger/20' : ''" :value="name" :placeholder="model.split('/').pop() || 'Model name'" maxlength="80" :disabled="saving || testing" :aria-invalid="Boolean(nameError)" aria-label="Display name (optional)" :aria-describedby="nameError ? 'model-display-name-error' : 'model-display-name-help'" @input="emit('update:name', ($event.target as HTMLInputElement).value)">
               <span v-if="nameError" id="model-display-name-error" class="k-model-form-hint text-danger" role="alert">{{ nameError }}</span>
-              <span v-else class="k-model-form-hint">Defaults to the selected model ID. You can choose a shorter name for model pickers.</span>
+              <span v-else id="model-display-name-help" class="k-model-form-hint">Defaults to the selected model ID. You can choose a shorter name for model pickers.</span>
             </label>
                 <ReasoningEffortControl variant="settings" :effort="reasoningEffort" :options="reasoningEffortOptions" :validation-error="reasoningEffortError" :disabled="saving || testing" @update:effort="emit('update:reasoningEffort', $event)" />
               </div>

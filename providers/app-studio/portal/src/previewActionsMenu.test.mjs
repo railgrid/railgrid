@@ -144,3 +144,16 @@ test('disables external workspace and target changes while an assistant run is a
   assert.doesNotMatch(app, /hydrateDevelopmentWorkspace|developmentHydrateBusy/)
   assert.match(app, /messageStreaming \|\| developmentSyncBusy/)
 })
+
+test('annotation moves keyboard focus into the preview and back on cancel', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const toggle = app.slice(app.indexOf('function toggleDevelopmentPreviewAnnotation'), app.indexOf('function handleDevelopmentPreviewDocument'))
+  // The picker reads keys in the preview frame; the user's action focuses it
+  // only once the bridge accepted the start.
+  assert.match(toggle, /if \(!previewBridgeController\.startAnnotationMode\(\)\) return[\s\S]*developmentPreviewAnnotationReturnFocus = trigger[\s\S]*developmentPreviewFrameRef\.value\?\.focus\(\)/)
+  const restore = app.slice(app.indexOf('function restoreDevelopmentPreviewAnnotationFocus'), app.indexOf('function clearDevelopmentPreviewAnnotationHover'))
+  // Focus returns to the trigger only while the preview still holds it.
+  assert.match(restore, /trigger\?\.isConnected && document\.activeElement === developmentPreviewFrameRef\.value\) trigger\.focus\(\)/)
+  const mode = app.slice(app.indexOf('function handleDevelopmentPreviewAnnotationMode'), app.indexOf('function restoreDevelopmentPreviewAnnotationFocus'))
+  assert.match(mode, /if \(!active\) \{[\s\S]*restoreDevelopmentPreviewAnnotationFocus\(\)/)
+})

@@ -221,14 +221,22 @@ func (s *Service) GetProviderKubeconfig(ctx context.Context, name string, mode K
 	if err != nil {
 		return nil, fmt.Errorf("getting Provider %q: %w", name, err)
 	}
-	secretNS, _, _ := unstructured.NestedString(prov.Object, "status", "secretRef", "namespace")
-	secretName, _, _ := unstructured.NestedString(prov.Object, "status", "secretRef", "name")
-	secretKey, _, _ := unstructured.NestedString(prov.Object, "status", "secretRef", "key")
+	return s.kubeconfigFromSecret(ctx, cfg, prov, name+"-kubeconfig", mode)
+}
+
+// kubeconfigFromSecret reads the kubeconfig Secret that owner's
+// status.secretRef names in root:railgrid:system:providers (cfg), falling back
+// to defaultSecretName / "default" / "kubeconfig", and re-points its server
+// URL for mode. A nil slice and nil error mean the Secret does not exist yet.
+func (s *Service) kubeconfigFromSecret(ctx context.Context, cfg *rest.Config, owner *unstructured.Unstructured, defaultSecretName string, mode KubeconfigServerMode) ([]byte, error) {
+	secretNS, _, _ := unstructured.NestedString(owner.Object, "status", "secretRef", "namespace")
+	secretName, _, _ := unstructured.NestedString(owner.Object, "status", "secretRef", "name")
+	secretKey, _, _ := unstructured.NestedString(owner.Object, "status", "secretRef", "key")
 	if secretNS == "" {
 		secretNS = "default"
 	}
 	if secretName == "" {
-		secretName = name + "-kubeconfig"
+		secretName = defaultSecretName
 	}
 	if secretKey == "" {
 		secretKey = "kubeconfig"
@@ -355,6 +363,10 @@ type Service struct {
 	// endpoint re-points the server URL per request — see KubeconfigServerMode.
 	hubExternalURL string
 	hubInternalURL string
+	// systemProvidersDynamic replaces the kcp-admin client for
+	// root:railgrid:system:providers that the SystemWorkspace and
+	// WorkspaceSeed methods use. Nil in production; tests set it.
+	systemProvidersDynamic dynamic.Interface
 }
 
 // tenantWorkspaceOps is the slice of kcp.Bootstrapper the admin surface

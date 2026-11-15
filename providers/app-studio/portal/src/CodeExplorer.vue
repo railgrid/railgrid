@@ -664,7 +664,7 @@ async function downloadSelected() {
     link.remove()
     window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
   } catch (error) {
-    toast('error', errorMessage(error, `Could not download ${projectFileBaseName(path)}.`))
+    toast('error', errorMessage(error, `Could not download ${projectFileBaseName(path)}.`), { announcement: 'polite' })
   } finally {
     downloadBusy.value = false
   }

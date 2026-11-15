@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { portalHref } from './portalkit/navigation'
-import { ref, computed, onUnmounted, watch } from 'vue'
+import { ref, computed, nextTick, onUnmounted, watch } from 'vue'
 import { Globe2, KeyRound, Plug, RefreshCw, Save, Server } from 'lucide-vue-next'
 import { confirmDialog } from './portalkit/confirm'
 import { connectEdgeService, deleteEdgeService, getService, updateEdgeService } from './api'
@@ -14,7 +14,8 @@ import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard, type ResourceStatTone } from './portalkit/ResourceStatCards.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import { toast } from './portalkit/toast'
-import { servicePortError } from './serviceValidation'
+import { parseServiceHost, servicePortError } from './serviceValidation'
+import { serviceTarget } from './serviceTarget'
 
 // The route owns the resource identity. A list-row snapshot is optional and is
 // used only as a seed; every instance page performs an exact getService read so
@@ -62,6 +63,7 @@ const instructions = ref('')
 const targetMode = ref<'host' | 'kube'>('host')
 const configurationBaseline = ref('')
 const portError = ref<string | null>(null)
+const hostError = ref<string | null>(null)
 
 function configurationSnapshot(): string {
   return JSON.stringify({ form: form.value, instructions: instructions.value, targetMode: targetMode.value })
@@ -81,6 +83,7 @@ function seedForm(next: EdgeService | null): void {
   targetMode.value = next?.host ? 'host' : next?.targetName ? 'kube' : 'host'
   configurationBaseline.value = configurationSnapshot()
   portError.value = null
+  hostError.value = null
 }
 seedForm(service.value)
 
@@ -88,6 +91,16 @@ seedForm(service.value)
 // locking, target hints, and credential fields.
 const entry = computed(() => props.catalog.find((c) => c.type === form.value.serviceType))
 const schemeLocked = computed(() => !!entry.value?.schemeLocked)
+const parsedHost = computed(() => parseServiceHost(form.value.host, schemeLocked.value ? entry.value?.defaultScheme : undefined))
+const hostInputError = computed(() => targetMode.value === 'host' ? parsedHost.value.error || '' : '')
+
+function applyHostUrl(): void {
+  const parsed = parsedHost.value
+  if (parsed.error) return
+  form.value.host = parsed.host
+  if (parsed.scheme) form.value.scheme = parsed.scheme
+  if (parsed.port) form.value.port = parsed.port
+}
 // Both host edge kinds use direct/loopback reachability. A Kubernetes edge is
 // the only kind allowed to edit a Kubernetes Service target.
 const edgeIsHost = computed(() =>
@@ -95,8 +108,12 @@ const edgeIsHost = computed(() =>
   service.value?.edgeKind === 'MacOSServer' ||
   ['server', 'macos'].includes(props.edges.find((e) => e.name === service.value?.edgeName)?.type ?? ''),
 )
+const targetRestriction = computed(() => entry.value?.hostRequired
+  ? 'This service type requires a host or IP address.'
+  : edgeIsHost.value ? 'Kubernetes Service targets require a Kubernetes edge.' : '')
 
 function onTypeChange(): void {
+  hostError.value = null
   const catalogEntry = entry.value
   if (!catalogEntry) return
   if (catalogEntry.defaultPort) form.value.port = catalogEntry.defaultPort
@@ -212,12 +229,7 @@ function statusTone(status: string): 'success' | 'warning' | 'danger' | 'muted' 
 const targetSummary = computed(() => {
   const value = service.value
   if (!value) return '—'
-  const host = value.host?.trim()
-  const targetName = value.targetName?.trim()
-  const target = host || (targetName
-    ? `${value.targetNamespace ? `${value.targetNamespace}/` : ''}${targetName}`
-    : 'Agent loopback')
-  return value.port ? `${target}:${value.port}` : target
+  return serviceTarget(value)
 })
 
 // The catalog distinguishes a service that has no credential mechanism from a
@@ -276,18 +288,36 @@ const serviceStatCards = computed<ResourceStatCard[]>(() => [
 ])
 
 async function refreshDetail(): Promise<void> {
-  if (busy.value) return
+  if (busy.value || readLoading.value) return
   await load()
 }
 
 async function onSaveConfig(): Promise<void> {
   const name = currentName.value
   if (!name || !service.value || busy.value || readLoading.value) return
+  if (targetMode.value === 'host' && !hostInputError.value) applyHostUrl()
   portError.value = servicePortError(form.value.port)
   if (portError.value) {
     document.getElementById('service-edit-port')?.focus()
     return
   }
+  if (targetMode.value === 'kube' && targetRestriction.value) {
+    targetMode.value = 'host'
+    hostError.value = entry.value?.hostRequired ? 'Enter a host or IP address for this service type.' : 'Use a host or agent loopback for this edge.'
+    await nextTick()
+    document.getElementById('service-edit-host')?.focus()
+    return
+  }
+  if (entry.value?.hostRequired && !form.value.host?.trim()) {
+    hostError.value = 'Enter a host or IP address for this service type.'
+    document.getElementById('service-edit-host')?.focus()
+    return
+  }
+  if (hostInputError.value) {
+    document.getElementById('service-edit-host')?.focus()
+    return
+  }
+  hostError.value = null
   const generation = selectionGeneration
   busy.value = true
   mutationError.value = null
@@ -361,16 +391,17 @@ async function onSaveCreds(): Promise<void> {
 async function onDelete(): Promise<void> {
   const name = currentName.value
   if (!name || !service.value || busy.value || deleting.value) return
+  const generation = selectionGeneration
   if (!(await confirmDialog({
     title: `Delete service "${name}"?`,
     message: 'Its MCP tools stop being exposed.',
     danger: true,
     confirmLabel: 'Delete',
   }))) return
+  if (!active || generation !== selectionGeneration || currentName.value !== name || busy.value || deleting.value) return
   deleting.value = true
   busy.value = true
   mutationError.value = null
-  const generation = selectionGeneration
   try {
     await deleteEdgeService(name)
     if (!active || generation !== selectionGeneration || currentName.value !== name) return
@@ -418,7 +449,7 @@ onUnmounted(() => {
         </template>
         <template #actions>
           <div class="service-detail__actions" role="group" aria-label="Service actions">
-            <button class="k-btn k-btn--ghost" type="button" :disabled="busy || readLoading" :aria-busy="readLoading || undefined" @click="refreshDetail">
+            <button class="k-btn k-btn--ghost" type="button" aria-label="Refresh service" :disabled="busy" :aria-disabled="readLoading || undefined" :aria-busy="readLoading || undefined" @click="refreshDetail">
               <RefreshCw :size="14" :class="{ spin: readLoading }" aria-hidden="true" />
               {{ readLoading ? 'Refreshing…' : 'Refresh' }}
             </button>
@@ -445,7 +476,7 @@ onUnmounted(() => {
                 <div><span class="lbl">Auth</span><StatusBadge :status="authLabel(entry?.auth)" tone="muted" /></div>
                 <div><span class="lbl">Default port</span><strong class="mono">{{ entry?.defaultPort ?? '—' }}</strong></div>
                 <div><span class="lbl">Default scheme</span><strong class="mono">{{ entry?.defaultScheme || 'http' }}{{ entry?.schemeLocked ? ' (fixed)' : '' }}</strong></div>
-                <div><span class="lbl">Reachability</span><strong>{{ entry?.hostRequired ? 'LAN host (required)' : targetMode === 'kube' ? 'Kubernetes Service' : 'Agent loopback' }}</strong></div>
+                <div><span class="lbl">Reachability</span><strong>{{ targetSummary === 'Target not specified' ? 'Not specified' : entry?.hostRequired ? 'LAN host (required)' : targetMode === 'kube' ? 'Kubernetes Service' : 'Agent loopback' }}</strong></div>
               </div>
               <p v-if="entry?.description" class="service-detail__description">{{ entry.description }}</p>
               <div v-if="entry?.tools?.length" class="service-detail__tools">
@@ -465,18 +496,20 @@ onUnmounted(() => {
                     <option v-for="catalogEntry in props.catalog" :key="catalogEntry.type" :value="catalogEntry.type">{{ catalogEntry.displayName }}</option>
                   </select>
                 </label>
-                <label class="fld"><span class="lbl">Scheme</span>
-                  <select v-model="form.scheme" class="k-input" :disabled="busy || !service || schemeLocked" :title="schemeLocked ? 'Fixed by the service type' : ''"><option value="http">http</option><option value="https">https</option></select>
-                </label>
+                <div class="fld"><label for="service-edit-scheme" class="lbl">Scheme</label>
+                  <select id="service-edit-scheme" v-model="form.scheme" class="k-input" :disabled="busy || !service || schemeLocked" :aria-describedby="schemeLocked ? 'service-edit-scheme-help' : undefined"><option value="http">http</option><option value="https">https</option></select>
+                  <span v-if="schemeLocked" id="service-edit-scheme-help" class="field-help">Fixed by the selected service type.</span>
+                </div>
                 <div class="fld"><label for="service-edit-port" class="lbl">Port</label><input id="service-edit-port" v-model="form.port" type="number" min="1" max="65535" class="k-input" :disabled="busy || !service" :aria-invalid="portError ? 'true' : undefined" :aria-describedby="portError ? 'service-edit-port-error' : undefined" @input="portError = null" /><span v-if="portError" id="service-edit-port-error" class="error" role="alert">{{ portError }}</span></div>
               </div>
-              <fieldset class="service-detail__target-mode service-target-fieldset">
+              <fieldset class="service-detail__target-mode service-target-fieldset" :aria-describedby="targetRestriction ? 'service-edit-target-help' : undefined">
                 <legend class="lbl">Target</legend>
-                <label class="k-checkbox-hit"><input v-model="targetMode" name="service-edit-target-mode" type="radio" value="host" :disabled="busy || !service" /> Host / IP</label>
-                <label class="k-checkbox-hit" :class="{ 'is-disabled': edgeIsHost }"><input v-model="targetMode" name="service-edit-target-mode" type="radio" value="kube" :disabled="busy || !service || edgeIsHost" /> Kubernetes Service</label>
+                <label class="k-checkbox-hit"><input v-model="targetMode" class="k-checkbox" name="service-edit-target-mode" type="radio" value="host" :disabled="busy || !service" /> Host / IP</label>
+                <label class="k-checkbox-hit" :class="{ 'is-disabled': targetRestriction }"><input v-model="targetMode" class="k-checkbox" name="service-edit-target-mode" type="radio" value="kube" :disabled="busy || !service || !!targetRestriction" /> Kubernetes Service</label>
+                <p v-if="targetRestriction" id="service-edit-target-help" class="field-help service-detail__target-help">{{ targetRestriction }}</p>
               </fieldset>
               <div v-if="targetMode === 'host'" class="service-detail__form-grid">
-                <label class="fld"><span id="service-edit-host-label" class="lbl">Host {{ entry?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span><input v-model="form.host" class="k-input" :disabled="busy || !service" aria-labelledby="service-edit-host-label" :aria-describedby="entry?.hostHelp ? 'service-edit-host-help' : undefined" placeholder="192.168.1.1, myui.example.com" /><span v-if="entry?.hostHelp" id="service-edit-host-help" class="field-help service-detail__field-help">{{ entry.hostHelp }}</span></label>
+                <div class="fld"><label for="service-edit-host" class="lbl">Host {{ entry?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</label><input id="service-edit-host" v-model="form.host" class="k-input" :disabled="busy || !service" :required="!!entry?.hostRequired" :aria-invalid="hostError || hostInputError ? 'true' : undefined" :aria-describedby="[entry?.hostHelp ? 'service-edit-host-help' : '', hostError || hostInputError ? 'service-edit-host-error' : ''].filter(Boolean).join(' ') || undefined" placeholder="192.168.1.1, myui.example.com, or paste a URL" @input="hostError = null" @blur="applyHostUrl" /><span v-if="entry?.hostHelp" id="service-edit-host-help" class="field-help service-detail__field-help">{{ entry.hostHelp }}</span><span v-if="hostError || hostInputError" id="service-edit-host-error" class="error" role="alert">{{ hostError || hostInputError }}</span></div>
               </div>
               <div v-else class="service-detail__form-grid service-detail__form-grid--two">
                 <label class="fld"><span class="lbl">Target namespace</span><input v-model="form.targetNamespace" class="k-input" :disabled="busy || !service" placeholder="home" /></label>

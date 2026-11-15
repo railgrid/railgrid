@@ -87,6 +87,28 @@ describe('mounted Infrastructure instance detail deletion behavior', () => {
     vi.useRealTimers()
   })
 
+  it('waits for the instance read before describing template metadata', async () => {
+    const pending = deferred<Instance>()
+    vi.mocked(api.getInstance).mockReturnValueOnce(pending.promise)
+    app = createApp(InstanceDetailPage, { instanceName: instance.name, tombstones: createResourceTombstones() })
+    app.mount(host)
+    await flushTicks()
+    expect(host.textContent).not.toContain('Template metadata unavailable')
+    expect((host.querySelector('.k-resource-page__meta')?.textContent?.match(/·/g) ?? []).length).toBe(1)
+
+    pending.resolve({ ...instance })
+    await flush()
+    expect(host.querySelector('.k-resource-page__meta')?.textContent).toContain('demo-template')
+  })
+
+  it('reports empty conditions without inferring controller state', async () => {
+    app = createApp(InstanceDetailPage, { instanceName: instance.name, tombstones: createResourceTombstones() })
+    app.mount(host)
+    await flush()
+    expect(host.querySelector('#instance-conditions')?.textContent).toContain('No conditions reported.')
+    expect(host.querySelector('#instance-conditions')?.textContent).not.toContain('has not reconciled')
+  })
+
   it('publishes only the loaded resource identity and clears it on read failure and unmount', async () => {
     const publish = vi.fn()
     app = createApp(InstanceDetailPage, {
@@ -135,16 +157,51 @@ describe('mounted Infrastructure instance detail deletion behavior', () => {
     expect(refresh?.disabled).toBe(false)
     expect(host.textContent).toContain('retained-value')
 
+    refresh?.focus()
     refresh?.click()
     await nextTick()
     expect(refresh?.textContent).toContain('Refreshing')
-    expect(refresh?.disabled).toBe(true)
+    expect(refresh?.disabled).toBe(false)
+    expect(refresh?.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(refresh)
+    refresh?.click()
+    expect(api.getInstance).toHaveBeenCalledTimes(2)
 
     backgroundRequest.resolve({ ...instance, message: 'Updated snapshot' })
     await flushTicks()
     expect(refresh?.textContent).toContain('Refresh')
     expect(refresh?.disabled).toBe(false)
     expect(host.textContent).toContain('retained-value')
+  })
+
+  it('offers a focused path to reported conditions for a failed instance', async () => {
+    vi.mocked(api.getInstance).mockResolvedValue({
+      ...instance,
+      phase: 'Failed',
+      conditions: [{ type: 'Ready', status: 'False', reason: 'ReadinessTimeout', message: 'A replica is not ready.' }],
+    })
+    app = createApp(InstanceDetailPage, { instanceName: instance.name, tombstones: createResourceTombstones() })
+    app.mount(host)
+    await flush()
+
+    const action = host.querySelector<HTMLButtonElement>('.instance-detail__attention button')!
+    const conditions = host.querySelector<HTMLElement>('#instance-conditions')!
+    expect(action.textContent).toContain('Review conditions')
+    expect(conditions.textContent).toContain('ReadinessTimeout')
+    action.click()
+    expect(document.activeElement).toBe(conditions)
+  })
+
+  it('does not offer condition review for a ready instance or a failure without conditions', async () => {
+    app = createApp(InstanceDetailPage, { instanceName: instance.name, tombstones: createResourceTombstones() })
+    app.mount(host)
+    await flush()
+    expect(host.querySelector('.instance-detail__attention')).toBeNull()
+
+    vi.mocked(api.getInstance).mockResolvedValue({ ...instance, phase: 'Failed', conditions: [] })
+    host.querySelector<HTMLButtonElement>('.instance-detail__actions > button')!.click()
+    await flush()
+    expect(host.querySelector('.instance-detail__attention')).toBeNull()
   })
 
   it('omits empty template detail groups while retaining meaningful groups', async () => {

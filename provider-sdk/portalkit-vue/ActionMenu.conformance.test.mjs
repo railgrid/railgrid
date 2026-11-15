@@ -83,6 +83,7 @@ function executableStylesHelper({ canonical = '1', version = '', existingNodes =
   const context = { document, window: { getComputedStyle: () => ({ getPropertyValue: name => computedValues.get(name) ?? '' }) } }
   const executable = styles
     .replace(/^import railgridUIStyles.*$/m, "const railgridUIStyles = 'current-railgrid-ui';")
+    .replace(/^import \{ ensureTooltips \}.*$/m, 'const ensureTooltips = () => {};')
     .replaceAll('export const ', 'const ')
     .replaceAll('export function ', 'function ')
     .replaceAll(': string', '')
@@ -157,8 +158,8 @@ test('ActionMenu keyboard paths activate, wrap, restore focus, and dismiss', () 
   assert.match(menuHandler, /event\.key === 'Enter' \|\| event\.key === ' ' \|\| event\.key === 'Spacebar'/)
   assert.match(menuHandler, /event\.preventDefault\(\)[\s\S]*?selectActive\(\)/)
   assert.match(component, /function selectActive\(\): void \{[\s\S]*?select\(item\.id\)/)
-  assert.match(component, /function select\(id: string\): void \{[\s\S]*?closeMenu\(true\)[\s\S]*?emit\('select', id\)/)
-  assert.match(component, /if \(restoreFocus\) void nextTick\(\(\) => trigger\.value\?\.focus\(\)\)/)
+  assert.match(component, /function select\(id: string\): void \{[\s\S]*?closeMenu\(\)[\s\S]*?trigger\.value\?\.focus\(\)[\s\S]*?emit\('select', id\)/)
+  assert.match(component, /if \(restoreFocus\) trigger\.value\?\.focus\(\)/)
 
   assert.match(menuHandler, /if \(event\.key === 'Escape'\)[\s\S]*?closeMenu\(true\)/)
   assert.match(triggerHandler, /if \(event\.key === 'Escape'\)[\s\S]*?closeMenu\(true\)/)
@@ -168,12 +169,53 @@ test('ActionMenu keyboard paths activate, wrap, restore focus, and dismiss', () 
   assert.doesNotMatch(component, /deferredCloseTimer/)
 })
 
-test('teleported LayoutSelector keeps native Tab navigation relative to its trigger', () => {
-  assert.match(layoutSelector, /<Teleport to="body">/)
-  assert.match(layoutSelector, /ref="panelRef"/)
-  assert.match(layoutSelector, /@keydown="handleKeydown"/)
-  assert.match(layoutSelector, /function closeMenuAfterTab\(\)[\s\S]*?closeMenu\(\)[\s\S]*?trigger\.value\?\.focus\(\)/)
-  assert.doesNotMatch(layoutSelector, /deferredCloseTimer/)
+test('LayoutSelector exposes a single-tab-stop radio group', () => {
+  assert.match(layoutSelector, /role="radiogroup"/)
+  assert.match(layoutSelector, /role="radio"/)
+  assert.match(layoutSelector, /:aria-checked="mode === modelValue"/)
+  assert.match(layoutSelector, /:tabindex="mode === modelValue \? 0 : -1"/)
+  assert.match(layoutSelector, /event\.key === 'ArrowRight'/)
+  assert.match(layoutSelector, /event\.key === 'ArrowLeft'/)
+  assert.doesNotMatch(layoutSelector, /<Teleport/)
+})
+
+test('LayoutSelector preserves modified navigation and composition while supporting radio keys', async () => {
+  const script = layoutSelector.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const executable = ts.transpileModule(script.replace(/^import .*$/gm, ''), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const props = reactive({ modelValue: 'grid' })
+  const emitted = []
+  const focused = []
+  const api = runInNewContext(`${executable}\n({ navigate, root })`, {
+    nextTick, ref, layoutModes: ['grid', 'list'],
+    defineProps: () => props, withDefaults: value => value,
+    defineEmits: () => (name, mode) => { emitted.push([name, mode]); props.modelValue = mode },
+  })
+  api.root.value = { querySelectorAll: () => [{ focus: () => focused.push('grid') }, { focus: () => focused.push('list') }] }
+  function event(key, extra = {}) {
+    return { key, prevented: false, preventDefault() { this.prevented = true }, ...extra }
+  }
+  for (const modifier of ['altKey', 'ctrlKey', 'metaKey', 'shiftKey', 'isComposing']) {
+    const e = event('ArrowRight', { [modifier]: true })
+    await api.navigate(e)
+    assert.equal(e.prevented, false, `${modifier} must retain its default behavior`)
+  }
+  const ime = event('ArrowRight', { keyCode: 229 })
+  await api.navigate(ime)
+  assert.equal(ime.prevented, false)
+  assert.equal(emitted.length, 0)
+  assert.equal(focused.length, 0)
+  const arrow = event('ArrowRight')
+  await api.navigate(arrow)
+  assert.equal(arrow.prevented, true)
+  assert.deepEqual(emitted, [['update:modelValue', 'list']])
+  assert.deepEqual(focused, ['list'])
+  const home = event('Home')
+  await api.navigate(home)
+  assert.equal(home.prevented, true)
+  assert.deepEqual(emitted.at(-1), ['update:modelValue', 'grid'])
+  assert.equal(focused.at(-1), 'grid')
 })
 
 test('ActionMenu exposes the trigger/menu ARIA relationship and outside dismissal guards', () => {
@@ -182,7 +224,7 @@ test('ActionMenu exposes the trigger/menu ARIA relationship and outside dismissa
   assert.match(triggerTemplate, /:aria-controls="menuID"/)
   assert.match(triggerTemplate, /aria-haspopup="menu"/)
   assert.match(triggerTemplate, /:aria-expanded="open"/)
-  assert.match(triggerTemplate, /:disabled="unavailable"/)
+  assert.match(triggerTemplate, /:disabled="disabled && !busy"/)
 
   const menuTemplate = sourceBlock(component, '<div\n        v-if="open"', '        <template v-for="(item, index)')
   assert.match(menuTemplate, /role="menu"/)
@@ -194,7 +236,7 @@ test('ActionMenu exposes the trigger/menu ARIA relationship and outside dismissa
 
   assert.match(component, /document\.addEventListener\('pointerdown', closeFromOutsidePointer, true\)/)
   assert.match(component, /document\.addEventListener\('focusin', closeFromOutsideFocus\)/)
-  assert.match(component, /<Teleport to="body">/)
+  assert.match(component, /<Teleport :to="popupHost">/)
   assert.match(component, /panelRef\.value\?\.contains\(target\)/)
   for (const handler of ['closeFromOutsidePointer', 'closeFromOutsideFocus']) {
     const block = sourceBlock(component, `function ${handler}`, 'function focusTrigger')
@@ -218,9 +260,10 @@ test('caller busy state closes the menu, blocks repeat actions, and recovers', a
     defineEmits: () => (...event) => emitted.push(event),
     defineExpose: () => {}, useId: () => 'test',
     onMounted: () => {}, onBeforeUnmount: () => {}, ensureRailgridUIStyles: () => {},
+    usePopupHosting: () => ({ host: ref('body'), modalPopover: ref(false), reset: () => {}, promote: () => true }),
     useAnchoredPopover: () => {
       const open = ref(false)
-      return { open, triggerRef: ref(null), panelRef: ref(null), panelStyle: ref({}), close: () => { open.value = false } }
+      return { open, triggerRef: ref(null), panelRef: ref(null), panelStyle: ref({}), updatePosition: () => {}, close: () => { open.value = false } }
     },
   }))
   try {
@@ -250,17 +293,98 @@ test('caller busy state closes the menu, blocks repeat actions, and recovers', a
   }
 })
 
+test('Escape restores focus immediately without stealing a later focus change', async () => {
+  const script = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const executable = ts.transpileModule(script.replace(/^import .*$/gm, '').replace(/^export /gm, ''), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  let focused = 'item'
+  const trigger = { focus: () => { focused = 'trigger' } }
+  const scope = effectScope()
+  const api = scope.run(() => runInNewContext(`${executable}\n({ open, handleMenuKeydown })`, {
+    computed, nextTick, ref, watch,
+    defineProps: () => ({ label: 'Actions', items: [{ id: 'edit', label: 'Edit' }] }),
+    withDefaults: (value, defaults) => Object.assign(value, { ...defaults, ...value }),
+    defineEmits: () => () => {}, defineExpose: () => {}, useId: () => 'test',
+    onMounted: () => {}, onBeforeUnmount: () => {}, ensureRailgridUIStyles: () => {},
+    usePopupHosting: () => ({ host: ref('body'), modalPopover: ref(false), reset: () => {}, promote: () => true }),
+    useAnchoredPopover: () => {
+      const open = ref(true)
+      return { open, triggerRef: ref(trigger), panelRef: ref(null), panelStyle: ref({}), updatePosition: () => {}, close: () => { open.value = false } }
+    },
+  }))
+  try {
+    api.handleMenuKeydown({ key: 'Escape', preventDefault() {}, stopPropagation() {} })
+    assert.equal(focused, 'trigger')
+    focused = 'other control'
+    await nextTick()
+    assert.equal(focused, 'other control')
+  } finally {
+    scope.stop()
+  }
+})
+
+test('ActionMenu typeahead cycles visible labels and skips unavailable actions', async () => {
+  const script = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const executable = ts.transpileModule(script.replace(/^import .*$/gm, '').replace(/^export /gm, ''), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const items = [
+    { id: 'archive', label: 'Archive' },
+    { id: 'blocked', label: 'Add', disabled: true },
+    { id: 'busy', label: 'Approve', busy: true },
+    { id: 'assign', label: 'Assign', description: 'Archive details' },
+    { id: 'delete', label: 'Delete' },
+  ]
+  const focused = []
+  const scope = effectScope()
+  const api = scope.run(() => runInNewContext(`${executable}\n({ activeIndex, handleMenuKeydown })`, {
+    computed, nextTick, ref, watch,
+    defineProps: () => ({ label: 'Actions', items }),
+    withDefaults: (value, defaults) => Object.assign(value, { ...defaults, ...value }),
+    defineEmits: () => () => {}, defineExpose: () => {}, useId: () => 'typeahead',
+    onMounted: () => {}, onBeforeUnmount: () => {}, ensureRailgridUIStyles: () => {},
+    usePopupHosting: () => ({ host: ref('body'), modalPopover: ref(false), reset: () => {}, promote: () => true }),
+    useAnchoredPopover: () => ({ open: ref(true), triggerRef: ref(null), panelRef: ref({ querySelectorAll: () => items.map((_, i) => ({ focus: () => focused.push(i) })) }), panelStyle: ref({}), updatePosition: () => {}, close: () => {} }),
+  }))
+  const key = (value, extra = {}) => {
+    const event = { key: value, prevented: false, preventDefault() { this.prevented = true }, stopPropagation() {}, ...extra }
+    api.handleMenuKeydown(event)
+    return event
+  }
+  try {
+    api.activeIndex.value = 0
+    assert.equal(key('a').prevented, true)
+    await nextTick()
+    assert.equal(focused.at(-1), 3)
+    assert.equal(key('A', { shiftKey: true }).prevented, true)
+    await nextTick()
+    assert.equal(focused.at(-1), 0)
+    assert.equal(key('z').prevented, false)
+    for (const extra of [{ altKey: true }, { ctrlKey: true }, { metaKey: true }, { isComposing: true }, { keyCode: 229 }]) {
+      assert.equal(key('d', extra).prevented, false)
+    }
+    assert.equal(key(' ', { shiftKey: true }).prevented, false)
+    assert.equal(api.activeIndex.value, 0)
+    assert.equal(key('d').prevented, true)
+    await nextTick()
+    assert.equal(focused.at(-1), 4)
+  } finally { scope.stop() }
+})
+
 test('busy progress stays visible outside the closed menu and is announced', () => {
   const trigger = templateBlock(component, '<button\n      :id="triggerID"')
   assert.match(trigger, /'k-table-action--busy': busy/)
   assert.match(trigger, /'k-table-action--neutral': busy/)
   assert.match(trigger, /<Loader2 v-if="busy" class="k-action-menu__busy"/)
   assert.match(trigger, /:aria-busy="busy \|\| undefined"/)
+  assert.match(trigger, /:aria-disabled="busy \? 'true' : undefined"/)
+  assert.match(trigger, /:disabled="disabled && !busy"/)
   assert.match(trigger, /:data-k-tip="primaryLabel \|\| primaryMenu \? undefined : accessibleLabel"/)
-  const beforeMenu = sourceBlock(component, '</button>', '<Teleport to="body">')
+  const beforeMenu = sourceBlock(component, '</button>', '<Teleport :to=')
   assert.match(beforeMenu, /role="status" aria-live="polite" aria-atomic="true">\{\{ busy \? accessibleLabel : '' \}\}/)
   assert.match(stylesheet, /\.k-table__primary-actions:has\(\.k-table-action--busy\)/)
-  assert.match(stylesheet, /\.k-icon-action\.k-table-action--busy:disabled\s*\{\s*opacity:\s*1;/)
+  assert.match(stylesheet, /\.k-icon-action\.k-table-action--busy\[aria-disabled="true"\]\s*\{\s*opacity:\s*1;/)
 })
 
 test('canonical icon action, layer, and bounded search recipes remain intact', () => {
@@ -370,12 +494,13 @@ test('cached popup owners close their production state on KeepAlive deactivation
     ['ModelIDSelector', '../agentkit-vue/ModelIDSelector.vue', 'closeSelector'],
   ]) {
     const source = readFileSync(new URL(path, import.meta.url), 'utf8')
-    if (name === 'FormSelect') assert.match(source, /<Teleport[^>]*:to="trigger\?\.closest\('dialog\[open\]'\) \?\? 'body'"/)
-    else assert.match(source, /<Teleport[^>]*to="body"/)
+    assert.match(source, name === 'ModelIDSelector'
+      ? /<Teleport[^>]*:to="trigger\?\.closest\('dialog\[open\]'\) \?\? 'body'"/
+      : /<Teleport[^>]*:to="popupHost"/)
     const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
     const parsed = ts.createSourceFile(`${name}.ts`, script, ts.ScriptTarget.Latest, true)
     const declarations = parsed.statements.filter(statement =>
-      (ts.isVariableStatement(statement) && statement.declarationList.declarations.some(declaration => ['open', 'query'].includes(declaration.name.getText(parsed))))
+      (ts.isVariableStatement(statement) && statement.declarationList.declarations.some(declaration => ['open', 'query', 'composing'].includes(declaration.name.getText(parsed))))
       || (ts.isFunctionDeclaration(statement) && statement.name?.text === closeName)
       || statement.getText(parsed).startsWith('onDeactivated('),
     )
@@ -437,7 +562,10 @@ test('model search popup tabs between search and its action before returning to 
 test('split primary action closes the menu, respects busy/disabled, and keeps Escape focus on the chevron', async () => {
   const primary = templateBlock(component, '<button\n      v-if="primaryLabel"')
   const trigger = templateBlock(component, '<button\n      :id="triggerID"')
-  for (const segment of [primary, trigger]) assert.match(segment, /:disabled="unavailable"/)
+  assert.match(primary, /:disabled="disabled"/)
+  assert.match(primary, /:aria-disabled="busy \? 'true' : undefined"/)
+  assert.match(primary, /:aria-busy="busy \|\| undefined"/)
+  assert.match(trigger, /:disabled="disabled && !busy"/)
   assert.match(primary, /@click="onPrimary"/)
   const script = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
   const executable = ts.transpileModule(script.replace(/^import .*$/gm, '').replace(/^export /gm, ''), {
@@ -454,15 +582,32 @@ test('split primary action closes the menu, respects busy/disabled, and keeps Es
     defineEmits: () => (...event) => emitted.push(event),
     defineExpose: () => {}, useId: () => 'split-test',
     onMounted: () => {}, onBeforeUnmount: () => {}, ensureRailgridUIStyles: () => {},
+    usePopupHosting: () => ({ host: ref('body'), modalPopover: ref(false), reset: () => {}, promote: () => true }),
     useAnchoredPopover: () => {
       const open = ref(false)
-      return { open, triggerRef: ref({ focus: () => { focused = true } }), panelRef: ref(null), panelStyle: ref({}), close: () => { open.value = false } }
+      return { open, triggerRef: ref({ focus: () => { focused = true } }), panelRef: ref(null), panelStyle: ref({}), updatePosition: () => {}, close: () => { open.value = false } }
     },
   }))
-  const key = value => ({ key: value, preventDefault() {} })
+  const key = value => ({ key: value, preventDefault() {}, stopPropagation() {} })
   try {
+    for (const extra of [{ isComposing: true }, { keyCode: 229 }, { altKey: true }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }]) {
+      let prevented = false
+      api.handleTriggerKeydown({ key: 'ArrowDown', ...extra, preventDefault() { prevented = true }, stopPropagation() {} })
+      assert.equal(api.open.value, false)
+      assert.equal(prevented, false)
+    }
     api.handleTriggerKeydown(key('ArrowDown'))
     assert.equal(api.open.value, true)
+    for (const extra of [{ isComposing: true }, { keyCode: 229 }, { altKey: true }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }]) {
+      let prevented = false
+      api.handleMenuKeydown({ key: 'Escape', ...extra, preventDefault() { prevented = true }, stopPropagation() {} })
+      assert.equal(api.open.value, true)
+      assert.equal(prevented, false)
+    }
+    api.handleMenuKeydown({ ...key('Tab'), shiftKey: true })
+    assert.equal(api.open.value, false)
+    assert.equal(focused, true)
+    api.handleTriggerKeydown(key('ArrowDown'))
     api.onPrimary()
     assert.equal(api.open.value, false)
     assert.deepEqual(emitted, [['primary']])

@@ -13,6 +13,7 @@ const props = defineProps<{
   models: DiscoveredModel[]
   disabled?: boolean
   invalid?: boolean
+  required?: boolean
   describedBy?: string
 }>()
 
@@ -23,12 +24,14 @@ const emit = defineEmits<{
 
 const instanceID = useId()
 const listboxID = `model-id-options-${instanceID}`
+const requiredDescriptionID = `model-id-required-${instanceID}`
 const root = ref<HTMLElement | null>(null)
 const trigger = ref<HTMLButtonElement | null>(null)
 const panel = ref<HTMLElement | null>(null)
 const searchInput = ref<HTMLInputElement | null>(null)
 const open = ref(false)
 const query = ref('')
+const composing = ref(false)
 const activeIndex = ref(0)
 const panelStyle = ref<Record<string, string>>({})
 
@@ -118,6 +121,7 @@ async function openSelector() {
 function closeSelector(focusTrigger = false) {
   if (!open.value) return
   open.value = false
+  composing.value = false
   query.value = ''
   if (focusTrigger) nextTick(() => trigger.value?.focus())
 }
@@ -153,6 +157,8 @@ function scrollActiveOption() {
 }
 
 function onSearchKeydown(event: KeyboardEvent) {
+  if (composing.value || event.isComposing || event.keyCode === 229 || event.key === 'Process') return
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
   if (event.key === 'ArrowDown') {
     event.preventDefault()
     moveActive(1)
@@ -163,25 +169,23 @@ function onSearchKeydown(event: KeyboardEvent) {
     moveActive(-1)
     return
   }
-  if (event.key === 'Home') {
-    event.preventDefault()
-    activeIndex.value = firstEnabledIndex(optionList.value)
-    scrollActiveOption()
-    return
-  }
-  if (event.key === 'End') {
-    event.preventDefault()
-    const reversedIndex = [...optionList.value].reverse().findIndex(option => !option.disabled)
-    activeIndex.value = reversedIndex >= 0 ? optionList.value.length - reversedIndex - 1 : 0
-    scrollActiveOption()
-    return
-  }
   if (event.key === 'Enter') {
     event.preventDefault()
     const option = optionList.value[activeIndex.value]
     if (option) chooseOption(option)
     return
   }
+}
+
+function onPanelKeydown(event: KeyboardEvent) {
+  if (composing.value || event.isComposing || event.keyCode === 229 || event.key === 'Process') return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closeSelector(true)
+    return
+  }
+  if (event.key === 'Tab') onPanelTab(event)
 }
 
 function onPanelTab(event: KeyboardEvent) {
@@ -245,8 +249,7 @@ onBeforeUnmount(() => {
       :aria-controls="listboxID"
       :aria-expanded="open"
       :aria-invalid="invalid"
-      :aria-describedby="describedBy"
-      aria-required="true"
+      :aria-describedby="[describedBy, required ? requiredDescriptionID : undefined].filter(Boolean).join(' ') || undefined"
       aria-haspopup="listbox"
       @click="toggleSelector"
       @keydown="onTriggerKeydown"
@@ -255,13 +258,14 @@ onBeforeUnmount(() => {
       <ChevronDown class="h-3.5 w-3.5 shrink-0 text-text-muted transition-transform" :class="{ 'rotate-180': open }" :stroke-width="1.75" aria-hidden="true" />
     </button>
 
-    <Teleport v-if="open" to="body">
+    <span v-if="required" :id="requiredDescriptionID" class="sr-only">Required</span>
+
+    <Teleport v-if="open" :to="trigger?.closest('dialog[open]') ?? 'body'">
       <div
         ref="panel"
         class="k-menu k-table__filter-panel k-table__filter-panel--searchable k-model-id-picker"
         :style="panelStyle"
-        @keydown.esc.prevent="closeSelector(true)"
-        @keydown.tab="onPanelTab"
+        @keydown="onPanelKeydown"
       >
         <div class="k-model-id-picker__search-row">
           <label class="k-table__filter-search">
@@ -278,6 +282,8 @@ onBeforeUnmount(() => {
               aria-expanded="true"
               aria-label="Search model IDs"
               placeholder="Find a model or enter an ID…"
+              @compositionstart="composing = true"
+              @compositionend="composing = false"
               @keydown="onSearchKeydown"
             >
           </label>

@@ -418,7 +418,7 @@ async function remove(): Promise<void> {
                     <template #destructive-actions>
                       <AgentsWorkbenchSection v-if="!workspaceCompact" class="agents-config-sec" :heading-id="domID('agent-layout-heading')" title="Layout">
                         <label class="agents-check k-checkbox-hit">
-                          <input type="checkbox" data-keep-workbench-open :checked="keepWorkbenchOpen" @change="setKeepWorkbenchOpen" />
+                          <input class="k-checkbox" type="checkbox" data-keep-workbench-open :checked="keepWorkbenchOpen" @change="setKeepWorkbenchOpen" />
                           Keep the workbench open on desktop
                         </label>
                       </AgentsWorkbenchSection>

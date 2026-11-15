@@ -242,7 +242,11 @@ const credentialOptions = computed(() => chatCredentials.value.filter(item => !c
 function selectOnlyModel(): void {
   if (modelCredential.value || !credentials.value.hasSnapshot || credentials.value.error) return
   const eligible = chatCredentials.value.filter(model => !credentialUnavailable(model))
-  if (eligible.length === 1 && eligible[0].ready === true) modelCredential.value = eligible[0].name
+  // The workspace default (spec.default) wins when it works; otherwise the
+  // only model there is. Several unmarked models are still the user's choice.
+  const preferred = eligible.find(model => model.default === true && model.ready === true)
+  if (preferred) modelCredential.value = preferred.name
+  else if (eligible.length === 1 && eligible[0].ready === true) modelCredential.value = eligible[0].name
 }
 watch([chatCredentials, credentials], selectOnlyModel, { immediate: true })
 
@@ -393,6 +397,25 @@ onUnmounted(() => {
 function clearErrors(): void {
   for (const key of Object.keys(errors)) delete errors[key]
 }
+
+// A changed field has a new value to validate; keep unrelated errors visible.
+for (const [value, key] of [
+  [name, 'name'], [modelCredential, 'modelCredential'], [harnessEdge, 'harnessEdge'],
+  [harnessCredential, 'harnessCredential'], [harnessReasoningEffort, 'harnessReasoningEffort'],
+  [harnessGitHubConnection, 'harnessGitHubConnection'], [channel, 'channel'],
+] as const) watch(value, () => { delete errors[key] }, { flush: 'sync' })
+watch(() => ({ ...parameters.value }), (current, previous) => {
+  for (const key of new Set([...Object.keys(current), ...Object.keys(previous)])) {
+    if (current[key] !== previous[key]) delete errors[`param-${key}`]
+  }
+}, { flush: 'sync' })
+watch(() => ({ ...slotWiring.value }), (current, previous) => {
+  for (const key of new Set([...Object.keys(current), ...Object.keys(previous)])) {
+    if (current[key] !== previous[key]) delete errors[`slot-${key}`]
+  }
+}, { flush: 'sync' })
+watch(researchSpecialist, () => { delete errors['param-domain'] }, { flush: 'sync' })
+watch(digestTimeMissing, () => { delete errors['param-digestTime'] }, { flush: 'sync' })
 
 function addCredential(family: AgentCredentialFamily): void {
   if (busy.value) return
@@ -637,7 +660,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
         <button class="k-btn k-btn--ghost" type="button" :disabled="credentials.loading" @click="store.load('credentials')">Retry</button>
       </div>
 
-      <form ref="form" class="agents-create-form agents-guided-form k-create-surface k-create-surface--guided" aria-label="Create agent" :aria-busy="busy" @submit.prevent="submit">
+      <form ref="form" class="agents-create-form agents-guided-form k-create-surface k-create-surface--guided" aria-label="Create agent" novalidate :aria-busy="busy" @submit.prevent="submit">
         <div class="k-create-body k-create-body--guided">
           <div class="k-create-fields" :class="{ 'agents-template-fields': selectedTemplate }">
             <div v-if="selectedTemplate" class="agents-template-selection">
@@ -673,18 +696,18 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
 
               <label v-if="!selectedTemplate">
                 <span id="agent-create-system-prompt-label">Instructions (optional)</span>
-                <textarea :value="instructions" class="k-input" rows="3" placeholder="Describe how this agent should help." :disabled="busy" aria-labelledby="agent-create-system-prompt-label" @input="editInstructions" />
+                <textarea :value="instructions" class="k-input" rows="6" placeholder="Describe how this agent should help." :disabled="busy" aria-labelledby="agent-create-system-prompt-label" @input="editInstructions" />
               </label>
               <div v-for="param in definitionParameters" :key="param.key" class="agents-template-parameter">
                 <fieldset v-if="isResearcher && param.key === 'domain'" class="agents-template-choice">
                   <legend>Research focus</legend>
                   <div class="agents-grid2">
                     <label class="agents-template-radio k-btn k-btn--ghost">
-                      <input v-model="researchSpecialist" type="radio" name="research-focus" :value="false" :disabled="busy" />
+                      <input class="k-checkbox" v-model="researchSpecialist" type="radio" name="research-focus" :value="false" :disabled="busy" />
                       <span><strong>Generalist</strong><small>Research any topic.</small></span>
                     </label>
                     <label class="agents-template-radio k-btn k-btn--ghost">
-                      <input v-model="researchSpecialist" type="radio" name="research-focus" :value="true" :disabled="busy" />
+                      <input class="k-checkbox" v-model="researchSpecialist" type="radio" name="research-focus" :value="true" :disabled="busy" />
                       <span><strong>Specialist</strong><small>Focus on a field you define.</small></span>
                     </label>
                   </div>
@@ -717,6 +740,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                     :placeholder="isCodeReviewer && param.key === 'reviewFocus' ? 'Use template default' : param.default || (param.type === 'list' ? 'One per line' : '')"
                     :disabled="busy"
                     :aria-labelledby="`agent-create-param-${param.key}-label`"
+                    :aria-required="param.required || (isResearcher && param.key === 'domain') ? 'true' : undefined"
                     :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
                     :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
                   />
@@ -729,6 +753,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                     :disabled="busy"
                     autocomplete="off"
                     :aria-labelledby="`agent-create-param-${param.key}-label`"
+                    :aria-required="param.required || (isResearcher && param.key === 'domain') ? 'true' : undefined"
                     :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
                     :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
                   />
@@ -910,7 +935,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                       :disabled="busy"
                       :invalid="Boolean(errors.modelCredential)"
                       labelledby="agent-create-model-label"
-                      :describedby="['agent-create-model-hint', errors.modelCredential ? 'agent-create-model-error' : ''].filter(Boolean).join(' ')"
+                      :describedby="['agent-create-model-hint', credentialOptions.length === 0 ? 'agent-create-model-empty' : '', errors.modelCredential ? 'agent-create-model-error' : ''].filter(Boolean).join(' ')"
                     />
                     <span v-if="errors.modelCredential" id="agent-create-model-error" class="agents-fielderr" role="alert">{{ errors.modelCredential }}</span>
                     <span id="agent-create-model-hint" class="agents-hint">{{ selectedTemplate && !hasOption(credentialOptions, modelCredential) ? 'Choose a model to create this agent.' : chatCredentials.some(model => model.name === modelCredential && model.ready === true) ? 'Ready to use' : 'The default model for this agent.' }}</span>

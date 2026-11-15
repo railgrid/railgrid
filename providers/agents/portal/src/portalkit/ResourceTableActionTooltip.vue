@@ -8,10 +8,28 @@ const open = ref(false)
 const positioned = ref(false)
 const position = ref({ left: '8px', top: '8px' })
 let hovered = false
+let tooltipHovered = false
 let focused = false
 let request = 0
+let leaveTimer: ReturnType<typeof setTimeout> | undefined
+
+function cancelLeave() {
+  clearTimeout(leaveTimer)
+  leaveTimer = undefined
+}
+
+function scheduleLeave() {
+  cancelLeave()
+  leaveTimer = setTimeout(() => {
+    leaveTimer = undefined
+    if (!hovered && !tooltipHovered && !focused) hide()
+  }, 150)
+}
 
 function hide() {
+  // Removing a hovered bubble does not dispatch mouseleave. Do not retain
+  // that stale pointer state when the tooltip is shown again.
+  tooltipHovered = false
   request++
   open.value = false
   positioned.value = false
@@ -37,12 +55,15 @@ async function show() {
   positioned.value = true
 }
 
-function enter() { hovered = true; void show() }
-function leave() { hovered = false; if (!focused) hide() }
-function focus() { focused = true; void show() }
-function blur() { focused = false; if (!hovered) hide() }
+function enter() { hovered = true; cancelLeave(); void show() }
+function leave() { hovered = false; scheduleLeave() }
+function tooltipEnter() { tooltipHovered = true; cancelLeave() }
+function tooltipLeave() { tooltipHovered = false; scheduleLeave() }
+function focus() { focused = true; cancelLeave(); void show() }
+function blur() { focused = false; scheduleLeave() }
 function keydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && open.value) {
+  if (event.key === 'Escape' && !event.defaultPrevented && open.value) {
+    event.preventDefault()
     event.stopPropagation()
     hide()
   }
@@ -52,7 +73,7 @@ function viewportChanged() {
   const anchor = props.anchor
   // Keyboard focus can scroll the table to reveal this button. Reposition
   // its explanation after that scroll instead of immediately dismissing it.
-  if (focused && anchor && anchor === document.activeElement) {
+  if (open.value && focused && anchor && anchor === document.activeElement) {
     const rect = anchor.getBoundingClientRect()
     if (rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth) {
       void show()
@@ -63,8 +84,10 @@ function viewportChanged() {
 }
 
 watch(() => props.anchor, (anchor, _previous, cleanup) => {
+  cancelLeave()
   hide()
   hovered = false
+  tooltipHovered = false
   focused = false
   if (!anchor) return
   anchor.addEventListener('mouseenter', enter)
@@ -86,18 +109,20 @@ watch(() => props.anchor, (anchor, _previous, cleanup) => {
 watch(() => props.label, () => { if (open.value) void show() })
 watch(open, (visible, _previous, cleanup) => {
   if (!visible) return
+  document.addEventListener('keydown', keydown)
   window.addEventListener('scroll', viewportChanged, true)
   window.addEventListener('resize', viewportChanged)
   cleanup(() => {
+    document.removeEventListener('keydown', keydown)
     window.removeEventListener('scroll', viewportChanged, true)
     window.removeEventListener('resize', viewportChanged)
   })
 }, { flush: 'sync' })
-onBeforeUnmount(hide)
+onBeforeUnmount(() => { cancelLeave(); hide() })
 </script>
 
 <template>
-  <Teleport to="body">
+  <Teleport :to="anchor?.closest('dialog[open]') ?? 'body'">
     <div
       v-if="open"
       ref="tooltip"
@@ -105,6 +130,8 @@ onBeforeUnmount(hide)
       :class="{ 'k-table__primary-tooltip--positioned': positioned }"
       :style="position"
       aria-hidden="true"
+      @mouseenter="tooltipEnter"
+      @mouseleave="tooltipLeave"
     >{{ label }}</div>
   </Teleport>
 </template>

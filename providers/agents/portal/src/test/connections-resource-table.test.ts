@@ -46,6 +46,37 @@ function deferred<T>() {
 }
 
 describe('Connections resource tables', () => {
+  it('preserves native connection links while routing ordinary clicks', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.connections.data = [connection('team/slack')]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+    const view = await mountVue(ConnectionsView, { store, api, routeOwned: true })
+    await settleVue(1, 120)
+    const link = view.element.querySelector<HTMLAnchorElement>('.k-table-resource-link')!
+    expect(link.getAttribute('href')).toBe('#/connections/team%2Fslack/edit')
+    let prevented = true
+    link.addEventListener('click', event => { prevented = event.defaultPrevented; event.preventDefault() }, { once: true })
+    link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }))
+    expect(prevented).toBe(false)
+    expect(view.navigations).toEqual([])
+    link.click()
+    expect(view.navigations).toEqual([{ kind: 'edit', resource: 'connection', name: 'team/slack' }])
+    expect(view.element.querySelector<HTMLAnchorElement>('.k-resource-page__actions a')?.getAttribute('href')).toBe('#/create/connection')
+  })
+
+  it('offers a native creation link in the first-use guide', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true, data: [] })
+    const view = await mountVue(ConnectionsView, { store, api, routeOwned: true })
+    await settleVue(1, 120)
+    const link = view.element.querySelector<HTMLAnchorElement>('.k-first-run a')!
+    expect(link.getAttribute('href')).toBe('#/create/connection')
+    link.click()
+    expect(view.navigations).toEqual([{ kind: 'create', resource: 'connection' }])
+  })
+
   it('keeps a toolset creatable while tool connections fail, retry, and return an authoritative empty list', async () => {
     const response = deferred<Connection[]>()
     const listConnections = vi.fn(() => response.promise)
@@ -67,7 +98,7 @@ describe('Connections resource tables', () => {
     await settle(el, 2)
 
     expect(listConnections).toHaveBeenCalledTimes(1)
-    expect(retry.disabled).toBe(true)
+    expect(retry.getAttribute('aria-disabled')).toBe('true')
     expect(text(retry)).toContain('Retrying')
     expect(text(el)).not.toContain('No external tool connections are configured')
 
@@ -99,7 +130,7 @@ describe('Connections resource tables', () => {
     const retry = el.querySelector<HTMLButtonElement>('.k-inline-notification__action')!
     retry.click()
     await settle(el, 2)
-    expect(retry.disabled).toBe(true)
+    expect(retry.getAttribute('aria-disabled')).toBe('true')
     expect(text(retry)).toContain('Refreshing')
 
     response.resolve([connection('included', 'websearch'), connection('new', 'websearch')])
@@ -108,6 +139,80 @@ describe('Connections resource tables', () => {
     expect(el.querySelector('.k-inline-notification--warning')).toBeNull()
     expect([...el.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].some(input => input.checked)).toBe(true)
     expect(text(el)).toContain('new')
+  })
+
+  it('keeps an unavailable toolset assignment visible and prevents saving until it is resolved', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true, data: [], error: '' })
+    store.toolsets.data = [toolset('research', ['missing'])]
+    Object.assign(store.toolsets, { loaded: true, hasSnapshot: true })
+
+    const el = await mount<Toolsets>('agents-toolsets', { store, api, editRoute: true, editName: 'research' })
+    const label = [...el.querySelectorAll('label')].find(item => text(item).includes('Connection unavailable'))!
+    const checkbox = label.querySelector<HTMLInputElement>('input')!
+    const save = [...el.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button) === 'Save changes')!
+    expect(text(label)).toContain('missing')
+    expect(checkbox.checked).toBe(true)
+    expect(save.disabled).toBe(true)
+    checkbox.focus()
+    checkbox.click()
+    await settle(el, 2)
+    expect(text(el)).not.toContain('Connection unavailable')
+    expect(document.activeElement).toBe(el.querySelector('fieldset[aria-describedby="toolset-tools-hint"]'))
+    expect(save.disabled).toBe(false)
+  })
+
+  it('does not offer to remove an assignment while the connection list has failed', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    Object.assign(store.connections, { loaded: true, hasSnapshot: false, error: 'unavailable' })
+    store.toolsets.data = [toolset('research', ['missing'])]
+    Object.assign(store.toolsets, { loaded: true, hasSnapshot: true })
+
+    const el = await mount<Toolsets>('agents-toolsets', { store, api, editRoute: true, editName: 'research' })
+    const label = [...el.querySelectorAll('label')].find(item => text(item).includes('missing'))!
+    expect(label.querySelector<HTMLInputElement>('input')?.disabled).toBe(true)
+    expect(text(label)).toContain('retry to review')
+    expect([...el.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button) === 'Save changes')?.disabled).toBe(true)
+  })
+
+  it('returns focus to the tool group if a refresh removes a focused connection', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.connections.data = [connection('included', 'websearch')]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+    store.toolsets.data = [toolset('research', ['included'])]
+    Object.assign(store.toolsets, { loaded: true, hasSnapshot: true })
+    const el = await mount<Toolsets>('agents-toolsets', { store, api, editRoute: true, editName: 'research' })
+    const selected = [...el.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find(input => input.checked)!
+    selected.focus()
+    store.connections.data = []
+    store.dispatchEvent(new Event('change'))
+    await settle(el, 2)
+
+    expect(document.activeElement).toBe(el.querySelector('fieldset[aria-describedby="toolset-tools-hint"]'))
+    expect(text(el)).toContain('Connection unavailable')
+    expect([...el.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button) === 'Save changes')?.disabled).toBe(true)
+  })
+
+  it('does not move focus when the user leaves a connection before a refresh renders', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.connections.data = [connection('included', 'websearch')]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+    store.toolsets.data = [toolset('research', ['included'])]
+    Object.assign(store.toolsets, { loaded: true, hasSnapshot: true })
+    const el = await mount<Toolsets>('agents-toolsets', { store, api, editRoute: true, editName: 'research' })
+    const selected = [...el.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find(input => input.checked)!
+    const displayName = el.querySelector<HTMLInputElement>('input[placeholder="research"]')!
+    selected.focus()
+    store.connections.data = []
+    store.dispatchEvent(new Event('change'))
+    displayName.focus()
+    await settle(el, 2)
+
+    expect(document.activeElement).toBe(displayName)
   })
 
   it('shows secret-bearing webhook destinations as configured without putting their URLs in the table', async () => {
@@ -590,9 +695,9 @@ describe('Connections resource tables', () => {
 
     const toolsets = await mount<Toolsets>('agents-toolsets', { store, api, routeOwned: true })
     expect(toolsets.querySelector('.k-first-run')).not.toBeNull()
-    expect(text(toolsets.querySelector('.agents-stale'))).toContain('toolset refresh failed')
-    expect(toolsets.querySelector('.agents-stale button')).not.toBeNull()
-    expect(text(toolsets.querySelector('.k-inline-notification--warning'))).toContain('last loaded list remains available')
+    expect(text(toolsets.querySelector('[data-toolsets-first-run-warning]'))).toContain('Toolsets could not be refreshed')
+    expect(toolsets.querySelector('[data-toolsets-first-run-warning] button')).not.toBeNull()
+    expect(text(toolsets.querySelector('.k-inline-notification--warning'))).toContain('last successful empty result')
     expect(toolsets.querySelector('.k-inline-notification--warning .k-inline-notification__action')).not.toBeNull()
   })
 
@@ -644,16 +749,21 @@ describe('Connections resource tables', () => {
     const el = await mount<Connections>('agents-connections', { store, api, routeOwned: true })
 
     const action = el.querySelector<HTMLButtonElement>(`[aria-label="${idleLabel}"]`)!
+    action.focus()
     action.click()
     action.click()
     await settle(el)
 
     expect(request).toHaveBeenCalledTimes(1)
     const busy = el.querySelector<HTMLButtonElement>(`[aria-label="${busyLabel}"]`)!
-    expect(busy.disabled).toBe(true)
+    expect(busy.disabled).toBe(false)
+    expect(document.activeElement).toBe(busy)
+    expect(busy.getAttribute('aria-disabled')).toBe('true')
     expect(busy.getAttribute('aria-busy')).toBe('true')
+    busy.click()
+    expect(request).toHaveBeenCalledTimes(1)
     for (const sibling of el.querySelectorAll<HTMLButtonElement>('table[aria-label="Connections"] .k-table-action')) {
-      expect(sibling.disabled).toBe(true)
+      if (sibling !== busy) expect(sibling.disabled).toBe(true)
     }
 
     finish(result)
@@ -679,7 +789,9 @@ describe('Connections resource tables', () => {
     await settle(el)
 
     const deleting = el.querySelector<HTMLButtonElement>('[aria-label="Deleting connection delete-me…"]')!
-    expect(deleting.disabled).toBe(true)
+    expect(deleting.disabled).toBe(false)
+    expect(deleting.getAttribute('aria-disabled')).toBe('true')
+    deleting.click()
     expect(deleting.getAttribute('aria-busy')).toBe('true')
     expect(el.querySelector<HTMLButtonElement>('[aria-label="Edit connection delete-me"]')!.disabled).toBe(true)
     expect(deleteConnection).toHaveBeenCalledTimes(1)

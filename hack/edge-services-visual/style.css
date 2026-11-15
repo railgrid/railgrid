@@ -1,0 +1,12 @@
+@import "../../portal/src/assets/main.css";
+@source "../../portal/src/**/*.{vue,ts}";
+@source "../../provider-sdk/portalkit-vue/**/*.vue";
+
+.example { padding: 2rem; }
+.fixture-controls, .heading { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between; }
+.fixture-controls { justify-content: flex-end; margin-bottom: 2rem; }
+.heading { margin-bottom: 1.5rem; }
+.heading h1 { font-size: 1.5rem; font-weight: 600; }
+.heading p { color: var(--color-text-muted); margin-top: .35rem; }
+.fixture-note { color: var(--color-text-muted); margin-top: .75rem; font-size: .875rem; }
+@media (max-width: 600px) { .example { padding: 1rem; } }

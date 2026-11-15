@@ -31,6 +31,7 @@ import MemberList from '@/components/MemberList.vue'
 import AddMemberDialog from '@/components/AddMemberDialog.vue'
 import CreateServiceAccountDialog from '@/components/CreateServiceAccountDialog.vue'
 import WorkspaceControlHeader from '@/components/WorkspaceControlHeader.vue'
+import WorkspaceDeletionProgress from '@/components/WorkspaceDeletionProgress.vue'
 import OrgBillingCard from '@/components/OrgBillingCard.vue'
 import CreateWorkspaceDialog from '@/components/CreateWorkspaceDialog.vue'
 import { useTenantStore, type AppAccessGrantRow, type MemberRow, type OrgRow, type SARow, type TokenResponse, type WorkspaceRow } from '@/stores/tenant'
@@ -38,6 +39,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useSettingsBulkAction, type SettingsBulkItem } from '@/composables/useSettingsBulkAction'
 import { confirmDialog } from '@/portalkit/confirm'
 import ResourceTable from '@/portalkit/ResourceTable.vue'
+import ResourceTimestamp from '@/portalkit/ResourceTimestamp.vue'
+import { formatFullTimestamp } from '@/portalkit/timestamp'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
 import ResourceTableActionButton from '@/portalkit/ResourceTableActionButton.vue'
 import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
@@ -200,7 +203,7 @@ async function onDeleteOrg(): Promise<void> {
   const requestRoute = route.fullPath
   if (!(await confirmDialog({
     title: `Delete organization "${org.displayName}"?`,
-    message: 'It enters a recoverable 30-day grace window. Restore it within 30 days to cancel deletion.',
+    message: 'It enters a recovery window. Restore it before the window closes to cancel deletion.',
     danger: true,
     confirmLabel: 'Delete',
   }))) return
@@ -221,7 +224,7 @@ async function onDeleteOrg(): Promise<void> {
   try {
     const ok = await tenant.deleteOrg(target)
     if (ok) {
-      toast('ok', 'Organization deletion requested. Restore it within 30 days.')
+      toast('ok', 'Organization deletion requested. Restore it before the recovery window closes.')
     } else {
       clearManagedOrgSnapshot()
     }
@@ -469,11 +472,6 @@ const workspaceFilters: TableFilterDefinition[] = [{
   ],
 }]
 let workspaceListRequest = 0
-const WORKSPACE_GRACE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000
-const DAY_MS = 24 * 60 * 60 * 1000
-const WORKSPACE_COUNTDOWN_REFRESH_MS = 60 * 1000
-const deletionCountdownNow = ref(Date.now())
-let deletionCountdownTimer: number | null = null
 
 // This computed list is intentionally fenced by scopedOrgUUID. The tenant
 // store keeps a per-organization cache for the shell, but this page must not
@@ -512,15 +510,9 @@ function workspaceDeletionCountdown(workspace: WorkspaceRow): string | null {
   if (!deletionRequestedAt) return null
   // A forced deletion has no window: the hub cascades on its next sweep.
   if (workspace.deletionForced) return 'Deleting now. No recovery window.'
-  const requestedAtMs = Date.parse(deletionRequestedAt)
-  if (!Number.isFinite(requestedAtMs)) return 'Deletion timing unavailable.'
-  // Local delete stamps can be milliseconds newer than the minute ticker. A
-  // future-dated stamp still starts at 30 days, never a misleading 31.
-  const remainingMs = Math.min(WORKSPACE_GRACE_PERIOD_MS, requestedAtMs + WORKSPACE_GRACE_PERIOD_MS - deletionCountdownNow.value)
-  if (remainingMs <= 0) return 'Deletion window expired.'
-  if (remainingMs < DAY_MS) return 'Deletion scheduled today (under one day).'
-  const days = Math.ceil(remainingMs / DAY_MS)
-  return `${days} ${days === 1 ? 'day' : 'days'} until deletion.`
+  const deadline = formatFullTimestamp(workspace.recoveryDeadline)
+  if (deadline) return `Recovery deadline: ${deadline}.`
+  return 'Pending deletion. Recovery deadline unavailable.'
 }
 
 const workspaceInventoryVerified = computed(() =>
@@ -552,6 +544,30 @@ const selectedWorkspaceKeys = ref<Array<string | number>>([])
 const workspaceDeleteBatchBusy = ref(false)
 const workspaceDeleteProgress = ref<WorkspaceDeleteProgress | null>(null)
 const workspaceDeleteSummary = ref<WorkspaceDeleteSummary | null>(null)
+const workspaceDeleteAnnouncement = ref('')
+let workspaceDeleteAnnouncementTimer: ReturnType<typeof setTimeout> | undefined
+
+function clearWorkspaceDeleteAnnouncement(): void {
+  clearTimeout(workspaceDeleteAnnouncementTimer)
+  workspaceDeleteAnnouncementTimer = undefined
+  workspaceDeleteAnnouncement.value = ''
+}
+
+function scheduleWorkspaceDeleteAnnouncement(): void {
+  if (workspaceDeleteAnnouncementTimer !== undefined) return
+  workspaceDeleteAnnouncementTimer = setTimeout(() => {
+    workspaceDeleteAnnouncementTimer = undefined
+    const progress = workspaceDeleteProgress.value
+    if (progress) workspaceDeleteAnnouncement.value = `${progress.completed} of ${progress.total} workspace deletion requests finished. ${progress.succeeded} accepted; ${progress.failed} failed.`
+  }, 1000)
+}
+
+function finishWorkspaceDeleteAnnouncement(outcomes: WorkspaceDeleteOutcome[]): void {
+  clearTimeout(workspaceDeleteAnnouncementTimer)
+  workspaceDeleteAnnouncementTimer = undefined
+  const accepted = outcomes.filter((outcome) => outcome.ok).length
+  workspaceDeleteAnnouncement.value = `Workspace deletion results: ${accepted} accepted; ${outcomes.length - accepted} failed.`
+}
 let workspaceDeleteScopeGeneration = 0
 let workspaceSelectionRevision = 0
 let workspaceDeleteRunSequence = 0
@@ -566,6 +582,7 @@ watch(
   [() => route.fullPath, () => tenant.orgUUID, () => tenant.workspaceMode, () => tenant.workspaceUUID],
   () => {
     workspaceDeleteScopeGeneration++
+    clearWorkspaceDeleteAnnouncement()
     selectedWorkspaceKeys.value = []
     workspaceDeleteProgress.value = null
     workspaceDeleteSummary.value = null
@@ -732,7 +749,7 @@ async function requestWorkspaceDeletions(keys: Array<string | number>, retryOnly
   const selectionList = ids.map((uuid) => `${names.get(uuid)} (UUID ${uuid})`).join('\n')
   const confirmed = await confirmDialog({
     title: `Delete ${countLabel}?`,
-    message: `${workspaceSubject} in "${organizationSettingsOrg.value?.displayName || orgUUID}" will enter a recoverable 30-day grace period. Restore ${restorePronoun} within 30 days to cancel deletion.\n\nSelected workspaces:\n${selectionList}`,
+    message: `${workspaceSubject} in "${organizationSettingsOrg.value?.displayName || orgUUID}" will enter a recovery window. Restore ${restorePronoun} before the window closes to cancel deletion.\n\nSelected workspaces:\n${selectionList}`,
     danger: true,
     confirmLabel: `Delete ${countLabel}`,
   })
@@ -745,6 +762,8 @@ async function requestWorkspaceDeletions(keys: Array<string | number>, retryOnly
   const runID = ++workspaceDeleteRunSequence
   activeWorkspaceDeleteRun = runID
   workspaceDeleteProgress.value = { orgUUID, total: ids.length, completed: 0, succeeded: 0, failed: 0 }
+  clearWorkspaceDeleteAnnouncement()
+  workspaceDeleteAnnouncement.value = `Submitting ${ids.length} workspace deletion requests.`
   const observed = new Map<string, WorkspaceDeleteOutcome>()
   try {
     const results = await tenant.deleteWorkspaces(orgUUID, ids, {
@@ -758,6 +777,7 @@ async function requestWorkspaceDeletions(keys: Array<string | number>, retryOnly
           progress.total = total
           progress.succeeded = [...observed.values()].filter((item) => item.ok).length
           progress.failed = [...observed.values()].filter((item) => !item.ok).length
+          scheduleWorkspaceDeleteAnnouncement()
         }
         if (outcome.ok) {
           selectedWorkspaceKeys.value = selectedWorkspaceKeys.value.filter((key) => String(key) !== outcome.uuid)
@@ -778,6 +798,7 @@ async function requestWorkspaceDeletions(keys: Array<string | number>, retryOnly
         error: 'The request was not sent. Retry after checking the workspace inventory.',
       })
       recordWorkspaceDeleteOutcomes(orgUUID, names, outcomes)
+      finishWorkspaceDeleteAnnouncement(outcomes)
       // The store marks successful rows locally before returning. Refresh once
       // to adopt server state, but never hold the batch busy state on this GET.
       if (!workspaceListLoading.value) void reloadScopedWorkspaces(orgUUID)
@@ -802,15 +823,26 @@ async function onRetryFailedWorkspaceDeletions(): Promise<void> {
 
 const restoringWorkspaceUUID = ref<string | null>(null)
 const forceDeletingWorkspaceUUID = ref<string | null>(null)
-async function restoreWorkspace(workspace: WorkspaceRow): Promise<void> {
+const workspaceInventoryHeading = ref<HTMLElement | null>(null)
+async function restoreWorkspace(workspace: WorkspaceRow, event?: MouseEvent): Promise<void> {
   if (!workspaceInventoryVerified.value || workspace.orgUUID !== tenant.orgUUID ||
     activeOrg.value?.deletionRequestedAt || workspace.role !== 'admin' || !workspace.deletionRequestedAt ||
     workspace.deletionForced || restoringWorkspaceUUID.value || forceDeletingWorkspaceUUID.value || workspaceDeleteBatchBusy.value) return
+  const source = event && event.currentTarget instanceof HTMLElement && document.activeElement === event.currentTarget
+    ? event.currentTarget : null
   const org = workspace.orgUUID
+  const generation = workspaceDeleteScopeGeneration
   restoringWorkspaceUUID.value = workspace.uuid
   try {
     const ok = await tenant.undeleteWorkspace(org, workspace.uuid)
-    if (ok && tenant.orgUUID === org) toast('ok', 'Workspace restored.')
+    if (ok && tenant.orgUUID === org) {
+      toast('ok', 'Workspace restored.')
+      await nextTick()
+      if (source && !source.isConnected && document.activeElement === document.body &&
+        !pageDisposed && generation === workspaceDeleteScopeGeneration && tenant.orgUUID === org) {
+        workspaceInventoryHeading.value?.focus({ preventScroll: true })
+      }
+    }
   } catch (error) {
     if (tenant.orgUUID === org) toast('error', error instanceof Error ? error.message : 'Could not restore workspace. Try again.')
   } finally {
@@ -837,13 +869,15 @@ function workspaceForceDeleteDisabledReason(workspace: WorkspaceRow): string | n
   return null
 }
 
-// forceDeleteWorkspace deletes one workspace without the 30-day recovery
+// forceDeleteWorkspace deletes one workspace without the recovery
 // window. The hub stamps the kcp Workspace forced and its reconciler
 // cascades on the next sweep, so the row reads "Deleting now" until the
 // inventory drops it. Unlike the bulk action this is never restorable, so
 // the confirmation says so in plain words and names the exact target.
-async function forceDeleteWorkspace(workspace: WorkspaceRow): Promise<void> {
+async function forceDeleteWorkspace(workspace: WorkspaceRow, event?: MouseEvent): Promise<void> {
   if (workspaceForceDeleteDisabledReason(workspace)) return
+  const source = event && event.currentTarget instanceof HTMLElement && document.activeElement === event.currentTarget
+    ? event.currentTarget : null
   const org = workspace.orgUUID
   const name = workspace.displayName || workspace.uuid
   const requestRoute = route.fullPath
@@ -853,7 +887,7 @@ async function forceDeleteWorkspace(workspace: WorkspaceRow): Promise<void> {
   const generation = workspaceDeleteScopeGeneration
   const confirmed = await confirmDialog({
     title: `Delete "${name}" now?`,
-    message: `This skips the 30-day recovery window. The workspace and everything in it are removed permanently and cannot be restored.\n\nWorkspace: ${name} (UUID ${workspace.uuid})`,
+    message: `This skips the recovery window. The workspace and everything in it are removed permanently and cannot be restored.\n\nWorkspace: ${name} (UUID ${workspace.uuid})`,
     danger: true,
     confirmLabel: 'Delete now',
   })
@@ -865,7 +899,16 @@ async function forceDeleteWorkspace(workspace: WorkspaceRow): Promise<void> {
   forceDeletingWorkspaceUUID.value = workspace.uuid
   try {
     await tenant.forceDeleteWorkspace(org, workspace.uuid)
-    if (tenant.orgUUID === org) toast('ok', `Deleting "${name}" now. It cannot be restored.`)
+    if (tenant.orgUUID === org) {
+      toast('ok', `Deleting "${name}" now. It cannot be restored.`)
+      if (source) {
+        await nextTick()
+        if (!source.isConnected && document.activeElement === document.body &&
+          !pageDisposed && generation === workspaceDeleteScopeGeneration && tenant.orgUUID === org) {
+          workspaceInventoryHeading.value?.focus({ preventScroll: true })
+        }
+      }
+    }
   } catch (error) {
     if (tenant.orgUUID === org) toast('error', error instanceof Error ? error.message : 'Could not delete the workspace now. Try again.')
   } finally {
@@ -958,9 +1001,6 @@ watch(
 
 onMounted(() => {
   void tenant.fetchOrgs()
-  deletionCountdownTimer = window.setInterval(() => {
-    deletionCountdownNow.value = Date.now()
-  }, WORKSPACE_COUNTDOWN_REFRESH_MS)
 })
 
 // Resolved row for the selected workspace. Null while the list is loading or
@@ -1069,13 +1109,13 @@ async function onDeleteWorkspace() {
   if (!target || !canEditWs.value) return
   const label = selWs.value?.displayName || target.ws
   const requestRoute = route.fullPath
-  if (!(await confirmDialog({ title: `Delete workspace "${label}"?`, message: 'It enters a 30-day grace window and can be restored.', danger: true, confirmLabel: 'Delete' }))) return
+  if (!(await confirmDialog({ title: `Delete workspace "${label}"?`, message: 'It enters a recovery window and can be restored before the window closes.', danger: true, confirmLabel: 'Delete' }))) return
   if (!isCurrentTarget(target) || !canEditWs.value || route.fullPath !== requestRoute) return
   wsBusy.value = true
   try {
     const ok = await tenant.deleteWorkspace(target.org, target.ws)
     if (ok && tenant.orgUUID === target.org && route.fullPath === requestRoute) {
-      toast('ok', 'Workspace deletion requested. Restore it in Organization settings within 30 days.')
+      toast('ok', 'Workspace deletion requested. Restore it in Organization settings before the recovery window closes.')
       await router.push(`/${target.org}/settings/organizations`)
     }
   } finally {
@@ -1417,6 +1457,7 @@ const serviceAccountRows = computed<Record<string, unknown>[]>(() =>
 )
 const issuedToken = ref<TokenResponse | null>(null)
 const issuedTokenSA = ref<string | null>(null)
+const tokenVisible = ref(false)
 const tokenDialogRef = ref<HTMLElement | null>(null)
 const tokenCloseButton = ref<HTMLButtonElement | null>(null)
 let tokenPreviousFocus: HTMLElement | null = null
@@ -1444,6 +1485,7 @@ watch(
   () => !!issuedToken.value,
   (open) => {
     if (open) {
+      tokenVisible.value = false
       tokenPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
       window.addEventListener('keydown', onTokenDialogKeydown)
       nextTick(() => tokenCloseButton.value?.focus())
@@ -1458,10 +1500,12 @@ watch(
 
 onBeforeUnmount(() => {
   pageDisposed = true
+  dismissToken()
   creationFeedbackGeneration++
   orgMemberBulkScopeGeneration.value++
   orgMemberBulk.resetSelection()
   workspaceDeleteScopeGeneration++
+  clearWorkspaceDeleteAnnouncement()
   selectedWorkspaceKeys.value = []
   workspaceDeleteProgress.value = null
   workspaceDeleteSummary.value = null
@@ -1481,10 +1525,6 @@ onBeforeUnmount(() => {
   invalidateServiceAccountRequests()
   window.removeEventListener('keydown', onTokenDialogKeydown)
   tenant.clearError()
-  if (deletionCountdownTimer !== null) {
-    window.clearInterval(deletionCountdownTimer)
-    deletionCountdownTimer = null
-  }
 })
 
 function saOperation(uuid: string): ServiceAccountOperation | undefined {
@@ -2190,22 +2230,37 @@ watch(
 
 const copiedToken = ref(false)
 const tokenCopyError = ref<string | null>(null)
+let tokenCopySequence = 0
+let tokenCopyTimer: ReturnType<typeof setTimeout> | null = null
 async function copyToken() {
-  if (!issuedToken.value) return
+  const currentToken = issuedToken.value
+  if (!currentToken) return
+  const sequence = ++tokenCopySequence
+  if (tokenCopyTimer) clearTimeout(tokenCopyTimer)
+  tokenCopyTimer = null
   copiedToken.value = false
   tokenCopyError.value = null
   try {
-    await navigator.clipboard.writeText(issuedToken.value.token)
+    await navigator.clipboard.writeText(currentToken.token)
+    if (sequence !== tokenCopySequence || issuedToken.value !== currentToken) return
     copiedToken.value = true
-    setTimeout(() => (copiedToken.value = false), 1500)
+    tokenCopyTimer = setTimeout(() => {
+      if (sequence === tokenCopySequence && issuedToken.value === currentToken) copiedToken.value = false
+      tokenCopyTimer = null
+    }, 1500)
   } catch {
-    tokenCopyError.value = 'The token could not be copied automatically. Select the token above and copy it manually before closing this dialog.'
+    if (sequence !== tokenCopySequence || issuedToken.value !== currentToken) return
+    tokenCopyError.value = 'The token could not be copied automatically. Show the token, then select it and copy it manually before closing this dialog.'
   }
 }
 
 function dismissToken() {
+  tokenCopySequence++
+  if (tokenCopyTimer) clearTimeout(tokenCopyTimer)
+  tokenCopyTimer = null
   issuedToken.value = null
   issuedTokenSA.value = null
+  tokenVisible.value = false
   copiedToken.value = false
   tokenCopyError.value = null
 }
@@ -2341,18 +2396,11 @@ watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organizatio
   if (!serviceAccount) createSADialogOpen.value = false
 })
 
-function fmtDate(s?: string | null): string {
-  if (!s) return '—'
-  try {
-    return new Date(s).toLocaleString()
-  } catch {
-    return s
-  }
-}
 </script>
 
 <template>
   <AppLayout>
+    <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{{ workspaceDeleteAnnouncement }}</div>
     <div :class="{ 'billing-focus-page': billingPlanFocused }">
       <header v-if="!billingPlanFocused" class="mb-4">
         <div>
@@ -2513,7 +2561,7 @@ function fmtDate(s?: string | null): string {
                 </div>
                 <div v-if="selWs.deletionRequestedAt">
                   <div class="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Deletion requested</div>
-                  <div class="text-[12px] text-warning">{{ fmtDate(selWs.deletionRequestedAt) }}</div>
+                  <div class="text-[12px] text-warning"><ResourceTimestamp :value="selWs.deletionRequestedAt" label="Workspace deletion requested" /></div>
                 </div>
                 </div>
               </template>
@@ -2529,10 +2577,10 @@ function fmtDate(s?: string | null): string {
                       <h4 v-if="!selWs.deletionRequestedAt" class="text-[12px] font-semibold text-text-primary">Delete this workspace</h4>
                       <h4 v-else class="text-[12px] font-semibold text-text-primary">Restore this workspace</h4>
                       <p v-if="!selWs.deletionRequestedAt" class="mt-1 text-[11px] text-text-muted">
-                        Deleting starts a recoverable 30-day grace window. You can restore this workspace during that window.
+                        Deleting starts a recovery window. Restore this workspace before the window closes to cancel deletion.
                       </p>
                       <p v-else class="mt-1 text-[11px] text-text-muted">
-                        This workspace is in its recoverable 30-day grace window. Restore it to cancel deletion.
+                        This workspace is pending deletion. Restore it before the recovery window closes to cancel deletion.
                       </p>
                     </div>
                     <div class="flex shrink-0 flex-wrap gap-2">
@@ -2541,7 +2589,7 @@ function fmtDate(s?: string | null): string {
                         type="button"
                         class="k-btn k-btn--danger min-h-11 px-2.5 text-[11px] disabled:opacity-50 sm:min-h-0 sm:py-1"
                         :disabled="wsBusy"
-                        title="Soft-delete with 30-day grace"
+                        title="Delete with a recovery window"
                         @click="onDeleteWorkspace"
                       >
                         <Trash2 class="h-3 w-3" :stroke-width="2" /> Delete workspace
@@ -2730,7 +2778,7 @@ function fmtDate(s?: string | null): string {
                     <h2 id="workspace-service-accounts-title" class="text-lg font-semibold text-text-primary">Service accounts</h2>
                     <p class="mt-1 text-[12px] text-text-muted">
                       Machine identities for CI and automation in {{ selWs.displayName || selWs.uuid }}.
-                      Issued bearer tokens are short-lived and shown only once.
+                      Issued bearer tokens are shown only once. Check the expiry when each token is issued.
                     </p>
                   </div>
                   <button v-if="canCreateSA" type="button" class="k-btn k-btn--primary self-start shrink-0" :disabled="anySettingsAccessMutationBusy" @click="openServiceAccountDialog">
@@ -2789,10 +2837,10 @@ function fmtDate(s?: string | null): string {
                     <span class="k-badge k-badge--muted">{{ row.role }}</span>
                   </template>
                   <template #createdAt="{ row }">
-                    {{ fmtDate(String(row.createdAt ?? '')) }}
+                    <ResourceTimestamp :value="String(row.createdAt ?? '')" label="Service account created" />
                   </template>
                   <template #lastTokenIssuedAt="{ row }">
-                    {{ row.lastTokenIssuedAt ? fmtDate(String(row.lastTokenIssuedAt)) : '—' }}
+                    <ResourceTimestamp :value="String(row.lastTokenIssuedAt ?? '')" label="Last token issued" />
                   </template>
                   <template #actions="{ row }">
                     <ActionMenu
@@ -2891,11 +2939,11 @@ function fmtDate(s?: string | null): string {
               </div>
               <div>
                 <div class="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Created</div>
-                <div class="text-[12px] text-text-secondary">{{ fmtDate(organizationSettingsOrg.createdAt) }}</div>
+                <div class="text-[12px] text-text-secondary"><ResourceTimestamp :value="organizationSettingsOrg.createdAt" label="Organization created" /></div>
               </div>
               <div v-if="organizationSettingsOrg.deletionRequestedAt" class="sm:col-span-2">
                 <div class="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Deletion requested</div>
-                <div class="text-[12px] text-warning">{{ fmtDate(organizationSettingsOrg.deletionRequestedAt) }}</div>
+                <div class="text-[12px] text-warning"><ResourceTimestamp :value="organizationSettingsOrg.deletionRequestedAt" label="Organization deletion requested" /></div>
               </div>
             </div>
 
@@ -2947,10 +2995,10 @@ function fmtDate(s?: string | null): string {
                   <h4 v-if="!organizationSettingsOrg.deletionRequestedAt" class="text-[12px] font-semibold text-text-primary">Delete this organization</h4>
                   <h4 v-else class="text-[12px] font-semibold text-text-primary">Restore this organization</h4>
                   <p v-if="!organizationSettingsOrg.deletionRequestedAt" class="mt-1 text-[11px] text-text-muted">
-                    Deleting starts a recoverable 30-day grace window. Restore this organization within 30 days to cancel deletion.
+                    Deleting starts a recovery window. Restore this organization before the window closes to cancel deletion.
                   </p>
                   <p v-else class="mt-1 text-[11px] text-text-muted">
-                    This organization is in its recoverable 30-day grace window. Restore it within 30 days to keep its workspaces and members.
+                    This organization is pending deletion. Restore it before the recovery window closes to keep its workspaces and members.
                   </p>
                 </div>
                 <div class="flex shrink-0 flex-wrap items-center gap-2">
@@ -2959,7 +3007,7 @@ function fmtDate(s?: string | null): string {
                     type="button"
                     class="k-btn k-btn--danger inline-flex items-center gap-1 px-2.5 py-1 text-[11px] disabled:opacity-50"
                     :disabled="orgBusy || orgMemberBulkBusy"
-                    title="Soft-delete with a recoverable 30-day grace window"
+                    title="Delete with a recovery window"
                     @click="onDeleteOrg"
                   >
                     <Trash2 class="h-3 w-3" :stroke-width="2" /> Delete organization
@@ -2986,35 +3034,20 @@ function fmtDate(s?: string | null): string {
 
           <section v-if="organizationSettingsOrg.uuid === tenant.orgUUID && !organizationSettingsOrg.deletionRequestedAt" class="space-y-4 rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="organization-workspaces-title" :aria-busy="workspaceListLoading">
             <div>
-              <h2 id="organization-workspaces-title" class="text-lg font-semibold text-text-primary">Workspaces</h2>
+              <h2 id="organization-workspaces-title" ref="workspaceInventoryHeading" tabindex="-1" class="text-lg font-semibold text-text-primary">Workspaces</h2>
               <p class="mt-1 text-[12px] text-text-muted">All workspaces you can access in this organization, including those pending deletion.</p>
             </div>
-            <div
+            <WorkspaceDeletionProgress
               v-if="workspaceDeleteBatchBusy && workspaceDeleteProgress?.orgUUID === organizationTargetUUID"
-              class="space-y-2 rounded-lg border border-border-subtle bg-surface-overlay/30 px-3 py-2.5"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              <div class="flex flex-wrap items-center justify-between gap-2 text-[12px]">
-                <span class="font-medium text-text-primary">Deleting selected workspaces</span>
-                <span class="text-text-secondary">{{ workspaceDeleteProgress.completed }} of {{ workspaceDeleteProgress.total }} requests finished</span>
-              </div>
-              <progress
-                class="h-2 w-full accent-accent"
-                :value="workspaceDeleteProgress.completed"
-                :max="workspaceDeleteProgress.total"
-                aria-label="Workspace deletion requests completed"
-              />
-              <p class="text-[11px] text-text-muted">
-                {{ workspaceDeleteProgress.succeeded }} requested<span v-if="workspaceDeleteProgress.failed"> · {{ workspaceDeleteProgress.failed }} failed</span>.
-              </p>
-            </div>
+              :completed="workspaceDeleteProgress.completed"
+              :total="workspaceDeleteProgress.total"
+              :succeeded="workspaceDeleteProgress.succeeded"
+              :failed="workspaceDeleteProgress.failed"
+            />
             <section
               v-if="workspaceDeleteSummary?.orgUUID === organizationTargetUUID"
               class="space-y-2 border-t border-border-default/30 pt-3"
               aria-labelledby="workspace-delete-results-title"
-              aria-live="polite"
             >
               <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div class="min-w-0">
@@ -3118,7 +3151,7 @@ function fmtDate(s?: string | null): string {
                   :busy-label="`Restoring workspace ${String(row.name)}…`"
                   :busy="restoringWorkspaceUUID === row.uuid"
                   :disabled="!workspaceInventoryVerified || !!restoringWorkspaceUUID || !!forceDeletingWorkspaceUUID || workspaceDeleteBatchBusy"
-                  @click="restoreWorkspace(row as unknown as WorkspaceRow)"
+                  @click="restoreWorkspace(row as unknown as WorkspaceRow, $event)"
                 />
                 <ResourceTableActionButton
                   v-if="row.role === 'admin' && !row.deletionForced"
@@ -3128,7 +3161,7 @@ function fmtDate(s?: string | null): string {
                   :busy-label="`Deleting workspace ${String(row.name)} now…`"
                   :busy="forceDeletingWorkspaceUUID === row.uuid"
                   :disabled="!!workspaceForceDeleteDisabledReason(row as unknown as WorkspaceRow)"
-                  @click="forceDeleteWorkspace(row as unknown as WorkspaceRow)"
+                  @click="forceDeleteWorkspace(row as unknown as WorkspaceRow, $event)"
                 />
               </template>
             </ResourceTable>
@@ -3296,7 +3329,7 @@ function fmtDate(s?: string | null): string {
             </h3>
             <p id="issued-token-description" class="mt-1 text-[12px] text-text-muted">
               Copy this token now — it cannot be retrieved later.
-              <span v-if="issuedToken.expiresAt"> Expires {{ fmtDate(issuedToken.expiresAt) }}.</span>
+              <span> <template v-if="formatFullTimestamp(issuedToken.expiresAt)">Expires <time :datetime="issuedToken.expiresAt">{{ formatFullTimestamp(issuedToken.expiresAt) }}</time>.</template><template v-else>Token expiry time unavailable.</template></span>
             </p>
           </div>
           <button ref="tokenCloseButton" type="button" class="k-btn k-btn--ghost p-1 text-text-muted hover:text-text-secondary" aria-label="Close token dialog" @click="dismissToken">
@@ -3304,6 +3337,7 @@ function fmtDate(s?: string | null): string {
           </button>
         </div>
         <textarea
+          v-if="tokenVisible"
           readonly
           rows="4"
           class="k-input w-full resize-none bg-surface-overlay/40 p-2 font-mono text-[11px] text-text-secondary"
@@ -3312,6 +3346,7 @@ function fmtDate(s?: string | null): string {
           :value="issuedToken.token"
           @focus="($event.target as HTMLTextAreaElement).select()"
         />
+        <p v-else class="rounded border border-border-subtle bg-surface-overlay/40 p-2 text-[12px] text-text-secondary">Token hidden</p>
         <p
           v-if="tokenCopyError"
           id="issued-token-copy-error"
@@ -3321,7 +3356,9 @@ function fmtDate(s?: string | null): string {
           <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
           {{ tokenCopyError }}
         </p>
-        <div class="mt-3 flex justify-end gap-2">
+        <span class="sr-only" role="status" aria-live="polite">{{ copiedToken ? 'Token copied.' : '' }}</span>
+        <div class="mt-3 flex flex-wrap justify-end gap-2">
+          <button type="button" class="k-btn k-btn--ghost min-h-11 px-3 text-[12px] sm:min-h-0 sm:py-1.5" @click="tokenVisible = !tokenVisible">{{ tokenVisible ? 'Hide token' : 'Show token' }}</button>
           <button
             type="button"
             class="k-btn k-btn--primary min-h-11 px-3 text-[12px] sm:min-h-0 sm:py-1.5"

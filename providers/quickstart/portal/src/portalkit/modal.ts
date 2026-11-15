@@ -12,6 +12,7 @@
 //   if (await confirmModal({ title: 'Delete agent?', message: '…', danger: true })) { … }
 //   await alertModal('Done', 'The thing happened.')
 
+import { nextDocumentID } from './document-id'
 import { ic } from './icons'
 import { ensureRailgridUIStyles } from './styles'
 
@@ -26,7 +27,7 @@ export interface ConfirmOptions {
   danger?: boolean
 }
 
-let modalSequence = 0
+let closeActiveModal: (() => void) | null = null
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string)
@@ -36,15 +37,22 @@ function esc(s: string): string {
 // backdrop, and resolves once. `showCancel=false` gives an alert (single button).
 function dialog(opts: ConfirmOptions, showCancel: boolean): Promise<boolean> {
   ensureRailgridUIStyles()
+  // Match the Vue helper: a newer request cancels the previous one rather
+  // than leaving two modal focus traps active at once.
+  closeActiveModal?.()
   return new Promise<boolean>((resolve) => {
-    const overlay = document.createElement('div')
+    const overlay = document.createElement('dialog')
     overlay.className = 'k-modal-overlay'
     const danger = opts.danger ? ' k-modal--danger' : ''
-    const titleID = `k-modal-title-${++modalSequence}`
-    const messageID = `k-modal-message-${modalSequence}`
-    const describedBy = opts.message ? ` aria-describedby="${messageID}"` : ''
+    const id = nextDocumentID()
+    const titleID = `k-modal-title-${id}`
+    const messageID = `k-modal-message-${id}`
+    overlay.setAttribute('role', showCancel ? 'alertdialog' : 'dialog')
+    overlay.setAttribute('aria-modal', 'true')
+    overlay.setAttribute('aria-labelledby', titleID)
+    if (opts.message) overlay.setAttribute('aria-describedby', messageID)
     overlay.innerHTML = `
-      <div class="k-modal k-modal--confirm k-modal--vanilla${danger}" role="${showCancel ? 'alertdialog' : 'dialog'}" aria-modal="true" aria-labelledby="${titleID}"${describedBy}>
+      <div class="k-modal k-modal--confirm k-modal--vanilla${danger}">
         <div class="k-modal__head">
           <span class="k-modal__icon" aria-hidden="true">${ic(opts.danger ? 'trash' : 'circle')}</span>
           <h2 id="${titleID}" class="k-modal__title">${esc(opts.title)}</h2>
@@ -56,15 +64,17 @@ function dialog(opts: ConfirmOptions, showCancel: boolean): Promise<boolean> {
         </div>
       </div>`
     let done = false
-    const previouslyFocused = document.activeElement as HTMLElement | null
     const close = (v: boolean): void => {
       if (done) return
       done = true
+      if (closeActiveModal === cancelActive) closeActiveModal = null
       overlay.removeEventListener('keydown', onKey)
+      overlay.close()
       overlay.remove()
-      if (previouslyFocused?.isConnected) previouslyFocused.focus()
       resolve(v)
     }
+    const cancelActive = (): void => close(false)
+    closeActiveModal = cancelActive
     // Keydown is scoped to the dialog (not window) and Enter is deliberately
     // NOT handled: the focused button activates on Enter natively, so focus
     // decides the outcome. A global Enter-confirms handler used to fire a
@@ -94,6 +104,10 @@ function dialog(opts: ConfirmOptions, showCancel: boolean): Promise<boolean> {
         first.focus()
       }
     }
+    overlay.addEventListener('cancel', (e) => {
+      e.preventDefault()
+      close(false)
+    })
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) close(false) // backdrop
     })
@@ -101,6 +115,7 @@ function dialog(opts: ConfirmOptions, showCancel: boolean): Promise<boolean> {
     overlay.querySelector('[data-k-modal-confirm]')?.addEventListener('click', () => close(true))
     overlay.addEventListener('keydown', onKey)
     document.body.appendChild(overlay)
+    overlay.showModal()
     // Danger dialogs focus Cancel so a reflexive Enter/Space cancels rather
     // than deletes; non-destructive ones focus the primary action.
     const initial = opts.danger && showCancel ? '[data-k-modal-cancel]' : '[data-k-modal-confirm]'

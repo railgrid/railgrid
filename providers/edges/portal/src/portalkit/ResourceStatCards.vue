@@ -69,7 +69,7 @@ const cardLayout = computed(() => {
       </span>
       <span class="k-resource-stat-card__content">
         <span class="k-resource-stat-card__label">{{ card.label }}</span>
-        <strong class="k-resource-stat-card__value" :class="{ mono: card.mono }">{{ card.value }}</strong>
+        <strong class="k-resource-stat-card__value" :class="{ mono: card.mono }"><slot :name="`value-${card.id}`" :card="card">{{ card.value }}</slot></strong>
         <span v-if="card.detail" class="k-resource-stat-card__detail">{{ card.detail }}</span>
       </span>
     </li>

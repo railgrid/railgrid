@@ -1,0 +1,372 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: workspaceseeds.admin.railgrid.ai
+spec:
+  group: admin.railgrid.ai
+  names:
+    kind: WorkspaceSeed
+    listKind: WorkspaceSeedList
+    plural: workspaceseeds
+    shortNames:
+    - wsseed
+    singular: workspaceseed
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.bindings
+      name: Bindings
+      type: integer
+    - jsonPath: .status.objects
+      name: Objects
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Accepted")].status
+      name: Accepted
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          WorkspaceSeed declares backend functionality every tenant workspace gets
+          without anyone enabling it: APIExports the hub binds into the workspace and
+          objects it creates there. It is how a platform service that is not a
+          provider (it has no catalog entry, no portal presence and no Enable step)
+          reaches every workspace.
+
+          The hub applies every accepted seed to every tenant workspace
+          (root:railgrid:tenants:<org>:<workspace>): to a new one once its core
+          binding is in place, to existing ones when the seed is created or changed,
+          and again whenever an APIBinding in the workspace changes. Bindings are
+          created with the hub's own credential, with exactly the permission claims
+          the seed lists accepted. Objects are server-side applied under the field
+          manager "railgrid-workspace-seed", with force: the seed wins over whoever
+          else wrote the fields it sets, and an object a tenant deleted is created
+          again at the next of the triggers above. The hub does not watch the objects
+          themselves.
+
+          Nothing a seed created is removed when the seed changes or is deleted:
+          deleting an APIBinding deletes the workspace's objects of that API, so
+          removal is an operator's decision, taken per workspace.
+
+          WorkspaceSeed lives in the admin.railgrid.ai APIExport, bound only in
+          root:railgrid:system:providers. Whoever may write there decides what runs in
+          every tenant workspace with which permission claims accepted; treat write
+          access to it as platform administration.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: WorkspaceSeedSpec is what every tenant workspace gets.
+            properties:
+              bindings:
+                description: Bindings are the APIExports bound into every tenant workspace.
+                items:
+                  description: SeedBinding is one APIBinding created in every tenant
+                    workspace.
+                  properties:
+                    export:
+                      description: Export is the APIExport to bind.
+                      properties:
+                        name:
+                          description: Name is the APIExport's name.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        path:
+                          description: |-
+                            Path is the workspace path of the export, for example
+                            root:railgrid:system:switchboard.
+                          maxLength: 512
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(:[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                      required:
+                      - name
+                      - path
+                      type: object
+                    name:
+                      description: |-
+                        Name is the APIBinding's name in the workspace. A binding of that name
+                        that this seed did not create, or that references another export, is
+                        left alone and reported; "railgrid" is the hub's own and is refused.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                      type: string
+                    permissionClaims:
+                      description: |-
+                        PermissionClaims are the export's permission claims the binding
+                        accepts. kcp reports a mismatch, and serves nothing for the claim, when
+                        group, resource, verbs and identity hash differ from what the export
+                        declares; a claim the export declares and this list omits stays
+                        unaccepted.
+                      items:
+                        description: SeedPermissionClaim is one accepted permission
+                          claim.
+                        properties:
+                          group:
+                            description: Group of the claimed resource; empty for
+                              the core group.
+                            type: string
+                          identityHash:
+                            description: |-
+                              IdentityHash of the export that serves the claimed resource, when it is
+                              not a built-in one.
+                            type: string
+                          resource:
+                            description: Resource is the claimed resource, plural.
+                            minLength: 1
+                            type: string
+                          selector:
+                            description: |-
+                              Selector scopes the claim to the objects it matches. Without one the
+                              claim covers every object of the resource in the workspace, which is
+                              refused for core secrets and configmaps.
+                            properties:
+                              matchExpressions:
+                                description: matchExpressions is a list of label selector
+                                  requirements. The requirements are ANDed.
+                                items:
+                                  description: |-
+                                    A label selector requirement is a selector that contains values, a key, and an operator that
+                                    relates the key and values.
+                                  properties:
+                                    key:
+                                      description: key is the label key that the selector
+                                        applies to.
+                                      type: string
+                                    operator:
+                                      description: |-
+                                        operator represents a key's relationship to a set of values.
+                                        Valid operators are In, NotIn, Exists and DoesNotExist.
+                                      type: string
+                                    values:
+                                      description: |-
+                                        values is an array of string values. If the operator is In or NotIn,
+                                        the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                        the values array must be empty. This array is replaced during a strategic
+                                        merge patch.
+                                      items:
+                                        type: string
+                                      type: array
+                                      x-kubernetes-list-type: atomic
+                                  required:
+                                  - key
+                                  - operator
+                                  type: object
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              matchLabels:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                  map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                  operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                type: object
+                            type: object
+                            x-kubernetes-map-type: atomic
+                          verbs:
+                            description: Verbs the export's controllers get on the
+                              resource.
+                            items:
+                              type: string
+                            minItems: 1
+                            type: array
+                            x-kubernetes-list-type: set
+                        required:
+                        - resource
+                        - verbs
+                        type: object
+                      maxItems: 32
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    tenantAccess:
+                      default: ReadWrite
+                      description: |-
+                        TenantAccess bounds what workspace members may do with the API groups
+                        this binding serves. ReadWrite, the default, is what a provider's
+                        binding gives. With ReadOnly or None only the hub and the export's own
+                        controllers write those objects, which is what makes an object created
+                        by this seed something a tenant cannot delete and create again.
+                      enum:
+                      - ReadWrite
+                      - ReadOnly
+                      - None
+                      type: string
+                  required:
+                  - export
+                  - name
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              objects:
+                description: |-
+                  Objects are created in every tenant workspace once every binding of this
+                  seed is Bound there, in the order listed.
+                items:
+                  description: SeedObject is one object created in every tenant workspace.
+                  properties:
+                    manifest:
+                      description: |-
+                        Manifest is the object: apiVersion, kind, metadata.name and whatever
+                        else it holds. It is namespaced when metadata.namespace is set; the
+                        namespace must exist ("default" does in every tenant workspace). The
+                        manifest is applied as written, the same in every workspace.
+                      type: object
+                      x-kubernetes-embedded-resource: true
+                      x-kubernetes-preserve-unknown-fields: true
+                    resource:
+                      description: |-
+                        Resource is the plural resource name of the manifest's kind, for
+                        example "requests". The hub does not run discovery per workspace.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    whenBound:
+                      description: |-
+                        WhenBound lists exports that must have a Bound APIBinding in the
+                        workspace before the object is created, beyond this seed's own
+                        bindings. It is how an object of a provider's API is created only in
+                        workspaces where that provider is enabled, and as soon as it is.
+                      items:
+                        description: SeedExportReference names an APIExport.
+                        properties:
+                          name:
+                            description: Name is the APIExport's name.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          path:
+                            description: |-
+                              Path is the workspace path of the export, for example
+                              root:railgrid:system:switchboard.
+                            maxLength: 512
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(:[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        - path
+                        type: object
+                      maxItems: 8
+                      type: array
+                      x-kubernetes-list-type: atomic
+                  required:
+                  - manifest
+                  - resource
+                  type: object
+                maxItems: 32
+                type: array
+                x-kubernetes-list-type: atomic
+            type: object
+          status:
+            description: WorkspaceSeedStatus is the observed state of a WorkspaceSeed.
+            properties:
+              bindings:
+                description: Bindings is the number of bindings the accepted spec
+                  declares.
+                format: int32
+                type: integer
+              conditions:
+                description: |-
+                  Conditions describe the seed. "Accepted" is True when the spec is valid
+                  and the hub applies it to tenant workspaces; when False the message says
+                  what is wrong and the last accepted spec, if any, is no longer applied
+                  to further workspaces. The status does not say how far the fleet has
+                  been seeded; the hub logs each workspace it fails to seed.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              objects:
+                description: Objects is the number of objects the accepted spec declares.
+                format: int32
+                type: integer
+              observedGeneration:
+                description: ObservedGeneration is the generation the status was computed
+                  from.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

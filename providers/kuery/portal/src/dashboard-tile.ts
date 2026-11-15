@@ -40,11 +40,15 @@ export class KueryDashboardTile extends HTMLElement {
   private _contextGeneration = 0
   private _connected = false
   private _lastHTML = ''
+  private _readSerial = 0
+  private _retryTarget = 0
+  private _retryPending = false
 
   set railgridContext(v: TileContext | null) {
     const changed = createKueryRequestContext(v).identity !== createKueryRequestContext(this._ctx).identity
     this._ctx = v
     if (changed) {
+      this._retryPending = false
       this._contextGeneration += 1
       this._edges = []
       this._views = []
@@ -73,9 +77,11 @@ export class KueryDashboardTile extends HTMLElement {
     this._contextGeneration += 1
     this._poller?.stop()
     this._poller = null
+    this._retryPending = false
   }
 
   private async _load(): Promise<void> {
+    const serial = ++this._readSerial
     const generation = this._contextGeneration
     const request = createKueryRequestContext(this._ctx)
     const isCurrent = (): boolean =>
@@ -103,7 +109,7 @@ export class KueryDashboardTile extends HTMLElement {
       this._loaded = true
     } catch (e) {
       if (!isCurrent()) return
-      if (isBenignTileError(e)) {
+      if (!this._loaded && isBenignTileError(e)) {
         this._edges = []
         this._views = []
         this._error = null
@@ -112,7 +118,17 @@ export class KueryDashboardTile extends HTMLElement {
     } finally {
       if (!isCurrent()) return
       this._loading = false
+      if (this._retryPending && serial < this._retryTarget) return
+      const retry = this.querySelector<HTMLButtonElement>('[data-retry]')
+      const restoreFocus = this._retryPending && document.activeElement === retry
+      if (this._retryPending) this._lastHTML = ''
+      this._retryPending = false
       this._render()
+      if (restoreFocus && document.activeElement === document.body) {
+        const next = this.querySelector<HTMLButtonElement>('[data-retry]')
+        if (next) next.focus()
+        else { this.tabIndex = -1; this.focus() }
+      }
     }
   }
 
@@ -126,7 +142,7 @@ export class KueryDashboardTile extends HTMLElement {
       return
     }
     if (this._error && !this._loaded) {
-      if (this._commit(`<div class="${dashboardTileSemanticClass.error}" role="alert">Failed to load: ${escapeHTML(this._error)} <button class="k-dashboard-action" type="button" data-retry>Retry</button></div>`)) this._bindRetry()
+      if (this._commit(`<div class="${dashboardTileSemanticClass.error}" role="alert">Could not load Kuery summary. ${escapeHTML(this._error)} <button class="k-dashboard-action" type="button" data-retry>Retry</button></div>`)) this._bindRetry()
       return
     }
 
@@ -160,7 +176,7 @@ export class KueryDashboardTile extends HTMLElement {
         : `<p class="${dashboardTileSemanticClass.empty}">No edges to query yet — enroll one in Edges first.</p>`
 
     const liveText = `${this._views.length} saved ${this._views.length === 1 ? 'view' : 'views'} over ${this._edges.length} engaged ${this._edges.length === 1 ? 'edge' : 'edges'}.`
-    const error = this._error ? `<p class="${dashboardTileSemanticClass.error}" role="alert">Showing the last successful result. ${escapeHTML(this._error)} <button class="k-dashboard-action" type="button" data-retry>Retry</button></p>` : ''
+    const error = this._error ? `<p class="${dashboardTileSemanticClass.error}" role="status">Could not refresh. Showing the last successful result. ${escapeHTML(this._error)} <button class="k-dashboard-action" type="button" data-retry>Retry</button></p>` : ''
     const html = `<span class="kuery-tile-live" role="status" aria-live="polite" aria-atomic="true">${liveText}</span><div class="${dashboardTileSemanticClass.root}"><div class="${dashboardTileSemanticClass.stats}">${stats}</div>${error}${body}</div>`
     if (!this._commit(html)) return
     this._bindRetry()
@@ -173,7 +189,16 @@ export class KueryDashboardTile extends HTMLElement {
   }
 
   private _bindRetry(): void {
-    this.querySelector<HTMLButtonElement>('[data-retry]')?.addEventListener('click', () => this._poller?.refresh())
+    this.querySelector<HTMLButtonElement>('[data-retry]')?.addEventListener('click', (event) => {
+      if (this._retryPending || !this._poller) return
+      this._retryPending = true
+      this._retryTarget = this._readSerial + 1
+      const button = event.currentTarget as HTMLButtonElement
+      button.setAttribute('aria-disabled', 'true')
+      button.setAttribute('aria-busy', 'true')
+      button.textContent = 'Retrying…'
+      this._poller.refresh()
+    })
   }
 
   private _commit(html: string): boolean {

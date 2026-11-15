@@ -134,8 +134,10 @@ type projectSandboxSyncRequest struct {
 	Files          []projectSandboxSyncFile `json:"files"`
 	DeletedPaths   []string                 `json:"deletePaths,omitempty"`
 	SourceRevision uint64                   `json:"sourceRevision"`
-	SourceDigest   string                   `json:"sourceDigest"`
-	Restart        string                   `json:"restart,omitempty"`
+	// Older agents require sourceDigest alongside sourceRevision and reject
+	// this request before touching files.
+	SourceDigest string `json:"explicitSourceDigest"`
+	Restart      string `json:"restart,omitempty"`
 }
 
 type projectWorkspaceSyncSnapshot struct {
@@ -291,6 +293,10 @@ func writeDevelopmentSyncError(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, errProjectRuntimeOperationTargetChanged) {
 		writeProjectRuntimeOperationConflict(w)
+		return
+	}
+	if errors.Is(err, workspace.ErrSourceTreeUnavailable) {
+		writeStatus(w, http.StatusServiceUnavailable, "WorkspaceSourceUnavailable", err.Error())
 		return
 	}
 	if errors.Is(err, errProjectRuntimeOperationContention) || errors.Is(err, errProjectRuntimeOperationWaitTimeout) || errors.Is(err, errProjectDevelopmentInstanceReplacing) {
@@ -636,6 +642,9 @@ func (s *Server) postProjectComponentSync(ctx context.Context, id identity, ref 
 	body, status, err := post()
 	if err != nil {
 		return nil, err
+	}
+	if status == http.StatusBadRequest && strings.Contains(string(body), "sourceRevision and sourceDigest must be supplied together") {
+		return nil, &projectDevelopmentSyncPreconditionError{msg: fmt.Sprintf("component %s needs a dev agent that supports explicit sync deletions", component)}
 	}
 	if status == http.StatusConflict && projectDevelopmentSyncRevisionConflict(body) {
 		if applied, ok := s.projectComponentAppliedRevision(ctx, id, ref); ok && applied >= request.SourceRevision {
@@ -1099,14 +1108,17 @@ func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope worksp
 	if err != nil {
 		return projectWorkspaceSyncSnapshot{}, err
 	}
-	changed, err := s.workspaces.UncommittedPaths(ctx, scope)
+	deletions, err := s.workspaces.SourceDeletions(ctx, scope, revision)
+	if errors.Is(err, workspace.ErrSourceRevisionConflict) {
+		return projectWorkspaceSyncSnapshot{}, errProjectWorkspaceSyncRevisionChanged
+	}
 	if err != nil {
 		return projectWorkspaceSyncSnapshot{}, err
 	}
 	deleted := make([]string, 0)
-	for _, changedPath := range changed {
-		if _, present := presentPaths[changedPath]; !present {
-			deleted = append(deleted, changedPath)
+	for deletedPath := range deletions {
+		if _, present := presentPaths[deletedPath]; !present {
+			deleted = append(deleted, deletedPath)
 		}
 	}
 	sort.Strings(deleted)

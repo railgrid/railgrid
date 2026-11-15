@@ -19,6 +19,7 @@ export interface PortalTabItem {
   count?: number | string
   active?: boolean
   disabled?: boolean
+  href?: string
 }
 
 const props = defineProps<{
@@ -26,6 +27,7 @@ const props = defineProps<{
   /** Optional active id for callers that keep selection outside tab objects. */
   active?: string
   ariaLabel?: string
+  variant?: 'primary' | 'secondary'
 }>()
 
 const emit = defineEmits<{
@@ -38,23 +40,30 @@ function isActive(tab: PortalTabItem): boolean {
   return tab.active ?? props.active === tab.id
 }
 
-function select(tab: PortalTabItem): void {
-  if (!tab.disabled) emit('select', tab.id)
+function select(tab: PortalTabItem, event: MouseEvent): void {
+  if (tab.disabled) return
+  if (tab.href) {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    event.preventDefault()
+  }
+  emit('select', tab.id)
 }
 </script>
 
 <template>
-  <nav class="k-tabs" :aria-label="ariaLabel || 'Sections'">
-    <button
+  <nav class="k-tabs" :class="{ 'k-tabs--secondary': variant === 'secondary' }" :aria-label="ariaLabel || 'Sections'">
+    <component
       v-for="tab in tabs"
+      :is="tab.href && !tab.disabled ? 'a' : 'button'"
       :key="tab.id"
       class="k-tab"
       :class="{ 'k-tab--active': isActive(tab) }"
-      type="button"
+      :type="!tab.href || tab.disabled ? 'button' : undefined"
+      :href="!tab.disabled ? tab.href : undefined"
       :data-k-tab-id="tab.id"
       :aria-current="isActive(tab) ? 'page' : undefined"
       :disabled="tab.disabled || undefined"
-      @click="select(tab)"
+      @click="select(tab, $event)"
     >
       <span v-if="$slots.icon || tab.icon" class="k-tab__icon">
         <slot name="icon" :tab="tab">
@@ -63,6 +72,6 @@ function select(tab: PortalTabItem): void {
       </span>
       <span class="k-tab__label">{{ tab.label }}</span>
       <span v-if="tab.count !== undefined" class="k-tab__count">{{ tab.count }}</span>
-    </button>
+    </component>
   </nav>
 </template>

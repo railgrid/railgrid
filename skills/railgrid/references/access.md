@@ -101,8 +101,9 @@ Sources: `pkg/cli/cmd/{root,login,logout,whoami,token,get_token,use,connect,kube
 ## 2. Where credentials live
 
 - Kubeconfig entries named `railgrid` in the default kubeconfig file.
-- OIDC cache: `~/.config/railgrid/tokens/<sha256(issuer+"\n"+client)[:32]>.json`,
-  mode 0600, with a `.lock` sibling. Not `~/.railgrid`.
+- OIDC cache: `~/.config/railgrid/tokens/`. New logins key the cache by issuer,
+  client, and account. Older kubeconfigs keep using their issuer/client cache.
+  Cache files use mode 0600 and have a `.lock` sibling.
 - The edge agent, unrelated, keeps `~/.railgrid/agent-<edge>.kubeconfig`,
   `agent-<edge>.json`, `agent-<edge>.credential.json` and
   `agent-<edge>.harness.json`; `railgrid mcp claude|codex --ca-file` writes

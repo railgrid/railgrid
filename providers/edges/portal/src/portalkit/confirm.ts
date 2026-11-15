@@ -18,21 +18,30 @@ export interface ConfirmOptions {
   cancelLabel?: string
   // danger styles the confirm button as a solid destructive action (delete/remove).
   danger?: boolean
+  // Require an exact resource name for especially consequential actions.
+  verificationText?: string
+  verificationLabel?: string
+  irreversibleMessage?: string
 }
 
 interface ConfirmState extends Required<Omit<ConfirmOptions, 'message'>> {
   open: boolean
+  revision: number
   message: string
   resolve: ((ok: boolean) => void) | null
 }
 
 export const confirmState = reactive<ConfirmState>({
   open: false,
+  revision: 0,
   title: '',
   message: '',
   confirmLabel: 'Confirm',
   cancelLabel: 'Cancel',
   danger: false,
+  verificationText: '',
+  verificationLabel: '',
+  irreversibleMessage: '',
   resolve: null,
 })
 
@@ -49,7 +58,11 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
   confirmState.confirmLabel = opts.confirmLabel ?? 'Confirm'
   confirmState.cancelLabel = opts.cancelLabel ?? 'Cancel'
   confirmState.danger = opts.danger ?? false
+  confirmState.verificationText = opts.verificationText ?? ''
+  confirmState.verificationLabel = opts.verificationLabel ?? ''
+  confirmState.irreversibleMessage = opts.irreversibleMessage ?? ''
   confirmState.open = true
+  confirmState.revision++
   return new Promise<boolean>(resolve => {
     confirmState.resolve = resolve
   })

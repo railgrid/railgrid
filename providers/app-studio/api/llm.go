@@ -929,6 +929,13 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 	if err != nil {
 		return "", fmt.Errorf("capture project source revision: %w", err)
 	}
+	if err := s.workspaces.VerifySourceTree(ctx, scope, sourceRevision); err != nil {
+		return "", err
+	}
+	deletions, err := s.workspaces.SourceDeletions(ctx, scope, sourceRevision)
+	if err != nil {
+		return "", err
+	}
 	files := make([]codecommit.File, 0, len(cleanPaths))
 	writtenPaths := make([]string, 0, len(cleanPaths))
 	deletePaths := make([]string, 0)
@@ -937,8 +944,9 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		data, err := s.workspaces.ReadFileBytes(ctx, scope, p, hubmcp.BinaryFileMaxBytes)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				// A path the model listed that is no longer on disk is a
-				// deletion, which the action takes in the same file list.
+				if !deletions[p] {
+					return "", fmt.Errorf("workspace file %q is missing without a source deletion record", p)
+				}
 				deletePaths = append(deletePaths, p)
 				files = append(files, codecommit.File{Path: p, Delete: true})
 				continue
@@ -1008,17 +1016,18 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		return "", fmt.Errorf("stage immutable commit contents: %w", err)
 	}
 	intent := workspace.PendingCommit{
-		RequestID:       requestID,
-		RepositoryRef:   projectRepositoryRef,
-		RepositoryUID:   repositoryUID,
-		BundleRef:       staged.BundleRef,
-		BundleDigest:    staged.BundleDigest,
-		Message:         message,
-		Branch:          branch,
-		WorkspaceDigest: workspaceDigest,
-		Paths:           cleanPaths,
-		SourceRevision:  sourceRevision,
-		Attributions:    attributions,
+		RequestID:                 requestID,
+		RepositoryRef:             projectRepositoryRef,
+		RepositoryUID:             repositoryUID,
+		BundleRef:                 staged.BundleRef,
+		BundleDigest:              staged.BundleDigest,
+		ExplicitDeletionsVerified: true,
+		Message:                   message,
+		Branch:                    branch,
+		WorkspaceDigest:           workspaceDigest,
+		Paths:                     cleanPaths,
+		SourceRevision:            sourceRevision,
+		Attributions:              attributions,
 	}
 	if err := s.workspaces.ReservePendingCommit(ctx, scope, intent); err != nil {
 		if errors.Is(err, workspace.ErrPendingCommitExists) {

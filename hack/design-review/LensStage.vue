@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Activity, AlertCircle, AlertTriangle, Check, CheckCircle, Clock, Cloud, Command, Database, Diamond, Hexagon, Inbox, Loader2, Plus, Puzzle, RefreshCw, Server, Sparkles, Target, Trash2, X, XCircle, Zap } from 'lucide-vue-next'
 import { useThemeStore } from '@/stores/theme'
 import { categoryIcons } from '@/lib/categoryIcons'
@@ -20,6 +20,29 @@ const rejectContext = ref(false)
 const assetRows = computed(() => props.catalog.assets.filter(item => [item.name, item.contract, item.source.path].join(' ').toLowerCase().includes(assetQuery.value.toLowerCase().trim())))
 const kitVersion = computed(() => values.value['--railgrid-ui-core-version'])
 const swatches = computed(() => props.catalog.tokens.filter(item => item.name.startsWith('--color-')))
+const motionProgress = ref(2)
+const motionPreference = ref(false)
+let motionMedia
+function updateMotionPreference() { motionPreference.value = motionMedia.matches }
+onMounted(() => { motionMedia = matchMedia('(prefers-reduced-motion: reduce)'); updateMotionPreference(); motionMedia.addEventListener('change', updateMotionPreference) })
+const specimenObservers = new Map()
+function clearSpecimenObservers() {
+  for (const observer of specimenObservers.values()) observer.disconnect()
+  specimenObservers.clear()
+}
+function sizeSpecimen(event) {
+  const frame = event.currentTarget
+  specimenObservers.get(frame)?.disconnect()
+  const sample = frame.contentDocument?.querySelector('#sample')
+  if (!sample) return
+  const resize = () => { frame.style.height = `${Math.ceil(sample.getBoundingClientRect().height) + frame.offsetHeight - frame.clientHeight}px` }
+  const observer = new ResizeObserver(resize)
+  observer.observe(sample)
+  specimenObservers.set(frame, observer)
+  resize()
+}
+watch(() => props.stage, clearSpecimenObservers)
+onUnmounted(() => { motionMedia?.removeEventListener('change', updateMotionPreference); clearSpecimenObservers() })
 const selection = ref('Applications')
 const overlayMessage = ref('')
 const lensIcons = [
@@ -81,7 +104,14 @@ function reportHandoff() {
 </script>
 
 <template>
-  <div v-if="stage === 'colors'" class="spec-stack">
+  <div v-if="stage === 'motion'" class="spec-stack">
+    <p class="spec-note">System preference: <strong>{{ motionPreference ? 'Reduced motion' : 'No motion preference' }}</strong>. Change it in your operating system and repeat these examples.</p>
+    <section class="spec-section spec-stack"><h3>Task progress</h3><div class="k-task-progress"><div class="k-task-progress__header"><span id="motion-task-label" class="k-task-progress__label">Preparing deployment</span><span class="k-task-progress__value">{{ motionProgress }} of 4 steps</span></div><div class="k-progress" role="progressbar" aria-labelledby="motion-task-label" :aria-valuenow="motionProgress" aria-valuemin="0" aria-valuemax="4" :aria-valuetext="`${motionProgress} of 4 steps complete`"><div class="k-progress__bar k-progress__bar--accent" :style="{ '--k-progress-value': motionProgress / 4 }"></div></div></div><button type="button" class="k-btn k-btn--ghost spec-fit" @click="motionProgress = motionProgress === 4 ? 0 : motionProgress + 1">{{ motionProgress === 4 ? 'Restart example' : 'Advance task' }}</button></section>
+    <section class="spec-section spec-stack"><h3>Ongoing activity</h3><div class="spec-row"><span class="k-badge k-badge--muted"><span class="k-badge__dot live-dot" aria-hidden="true"></span> In progress</span><span class="spec-note"><Loader2 :size="14" class="k-spin inline-block" aria-hidden="true" /> Refreshing status</span></div><p class="spec-note">The labels remain when motion is reduced. This is a simulated task.</p></section>
+    <div class="spec-row"><a class="k-btn k-btn--ghost" href="http://127.0.0.1:5200/" target="_blank" rel="noopener">Agent run fixture</a><a class="k-btn k-btn--ghost" href="http://127.0.0.1:5204/ui/11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222?preview=usage-thresholds" target="_blank" rel="noopener">Dashboard usage fixture</a></div>
+  </div>
+
+  <div v-else-if="stage === 'colors'" class="spec-stack">
     <div class="spec-token-grid">
       <a v-for="item in swatches" :key="item.name" :href="item.source.href" class="spec-token" :title="values[item.name]">
         <span class="spec-swatch" :style="{ background: 'var(' + item.name + ')' }"></span>
@@ -98,7 +128,30 @@ function reportHandoff() {
     </section>
   </div>
 
-  <div v-else-if="stage === 'type'" class="spec-stack">
+  <div v-else-if="stage === 'materials' || stage === 'type'" class="spec-stack">
+    <p class="spec-note">Compare both themes side by side. These specimens use existing tokens and recipes; the role groupings are for review.</p>
+    <div class="material-comparison">
+      <section v-for="appearance in ['light', 'dark']" :key="appearance" class="material-comparison__column">
+        <h3>{{ appearance === 'light' ? 'Light' : 'Dark' }}</h3>
+        <iframe class="material-comparison__frame" :title="`${stage === 'type' ? 'Text roles' : 'Materials'} in ${appearance} theme`" :src="`./material-sample.html?kind=${stage === 'type' ? 'type' : 'materials'}&theme=${appearance}`" @load="sizeSpecimen"></iframe>
+      </section>
+    </div>
+    <section class="spec-section spec-stack" aria-labelledby="foundation-product-uses">
+      <h3 id="foundation-product-uses">Review in context</h3>
+      <p class="spec-note">Product fixtures mount portal views with simulated data; design examples are separate studies.<template v-if="stage === 'materials'"> The dialog and tooltip specimens above are static.</template></p>
+      <div v-if="stage === 'materials'" class="spec-grid">
+        <div><strong>Page and table</strong><p class="spec-note">Compare the Services collection in the product with its design study.</p><a href="http://127.0.0.1:5199/product.html" target="_blank" rel="noopener">Edge Services product fixture</a> · <a href="http://127.0.0.1:5199/" target="_blank" rel="noopener">Design example</a></div>
+        <div><strong>Raised and divided sections</strong><p class="spec-note">Compare the Infrastructure instance view with the deployment study’s rollout and Recent events sections. Complete the sample read to view the instance.</p><a href="http://127.0.0.1:5201/instance.html" target="_blank" rel="noopener">Infrastructure product fixture</a> · <a href="http://127.0.0.1:5201/" target="_blank" rel="noopener">Deployment design example</a></div>
+        <div><strong>Floating surfaces</strong><p class="spec-note">Open a row action menu and choose Delete service to inspect its confirmation dialog. Actions are simulated.</p><a href="http://127.0.0.1:5199/product.html" target="_blank" rel="noopener">Edge Services product fixture</a></div>
+      </div>
+      <div v-else class="spec-grid">
+        <div><strong>Heading and metric roles</strong><p class="spec-note">Compare the Infrastructure instance view with the deployment study’s title, section headings, and summary values. Complete the sample read to view the instance.</p><a href="http://127.0.0.1:5201/instance.html" target="_blank" rel="noopener">Infrastructure product fixture</a> · <a href="http://127.0.0.1:5201/" target="_blank" rel="noopener">Deployment design example</a></div>
+        <div><strong>Collection titles</strong><p class="spec-note">See the compact collection treatment in Connections and Toolsets.</p><a href="http://127.0.0.1:5198/?provider=agents&amp;route=%23%2Fconnections" target="_blank" rel="noopener">Open Agents Connections fixture</a></div>
+        <div><strong>Technical values and timestamps</strong><p class="spec-note">Review run identifiers, step labels, and exact timestamp details in context.</p><a href="http://127.0.0.1:5200/" target="_blank" rel="noopener">Open agent run fixture</a></div>
+        <div><strong>Table and control labels</strong><p class="spec-note">Compare service names, status, metadata, and action labels at collection density.</p><a href="http://127.0.0.1:5199/product.html" target="_blank" rel="noopener">Edge Services product fixture</a></div>
+      </div>
+    </section>
+    <template v-if="stage === 'type'">
     <div class="type-display spec-display">Railgrid</div>
     <div class="spec-grid">
       <section class="spec-section"><h3>Instrument Sans · interface</h3><p>Connect infrastructure to your workspace.</p><button class="k-btn k-btn--primary" type="button" @click="selection = 'Edge created in the fixture'">Create edge</button><p v-if="selection !== 'Applications'" role="status" class="spec-note">{{ selection }}</p></section>
@@ -106,6 +159,7 @@ function reportHandoff() {
       <section class="spec-section"><div class="k-eyebrow">Active connections</div><div class="k-kpi">1,028</div></section>
       <section class="spec-section"><h3>Tabular numerals</h3><div class="spec-numerals"><div><span>Edge 01</span><span>1,028</span></div><div><span>Edge 02</span><span>8,161</span></div><div><span>Edge 03</span><span>4,392</span></div></div></section>
     </div>
+    </template>
   </div>
 
   <div v-else-if="stage === 'icons'" class="spec-stack">
@@ -193,3 +247,11 @@ relay-87cc9   1/1   Running</code></pre></section><section class="spec-section">
     <a class="review-source-link" href="?entry=design.quality.review-checklist">Open review checklist</a>
   </div>
 </template>
+
+<style scoped>
+.material-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.material-comparison__column { min-width: 0; }
+.material-comparison__column h3 { margin: 0 0 8px; font-size: 13px; }
+.material-comparison__frame { display: block; width: 100%; height: 525px; border: 1px solid var(--color-border-subtle); border-radius: 6px; }
+@media (max-width: 760px) { .material-comparison { grid-template-columns: minmax(0, 1fr); } }
+</style>

@@ -8,7 +8,7 @@
   presentation in the slots.
 -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, Copy } from 'lucide-vue-next'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import type { AIMessageRole } from './ai'
@@ -29,21 +29,35 @@ const props = withDefaults(defineProps<{
 })
 
 const copyStatus = ref('')
+const copyFailed = ref(false)
 const copyLabel = computed(() => props.role === 'user' ? 'Copy message' : 'Copy response')
 let resetCopyStatus: ReturnType<typeof setTimeout> | undefined
+let copyAttempt = 0
+
+function resetCopy(): void {
+  copyAttempt++
+  if (resetCopyStatus) clearTimeout(resetCopyStatus)
+  copyStatus.value = ''
+  copyFailed.value = false
+}
+watch(() => [props.id, props.copyText], resetCopy)
 
 async function copyMessage(): Promise<void> {
-  if (resetCopyStatus) clearTimeout(resetCopyStatus)
+  resetCopy()
+  const attempt = copyAttempt
   try {
     await navigator.clipboard.writeText(props.copyText)
+    if (attempt !== copyAttempt) return
     copyStatus.value = 'Copied'
+    resetCopyStatus = setTimeout(() => { copyStatus.value = '' }, 2000)
   } catch {
-    copyStatus.value = 'Could not copy. Try again.'
+    if (attempt !== copyAttempt) return
+    copyFailed.value = true
+    copyStatus.value = 'Could not copy. Select the text to copy it.'
   }
-  resetCopyStatus = setTimeout(() => { copyStatus.value = '' }, 2500)
 }
 
-onBeforeUnmount(() => { if (resetCopyStatus) clearTimeout(resetCopyStatus) })
+onBeforeUnmount(resetCopy)
 
 ensureAgentUIStyles()
 </script>
@@ -52,7 +66,7 @@ ensureAgentUIStyles()
   <article
     :id="id || undefined"
     class="k-ai-message"
-    :class="[`k-ai-message--${role}`, { 'k-ai-message--bubble': bubble }]"
+    :class="[`k-ai-message--${role}`, { 'k-ai-message--bubble': bubble, 'k-ai-message--copy-error': copyFailed }]"
     :aria-label="ariaLabel || undefined"
   >
     <div class="k-ai-message__body">
@@ -79,7 +93,7 @@ ensureAgentUIStyles()
           <Check v-if="copyStatus === 'Copied'" :size="14" aria-hidden="true" />
           <Copy v-else :size="14" aria-hidden="true" />
         </button>
-        <span class="sr-only" role="status">{{ copyStatus }}</span>
+        <span class="k-ai-message-copy-feedback" role="status" aria-live="polite">{{ copyStatus }}</span>
       </div>
     </div>
   </article>

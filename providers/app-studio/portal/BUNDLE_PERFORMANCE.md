@@ -265,3 +265,12 @@ The production build for the shared AgentKit command receipt changes measured
 raw ceiling increases by 1,000 B to 1,411,500 B, leaving 642 B of raw headroom
 on that build. The gzip total and path-specific ceilings retain their existing
 values.
+
+The follow-up component rollouts raise the total asset ceilings to 1,417,000 B
+raw and 396,000 B gzip. The measured AgentKit interaction build used 1,413,161 B
+raw and 394,611 B gzip. Bootstrap, dashboard, page, and authentication settings
+ceilings are unchanged.
+
+After the independent follow-ups landed together, the project navigation build
+used 1,421,646 B raw and 397,413 B gzip. The combined total ceilings are
+1,425,000 B raw and 399,000 B gzip. The path-specific ceilings stay the same.

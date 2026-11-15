@@ -72,6 +72,7 @@ export class QuickstartElement extends HTMLElement {
   private _active = false
   private _greetPending = new Set<string>()
   private _greetResults = new Map<string, { message: string; error: boolean }>()
+  private _expandedObserved = new Set<string>()
 
   // The host sets this after appending and again on every change. Re-render,
   // and reload when the identity of the data actually changed.
@@ -92,6 +93,7 @@ export class QuickstartElement extends HTMLElement {
       this._busy = ''
       this._greetPending.clear()
       this._greetResults.clear()
+      this._expandedObserved.clear()
       this._draftName = ''
       this._draftMessage = ''
     }
@@ -142,13 +144,13 @@ export class QuickstartElement extends HTMLElement {
     const serial = ++this._readSerial
     const ctx = this._ctx
     this._loading = true
-    this._readError = ''
     this._render()
     try {
       const list = await this._kube(ctx).list<Greeting>(greetings)
       if (!this._current(generation) || serial !== this._readSerial) return
       this._items = list.items
       this._loaded = true
+      this._readError = ''
     } catch (err) {
       if (!this._current(generation) || serial !== this._readSerial) return
       this._readError = (err as Error).message
@@ -246,12 +248,17 @@ export class QuickstartElement extends HTMLElement {
     const ctx = this._ctx
     const focused = this.querySelector<HTMLInputElement>('input:focus')
     const focusName = focused?.name
+    const focusedRefresh = this.querySelector<HTMLButtonElement>('button[data-refresh]:focus')?.dataset.refresh
+    const focusedGreeting = this.querySelector<HTMLButtonElement>('button[data-greet]:focus')?.dataset.greet
+    const focusedOther = this.querySelector<HTMLButtonElement>('button[data-create]:focus, button[data-cancel]:focus, button[data-open]:focus, button[data-observed-for]:focus')
+    const otherKey = focusedOther && ['data-create', 'data-cancel', 'data-open', 'data-observed-for'].find(key => focusedOther.hasAttribute(key))
+    const otherValue = otherKey ? focusedOther?.getAttribute(otherKey) : null
     const selection = focused ? [focused.selectionStart, focused.selectionEnd] as const : null
     const createRoute = (ctx?.subPath || '').replace(/^\/+|\/+$/g, '') === 'create/greeting'
     const firstRun = !!ctx?.tenant && this._loaded && this._items.length === 0
     this.innerHTML = createRoute ? `
       <section class="k-create-page">
-        <button class="k-btn k-btn--ghost k-back-action" type="button" data-cancel ${this._busy ? 'disabled' : ''}>${ic('arrow-left')} Back to greetings</button>
+        <button class="k-btn k-btn--ghost k-back-action" type="button" data-cancel="back" ${this._busy ? 'disabled' : ''}>${ic('arrow-left')} Back to greetings</button>
         <header class="k-create-header">
           <h2 class="k-create-title">New greeting</h2>
           <p class="k-create-description">Create a greeting in the selected workspace, then send it from the greetings list.</p>
@@ -272,7 +279,7 @@ export class QuickstartElement extends HTMLElement {
             ${this._busy === 'create' ? '<span class="quickstart-read-status" role="status">Creating greeting…</span>' : ''}
           </div>
           <div class="k-create-actions">
-            <button class="k-btn k-btn--ghost" type="button" data-cancel ${this._busy ? 'disabled' : ''}>Cancel</button>
+            <button class="k-btn k-btn--ghost" type="button" data-cancel="footer" ${this._busy ? 'disabled' : ''}>Cancel</button>
             <button class="k-btn k-btn--primary" type="submit" ${ctx?.tenant && !this._busy ? '' : 'disabled'}>${ic('plus')} ${this._busy === 'create' ? 'Creating…' : 'Create greeting'}</button>
           </div>
         </form>
@@ -281,19 +288,19 @@ export class QuickstartElement extends HTMLElement {
       <div class="quickstart-page k-resource-page">
         <header class="k-resource-page__header">
           <div class="k-resource-page__heading">
-            <h2 class="k-resource-page__title">Greetings</h2>
+            <h2 class="k-resource-page__title" tabindex="-1">Greetings</h2>
             ${this._loaded && this._items.length > 0 ? `<div class="k-resource-page__meta"><span>${this._items.length} ${this._items.length === 1 ? 'greeting' : 'greetings'}</span></div>` : ''}
             <p class="k-resource-page__subtitle">Send a greeting to see its response. Each greeting belongs to this workspace.</p>
           </div>
           <div class="k-resource-page__header-side">
             <div class="k-resource-page__actions">
-              <button class="k-btn k-btn--ghost" type="button" data-refresh ${this._loading || !ctx?.tenant ? 'disabled' : ''}>${ic('refresh')} ${this._loading ? 'Refreshing…' : 'Refresh'}</button>
+              <button class="k-btn k-btn--ghost" type="button" data-refresh="header" ${!ctx?.tenant ? 'disabled' : ''} ${this._loading ? 'aria-disabled="true" aria-busy="true"' : ''}>${ic('refresh')} ${this._loading ? 'Refreshing…' : 'Refresh'}</button>
               ${!firstRun ? `<button class="k-btn k-btn--primary" type="button" data-create ${ctx?.tenant ? '' : 'disabled'}>${ic('plus')} New greeting</button>` : ''}
             </div>
           </div>
         </header>
         <section class="k-resource-page__body ${firstRun ? 'quickstart-first-use' : 'k-card quickstart-panel'}" aria-label="Workspace greetings">
-          ${this._readError ? `<p class="quickstart-error" role="alert">${this._loaded ? 'Showing the last successful greetings. ' : ''}${escapeHTML(this._readError)} <button class="k-btn k-btn--ghost" type="button" data-refresh>Retry</button></p>` : ''}
+          ${this._readError ? `<p class="quickstart-error" role="${this._loaded ? 'status' : 'alert'}">${this._loaded ? 'Showing the last successful greetings. ' : ''}${escapeHTML(this._readError)} <button class="k-btn k-btn--ghost" type="button" data-refresh="retry" ${this._loading ? 'aria-disabled="true" aria-busy="true"' : ''}>${this._loading ? 'Retrying…' : 'Retry'}</button></p>` : ''}
           ${this._loading && this._loaded ? '<span class="quickstart-read-status" role="status">Refreshing greetings…</span>' : ''}
           ${this._renderList()}
         </section>
@@ -304,6 +311,21 @@ export class QuickstartElement extends HTMLElement {
       const input = this.querySelector<HTMLInputElement>(`input[name="${focusName}"]`)
       input?.focus()
       if (input && selection && selection[0] !== null && selection[1] !== null) input.setSelectionRange(selection[0], selection[1])
+    }
+    if (focusedRefresh) {
+      const target = this.querySelector<HTMLElement>(`button[data-refresh="${focusedRefresh}"]`)
+        ?? this.querySelector<HTMLElement>('.k-resource-page__title')
+      target?.focus()
+    }
+    if (focusedGreeting !== undefined) {
+      const target = [...this.querySelectorAll<HTMLButtonElement>('button[data-greet]')].find(button => button.dataset.greet === focusedGreeting)
+        ?? this.querySelector<HTMLElement>('.k-resource-page__title')
+      target?.focus()
+    }
+    if (otherKey && otherValue !== null) {
+      const target = [...this.querySelectorAll<HTMLButtonElement>(`button[${otherKey}]`)].find(button => button.getAttribute(otherKey) === otherValue)
+        ?? this.querySelector<HTMLElement>('.k-resource-page__title')
+      target?.focus()
     }
   }
 
@@ -331,9 +353,17 @@ export class QuickstartElement extends HTMLElement {
     const isReady = ready?.status === 'True'
     // status.observedAt is the proof a reconciler is running: it is absent
     // until the provider's controller has seen the object.
-    const observed = item.status?.observedAt ? new Date(item.status.observedAt).toLocaleString() : 'not observed yet'
+    const observedDate = item.status?.observedAt ? new Date(item.status.observedAt) : null
+    const observedMs = observedDate?.getTime()
+    const validObserved = observedDate && observedMs !== undefined && Number.isFinite(observedMs)
+    const elapsedSeconds = validObserved ? Math.round((observedMs - Date.now()) / 1000) : 0
+    const units: [Intl.RelativeTimeFormatUnit, number][] = [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60], ['second', 1]]
+    const unit = units.find(([, seconds]) => Math.abs(elapsedSeconds) >= seconds) || units[units.length - 1]!
+    const observed = validObserved ? new Intl.RelativeTimeFormat(undefined, { numeric: Math.abs(elapsedSeconds) < 45 ? 'auto' : 'always' }).format(Math.abs(elapsedSeconds) < 45 ? 0 : Math.round(elapsedSeconds / unit[1]), unit[0]) : 'not observed yet'
+    const observedExact = validObserved ? new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' }).format(observedDate) : ''
     const result = this._greetResults.get(name)
     const pending = this._greetPending.has(name)
+    const expandedObserved = this._expandedObserved.has(name)
     return `
       <li class="quickstart-row">
         <button class="k-btn k-btn--text quickstart-row-name" type="button" data-open="${escapeHTML(name)}">${escapeHTML(name)}</button>
@@ -341,8 +371,8 @@ export class QuickstartElement extends HTMLElement {
         <span class="k-badge ${isReady ? 'k-badge--success' : 'k-badge--warning'}" title="${escapeHTML(ready?.message || '')}">
           ${isReady ? 'Ready' : escapeHTML(ready?.reason || 'Pending')}
         </span>
-        <span class="quickstart-row-observed">${escapeHTML(observed)}</span>
-        <button class="k-btn k-btn--ghost" type="button" data-greet="${escapeHTML(name)}" ${pending ? 'disabled' : ''} aria-busy="${pending}" aria-label="${pending ? 'Greeting' : 'Greet'} ${escapeHTML(name)}">
+        <span class="quickstart-row-observed">${validObserved ? `<button class="k-resource-timestamp__button" type="button" data-observed-for="${escapeHTML(name)}" data-observed-time="${escapeHTML(observed)}" data-observed-exact="${escapeHTML(observedExact)}" aria-label="Last observed: ${escapeHTML(observed)} — ${escapeHTML(observedExact)}" aria-pressed="${expandedObserved}" title="${escapeHTML(observedExact)}"><time datetime="${escapeHTML(observedDate.toISOString())}">${escapeHTML(expandedObserved ? observedExact : observed)}</time></button>` : escapeHTML(observed)}</span>
+        <button class="k-btn k-btn--ghost" type="button" data-greet="${escapeHTML(name)}" ${pending ? 'aria-disabled="true"' : ''} aria-busy="${pending}" aria-label="${pending ? 'Greeting' : 'Greet'} ${escapeHTML(name)}">
           ${ic('send')} ${pending ? 'Greeting…' : 'Greet'}
         </button>
         ${pending ? `<span class="quickstart-row-result" role="status">Greeting ${escapeHTML(name)}…</span>` : ''}
@@ -359,7 +389,7 @@ export class QuickstartElement extends HTMLElement {
       button.addEventListener('click', () => this._navigate(''))
     }
     for (const button of this.querySelectorAll<HTMLButtonElement>('[data-refresh]')) {
-      button.addEventListener('click', () => { void this._load() })
+      button.addEventListener('click', () => { if (!this._loading) void this._load() })
     }
     const form = this.querySelector<HTMLFormElement>('[data-form="create"]')
     form?.addEventListener('input', () => {
@@ -375,6 +405,17 @@ export class QuickstartElement extends HTMLElement {
     })
     for (const button of this.querySelectorAll<HTMLButtonElement>('[data-greet]')) {
       button.addEventListener('click', () => void this._greet(button.dataset.greet as string))
+    }
+    for (const button of this.querySelectorAll<HTMLButtonElement>('[data-observed-time]')) {
+      button.addEventListener('click', () => {
+        const expanded = button.getAttribute('aria-pressed') !== 'true'
+        const name = button.dataset.observedFor || ''
+        if (expanded) this._expandedObserved.add(name)
+        else this._expandedObserved.delete(name)
+        button.setAttribute('aria-pressed', String(expanded))
+        const time = button.querySelector('time')
+        if (time) time.textContent = expanded ? button.dataset.observedExact || '' : button.dataset.observedTime || ''
+      })
     }
     for (const button of this.querySelectorAll<HTMLButtonElement>('[data-open]')) {
       button.addEventListener('click', () => this._openDetail(button.dataset.open as string))

@@ -22,7 +22,7 @@ Pass `columns` containing `id`, `label`, and `count`. The `icon` and `column` sl
 
 ## Behavior
 
-Populated columns always appear. Empty columns start as compact buttons in Hidden columns. Users may reveal an empty column and hide it again. Expansion is local to the mounted board; key by data scope to reset it. Unknown observed phases must be supplied, never dropped.
+Populated columns always appear. Empty columns start as labeled reveal controls above the scrollable lanes, so they remain discoverable at narrow widths. Users may reveal an empty column and hide it again. Expansion is local to the mounted board; key by data scope to reset it. Unknown observed phases must be supplied, never dropped.
 
 ## Content
 
@@ -30,7 +30,7 @@ Counts represent the supplied filtered collection, not workspace totals. Consume
 
 ## Layout and responsive behavior
 
-Horizontal overflow preserves readable cards on small screens. Each visible lane has independently scrollable content. Lanes are transparent groupings: their headings and spacing separate workflows without adding a surface between the containing section and its cards. Hidden columns use a narrower group of compact, unbordered reveal buttons; coarse pointers retain 44px targets. Shared canonical CSS owns spacing and geometry.
+Horizontal overflow preserves readable cards on small screens, with a visible hint when lanes extend beyond the viewport. Each visible lane has independently scrollable content. Lanes are transparent groupings: their headings and spacing separate workflows without adding a surface between the containing section and its cards. Empty-column controls wrap above the lanes; coarse pointers retain at least 44px targets for both reveal and collapse. Shared canonical CSS owns spacing and geometry.
 
 ## Accessibility
 
@@ -38,7 +38,9 @@ Named regions support keyboard scrolling. Native buttons reveal and collapse emp
 
 ## Code and evidence
 
-Canonical implementation: `provider-sdk/portalkit-vue/ResourceBoard.vue`. Render only after an authoritative first read and retain content on refresh failures. Consumers remain responsible for read-state feedback. Verification status is recorded in this entry's metadata.
+Canonical implementation: `provider-sdk/portalkit-vue/ResourceBoard.vue`. The Planner provider in the separate providers checkout uses it in `providers/planner/portal/src/components/IssueBoard.vue` to group issues by status. Its caller owns loading and filtering, and the board preserves a lane for an issue whose reported status is absent from the current workflow. The design-book board is a synthetic component fixture, not the Planner product view.
+
+Render only after an authoritative first read and retain content on refresh failures. Consumers remain responsible for read-state feedback. Verification status is recorded in this entry's metadata.
 
 ## Related guidance
 

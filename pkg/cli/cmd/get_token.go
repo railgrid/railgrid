@@ -36,6 +36,7 @@ func newGetTokenCommand() *cobra.Command {
 	var (
 		issuerURL             string
 		clientID              string
+		account               string
 		insecureSkipTLSVerify bool
 	)
 
@@ -44,12 +45,13 @@ func newGetTokenCommand() *cobra.Command {
 		Short:  "Get an OIDC token for kubectl exec credential plugin",
 		Hidden: true, // Called by kubectl, not directly by users.
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runGetToken(cmd.Context(), cmd.OutOrStdout(), issuerURL, clientID, insecureSkipTLSVerify)
+			return runGetToken(cmd.Context(), cmd.OutOrStdout(), issuerURL, clientID, insecureSkipTLSVerify, account)
 		},
 	}
 
 	cmd.Flags().StringVar(&issuerURL, "oidc-issuer-url", "", "OIDC issuer URL")
 	cmd.Flags().StringVar(&clientID, "oidc-client-id", "", "OIDC client ID")
+	cmd.Flags().StringVar(&account, "oidc-account", "", "Railgrid account ID for the token cache")
 	cmd.Flags().BoolVar(&insecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS verification for OIDC provider")
 
 	return cmd
@@ -67,7 +69,7 @@ type execCredentialStatus struct {
 	ExpirationTimestamp string `json:"expirationTimestamp,omitempty"`
 }
 
-func runGetToken(ctx context.Context, out io.Writer, issuerURL, clientID string, insecure bool) error {
+func runGetToken(ctx context.Context, out io.Writer, issuerURL, clientID string, insecure bool, account ...string) error {
 	if issuerURL == "" || clientID == "" {
 		return fmt.Errorf("--oidc-issuer-url and --oidc-client-id are required")
 	}
@@ -76,13 +78,13 @@ func runGetToken(ctx context.Context, out io.Writer, issuerURL, clientID string,
 	// single-use, so two concurrent kubectl invocations racing here would burn
 	// one of the rotated tokens and brick the cache. With the lock the loser
 	// waits, re-reads the cache, and uses the IDToken the winner just stored.
-	unlock, err := cliauth.LockTokenCache(issuerURL, clientID)
+	unlock, err := cliauth.LockTokenCache(issuerURL, clientID, account...)
 	if err != nil {
 		return fmt.Errorf("locking token cache: %w", err)
 	}
 	defer unlock()
 
-	cache, loadErr := cliauth.LoadTokenCache(issuerURL, clientID)
+	cache, loadErr := cliauth.LoadTokenCache(issuerURL, clientID, account...)
 	if loadErr == nil && !cache.IsExpired() {
 		return outputExecCredential(out, cache.IDToken, cache.ExpiresAt)
 	}

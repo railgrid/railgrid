@@ -14,17 +14,23 @@ not be edited directly.
 
 | Source file | Contract |
 |---|---|
+| `document-id.ts` | [document-wide IDs and Vue app prefixes](portalkit-support.md) |
 | `agent-context.ts` | [provider-published Agents context](provider-agent-context.md) |
-| `dashboardtile.ts` | [dashboard and tile support](portalkit-support.md) |
-| `railgrid-ui.css` | [shared recipes](../foundations/recipes.md) |
+| `page-context.ts` | [page and navigation context](portalkit-support.md) |
+| `navigation.ts` | [page and navigation context](portalkit-support.md) |
+| `dashboardtile.ts` | [provider dashboard summary](dashboard-tile.md) and [tile support](portalkit-support.md) |
+| `railgrid-ui.css` | [shared recipes](../implementation/recipes.md) |
 | `form-select.ts` | [form select](form-select.md) |
 | `icons.ts` | [iconography](../foundations/iconography.md) |
+| `kube.ts` | [tenant request contract](portalkit-support.md) |
 | `modal.ts` | [modal and confirmation support](confirm-dialog.md) |
+| `modal-popup.ts` | [popup hosting](menu.md) |
 | `resource-table-filter.ts` | [resource table](resource-table.md) |
 | `styles.ts` | [style handoff](portalkit-support.md) |
 | `tabs.ts` | [provider route tabs](tabs.md) |
 | `tenant.ts` | [tenant request contract](portalkit-support.md) |
 | `toast.ts` | [legacy toast compatibility](toast.md) |
+| `tooltip.ts` | [tooltip](tooltip.md) |
 
 These files are copied to the Quickstart portal. Vue portals receive only the
 shared plain assets named after the Vue table below; framework-neutral
@@ -44,32 +50,44 @@ Vue portals because the SFC kit owns those contracts there.
 | `FormSelect.vue` | [form select](form-select.md) |
 | `LayoutSelector.vue` | [layout selector](layout-selector.md) |
 | `layoutPreference.ts` | [layout selector](layout-selector.md) |
-| `useAnchoredPopover.ts` | [layout selector](layout-selector.md) |
-| `agent-context.ts` | [provider-published Agents context](provider-agent-context.md) |
+| `useAnchoredPopover.ts` | [dropdown and context menu](menu.md) |
 | `ResourceBackLink.vue` | [resource back link](resource-back-link.md) |
+| `ResourceBoard.vue` | [resource board](resource-board.md) |
 | `ResourcePage.vue` | [resource page](resource-page.md) |
 | `ResourceSectionCard.vue` | [resource section card](resource-section-card.md) |
 | `ResourceStatCards.vue` | [resource stat cards](resource-stat-cards.md) |
 | `ResourceTable.vue` | [resource table](resource-table.md) |
 | `ResourceTableFilter.vue` | [resource table](resource-table.md) |
 | `table.ts` | [resource table](resource-table.md) |
-| `ResourceTimestamp.vue` | [resource table](resource-table.md) |
-| `timestamp.ts` | [resource table](resource-table.md) |
-| `timestampClock.ts` | [resource table](resource-table.md) |
+| `ResourceTimestamp.vue` | [timestamp](timestamp.md) |
+| `timestamp.ts` | [timestamp](timestamp.md) |
+| `timestampClock.ts` | [timestamp](timestamp.md) |
+| `ResourceTableActionTooltip.vue` | [resource table actions](resource-table-actions.md) |
 | `ResourceTableActionButton.vue` | [resource table actions](resource-table-actions.md) |
 | `ResourceTableDeleteButton.vue` | [resource table actions](resource-table-actions.md) |
 | `ResourceTableEditButton.vue` | [resource table actions](resource-table-actions.md) |
-| `InlineNotification.vue` | [toast and contextual notifications](toast.md) |
+| `ResourceTableExpandButton.vue` | [resource table actions](resource-table-actions.md) |
+| `InlineNotification.vue` | [inline notification](inline-notification.md) |
 | `StatusBadge.vue` | [status badge](status-badge.md) |
 | `Tabs.vue` | [provider route tabs](tabs.md) |
 | `ToastHost.vue` | [toast notifications](toast.md) |
 | `toast.ts` | [toast transport](toast.md) |
 | `useDelayedLoading.ts` | [PortalKit support contracts](portalkit-support.md) |
+| `useUserLabels.ts` | [PortalKit support contracts](portalkit-support.md) |
 
-The manifest also copies `agent-context.ts`, `dashboardtile.ts`, `railgrid-ui.css`, `icons.ts`,
-`page-state.ts`, `styles.ts`, `tabs.ts`, and `tenant.ts` to the root,
-Agents, App Studio, Code, Databricks, Edges, Infrastructure, and Kuery Vue
-portals. The Vue toast trio is copied to every one of those except Agents;
+## Shared plain assets in Vue portals
+
+The manifest copies `document-id.ts`, `page-context.ts`, `agent-context.ts`, `navigation.ts`,
+`dashboardtile.ts`, `railgrid-ui.css`, `icons.ts`, `kube.ts`, `page-state.ts`,
+`styles.ts`, `tabs.ts`, `tenant.ts`, and `tooltip.ts` to the root, Agents,
+App Studio, Code, Edges, Infrastructure, and Kuery Vue portals. Their contracts
+are linked in the vanilla table above, except for:
+
+| Source file | Contract |
+|---|---|
+| `page-state.ts` | [resource reads](../patterns/resource-reads.md) |
+
+The Vue toast pair is copied to every one of those except Agents;
 Agents receives the framework-neutral `toast.ts` compatibility file instead.
 Quickstart receives the complete vanilla TypeScript manifest, including that
 plain toast bus. Canonical READMEs and tests remain source-only support files
@@ -83,14 +101,18 @@ components and conversation/model types are canonical in
 `provider-sdk/agentkit-vue`; plain styles, activity views, and the style loader
 are canonical in `provider-sdk/agentkit`.
 
+### AgentKit Vue assets
+
 | Source file | Contract |
 |---|---|
-| `AIActionRow.vue` | [AI presentation](ai-conversation.md) |
+| `AIActionRow.vue` | [AI activity row](ai-action-row.md) |
+| `AIModelPicker.vue` | [AI presentation](ai-conversation.md) |
+| `AIModelReasoningPicker.vue` | [model and reasoning picker](model-reasoning-picker.md) |
 | `AIActivityDisclosure.vue` | [AI presentation](ai-conversation.md) |
 | `AIComposer.vue` | [AI presentation](ai-conversation.md) |
 | `AIConversationComposer.vue` | [AI presentation](ai-conversation.md) |
-| `AICommandPalette.vue` | [AI presentation](ai-conversation.md) |
-| `AISkillCatalogList.vue` | [AI presentation](ai-conversation.md) |
+| `AICommandPalette.vue` | [composer command palette](ai-command-palette.md) |
+| `AISkillCatalogList.vue` | [skill catalog](skill-catalog.md) |
 | `AIAttachmentReceipts.vue` | [AI presentation](ai-conversation.md) |
 | `AgentKitAttachmentPreview.vue` | [AI presentation](ai-conversation.md) |
 | `AgentKitAttachmentTextPreview.vue` | [AI presentation](ai-conversation.md) |
@@ -105,9 +127,12 @@ are canonical in `provider-sdk/agentkit`.
 | `AIConversationIdentity.vue` | [AI presentation](ai-conversation.md) |
 | `AIConversationLayout.vue` | [AI presentation](ai-conversation.md) |
 | `AIConversationRail.vue` | [AI presentation](ai-conversation.md) |
-| `AIInterrupt.vue` | [AI presentation](ai-conversation.md) |
+| `AIConversationRenameDialog.vue` | [AI presentation](ai-conversation.md) |
+| `AIInterrupt.vue` | [AI interruption](ai-interrupt.md) |
 | `AIMessage.vue` | [AI presentation](ai-conversation.md) |
 | `AIWorkbenchLauncher.vue` | [AI presentation](ai-conversation.md) |
+| `AIWorkbenchPane.vue` | [AI presentation](ai-conversation.md) |
+| `AIWorkbenchSection.vue` | [AI presentation](ai-conversation.md) |
 | `AITimestamp.vue` | [AI presentation](ai-conversation.md) |
 | `AIPrimaryAction.vue` | [AI presentation](ai-conversation.md) |
 | `AITranscript.vue` | [AI presentation](ai-conversation.md) |
@@ -116,20 +141,32 @@ are canonical in `provider-sdk/agentkit`.
 | `AIPaneDivider.vue` | [AI conversation](ai-conversation.md) |
 | `AIWorkspace.vue` | [AI presentation](ai-conversation.md) |
 | `ModelConnectionCard.vue` | [model connections](model-connections.md) |
+| `ModelCollection.vue` | [model connections](model-connections.md) |
 | `ModelUsageSection.vue` | [model connections](model-connections.md) |
 | `ModelConnectionForm.vue` | [model connections](model-connections.md) |
 | `ModelIDSelector.vue` | [model connections](model-connections.md) |
 | `ai.ts` | [AI presentation](ai-conversation.md) |
 | `modelIDSelection.ts` | [model connections](model-connections.md) |
-| `AIExecutionDetails.vue` | [AI presentation](ai-conversation.md) |
+| `AIOverflowTitle.vue` | [AI presentation](ai-conversation.md) |
+| `threadPins.ts` | [AI presentation](ai-conversation.md) |
+| `threadReadState.ts` | [AI presentation](ai-conversation.md) |
+| `AIExecutionDetails.vue` | [AI execution details](ai-execution-details.md) |
 | `AIActivityFeed.vue` | [AI presentation](ai-conversation.md) |
+| `AITranscriptActivity.vue` | [AI activity row](ai-action-row.md) |
 | `AIConversationTurn.vue` | [AI presentation](ai-conversation.md) |
+| `AIConversationStatus.vue` | [AI presentation](ai-conversation.md) |
 | `AITurnProgress.vue` | [AI presentation](ai-conversation.md) |
 | `AIPlanDisclosure.vue` | [AI presentation](ai-conversation.md) |
 | `AIPlanSteps.vue` | [AI presentation](ai-conversation.md) |
 | `conversation.ts` | [AI presentation](ai-conversation.md) |
+| `useDisclosureScroll.ts` | [AI presentation](ai-conversation.md) |
+| `turn-work-duration.ts` | [AI presentation](ai-conversation.md) |
 | `timestamp.ts` | [AI presentation](ai-conversation.md) |
 | `clock.ts` | [AI presentation](ai-conversation.md) |
+### AgentKit plain assets
+
+| Source file | Contract |
+|---|---|
 | `activity.css` | [AI presentation](ai-conversation.md) |
 | `activity.ts` | [AI presentation](ai-conversation.md) |
 | `agent-ui.css` | [AI presentation](ai-conversation.md) |

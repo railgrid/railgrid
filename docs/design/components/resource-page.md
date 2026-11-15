@@ -117,3 +117,5 @@ Pair the shell with the [resource reads pattern](../patterns/resource-reads.md),
 the [typography foundation](../foundations/typography.md), the [accessible
 interaction policy](../accessibility/interaction.md), and the [UI copy
 policy](../content/ui-copy.md).
+
+While Retry is pending, the control stays focusable and blocks repeat activation. When recovery removes the still-focused Retry button, focus moves to the resource heading. If the user has moved focus elsewhere, recovery leaves it there.

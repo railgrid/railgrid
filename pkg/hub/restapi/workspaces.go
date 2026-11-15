@@ -462,8 +462,14 @@ func (h *Handler) workspaceView(r *http.Request, orgUUID, wsUUID string) (Worksp
 	if t, found, err := h.mgr.bootstrapper.GetWorkspaceDeletionRequestedAt(r.Context(), orgUUID, wsUUID); err == nil && found && t != nil {
 		tt := *t
 		view.DeletionRequestedAt = &tt
-		if forced, err := h.mgr.bootstrapper.GetWorkspaceDeletionForced(r.Context(), orgUUID, wsUUID); err == nil && forced {
-			view.DeletionForced = true
+		if forced, err := h.mgr.bootstrapper.GetWorkspaceDeletionForced(r.Context(), orgUUID, wsUUID); err == nil {
+			view.DeletionForced = forced
+			// A parent deletion can cascade sooner, so do not promise this
+			// deadline unless the parent is known to be active.
+			if !forced && orgErr == nil && org.Status.DeletionRequestedAt == nil && org.DeletionTimestamp.IsZero() {
+				deadline := t.Add(h.mgr.SoftDeleteGracePeriod()).UTC()
+				view.RecoveryDeadline = &deadline
+			}
 		}
 	}
 	return view, true

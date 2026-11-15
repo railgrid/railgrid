@@ -1033,6 +1033,8 @@ type WorkspaceView struct {
 	DisplayName         string     `json:"displayName,omitempty"`
 	ClusterName         string     `json:"clusterName,omitempty"`
 	DeletionRequestedAt *time.Time `json:"deletionRequestedAt,omitempty"`
+	// RecoveryDeadline is omitted when recovery is unavailable or cannot be verified.
+	RecoveryDeadline *time.Time `json:"recoveryDeadline,omitempty"`
 	// DeletionForced is set when the deletion was requested without the
 	// recovery window (DELETE ?force=true): the cascade runs on the
 	// reconciler's next sweep and undelete is refused.

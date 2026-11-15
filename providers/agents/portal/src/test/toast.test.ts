@@ -25,7 +25,7 @@ describe('Agents toast adapter lifecycle', () => {
       const id = toast('ok', 'saved')
 
       expect(snapshots.at(-1)).toEqual([{ id, message: 'saved' }])
-      await vi.advanceTimersByTimeAsync(4000)
+      await vi.advanceTimersByTimeAsync(5000)
       await flushToastLifecycle()
 
       expect(snapshots.at(-1)).toEqual([])
@@ -50,7 +50,7 @@ describe('Agents toast adapter lifecycle', () => {
     off()
   })
 
-  it('evicts the oldest visible toast without retaining its action', () => {
+  it('preserves an actionable toast when the visible stack fills', () => {
     const firstAction = vi.fn()
     const snapshots: Array<Array<{ id: number; action?: () => void }>> = []
     const off = subscribeToasts((items) => snapshots.push(items.map((item) => ({ id: item.id, action: item.action?.run }))))
@@ -59,8 +59,9 @@ describe('Agents toast adapter lifecycle', () => {
     const third = toast('ok', 'third')
     const fourth = toast('ok', 'fourth')
 
-    expect(snapshots.at(-1)?.map((item) => item.id)).toEqual([second, third, fourth])
-    expect(snapshots.at(-1)?.some((item) => item.id === first || item.action === firstAction)).toBe(false)
+    expect(snapshots.at(-1)?.map((item) => item.id)).toEqual([first, third, fourth])
+    expect(snapshots.at(-1)?.some((item) => item.id === second)).toBe(false)
+    expect(snapshots.at(-1)?.find(item => item.id === first)?.action).toBe(firstAction)
     off()
   })
 

@@ -298,7 +298,10 @@ onBeforeUnmount(() => {
       </router-link>
     </div>
 
-    <div v-if="loadState === 'loading'" role="status" aria-live="polite" :class="tileClass.message">
+    <div v-if="loadState === 'idle'" role="status" :class="tileClass.message">
+      Provider not ready. Its dashboard summary will appear when it becomes available.
+    </div>
+    <div v-else-if="loadState === 'loading'" role="status" aria-live="polite" :class="tileClass.message">
       Loading summary&hellip;
     </div>
     <div v-else-if="loadState === 'error'" role="alert" class="flex items-start gap-2 text-[11px] text-text-muted">
@@ -306,7 +309,7 @@ onBeforeUnmount(() => {
       <div class="min-w-0">
         <p class="font-medium text-text-primary">Summary unavailable</p>
         <p class="mt-1">This provider's dashboard summary could not be loaded.</p>
-        <div class="mt-3 flex flex-wrap items-center gap-3">
+        <div v-if="!editMode" class="mt-3 flex flex-wrap items-center gap-3">
           <button type="button" class="tile-no-drag k-btn k-btn--ghost h-8 px-2.5 text-[11px]" @click="retryLoad">
             <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
             {{ canRetryInDocument ? 'Retry' : 'Reload page' }}

@@ -182,11 +182,6 @@ name: Split <name> provider
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
-    paths:
-      - 'providers/<name>/**'
-      - '.github/workflows/split-<name>.yaml'
   workflow_dispatch:
 concurrency:
   group: split-<name>-${{ github.ref }}

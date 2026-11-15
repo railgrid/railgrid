@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import ProviderConnectionEditor from '../views/ProviderConnectionEditor.vue'
+import HarnessCredentialForm from '../components/HarnessCredentialForm.vue'
 import { stubApi } from './helpers'
 import { mountVue, settleVue } from './vue-helper'
 
@@ -28,7 +29,113 @@ function dnsSubdomain(length: number): string {
 }
 const account = { name: 'account', displayName: 'Production', provider: 'openai', baseURL: 'https://api.openai.com/v1', isConnection: true, discovered: ['first-model', 'second-model'] }
 
+it('uses the shared loading indicator while saving a harness identity', async () => {
+  const save = vi.fn()
+  const view = await mountVue(HarnessCredentialForm, {
+    name: 'review', providerPreset: 'codex', providerOptions: [{ value: 'codex', label: 'Codex' }],
+    providerLabelId: 'provider-label', providerGuidance: 'Use Codex.', secretKeys: ['auth.json'],
+    secretKey: 'auth.json', secret: '', secretHint: 'Add the login file.', busy: false, onSave: save,
+  })
+  const action = view.element.querySelector<HTMLButtonElement>('button[type="submit"]')!
+  action.focus()
+  action.click()
+  expect(save).toHaveBeenCalledTimes(1)
+  await view.setProps({ busy: true })
+  expect(document.activeElement).toBe(action)
+  expect(action.disabled).toBe(false)
+  expect(action.getAttribute('aria-disabled')).toBe('true')
+  expect(action.querySelector('svg.k-spin[aria-hidden="true"]')).toBeTruthy()
+  action.click()
+  expect(save).toHaveBeenCalledTimes(1)
+  await view.setProps({ busy: false })
+  expect(action.querySelector('svg.k-spin')).toBeNull()
+})
+
 describe('provider-first BYOK flow', () => {
+  it('distinguishes optional verification from required model selection', async () => {
+    const optional = await mountEditor({}, { credential: account })
+    const optionalTrigger = optional.element.querySelector<HTMLButtonElement>('#model-id')!
+    expect(optional.element.textContent).toContain('Verification model (optional)')
+    expect(optionalTrigger.getAttribute('aria-describedby')).toBe('provider-model-help')
+    expect(optionalTrigger.hasAttribute('aria-required')).toBe(false)
+
+    optional.unmount()
+    const required = await mountEditor({}, { credentials: [account], initialConnection: 'account' })
+    const requiredTrigger = required.element.querySelector<HTMLButtonElement>('#model-id')!
+    const descriptions = requiredTrigger.getAttribute('aria-describedby')!.split(' ')
+    expect(descriptions).toContain('provider-model-help')
+    expect(required.element.querySelector(`#${descriptions[1]}`)?.textContent).toBe('Required')
+  })
+
+  it('shows and clears a custom endpoint error beside the field', async () => {
+    const view = await mountEditor()
+    const provider = view.element.querySelector<HTMLSelectElement>('#model-provider')!
+    provider.value = 'custom'
+    provider.dispatchEvent(new Event('change', { bubbles: true }))
+    await settleVue()
+    await input(view.element, '#model-base-url', 'not-a-url')
+    const endpoint = view.element.querySelector<HTMLInputElement>('#model-base-url')!
+    expect(endpoint.getAttribute('aria-invalid')).toBe('true')
+    expect(endpoint.getAttribute('aria-describedby')).toContain('provider-url-error')
+    expect(view.element.querySelector('#provider-url-error')?.textContent).toContain('valid HTTP or HTTPS')
+    await input(view.element, '#model-base-url', 'https://example.test/v1/chat/completions')
+    expect(view.element.querySelector('#provider-url-error')?.textContent).toContain('Use https://example.test/v1')
+    await input(view.element, '#model-credential', 'example-key')
+    button(view.element, 'Verify & connect').click()
+    await settleVue()
+    expect(view.element.querySelector('#provider-connection-error')?.textContent).toContain('Use https://example.test/v1')
+    await input(view.element, '#model-base-url', 'https://example.test/v1')
+    expect(endpoint.getAttribute('aria-invalid')).toBe('false')
+    expect(view.element.querySelector('#provider-url-error')).toBeNull()
+  })
+
+  it('associates a key error with the key, not the endpoint', async () => {
+    const view = await mountEditor()
+    const provider = view.element.querySelector<HTMLSelectElement>('#model-provider')!
+    provider.value = 'custom'
+    provider.dispatchEvent(new Event('change', { bubbles: true }))
+    await settleVue()
+    await input(view.element, '#model-base-url', 'https://example.test/v1')
+    await input(view.element, '#model-credential', 'invalid key')
+    button(view.element, 'Verify & connect').click()
+    await settleVue()
+    const endpoint = view.element.querySelector<HTMLInputElement>('#model-base-url')!
+    const key = view.element.querySelector<HTMLInputElement>('#model-credential')!
+    expect(key.getAttribute('aria-invalid')).toBe('true')
+    expect(key.getAttribute('aria-describedby')).toContain('provider-connection-error')
+    expect(endpoint.getAttribute('aria-invalid')).toBe('false')
+    expect(endpoint.getAttribute('aria-describedby')).toBe('provider-url-help')
+    expect(view.element.querySelector('#provider-connection-error')?.textContent).toContain('without spaces')
+  })
+
+  it.each([
+    ['provider details', {}],
+    ['model details', { credential: account }],
+  ])('uses the shared loading indicator during %s saves', async (_stage, props) => {
+    const view = await mountEditor({}, { ...props, busy: true })
+    const action = view.element.querySelector<HTMLButtonElement>('button[type="submit"]')!
+    expect(action.disabled).toBe(false)
+    expect(action.getAttribute('aria-disabled')).toBe('true')
+    expect(action.querySelector('svg.k-spin[aria-hidden="true"]')).toBeTruthy()
+    await view.setProps({ busy: false })
+    expect(action.querySelector('svg.k-spin')).toBeNull()
+  })
+
+  it('keeps the submit button focused and blocks repeated provider checks', async () => {
+    const probeCredentialDraft = vi.fn().mockReturnValue(new Promise(() => {}))
+    const view = await mountEditor({ probeCredentialDraft })
+    await input(view.element, '[name="apiKey"]', 'test-key')
+    const action = button(view.element, 'Verify & connect')
+    action.focus()
+    action.click()
+    await settleVue()
+    expect(document.activeElement).toBe(action)
+    expect(action.getAttribute('aria-busy')).toBe('true')
+    action.click()
+    await settleVue()
+    expect(probeCredentialDraft).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps API provider choices separate from harness logins and does not ask for an internal name', async () => {
     const view = await mountEditor()
     expect([...view.element.querySelectorAll<HTMLOptionElement>('#model-provider option')].map(item => item.value)).toEqual(['openai', 'anthropic', 'openrouter', 'custom'])

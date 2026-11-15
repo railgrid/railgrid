@@ -154,9 +154,13 @@ func (s *FileStore) ApplyManagedTransaction(ctx context.Context, scope Scope, ch
 		return errors.Join(rollbackErr, s.failSourceMutation(ctx, scope, mutation, treeRestored))
 	}
 	changedPaths := make([]string, 0, len(entries))
+	var deleted []string
 	for _, entry := range entries {
 		if entry.changed {
 			changedPaths = append(changedPaths, entry.clean)
+			if entry.change.Operation == ManagedFileDelete {
+				deleted = append(deleted, entry.clean)
+			}
 		}
 	}
 	for index, entry := range entries {
@@ -188,7 +192,7 @@ func (s *FileStore) ApplyManagedTransaction(ctx context.Context, scope Scope, ch
 			return nil, rollback(err)
 		}
 	}
-	if err := s.completeSourceMutation(ctx, scope, mutation); err != nil {
+	if err := s.completeSourceMutation(ctx, scope, mutation, deleted...); err != nil {
 		return nil, rollback(err)
 	}
 

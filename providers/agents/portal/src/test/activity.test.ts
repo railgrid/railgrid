@@ -158,7 +158,7 @@ describe('Activity.vue', () => {
     const refresh = view.element.querySelector<HTMLButtonElement>('button[aria-label="Refresh runs"]')!
 
     expect(refresh.classList.contains('k-btn')).toBe(true)
-    expect(refresh.disabled).toBe(true)
+    expect(refresh.getAttribute('aria-disabled')).toBe('true')
     expect(refresh.getAttribute('aria-busy')).toBe('true')
     expect(refresh.querySelector('.k-spin')).not.toBeNull()
 
@@ -1093,6 +1093,7 @@ describe('RunDetail.vue', () => {
 
     expect(inputDetails.open).toBe(false)
     expect(text(view.element).split(originalInput)).toHaveLength(2)
+    expect(inputDetails.compareDocumentPosition(view.element.querySelector('.agents-run-activity')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('shows a redacted, bounded request preview inside the summary', async () => {

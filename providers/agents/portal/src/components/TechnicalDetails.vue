@@ -1,21 +1,35 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, ChevronDown, Copy } from 'lucide-vue-next'
 import { sanitizeTechnicalDiagnostic } from '../failure-presentation'
 
 const props = defineProps<{ diagnostic?: string; compact?: boolean; copyable?: boolean }>()
 const safeDiagnostic = computed(() => sanitizeTechnicalDiagnostic(props.diagnostic))
 const copyState = ref<'idle' | 'copying' | 'copied' | 'failed'>('idle')
-watch(safeDiagnostic, () => { copyState.value = 'idle' })
+let copyGeneration = 0
+let copyTimer: ReturnType<typeof setTimeout> | undefined
+function resetCopy(): void {
+  copyGeneration += 1
+  clearTimeout(copyTimer)
+  copyTimer = undefined
+  copyState.value = 'idle'
+}
+watch(safeDiagnostic, resetCopy, { flush: 'sync' })
+onBeforeUnmount(resetCopy)
 
 async function copyDetails(): Promise<void> {
+  if (copyState.value === 'copying') return
   const diagnostic = safeDiagnostic.value
+  resetCopy()
+  const generation = copyGeneration
   copyState.value = 'copying'
   try {
     await navigator.clipboard.writeText(diagnostic)
-    if (diagnostic === safeDiagnostic.value) copyState.value = 'copied'
+    if (generation !== copyGeneration) return
+    copyState.value = 'copied'
+    copyTimer = setTimeout(() => { copyState.value = 'idle'; copyTimer = undefined }, 2000)
   } catch {
-    if (diagnostic === safeDiagnostic.value) copyState.value = 'failed'
+    if (generation === copyGeneration) copyState.value = 'failed'
   }
 }
 </script>
@@ -38,7 +52,7 @@ async function copyDetails(): Promise<void> {
           aria-label="Copy details"
           :data-k-tip="copyState === 'copied' ? 'Copied' : 'Copy details'"
           :aria-busy="copyState === 'copying' || undefined"
-          :disabled="copyState === 'copying'"
+          :aria-disabled="copyState === 'copying' || undefined"
           @click="copyDetails"
         >
           <Check v-if="copyState === 'copied'" :stroke-width="1.75" aria-hidden="true" />

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { PublishPageResource } from '../portalkit/page-context'
+import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import { portalHref } from '../portalkit/navigation'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Boxes, CalendarClock, FileCode2, RefreshCw } from 'lucide-vue-next'
@@ -38,6 +39,7 @@ const loaded = ref(false)
 const error = ref<string | null>(null)
 const deleting = ref(false)
 const deleteError = ref<string | null>(null)
+const conditionsSection = ref<InstanceType<typeof ResourceSectionCard> | null>(null)
 let active = true
 let mounted = false
 let navigatingAway = false
@@ -69,6 +71,9 @@ const actionItems = computed<ActionMenuItem[]>(() => [{
   busy: deleting.value,
 }])
 const displayedPhase = computed(() => deletionInProgress.value ? 'Deleting' : inst.value?.phase ?? '')
+const needsConditionReview = computed(() =>
+  !deletionInProgress.value && ['failed', 'error'].includes(displayedPhase.value.toLowerCase()) && conditions.value.length > 0,
+)
 const displayedMessage = computed(() => {
   if (!inst.value) return undefined
   return deletionInProgress.value ? DELETING_MESSAGE : inst.value.message
@@ -87,6 +92,10 @@ const conditions = computed<ConditionInfo[]>(() => (inst.value?.conditions ?? []
   message: condition.message,
   lastTransitionTime: condition.time,
 })))
+function reviewConditions(): void {
+  const section = conditionsSection.value?.$el as HTMLElement | undefined
+  section?.focus()
+}
 const conditionObservedGeneration = computed(() => {
   if (inst.value?.observedGeneration !== undefined) return inst.value.observedGeneration
   return undefined
@@ -211,6 +220,11 @@ function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
   return refresh.request(mode)
 }
 
+function refreshFromHeader(): void {
+  if (foregroundLoading.value || deleting.value || deletionInProgress.value) return
+  void load('foreground')
+}
+
 watch(
   () => props.instanceName,
   () => {
@@ -231,10 +245,13 @@ async function executeDelete() {
   const expectedInstance = inst.value
   deleteError.value = null
   const confirmed = await confirmDialog({
-    title: `Delete instance "${props.instanceName}"?`,
-    message: `This permanently deletes "${props.instanceName}" and the resources (and bridged credentials Secret) it provisioned. This cannot be undone.`,
+    title: 'Delete instance',
+    message: `"${props.instanceName}" and the resources it provisioned, including its bridged credentials Secret, will be permanently deleted.`,
+    irreversibleMessage: `Deleting "${props.instanceName}" cannot be undone.`,
     confirmLabel: 'Delete instance',
     danger: true,
+    verificationText: props.instanceName,
+    verificationLabel: 'the instance name',
   })
   if (!confirmed || !active || !sameResourceIdentity(expectedInstance, inst.value) || instanceIsDeleting(inst.value)) return
 
@@ -300,9 +317,9 @@ onUnmounted(() => {
     >
       <template #meta>
         <span>Infrastructure</span>
-        <span aria-hidden="true">·</span>
-        <span v-if="inst">Template <code>{{ inst.template }}</code></span>
-        <span v-else class="muted">Template metadata unavailable</span>
+        <span v-if="inst" aria-hidden="true">·</span>
+        <span v-if="inst?.template">Template <code>{{ inst.template }}</code></span>
+        <span v-else-if="inst" class="muted">Template metadata unavailable</span>
       </template>
       <template v-if="inst" #status>
         <span class="instance-status-label">Status</span>
@@ -317,9 +334,11 @@ onUnmounted(() => {
           <button
             class="k-btn k-btn--ghost icon-text"
             type="button"
-            :disabled="foregroundLoading || deleting || deletionInProgress"
+            aria-label="Refresh instance"
+            :disabled="deleting || deletionInProgress"
+            :aria-disabled="foregroundLoading || undefined"
             :aria-busy="foregroundLoading || undefined"
-            @click="load('foreground')"
+            @click="refreshFromHeader"
           >
             <RefreshCw :size="14" :class="{ spin: foregroundLoading }" aria-hidden="true" />
             {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
@@ -333,7 +352,15 @@ onUnmounted(() => {
         </div>
       </template>
       <template #summary>
-        <ResourceStatCards :cards="statCards" density="compact" aria-label="Instance summary" />
+        <div class="instance-detail__summary">
+          <div v-if="needsConditionReview" class="instance-detail__attention">
+            <p>Review the controller conditions for more information about this instance.</p>
+            <button class="k-btn k-btn--ghost" type="button" @click="reviewConditions">Review conditions</button>
+          </div>
+          <ResourceStatCards :cards="statCards" density="compact" aria-label="Instance summary">
+            <template #value-created><ResourceTimestamp :value="inst?.createdAt" label="Instance created" /></template>
+          </ResourceStatCards>
+        </div>
       </template>
       <template #body>
         <p v-if="deleting" class="instance-message" role="status" aria-live="polite">Deleting this instance. The last successful snapshot remains visible until the hub confirms removal.</p>
@@ -363,13 +390,12 @@ onUnmounted(() => {
             <pre>{{ JSON.stringify(inst.values, null, 2) }}</pre>
           </ResourceSectionCard>
 
-          <ResourceSectionCard id="instance-conditions" eyebrow="Diagnostics" title="Conditions" description="Controller conditions and generation freshness for this instance.">
+          <ResourceSectionCard ref="conditionsSection" id="instance-conditions" tabindex="-1" eyebrow="Diagnostics" title="Conditions" description="Controller conditions and generation freshness for this instance.">
             <ConditionsPanel
               :show-title="false"
               :conditions="conditions"
               :generation="inst.generation"
               :observed-generation="conditionObservedGeneration"
-              empty-text="No conditions yet. The infrastructure controller has not reconciled this instance."
             />
           </ResourceSectionCard>
 

@@ -1,18 +1,44 @@
-# Developer Reference
+<p align="center">
+  <img src="docs/assets/images/banner.svg" alt="railgrid: one control plane for platform teams." width="100%">
+</p>
 
-Deep-dive reference for contributors working on railgrid internals.
+# Developer reference
 
-## Table of Contents
+How railgrid works inside, for people changing it. To build, run and test a
+change, start with [CONTRIBUTING.md](CONTRIBUTING.md); for the repository map,
+the provider contract and the codegen pipeline, see [AGENTS.md](AGENTS.md).
 
-- [Edge CRD Spec](#edge-crd-spec)
-- [Join Token Flow](#join-token-flow)
-- [Edge Proxy URL Format](#edge-proxy-url-format)
-- [SSH Server-Mode Internals](#ssh-server-mode-internals)
-- [kcp Workspace Hierarchy](#kcp-workspace-hierarchy)
-- [MCP Integration](#mcp-integration)
-- [Hub Controller Reference](#hub-controller-reference)
+**Contents**
 
-## Local Development with Tilt
+- [The three planes](#the-three-planes)
+- [Local development with Tilt](#local-development-with-tilt)
+- [The workspace tree](#the-workspace-tree)
+- [Edges](#edges)
+  - [The edge kinds](#the-edge-kinds)
+  - [How an edge joins](#how-an-edge-joins)
+  - [The tunnel](#the-tunnel)
+  - [How a call reaches an edge](#how-a-call-reaches-an-edge)
+  - [SSH internals](#ssh-internals)
+- [MCP](#mcp)
+- [Controller reference](#controller-reference)
+
+---
+
+## The three planes
+
+| Plane | What it is | Where it lives |
+|---|---|---|
+| **Tenancy** | kcp workspaces, organizations, users, memberships | `pkg/hub/`, `apis/tenancy/`, `pkg/kcppaths/` |
+| **Providers** | Pluggable extensions: an APIExport, controllers, a backend, a portal page, MCP tools | `providers/`, `provider-sdk/`, `pkg/hub/providers/` |
+| **Connectivity** | Edges, the agent, the reverse tunnel, kubectl, SSH and MCP through it | `providers/edges/`, `pkg/agent/` |
+
+Connectivity is a provider like any other. The hub holds no edge types and no
+tunnel code of its own: the kinds, their reconcilers and the tunnel endpoint
+all live in the edges provider, and the hub only forwards to it.
+
+---
+
+## Local development with Tilt
 
 For the fastest local dev loop, use [Tilt](https://tilt.dev/) instead of running `make` in multiple terminals.
 
@@ -144,336 +170,416 @@ settings and for the contract a provider repository implements.
 
 ---
 
-**API group:** `railgrid.ai/v1alpha1`  
-**Kind:** `Edge`
+## The workspace tree
 
-### Spec fields
+railgrid uses [kcp](https://kcp.io) for multi-tenant API isolation: every
+tenant gets a workspace that behaves like its own Kubernetes API server.
 
-```yaml
-spec:
-  type: kubernetes       # "kubernetes" | "server"
-  displayName: ""        # human-readable label (optional)
-  hostname: ""           # FQDN of the host, informational (optional)
-  provider: ""           # aws | gcp | onprem | bare-metal (optional)
-  region: ""             # deployment region label (optional)
+<p align="center">
+  <img src="docs/assets/images/workspace-tree.svg" alt="root:railgrid has three branches. system holds controllers (the platform APIExports), providers (the catalog), tenants (users, organizations, memberships) and one workspace per system service. providers holds one workspace per platform provider. tenants holds one workspace per organization, each with its team workspaces and a providers branch for providers the organization runs itself." width="100%">
+</p>
+
+The paths are built in one place, [`pkg/kcppaths/paths.go`](pkg/kcppaths/paths.go);
+use its helpers and do not assemble a path by hand. The hub creates the tree
+at startup (`Bootstrap()` in `pkg/hub/kcp/bootstrap.go`) and applies every
+platform schema and APIExport into `root:railgrid:system:controllers`.
+
+| Path | Holds |
+|---|---|
+| `root:railgrid:system:controllers` | Every platform APIExport and APIResourceSchema, and the `railgrid-hub` namespace for leases and secrets |
+| `root:railgrid:system:providers` | `Provider` and `CatalogEntry` objects, `WorkspaceSeed`s, `SystemWorkspace`s |
+| `root:railgrid:system:tenants` | `User`, `Organization`, `Membership` and the membership index |
+| `root:railgrid:providers:<name>` | A platform provider's own workspace |
+| `root:railgrid:tenants:<orgUUID>` | An organization |
+| `root:railgrid:tenants:<orgUUID>:<workspaceUUID>` | A team workspace |
+| `root:railgrid:tenants:<orgUUID>:providers:<name>` | A provider the organization registered itself ([BYO providers](docs/byo-providers.md)) |
+
+### What a new team workspace gets
+
+The organization reconciler and `POST` on the workspaces REST API both end in
+the same calls in `pkg/hub/kcp/bootstrap.go`:
+
+| Object | Why |
+|---|---|
+| APIBinding `railgrid` to `core.railgrid.ai` | Brings in `MCPServer`, with the export's permission claims accepted |
+| Namespace `default` | The `workspace` type does not extend kcp's universal type, so the hub creates it |
+| MCPServer `default` | The workspace's MCP endpoint, see [MCP](#mcp) |
+| Admin RBAC | So the workspace has an administrator from the start |
+| Every accepted `WorkspaceSeed` | Bindings and objects an administrator wants in every tenant workspace ([workspace seeds](docs/workspace-seeds.md)) |
+
+Provider APIs are not bound at creation. A provider's APIBinding appears when
+someone enables that provider in the workspace.
+
+### Addressing a workspace
+
+Clients never use the workspace path. They address a workspace by its kcp
+logical-cluster ID, through the hub's kcp front door:
+
+```
+https://<hub>/clusters/<cluster-id>/...
 ```
 
-### Status fields
+The ID is the last segment of the server URL in the kubeconfig that
+`railgrid login` writes. The hub forwards these requests to kcp unchanged, and
+kcp authenticates and authorizes them.
+
+---
+
+## Edges
+
+An edge is a cluster or a server that railgrid reaches without it being
+reachable: an agent on the edge dials out to the hub and requests come back
+down that connection.
+
+### The edge kinds
+
+**API group:** `edges.railgrid.ai/v1alpha1` · cluster-scoped · types in
+[`providers/edges/apis/v1alpha1/`](providers/edges/apis/v1alpha1/)
+
+| Kind | Resource | Short name | Verbs served on it |
+|---|---|---|---|
+| `KubernetesCluster` | `kubernetesclusters` | `kc` | `k8s`, `ssh`, `mcp`, `agent-token` |
+| `LinuxServer` | `linuxservers` | `ls` | `k8s`, `ssh`, `agent-token`, `ssh-credentials` |
+| `MacOSServer` | `macosservers` | `mac` | `agent-token` |
+
+The same group holds `Service`, `Workload` and `Placement`. The verbs are
+declared in [`providers/edges/manifest.yaml`](providers/edges/manifest.yaml).
+
+**Spec.** A `KubernetesCluster` has only `labels`. A `LinuxServer` carries the
+SSH settings:
 
 ```yaml
-status:
-  phase: ""              # "Ready" | "Pending" | "Error"
-  connected: false       # true when the agent tunnel is active
-  joinToken: ""          # base64url token set by TokenReconciler; cleared after registration
-  URL: ""                # proxy URL for kubernetes-type edges (kubectl endpoint)
-  sshCredentials:        # populated when agent sends SSH creds via WebSocket headers
-    username: ""
-    secretRef: ""        # name of Secret in railgrid-system holding the SSH password/key
-  conditions:
-  - type: Registered     # True once the agent has completed its first join
-    status: "False"      # False = AwaitingAgent, True = registered
-    reason: ""
-    message: ""
-```
-
-### Example manifests
-
-**Kubernetes-type edge:**
-
-```yaml
-apiVersion: railgrid.ai/v1alpha1
-kind: Edge
+apiVersion: edges.railgrid.ai/v1alpha1
+kind: KubernetesCluster
 metadata:
   name: my-cluster
-spec:
-  type: kubernetes
-  displayName: "Production k3s cluster"
-  provider: onprem
-  region: home-lab
-```
-
-**Server-type edge:**
-
-```yaml
-apiVersion: railgrid.ai/v1alpha1
-kind: Edge
+spec: {}                       # what `railgrid edge create` sends
+---
+apiVersion: edges.railgrid.ai/v1alpha1
+kind: LinuxServer
 metadata:
   name: my-server
 spec:
-  type: server
-  displayName: "NUC home server"
-  hostname: nuc.local
-  provider: bare-metal
-  region: home-lab
+  sshUserMapping: inherited    # inherited | provided | identity
+  sshCredentialsRef: ""        # the Secret used when sshUserMapping is "provided"
+  sshHostKey: ""               # pin the sshd host key (authorized_keys format)
+  sshHostKeyPolicy: strict     # strict | tofu
 ```
 
----
+**Status.** Every edge kind embeds the same connection status
+(`ConnectionStatus` in `providers/edges/internal/edgeapi/types.go`):
 
-## Join Token Flow
-
-```
-railgrid edge create <name>
-        │
-        ▼
-TokenReconciler (pkg/hub/controllers/edge/token_reconciler.go)
-  - generates 44-char crypto/rand base64url token
-  - writes to edge.status.joinToken
-  - sets Registered=False condition
-        │
-        ▼
-railgrid edge join-command <name>
-  → prints: railgrid agent run --token <joinToken> --edge-name <name> ...
-        │
-        ▼
-Agent starts (pkg/agent/agent.go)
-  opts.Token != "" → join-token mode
-  - skips registerEdge (token is NOT a kcp bearer)
-  - skips edge_reporter (hub owns status in this mode)
-  - builds sshHeaders from --ssh-user/--ssh-password flags
-        │
-        ▼
-pkg/agent/tunnel/tunneler.go: StartProxyTunnel(extraHeaders)
-  - WebSocket upgrade to hub /proxy endpoint
-  - merges sshHeaders into upgrade request
-        │
-        ▼
-pkg/virtual/builder/agent_proxy_builder_v2.go: ServeHTTP
-  - authorizeByJoinToken validates token against edge.status.joinToken
-  - extractSSHCredsFromHeaders reads X-Railgrid-SSH-* headers
-  - markEdgeConnected(edge, sshCreds):
-      • builds agent kubeconfig (SA token from edge-<name>-kubeconfig secret)
-      • sends kubeconfig back to agent in X-Railgrid-Agent-Kubeconfig response header
-      • storeSSHCredentials → creates Secret, writes status.sshCredentials
-      • clears joinToken, sets Registered=True, sets phase=Ready
-        │
-        ▼
-Agent receives kubeconfig (cmd/railgrid-agent/main.go)
-  - saves to ~/.railgrid/agent-<name>.kubeconfig
-  - clears opts.Token (reconnect without token from now on)
-        │
-        ▼
-On restart: agent loads saved kubeconfig automatically
-  opts.UsingSavedKubeconfig=true → skips registerEdge, skips edge_reporter
+```yaml
+status:
+  phase: Ready                 # Scheduling | Ready | Disconnected
+  connected: true              # the agent's tunnel is up
+  joinToken: ""                # set until the agent has enrolled, then cleared
+  joinTokenHash: "…"           # SHA-256 of the token; lets an expired agent re-enrol
+  hostname: "…"
+  URL: "/clusters/<id>/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/my-cluster/k8s"
+  agentVersion: "…"
+  lastHeartbeatTime: "…"
+  conditions:
+  - type: Registered           # also: UpgradeAvailable, SSHHostKeyChanged
+    status: "True"
+  # LinuxServer only:
+  sshCredentials: {username: "…", privateKeySecretRef: "…"}
+  sshHostKey: "…"
 ```
 
-### Why the agent skips `edge_reporter` in join-token mode
+Each part of status has one writer:
 
-The `edge_reporter` uses the agent's credentials to patch `edge.status` directly via the kcp API. Join tokens are not kcp Service Account credentials — they're a hub-internal bootstrap secret validated only by the hub's `authorizeByJoinToken` handler. So the hub itself calls `markEdgeConnected` / `markEdgeDisconnected` to update status, and the agent skips the reporter entirely.
+| Fields | Written by |
+|---|---|
+| `joinToken`, `joinTokenHash`, `Registered=False` | `TokenReconciler` |
+| `connected`, `phase`, `lastHeartbeatTime`, `Registered=True` | `LifecycleReconciler`, from the tunnel's Lease |
+| `hostname`, `URL`, `sshCredentials`, `sshHostKey` | The tunnel handler, when the agent connects |
+| `agentVersion`, `labels`, `harnesses` | The agent's own heartbeat, every 30s |
 
-After token exchange, the agent holds a real kcp SA kubeconfig and future reconnects use the normal `edge_reporter` path.
+To force a new join token, set the annotation
+`edges.railgrid.ai/regenerate-join-token` on the edge.
 
----
+### How an edge joins
 
-## Edge Proxy URL Format
+<p align="center">
+  <img src="docs/assets/images/edge-join-flow.svg" alt="Sequence. 1: the CLI creates the edge object in the tenant workspace. 2: the edges provider's TokenReconciler writes a join token to its status. 3: the CLI reads the token and prints the join command. 4: the agent opens a WebSocket to the hub with the join token as its bearer. 5: the hub forwards it to the edges provider. 6: the provider matches the token and asks the hub for a scoped identity. 7: the credential goes back to the agent on the upgrade response. 8: the agent saves it. 9: the provider clears the token and the edge is reported Ready." width="100%">
+</p>
 
-Once an Edge is `Ready`, `edge.status.URL` is set to:
+| # | What happens | Where |
+|---|---|---|
+| 1 | `railgrid edge create <name> [--type kubernetes\|server\|macos]` creates the object | `pkg/cli/cmd/edge.go` |
+| 2 | `TokenReconciler` generates 32 random bytes, base64url-encoded, and writes `status.joinToken` and its hash | `providers/edges/internal/edgectrl/token_reconciler.go` |
+| 3 | The CLI polls for the token and prints the install options: the agent Helm chart, `railgrid agent join`, `railgrid agent run`. `railgrid edge join-command <name>` prints them again | `pkg/cli/cmd/edge.go` |
+| 4 | The agent opens a WebSocket to the hub with `Authorization: Bearer <join token>` | `pkg/agent/tunnel/tunneler.go` |
+| 5 | The hub's agent ingress resolves the organization's edges provider and forwards the upgrade, passing only an allowlist of headers | `pkg/hub/providers/agent_ingress.go` |
+| 6 | The provider compares the token in constant time, then asks the hub's scoped-identity service for a token (24h TTL) | `providers/edges/internal/tunnel/agent_proxy_builder_v2.go`, `agentcred.go` |
+| 7 | The credential returns in the `X-Railgrid-Agent-Credential` header of the upgrade response | same |
+| 8 | The agent saves it to `~/.railgrid/agent-<edge>.credential.json`, or in a pod to the Secret `railgrid-agent-<edge>-kubeconfig` | `pkg/agent/credential.go`, `pkg/agent/incluster.go` |
+| 9 | The handler clears `status.joinToken`; `LifecycleReconciler` sets `connected`, `phase=Ready` and `Registered=True` | `edge_status.go`, `lifecycle_reconciler.go` |
+
+**After enrolment.** The agent reconnects with the saved credential, not the
+join token. It refreshes the credential at 80% of its lifetime through the
+edge's `agent-token` verb. On restart it loads the saved file and ignores one
+that is expired or was issued for a different hub or workspace. Because the
+hash of the join token outlives the token, an agent whose credential has
+expired can enrol again with the token it was first given.
+
+**Why the join token is not a kcp credential.** It is a bootstrap secret that
+only the edges provider can check. An enrolled agent presents a real
+ServiceAccount token, which the provider verifies with a TokenReview and a
+SubjectAccessReview for `create` on that one edge's tunnel.
+
+> [!NOTE]
+> Once the edge is registered the plaintext token is gone from status, so
+> `railgrid edge join-command` has nothing to print. Set the regenerate
+> annotation to enrol a new agent.
+
+### The tunnel
+
+The agent keeps one WebSocket open to the hub, and the edges provider dials
+*back* over it with [revdial](provider-sdk/revdial/revdial.go). The agent never
+listens on a port.
 
 ```
-https://<hub-external-url>/clusters/<workspace-id>/apis/railgrid.ai/v1alpha1/edges/<name>/proxy/k8s
+wss://<hub>/services/providers/edges/agent/clusters/<cluster-id>/<resource>/<name>/proxy
 ```
 
-This URL is a virtual workspace endpoint served by the hub's agent-proxy virtual workspace handler. The hub:
+| | |
+|---|---|
+| Agent side | `pkg/agent/tunnel/`; reconnects with backoff from 1s up to 30s |
+| Hub side | Forwards `/services/providers/edges/agent/…` to the provider (`pkg/hub/providers/agent_ingress.go`) |
+| Provider side | Mounted at `/agent/`, the SDK's agent-tunnel route class (`providers/edges/main.go`) |
+| Liveness | revdial pings every 18s; a Lease per tunnel, 90s TTL, renewed every 30s |
 
-1. Validates the caller's bearer token against kcp.
-2. Looks up the Edge resource to verify it is Ready and the tunnel is active.
-3. Forwards the raw TCP stream to the agent over the revdial tunnel.
-4. The agent forwards to `localhost:<kubeAPIPort>` on the target cluster.
+**More than one replica.** A tunnel belongs to the provider replica the agent
+happened to reach. That replica records it in a Lease (`registry.go`), and a
+request that lands on another replica is relayed to the owner over a
+pod-to-pod listener (`remote.go`, port `EDGES_INTERNAL_PORT`, default 8090).
+Relaying turns on only when `POD_IP` is set; without it the provider runs as a
+single replica.
 
-`railgrid edge kubeconfig <name>` generates a kubeconfig pointing to this URL with the user's hub bearer token embedded.
+### How a call reaches an edge
 
----
+<p align="center">
+  <img src="docs/assets/images/edge-request-path.svg" alt="A client calls the hub with the user's own bearer. The hub forwards to kcp, which authorizes the verb with workspace RBAC and stamps the caller's identity. The kcp shard forwards to the edges provider, which checks the caller can get the edge and finds its tunnel, then sends the request over revdial to the agent, which serves it against the kube-apiserver or sshd. Verbs: k8s on kubernetesclusters, ssh on linuxservers, mcp on kubernetesclusters." width="100%">
+</p>
 
-## SSH Server-Mode Internals
-
-### Connection path
+Every call to an edge is a kcp custom subresource on the edge object, so it is
+authorized by the workspace's ordinary RBAC:
 
 ```
-railgrid ssh <name>
-    │
-    │  WebSocket upgrade → hub /clusters/<ws>/…/edges/<name>/proxy/ssh
+https://<hub>/clusters/<cluster-id>/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/<name>/k8s
+```
+
+That path, without the host, is what the provider writes to `status.URL`.
+`railgrid edge kubeconfig <name>` puts the hub's host in front of it and
+writes a kubeconfig (context `railgrid-<name>`) that authenticates as you.
+
+1. The hub forwards `/clusters/…` to kcp unchanged.
+2. kcp authorizes `kubernetesclusters/k8s` for the caller, stamps their
+   identity into `X-Remote-*` headers, and the shard forwards the request to
+   the edges provider.
+3. The provider's gate asks kcp whether that caller may `get` the edge, then
+   looks up the tunnel: its own, or another replica's through the relay.
+4. The request goes down the tunnel as `/k8s/<rest of the path>`.
+5. The agent serves it against the cluster's API server
+   (`pkg/agent/tunnel/server.go`).
+
+No bearer reaches the provider or the agent: the provider acts on the identity
+kcp stamped. The contract is in
+[docs/provider-connectivity-contract.md](docs/provider-connectivity-contract.md).
+
+### SSH internals
+
+#### Connection path
+
+```
+railgrid ssh <name> [-- command]                  pkg/cli/cmd/ssh.go
+    │  wss://<hub>/clusters/<id>/apis/edges.railgrid.ai/v1alpha1/linuxservers/<name>/ssh
     ▼
-hub agent-proxy handler (pkg/virtual/builder/agent_proxy_builder_v2.go)
-    │
-    │  dials agent over revdial tunnel
+hub ─► kcp ─► edges provider                   edgesSSHHandler, edges_proxy_builder.go
+    │  GET /ssh, Upgrade: ssh-tunnel, over revdial
     ▼
-railgrid-agent (server mode, pkg/agent/agent.go)
-    │
-    │  forwards raw TCP to localhost:<ssh-proxy-port> (default 22)
+agent                                          newSSHHandler, pkg/agent/tunnel/server.go
+    │  raw TCP to localhost:<--ssh-proxy-port>, default 22
     ▼
-sshd on the target host
+sshd on the host
 ```
 
-### SSH credentials in join-token mode
+The SSH client runs in the provider, not on your machine: the provider opens
+the SSH session over the tunnel and bridges it to your WebSocket. With
+`-- command`, the CLI adds `?cmd=…` and the provider runs one command instead
+of a shell.
 
-When the agent starts with `--token` and `--ssh-user`/`--ssh-password`:
+#### How the provider gets SSH credentials
 
-1. Agent builds `X-Railgrid-SSH-User` and `X-Railgrid-SSH-Password` headers.
-2. These are passed to `StartProxyTunnel` as `extraHeaders`.
-3. Hub's `extractSSHCredsFromHeaders` reads them on the first connection.
-4. `storeSSHCredentials` creates a `railgrid-ssh-<name>` Secret in `railgrid-system`.
-5. `edge.status.sshCredentials` is populated with the username and secret ref.
+| When | How |
+|---|---|
+| The agent enrols with a join token | It sends `X-Railgrid-SSH-User` and a password or private key as upgrade headers; the provider stores them |
+| The agent is already enrolled | It posts them to the edge's `ssh-credentials` verb, retrying in the background |
 
-### SSH host key verification
+Either way they end up in the Secret `railgrid-system/<edge>-ssh-credentials`
+with `status.sshCredentials` pointing at it. If you give the agent no
+credentials it uses a key from `~/.ssh` (or generates one) and adds it to
+`authorized_keys`.
 
-The provider verifies the sshd host key on every SSH session and fails closed
-(`providers/edges/internal/tunnel/agent_proxy_builder.go`, `newSSHClient`):
+#### Which user a session runs as
 
-- **Key source.** `spec.sshHostKey` (operator pin, authorized_keys format) wins.
-  Otherwise `status.sshHostKey`, which the agent reports once on tunnel connect
-  (`X-Railgrid-SSH-HostKey`). The provider records the reported key **write-once**:
-  a later report with a different fingerprint is not applied and instead sets
-  the `SSHHostKeyChanged` condition (both fingerprints in the message). Resolve
-  it by pinning `spec.sshHostKey` or clearing `status.sshHostKey`.
-- **Unparseable key** → the session is refused.
-- **No key known** → `spec.sshHostKeyPolicy` decides:
+`spec.sshUserMapping` decides (`fetchSSHCredentials`):
+
+| Value | Username |
+|---|---|
+| `inherited` (default) | The one the agent registered, `status.sshCredentials.username` |
+| `provided` | The `username` key of the Secret named by `spec.sshCredentialsRef` |
+| `identity` | The caller's own name, as kcp stamped it |
+
+If none resolves, the session runs as `root`.
+
+#### Host key verification
+
+The provider verifies the sshd host key on every session and fails closed
+(`newSSHClient` in `providers/edges/internal/tunnel/agent_proxy_builder.go`).
+
+- **Key source.** `spec.sshHostKey` (an operator's pin) wins. Otherwise
+  `status.sshHostKey`, which the agent reports each time its tunnel connects
+  (`X-Railgrid-SSH-HostKey`). The provider records a reported key
+  **write-once**: a later report with a different fingerprint is not applied
+  and sets the `SSHHostKeyChanged` condition, with both fingerprints in the
+  message. Resolve it by pinning `spec.sshHostKey` or clearing
+  `status.sshHostKey`.
+- **Unparseable key.** The session is refused.
+- **No key known.** `spec.sshHostKeyPolicy` decides:
   - `strict` (default): the session is refused until a key is pinned or
     reported.
   - `tofu`: the key presented on the first session is trusted, recorded in
     `status.sshHostKey`, and enforced from then on.
-- **Legacy escape hatch.** `edges-provider serve --allow-unverified-ssh-host-key`
-  (env `RAILGRID_EDGES_ALLOW_UNVERIFIED_SSH_HOST_KEY=true`, chart value
-  `allowUnverifiedSSHHostKey`) opens sessions to edges with no known key
-  without verification. It is logged at verbosity 0 on startup and on every
-  use, and never affects an edge whose key is known. A malformed value for the
-  env form (e.g. `treu`) is a startup error rather than a silent `false`.
 
-The handshake itself is bounded: `newSSHClient` arms a deadline on the tunnelled
+> [!CAUTION]
+> `edges-provider serve --allow-unverified-ssh-host-key` (environment
+> `RAILGRID_EDGES_ALLOW_UNVERIFIED_SSH_HOST_KEY=true`, chart value
+> `allowUnverifiedSSHHostKey`) opens sessions to edges with no known key
+> without verifying anything. It is a legacy escape hatch: it is logged on
+> startup and on every use, and never affects an edge whose key is known. A
+> malformed value for the environment form (`treu`) is a startup error, not a
+> silent `false`.
+
+The handshake is bounded: `newSSHClient` arms a deadline on the tunnelled
 connection (the caller's context deadline, else 30s) before
-`gossh.NewClientConn`, which takes no context, and clears it once the session is
-up. Without it a stalled tunnel pins the handler goroutine indefinitely.
+`gossh.NewClientConn`, which takes no context, and clears it once the session
+is up. Without it a stalled tunnel would pin the handler goroutine.
+
+#### Audit lines
 
 Every session emits two structured lines at verbosity 0: `SSH session opened`
 (cluster, edge, caller, SSH user, mode, exec command, remote address, host key
 fingerprint) and `SSH session ended` (plus duration and error). A session
-refused before opening still gets the `ended` line with `opened=false`. When the
-caller's TokenReview fails the lines carry `caller=unknown` and `callerError`.
+refused before it opened still gets the `ended` line, with `opened=false`. A
+key trusted under `tofu` adds `SSH host key recorded on first use`. The caller
+is the identity kcp stamped; when there is none the lines carry
+`caller=unknown`.
 
 Two properties keep those lines trustworthy:
 
-- **`remoteAddr` is the LAST `X-Forwarded-For` hop**, not the first. Exactly one
-  trusted proxy (the hub backend) fronts this handler and *appends* the peer it
-  saw; every entry to its left is caller-supplied and forgeable. With no header
-  the peer address is used, port stripped. The value is always a parsed IP or
-  `unknown` — junk is never echoed.
+- **`remoteAddr` is the last `X-Forwarded-For` hop**, not the first. One
+  trusted proxy fronts this handler and *appends* the peer it saw; every entry
+  to its left is supplied by the caller and can be forged. With no header the
+  peer address is used, port stripped. The value is always a parsed IP or
+  `unknown`.
 - **`exec` is escaped and bounded.** The command is a raw query parameter;
-  control characters (newlines above all, which would otherwise forge extra
-  audit records) are escaped rather than dropped, and the value is truncated at
-  256 runes with an explicit `...[truncated]` marker.
+  control characters (newlines above all, which would forge extra audit
+  records) are escaped, not dropped, and the value is cut at 256 runes with an
+  explicit `...[truncated]` marker.
 
-Fingerprints in conditions and audit lines distinguish `unknown` (no key
-recorded) from `unparseable` (a key is recorded but malformed).
+Fingerprints distinguish `unknown` (no key recorded) from `unparseable` (a key
+is recorded but malformed).
 
-### SSH username mapping (OIDC)
+#### Keepalive
 
-With OIDC auth, the SSH username is derived from the user's token claim:
-- Default: email local-part (`alice@example.com` → `alice`)
-- Configurable via the OIDC username claim in hub config
-
-With static token auth, username defaults to `root`.
-
-### Keepalive
-
-The SSH test suite holds connections open for `--ssh-keepalive-duration` (default 60s). The hub sends keepalive pings every 30s over the WebSocket; agents respond to prevent idle-timeout disconnection.
+The provider sends `keepalive@openssh.com` on the SSH connection every 15s and
+gives up after three consecutive failures (`providers/edges/internal/ssh/ssh.go`).
+Underneath, revdial pings the tunnel every 18s.
 
 ---
 
-## kcp Workspace Hierarchy
+## MCP
 
-railgrid uses kcp for multi-tenant API isolation. Each user/team gets a dedicated kcp workspace:
+Every workspace has one [Model Context Protocol](https://modelcontextprotocol.io)
+endpoint that carries the tools of every provider enabled in it. Each tool
+call runs as the caller. The design is in
+[docs/mcp-architecture.md](docs/mcp-architecture.md).
 
-```
-root workspace
-└── user-<id> workspace
-    ├── Edge resources
-    ├── VirtualWorkload resources
-    └── Placement resources
-```
+### The MCPServer kind
 
-The hub deploys kcp's `APIBinding` resources to make the railgrid CRDs available in each workspace.
+**API group:** `railgrid.ai/v1alpha1` · cluster-scoped ·
+[`apis/railgrid/v1alpha1/types_mcpserver.go`](apis/railgrid/v1alpha1/types_mcpserver.go)
 
-### Static token scoping
-
-Static dev tokens (e.g. `dev-token`) are scoped to a specific kcp workspace path. The workspace path appears in the kubeconfig server URL:
-
-```
-https://console.127.0.0.1.sslip.io:9443/clusters/<workspace-id>/...
-```
-
-`ClusterNameFromKubeconfig` (in `test/e2e/framework/cluster.go`) extracts the workspace ID from the server URL.
-
----
-
-## MCP Integration
-
-railgrid exposes all connected Kubernetes clusters as a single [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server. AI agents (Claude, Cursor, Copilot, etc.) connect to this endpoint and can interact with all registered clusters using natural language.
-
-### KubernetesMCP CRD (railgrid.ai/v1alpha1)
-
-**API group:** `railgrid.ai/v1alpha1`  
-**Kind:** `KubernetesMCP`
-
-The `KubernetesMCP` object is automatically created as `default` in every tenant workspace by the hub bootstrapper. It acts as the configuration object for the multi-cluster MCP endpoint.
+The hub creates one named `default` in every team workspace.
 
 ```yaml
 apiVersion: railgrid.ai/v1alpha1
-kind: KubernetesMCP
+kind: MCPServer
 metadata:
   name: default
 spec:
-  edgeSelector: {}   # empty = all kubernetes-type edges; use label selectors to restrict
-  readOnly: false    # set true to disable write operations (create/delete/apply)
+  displayName: ""
+  instructions: ""     # overrides the guidance sent to MCP clients when they connect
+  readOnly: false
 status:
-  URL: "https://hub.example.com/services/mcp/root:railgrid:user-<id>/apis/railgrid.ai/v1alpha1/kubernetesmcps/default/mcp"
-  connectedEdges:
-  - my-cluster
-  - home-lab
+  phase: Ready         # Provisioning | Ready | Error
+  URL: "https://<hub>/services/mcpserver/<cluster-id>/apis/railgrid.ai/v1alpha1/mcpservers/default/mcp"
+  tokenSecretRef: "…"  # the Secret holding this endpoint's token
+  federatedProviders:  # what the endpoint currently aggregates
+  - name: edges
+    reachable: true
+    tools: [{name: "…", title: "…", description: "…"}]
 ```
 
-### MCP URL structure
+### Endpoints
+
+| Endpoint | URL |
+|---|---|
+| The workspace | `https://<hub>/services/mcpserver/<cluster-id>/apis/railgrid.ai/v1alpha1/mcpservers/<name>/mcp` |
+| One cluster edge | `https://<hub>/clusters/<cluster-id>/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/<name>/mcp` |
+| One edge `Service` | `https://<hub>/clusters/<cluster-id>/apis/edges.railgrid.ai/v1alpha1/services/<name>/mcp` |
+
+The per-edge endpoints are the `mcp` verb on the edge object, so they take the
+same path as [any other call to an edge](#how-a-call-reaches-an-edge).
+
+### Request flow for the workspace endpoint
 
 ```
-https://<hub>/services/mcp/<workspace-cluster-id>/apis/railgrid.ai/v1alpha1/kubernetesmcps/<name>/mcp
-```
-
-- `<workspace-cluster-id>` — kcp logical cluster name for the tenant workspace (from the server URL in the user's kubeconfig)
-- `<name>` — name of the `KubernetesMCP` object (usually `default`)
-
-### Request flow
-
-```
-AI agent (Claude / Cursor / …)
-    │  POST /services/mcp/<cluster>/…/default/mcp
-    │  Authorization: Bearer <user-token>
+MCP client (Claude Code, Codex, Cursor, …)
+    │  POST /services/mcpserver/<cluster-id>/…/mcpservers/default/mcp
+    │  Authorization: Bearer <token>
     ▼
-hub MCP virtual workspace handler (pkg/virtual/builder/mcp_builder.go)
-    │
-    │  1. Extract bearer token, validate against kcp
-    │  2. Resolve workspace cluster from URL path
-    │  3. Fetch KubernetesMCP object for edgeSelector
-    │  4. List all edges in the workspace
-    │  5. Filter: kubernetes-type only + connected (tunnel active) + label selector
-    │  6. Build MultiEdgeRailgridEdgeProvider (one per request)
-    │
+hub: pkg/hub/mcpaggregate
+    │  1. Parse the cluster ID and the MCPServer name from the path
+    │  2. Verify the bearer: the MCPServer's own token, or a member user
+    │  3. List the Ready providers this caller's organization can see
+    │  4. Discover each provider's tools (cached per caller)
+    │  5. Serve one stateless MCP server over streamable HTTP
     ▼
-kubernetes-mcp-server (github.com/containers/kubernetes-mcp-server)
-    │  MCP Streamable-HTTP protocol (tools/list, tools/call)
-    │
+each provider's own /mcp
+    │  platform provider:  <backend>/mcp, with the caller's bearer and the cluster ID
+    │  org-owned provider: over an edge, with a short-lived delegated token
     ▼
-RailgridEdgeProvider / MultiEdgeRailgridEdgeProvider (pkg/virtual/builder/mcp_provider.go)
-    │  GetTargets() → list of connected cluster names
-    │  GetDerivedKubernetes(cluster) → rest.Config via revdial tunnel
-    │
-    ▼
-Agent tunnel → target cluster kube-apiserver
+the provider acts as the caller, in the caller's workspace
 ```
 
-### Target parameter
+The aggregate uses the official
+[`modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk).
+It works with no providers enabled; the tool list is then empty.
 
-When an MCP client wants to target a specific cluster, it passes `?cluster=<edge-name>` as a query parameter. The parameter name is `cluster` (not `edge`) because users think in terms of clusters.
+`pkg/hub/controllers/mcpserver/` is the reconciler behind the kind: it
+provisions each MCPServer's ServiceAccount, token Secret and RBAC, writes
+`status.URL`, and refreshes `status.federatedProviders`.
 
-### Toolsets
+### Kubernetes tools
 
-The MCP server registers toolsets from `kubernetes-mcp-server` via blank imports in `mcp_builder.go`:
+The Kubernetes tools come from the edges provider, which embeds
+[`containers/kubernetes-mcp-server`](https://github.com/containers/kubernetes-mcp-server).
+Its toolsets register themselves from blank imports in
+`providers/edges/internal/tunnel/mcp_builder.go`:
 
 ```go
 _ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/config"
@@ -484,44 +590,69 @@ _ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kiali"
 _ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kubevirt"
 ```
 
-Each toolset registers its tools via `init()`. Without the blank imports, `tools/list` returns empty.
+Without an import its tools do not exist: `tools/list` simply omits them.
 
-### Adding to Claude Code
+On the provider's fleet endpoint a tool picks its cluster with a `cluster`
+argument, which takes an edge name. It is called `cluster`, not `edge`,
+because that is the word users reach for.
+
+### Adding it to an MCP client
 
 ```bash
-railgrid mcp url --name default
-# prints URL + ready-to-use claude mcp add command with your token
+railgrid mcp url --mcpserver-name default   # the workspace endpoint
+railgrid mcp url --edge my-cluster          # one cluster
 ```
 
-Or manually:
+Each prints the endpoint and the configuration to paste into an MCP client.
+Exactly one of the two flags is required. By hand:
 
 ```bash
 claude mcp add --transport http railgrid \
-  "https://hub.example.com/services/mcp/<cluster-id>/apis/railgrid.ai/v1alpha1/kubernetesmcps/default/mcp" \
-  -H "Authorization: Bearer <token-from-kubeconfig>"
+  "https://<hub>/services/mcpserver/<cluster-id>/apis/railgrid.ai/v1alpha1/mcpservers/default/mcp" \
+  -H "Authorization: Bearer <token>"
 ```
-
-### Per-edge MCP (single cluster)
-
-Each edge also exposes a direct MCP endpoint (independent of the multi-edge `Kubernetes` resource):
-
-```
-https://<hub>/services/agent-proxy/<workspace-cluster-id>/apis/railgrid.ai/v1alpha1/edges/<name>/mcp
-```
-
-```bash
-railgrid mcp url --edge my-cluster
-```
-
-This bypasses the `Kubernetes` MCP resource and connects directly to a single edge's Kubernetes API.
 
 ---
 
-## Hub Controller Reference
+## Controller reference
+
+### Hub
+
+Registered in `pkg/hub/server.go`.
 
 | Controller | Package | Responsibility |
-|-----------|---------|----------------|
-| `TokenReconciler` | `pkg/hub/controllers/edge/token_reconciler.go` | Generates join tokens; skips if `Registered=True` |
-| `RBACReconciler` | `pkg/hub/controllers/edge/rbac_reconciler.go` | Creates SA, ClusterRole, ClusterRoleBinding, kubeconfig Secret per edge |
-| `EdgeController` | `pkg/hub/controllers/edge/controller.go` | Main edge lifecycle reconciler |
-| `agent-proxy builder` | `pkg/virtual/builder/` | Virtual workspace that handles tunnel auth, status updates, SSH credential storage |
+|---|---|---|
+| `mcpserver` | `pkg/hub/controllers/mcpserver/` | Provisions each MCPServer's identity, publishes its URL, refreshes its tool list |
+| `user`, `organization-lifecycle` | `pkg/hub/controllers/organization/` | A user gets a personal organization; an organization gets its workspace, a default team workspace, the core binding, admin access and a default MCPServer |
+| `softdelete` | `pkg/hub/controllers/softdelete/` | 30-day grace period, then cascading deletion, for users, organizations and workspaces |
+| `membershipindex` | `pkg/hub/controllers/membershipindex/` | Repairs the per-user membership index |
+| `provider-catalog` | `pkg/hub/providers/controller.go` | Syncs CatalogEntries into the in-process registry the proxies route from |
+| `provider-provisioner` | `pkg/hub/providers/provider_controller.go` | A `Provider` object becomes a provider workspace, its `provider` ServiceAccount and a kubeconfig Secret |
+| `system-workspace-provisioner` | `pkg/hub/providers/system_workspace_controller.go` | The same for a `SystemWorkspace` under `root:railgrid:system` |
+| `provider-binding-claims` | `pkg/hub/providerclaims/` | Keeps each tenant APIBinding's permission claims in step with the provider's `spec.requires` |
+| `workspace-seeds` | `pkg/hub/workspaceseeds/` | Validates WorkspaceSeeds and applies them to every tenant workspace |
+| `providerinstall` | `pkg/hub/providerinstall/` | Cleans up provider workspaces the installer created when their organization goes |
+| `metering-organization`, `metering-provider-binding` | `pkg/hub/metering/` | Per-organization metering objects and bindings; only when metering is installed |
+
+The scoped-identity service (`pkg/hub/identity/`) materializes and
+garbage-collects the identities providers ask for. It is a sweep paced by token
+lifetime, not a controller-runtime controller.
+
+### Edges provider
+
+One leader-elected multicluster manager (`providers/edges/controller_manager.go`).
+The four `edgectrl` controllers are registered once per edge kind.
+
+| Controller | File under `providers/edges/internal/` | Responsibility |
+|---|---|---|
+| `token-<resource>` | `edgectrl/token_reconciler.go` | Mints the join token and its hash; handles the regenerate annotation |
+| `edge-rbac-<resource>` | `edgectrl/rbac_reconciler.go` | Asks the hub for the agent's scoped identity; revokes it when the edge is deleted |
+| `version-<resource>` | `edgectrl/version_reconciler.go` | Maintains `UpgradeAvailable` against the hub's version |
+| `lifecycle-<resource>` | `edgectrl/lifecycle_reconciler.go` | The only writer of `connected`, `phase` and `Registered=True`, from tunnel Leases |
+| `scheduler` | `scheduler/` | Fans a `Workload` out into `Placement`s on matching clusters |
+| `status-aggregator` | `status/` | Rolls `Placement` status up into the `Workload` |
+| `service-discovery-*` | `servicectrl/discovery_reconciler.go` | Pulls host services from the agent into `Service` objects |
+| `service-validation` | `servicectrl/validation_reconciler.go` | Checks a `Service`'s credentials over the tunnel; writes its status and URLs |
+
+Other providers document their controllers in their own architecture docs
+under [`docs/`](docs/).

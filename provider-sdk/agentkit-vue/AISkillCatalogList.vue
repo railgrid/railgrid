@@ -40,10 +40,14 @@ const searchInput = ref<HTMLInputElement | null>(null)
 function clearSearch() { emit('update:query', ''); searchInput.value?.focus() }
 
 const filteredSkills = computed(() => filterAssistantSkills(props.skills, props.query))
+const displayQuery = computed(() => {
+  const characters = Array.from(props.query.trim())
+  return characters.length > 80 ? `${characters.slice(0, 80).join('')}…` : characters.join('')
+})
 </script>
 
 <template>
-  <div class="grid min-h-0 gap-3">
+  <div class="skill-catalog-root grid min-h-0 gap-3">
     <label class="k-ai-search k-ai-search--clearable">
       <Search class="k-ai-search__icon" :stroke-width="1.75" aria-hidden="true" />
       <input
@@ -78,15 +82,16 @@ const filteredSkills = computed(() => filterAssistantSkills(props.skills, props.
       </div>
       <div v-else-if="!filteredSkills.length" class="py-4 text-text-secondary" :class="variant === 'catalog' ? 'mt-3 flex min-h-52 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border-subtle px-5 text-center text-[13px] font-medium' : 'text-[12px]'" role="status">
         <Plug v-if="variant === 'catalog'" class="h-7 w-7 text-text-muted" :stroke-width="1.5" aria-hidden="true" />
-        <span>{{ query.trim() ? 'No skills match your search.' : emptyText }}</span>
+        <span class="skill-catalog-empty-text">{{ query.trim() ? `No skills match “${displayQuery}”. Clear the search to see all skills.` : emptyText }}</span>
       </div>
-      <ul v-else :class="variant === 'workbench' ? 'divide-y divide-border-subtle border-b border-border-subtle' : 'mt-2 grid gap-x-4 gap-y-0.5 md:grid-cols-2'" aria-label="Installed skills">
+      <ul v-else :class="variant === 'workbench' ? 'divide-y divide-border-subtle border-b border-border-subtle' : 'skill-catalog-list mt-2 grid gap-x-4 gap-y-0.5'" aria-label="Installed skills">
         <li v-for="skill in filteredSkills" :key="skill.id" class="min-w-0">
           <button
             type="button"
             class="k-agentkit-touch-target flex w-full min-w-0 items-center gap-2.5 py-2.5 text-left transition hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-            :class="[variant === 'workbench' ? 'px-1' : 'rounded-md px-2.5', { 'bg-accent-subtle': skill.id === selectedID }]"
+            :class="variant === 'workbench' ? 'px-1' : 'rounded-md px-2.5'"
             :disabled="busy"
+            :aria-current="skill.id === selectedID ? 'true' : undefined"
             :aria-label="`${skill.name}${showStatus ? (skill.enabled === false ? ', Disabled' : ', Enabled') : ''}. Select to view details.`"
             :aria-haspopup="detailPresentation === 'dialog' ? 'dialog' : undefined"
             @click="emit('select', skill)"
@@ -114,3 +119,12 @@ const filteredSkills = computed(() => filterAssistantSkills(props.skills, props.
     </div>
   </div>
 </template>
+
+<style scoped>
+.skill-catalog-root { container-type: inline-size; }
+.skill-catalog-empty-text { overflow-wrap: anywhere; min-width: 0; }
+@container (min-width: 32rem) {
+  .skill-catalog-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+button[aria-current="true"] { background: var(--color-accent-subtle); }
+</style>

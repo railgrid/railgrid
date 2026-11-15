@@ -13,7 +13,7 @@ import { ensureRailgridUIStyles } from '../portalkit/styles'
 ensureRailgridUIStyles()
 
 const props = withDefaults(defineProps<{
-  variant?: 'default' | 'document'
+  variant?: 'default' | 'document' | 'divided'
   id?: string
   headingId?: string
   eyebrow?: string
@@ -35,7 +35,7 @@ const headingId = computed(() => props.headingId || (props.id ? `${props.id}-hea
   <section
     :id="props.id || undefined"
     class="k-resource-section-card"
-    :class="{ 'k-resource-section-card--document': variant === 'document' }"
+    :class="{ 'k-resource-section-card--document': variant === 'document', 'k-resource-section-card--divided': variant === 'divided' }"
     :aria-labelledby="props.title && headingId ? headingId : undefined"
     data-k-resource-section-card
   >

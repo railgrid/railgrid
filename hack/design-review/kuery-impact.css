@@ -1,0 +1,4 @@
+.impact-fixture { padding: 32px; }
+.impact-fixture__controls { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+.impact-fixture__note { margin: 16px 0; color: var(--color-text-secondary); font-size: 13px; }
+@media (max-width: 600px) { .impact-fixture { padding: 16px; } }

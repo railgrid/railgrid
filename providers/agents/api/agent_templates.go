@@ -36,6 +36,7 @@ import (
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/templates"
 )
 
@@ -55,6 +56,11 @@ func (s *Server) createAgentFromRequest(ctx context.Context, c *agentsclient.Cli
 	if strings.TrimSpace(req.Template) == "" {
 		a, err := s.createPlainAgent(ctx, c, req)
 		return a, createReport{}, err
+	}
+	// A template's model slot is filled before instantiation, which is what
+	// reports a required slot left empty.
+	if err := applyDefaultModelCredential(ctx, c, req); err != nil {
+		return nil, createReport{}, err
 	}
 	res, err := agentFromTemplateRequest(req)
 	if err != nil {
@@ -91,6 +97,14 @@ func (s *Server) createPlainAgent(ctx context.Context, c *agentsclient.Client, r
 	a, err := agentFromCreateRequest(req)
 	if err != nil {
 		return nil, err
+	}
+	// After validation, so a bad request is refused without a tenant read.
+	if a.Spec.ModelCredentialFor(llm.PurposeChat) == "" {
+		name, err := defaultModelCredentialName(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		a.Spec.SetModelCredential(llm.PurposeChat, name)
 	}
 	if len(a.Spec.Channels) > 0 {
 		if err := s.validateChannelUniqueness(ctx, c, a.Name, a.Spec.Channels); err != nil {
@@ -402,4 +416,37 @@ func (s *Server) registerAgentTemplateTools(srv *mcp.Server) {
 		}
 		return nil, templateDetail(t), nil
 	})
+}
+
+// applyDefaultModelCredential fills in the workspace's default chat credential
+// (ModelCredential spec.default) when a templated create names none, so an
+// agent made through REST or MCP without a model can run. A request that
+// names a credential, flat or in the template's model slot, is left exactly
+// as it is, and so is one whose template has no model slot. createPlainAgent
+// does the same for a create without a template.
+func applyDefaultModelCredential(ctx context.Context, c *agentsclient.Client, req *createAgentRequest) error {
+	if strings.TrimSpace(req.ModelCredential) != "" {
+		return nil
+	}
+	if name := strings.TrimSpace(req.Template); name != "" {
+		tmpl, ok := templates.Lookup(name)
+		if !ok {
+			return nil // agentFromTemplateRequest reports the unknown template.
+		}
+		key, found := slotKey(tmpl, templates.SlotModelCredential)
+		if !found {
+			return nil
+		}
+		for k, v := range req.Wiring {
+			if strings.TrimSpace(k) == key && strings.TrimSpace(v) != "" {
+				return nil
+			}
+		}
+	}
+	name, err := defaultModelCredentialName(ctx, c)
+	if err != nil {
+		return err
+	}
+	req.ModelCredential = name
+	return nil
 }
