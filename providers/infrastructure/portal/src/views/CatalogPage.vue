@@ -5,6 +5,7 @@ import TemplateCard from '../components/TemplateCard.vue'
 import { api, isContextChangedError } from '../api'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import ResourceTableFilter from '../portalkit/ResourceTableFilter.vue'
 import { readLayoutPreference, writeLayoutPreference, type LayoutMode } from '../portalkit/layoutPreference'
 import { portalHref } from '../portalkit/navigation'
 import { useDelayedLoading } from '../portalkit/useDelayedLoading'
@@ -37,11 +38,11 @@ const tableColumns = [
   { key: 'exposure', label: 'Exposure' },
 ]
 
-const categories = computed(() => uniq(templates.value.map(t => t.category || 'Other')))
-const clouds = computed(() => uniq(templates.value.flatMap(t => t.cloud ? [t.cloud] : [])))
+const categoryOptions = computed(() => filterOptions(templates.value.map(t => t.category || 'Other')))
+const cloudOptions = computed(() => filterOptions(templates.value.flatMap(t => t.cloud ? [t.cloud] : [])))
 
-function uniq(xs: string[]): string[] {
-  return Array.from(new Set(xs)).sort()
+function filterOptions(values: string[]) {
+  return Array.from(new Set(values)).sort().map(value => ({ value, label: value }))
 }
 
 const filtered = computed(() => templates.value.filter(t => {
@@ -129,14 +130,18 @@ function followInstancesLink(event: MouseEvent): void {
     </header>
 
     <div class="filters">
-      <select v-if="categories.length > 1" v-model="category" class="k-input" aria-label="Filter templates by category">
-        <option value="">All categories</option>
-        <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
-      </select>
-      <select v-if="clouds.length > 0" v-model="cloud" class="k-input" aria-label="Filter templates by cloud">
-        <option value="">All clouds</option>
-        <option v-for="c in clouds" :key="c" :value="c">{{ c }}</option>
-      </select>
+      <ResourceTableFilter
+        v-if="categoryOptions.length > 1"
+        v-model="category"
+        :definition="{ key: 'category', label: 'Category' }"
+        :options="categoryOptions"
+      />
+      <ResourceTableFilter
+        v-if="cloudOptions.length > 0"
+        v-model="cloud"
+        :definition="{ key: 'cloud', label: 'Cloud' }"
+        :options="cloudOptions"
+      />
       <LayoutSelector v-model="layout" aria-label="Template layout" />
     </div>
 
@@ -212,7 +217,7 @@ function followInstancesLink(event: MouseEvent): void {
         </template>
         <template #kind="{ value }"><span class="cell-mono">{{ value }}</span></template>
         <template #version="{ value }"><span class="cell-mono">{{ value }}</span></template>
-        <template #exposure="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
+        <template #exposure="{ value }"><span class="k-badge k-badge--muted k-badge--label">{{ value }}</span></template>
       </ResourceTable>
       <div v-if="loaded && templates.length === 0" class="empty-followup">
         <button type="button" class="k-btn k-btn--ghost" @click="load">Refresh catalog</button>
