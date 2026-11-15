@@ -30,6 +30,12 @@ function fixture() {
     '@/stores/tenant': { useTenantStore: () => tenant },
     '@/composables/useScopedNavigation': { useScopedNavigation: () => ({ scopePath: path => `/${tenant.orgUUID}/workspace${path}` }) },
     '@/components/MeteringUsageList.vue': { default: usage },
+    '@/portalkit/ResourceTimestamp.vue': {
+      default: {
+        props: ['value', 'label'],
+        setup: props => () => h('time', { datetime: props.value, 'aria-label': props.label }),
+      },
+    },
   }
   const exports = {}
   new Function('require', 'exports', code)(id => {
@@ -70,6 +76,9 @@ test('Free upgrade opens scoped plan selection; paid plans open billing without 
     const metrics = nodes(s.root).find(node => node.props?.id === 'metrics')
     assert.equal(metrics.props.variant, 'compact')
     assert.equal(metrics.props.usage.workspaces, '2')
+    const recordedAt = nodes(s.root).find(node => node.type === 'time')
+    assert.equal(recordedAt.props.datetime, '2026-11-04T12:00:00.000Z')
+    assert.equal(recordedAt.props['aria-label'], 'Usage recorded')
     s.tenant.orgUUID = 'org-b'
     await flush()
     assert.doesNotMatch(text(s.root), /Free plan usage/)
