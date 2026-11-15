@@ -3,7 +3,7 @@
 //   text  → plain span
 //   link  → clickable anchor (new tab) with an external-link glyph
 //   code  → monospace pill with a copy button
-//   badge → neutral pill
+//   badge → muted label
 // Driven entirely by a ResolvedValue from view.ts, so list cells and detail
 // fields render identically.
 import { onUnmounted, ref, watch } from 'vue'
@@ -77,7 +77,7 @@ async function copy() {
 
   <span
     v-else-if="value.type === 'badge'"
-    class="k-badge k-badge--muted"
+    class="k-badge k-badge--muted k-badge--label"
   >
     {{ value.text }}
   </span>

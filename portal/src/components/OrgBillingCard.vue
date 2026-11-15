@@ -388,8 +388,8 @@ function retryHostedAction(): void {
         <div class="plan-identity">
           <h3>{{ planLabel }}</h3><span v-if="billing?.installed" class="k-badge k-badge--muted k-badge--label">Current plan</span>
           <StatusBadge v-if="subscriptionBadge" :status="subscriptionBadge.status" :tone="subscriptionBadge.tone" />
-          <span v-if="billing?.overHardLimit" class="k-badge k-badge--danger">Over hard limit</span>
-          <span v-else-if="billing?.overSoftLimit" class="k-badge k-badge--warning">Over soft limit</span>
+          <StatusBadge v-if="billing?.overHardLimit" status="Over hard limit" tone="danger" />
+          <StatusBadge v-else-if="billing?.overSoftLimit" status="Over soft limit" tone="warning" />
           <span v-if="billing?.enabled && !billing.livemode" class="k-badge k-badge--muted k-badge--label">Test mode</span>
         </div>
         <p class="billing-description">
