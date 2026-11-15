@@ -61,14 +61,6 @@ const connectionSlice = computed(() => { revision.value; return { ...props.store
 const toolConnections = computed(() => { revision.value; return props.store.toolConnections() })
 const showFirstRun = computed(() => slice.value.hasSnapshot && slice.value.data.length === 0)
 const hasToolConnections = computed(() => connectionSlice.value.hasSnapshot && toolConnections.value.length > 0)
-const toolConnectionPrerequisite = computed(() => {
-  if (!connectionSlice.value.hasSnapshot) return 'Tool connections have not loaded. You can still create this toolset without external tools.'
-  if (connectionSlice.value.error) return 'The last loaded connection list is shown; retry before relying on its current contents.'
-  return toolConnections.value.length
-    ? 'At least one tool connection is available in this workspace.'
-    : 'No external connections are configured yet; add them later if the toolset should expose external tools.'
-})
-const derivedFamilies = computed(() => { revision.value; return props.store.familiesFor(draftConns.value, selectedStandalone.value) })
 const filters: TableFilterDefinition[] = [{ key: 'usage', label: 'Usage', allLabel: 'All usage' }]
 
 function usedBy(name: string): number | null {
@@ -198,12 +190,12 @@ function cancelCreate(): void {
             <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Refreshing…' : 'Retry' }}</button>
           </div>
           <fieldset class="agents-cap-fs agents-resource-fieldset" aria-describedby="toolset-tools-hint"><legend>Tools</legend><div class="agents-checkrow">
-            <label class="agents-check k-checkbox-hit"><input v-model="draftVisualization" type="checkbox" :disabled="createBusy" /><span class="agents-check-copy"><span>Visualize data</span><span class="agents-hint">Charts in chat from supplied data</span></span></label>
-            <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><span class="agents-check-copy"><span>{{ connection.metadata.name }}</span><span class="agents-hint">{{ connection.spec.type }}</span></span></label>
+            <label class="agents-check k-checkbox-hit"><input class="k-checkbox" v-model="draftVisualization" type="checkbox" :disabled="createBusy" /><span class="agents-check-copy"><span>Visualize data</span><span class="agents-hint">Charts in chat from supplied data</span></span></label>
+            <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check k-checkbox-hit"><input class="k-checkbox" type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><span class="agents-check-copy"><span>{{ connection.metadata.name }}</span><span class="agents-hint">{{ connection.spec.type }}</span></span></label>
             <span v-if="connectionSlice.hasSnapshot && !connectionSlice.error && !toolConnections.length" class="agents-hint" role="status">No external tool connections are configured. You can add them later; this toolset can still include visualization and cluster edge tools.</span>
-          </div><span id="toolset-tools-hint" class="agents-hint">Choose built-in visualization or add existing tool connections.</span></fieldset>
+          </div><span id="toolset-tools-hint" class="agents-hint">Choose visualization and any available tool connections.</span></fieldset>
         </div>
-        <CreateGuidance title="Build a reusable capability bundle" description="Choose built-in visualization and optional existing tool connections." :prerequisites="[toolConnectionPrerequisite, 'Cluster edge tools remain available independently and do not need a connection here.']" :values="[{ label: 'Toolset', value: draftName.trim() || 'Not entered yet', technical: true }, { label: 'Display name', value: draftDisplay.trim() || 'Same as name' }, { label: 'Connections', value: draftConns.length ? draftConns.join(', ') : 'None selected', technical: true }, { label: 'Families', value: derivedFamilies.join(', '), technical: true }]" :next-steps="['Railgrid creates the bundle without changing any existing agents.', 'Attach the toolset to interactive or background work from agent Config.', 'Connection authorization is still checked when an agent invokes a tool.']" />
+        <CreateGuidance title="Before you create" description="Creating a toolset does not change existing agents. Attach it in agent Config to grant access; connection authorization is checked when a tool runs." />
       </div>
       <div class="k-create-actions"><button type="button" class="k-btn k-btn--ghost secondary" :disabled="createBusy" @click="cancelCreate">Cancel</button><button class="k-btn k-btn--primary" type="submit" :disabled="createBusy">{{ createBusy ? 'Creating…' : 'Create toolset' }}</button></div>
     </form>
@@ -250,10 +242,10 @@ function cancelCreate(): void {
                 <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Refreshing…' : 'Retry' }}</button>
               </div>
               <fieldset class="agents-cap-fs agents-resource-fieldset" aria-describedby="toolset-tools-hint"><legend>Tools</legend><div class="agents-checkrow">
-                <label class="agents-check k-checkbox-hit"><input v-model="draftVisualization" type="checkbox" :disabled="createBusy" /><span class="agents-check-copy"><span>Visualize data</span><span class="agents-hint">Charts in chat from supplied data</span></span></label>
-                <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><span class="agents-check-copy"><span>{{ connection.metadata.name }}</span><span class="agents-hint">{{ connection.spec.type }}</span></span></label>
+                <label class="agents-check k-checkbox-hit"><input class="k-checkbox" v-model="draftVisualization" type="checkbox" :disabled="createBusy" /><span class="agents-check-copy"><span>Visualize data</span><span class="agents-hint">Charts in chat from supplied data</span></span></label>
+                <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check k-checkbox-hit"><input class="k-checkbox" type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><span class="agents-check-copy"><span>{{ connection.metadata.name }}</span><span class="agents-hint">{{ connection.spec.type }}</span></span></label>
                 <span v-if="connectionSlice.hasSnapshot && !connectionSlice.error && !toolConnections.length" class="agents-hint" role="status">No external tool connections are configured. You can add them later; this toolset can still include visualization and cluster edge tools.</span>
-              </div><span id="toolset-tools-hint" class="agents-hint">Choose built-in visualization or add existing tool connections.</span></fieldset>
+              </div><span id="toolset-tools-hint" class="agents-hint">Choose visualization and any available tool connections.</span></fieldset>
             </div>
             <div class="k-create-actions"><button type="button" class="k-btn k-btn--ghost secondary" :disabled="createBusy" @click="cancelCreate">Cancel</button><button class="k-btn k-btn--primary" type="submit" :disabled="createBusy">{{ createBusy ? 'Saving…' : 'Save changes' }}</button></div>
           </form>
