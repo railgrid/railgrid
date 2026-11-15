@@ -255,7 +255,7 @@ test('keeps the responsive ResourcePage title canonical across provider detail v
 test('keeps the ResourcePage title-first metadata and actions contract canonical', () => {
   const page = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourcePage.vue', import.meta.url), 'utf8')
   const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
-  const title = page.indexOf('<h1 class="k-resource-page__title">')
+  const title = page.search(/<h1\b[^>]*class="k-resource-page__title"[^>]*>/)
   const meta = page.indexOf('class="k-resource-page__meta"')
   const subtitle = page.indexOf('class="k-resource-page__subtitle"')
   const headerSide = page.indexOf('class="k-resource-page__header-side"')
