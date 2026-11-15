@@ -79,6 +79,19 @@ test('allows finite warning and error durations while clamping short values', ()
   off()
 })
 
+test('keeps safe links available and rejects unsafe navigation', () => {
+  const currentScope = scope('links')
+  let commands = []
+  const off = kit.subscribeToasts(items => { commands = items.filter(item => item.scope === currentScope) })
+  const valid = kit.toast({ message: 'Ready', scope: currentScope, link: { label: 'View', href: '/deployments' } })
+  const invalid = kit.toast({ message: 'Ready', scope: currentScope, link: { label: 'View', href: 'javascript:alert(1)' } })
+  assert.equal(commands.find(item => item.id === valid).persistent, true)
+  assert.equal(commands.find(item => item.id === valid).link.href, '/deployments')
+  assert.equal(commands.find(item => item.id === invalid).link, undefined)
+  assert.equal(commands.find(item => item.id === invalid).persistent, false)
+  off()
+})
+
 test('runtime updates remain addressable by ID after queue updates', () => {
   const currentScope = scope('runtime')
   const snapshots = []

@@ -40,8 +40,15 @@ export interface ToastAction {
   closeOnSuccess?: boolean
 }
 
+export interface ToastLink {
+  label: string
+  href: string
+}
+
 export interface ToastOptions {
   action?: ToastAction
+  /** Native navigation link; ignored when an action is supplied. */
+  link?: ToastLink
   /** Finite durations are clamped to five seconds for non-persistent notices. */
   duration?: ToastDuration
   /** Dedupe and clear operations are isolated to this scope. */
@@ -74,6 +81,7 @@ export interface ToastCommand {
   announcement: ToastAnnouncement
   hasAction: boolean
   actionLabel?: string
+  link?: ToastLink
   action?: ToastAction
   closeOnSuccess: boolean
   dismissLabel: string
@@ -96,6 +104,7 @@ export interface ToastView {
   announcement: ToastAnnouncement
   hasAction: boolean
   actionLabel?: string
+  link?: ToastLink
   actionBusy: boolean
   actionError?: string
   closeOnSuccess: boolean
@@ -300,7 +309,7 @@ function normaliseDuration(options: ToastInput, kind: ToastKind): { persistent: 
   const requested = typeof options.duration === 'number' && Number.isFinite(options.duration)
     ? options.duration
     : undefined
-  const persistent = options.duration === 'persistent' || Boolean(options.action) ||
+  const persistent = options.duration === 'persistent' || Boolean(options.action || options.link) ||
     (requested === undefined && (kind === 'warning' || kind === 'error'))
   if (persistent) return { persistent: true, duration: null }
   return { persistent: false, duration: Math.max(MIN_DURATION, requested ?? DEFAULT_DURATION[kind]) }
@@ -323,7 +332,8 @@ function findDedupe(
 }
 
 function createCommand(id: ToastId, options: ToastInput, kind: ToastKind): ToastCommand {
-  const timing = normaliseDuration(options, kind)
+  const link = !options.action && options.link && !options.link.href.includes('\\') && /^(?:\/(?!\/)|#|https?:\/\/)/i.test(options.link.href) ? options.link : undefined
+  const timing = normaliseDuration({ ...options, link }, kind)
   const source = options.source?.trim() || ''
   return {
     id,
@@ -339,6 +349,7 @@ function createCommand(id: ToastId, options: ToastInput, kind: ToastKind): Toast
     announcement: options.announcement ?? 'auto',
     hasAction: Boolean(options.action),
     ...(options.action ? { actionLabel: options.action.label, action: options.action } : {}),
+    ...(link ? { link } : {}),
     closeOnSuccess: options.action?.closeOnSuccess !== false,
     dismissLabel: 'Dismiss notification',
     focusOrigin: focusOrigin(),
