@@ -42,6 +42,7 @@ import { api, isProjectAPIInitializingError, isProjectAPINotFoundError, ProjectA
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import ToastHost from './portalkit/ToastHost.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
+import ModelActivationFeedback from './ModelActivationFeedback.vue'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import Tabs from './portalkit/Tabs.vue'
 import AIConversationTurn from './agentkit/AIConversationTurn.vue'
@@ -1050,6 +1051,8 @@ const llmEditorBaseline = ref<LLMEditorSnapshot | null>(null)
 const llmValidationAttempted = ref(false)
 const llmCreateRouteSession = ref(false)
 const llmSettingsLoading = ref(false)
+const llmSettingsRetrying = ref(false)
+let llmSettingsRetrySerial = 0
 const llmSettingsError = ref<string | null>(null)
 let llmSettingsLoadSerial = 0
 let llmSettingsLoadProject = ''
@@ -1619,7 +1622,11 @@ function invalidateProjectContextState() {
   developmentTemplatesLoadSerial += 1
   providerCatalogLoadSerial += 1
   invalidateLLMSettingsLoad()
+  llmConnectionsLoadSerial += 1
   llmConnections.value = []
+  llmConnectionsLoaded.value = false
+  llmConnectionsLoading.value = false
+  llmConnectionsError.value = null
   clearLLMDiscovery()
   createReadinessLoadSerial += 1
   toolLoadSerial += 1
@@ -4007,6 +4014,8 @@ watch(
 
 function invalidateLLMSettingsLoad() {
   llmSettingsLoadSerial += 1
+  llmSettingsRetrySerial += 1
+  llmSettingsRetrying.value = false
   llmSettingsLoadProject = ''
   llmSettingsLoading.value = false
 }
@@ -4047,6 +4056,15 @@ async function loadLLMSettings(waitForConfiguredModel = false) {
       llmSettingsLoadProject = ''
       llmSettingsLoading.value = false
     }
+  }
+}
+
+async function retryLLMSettings(waitForConfiguredModel = false) {
+  if (llmSettingsRetrying.value) return
+  const serial = ++llmSettingsRetrySerial
+  llmSettingsRetrying.value = true
+  try { await loadLLMSettings(waitForConfiguredModel) } finally {
+    if (serial === llmSettingsRetrySerial) llmSettingsRetrying.value = false
   }
 }
 
@@ -10981,20 +10999,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <h2 id="create-model-activation-title" class="k-create-title">Choose a model</h2>
                   <FirstRunGuide embedded :steps="projectSetupSteps" :current-step="1" journey-label="New project steps" />
                 </header>
-                <p v-if="llmSettingsLoading" class="flex items-center gap-2 text-[13px] text-text-secondary" role="status">
-                  <Loader2 class="h-4 w-4 animate-spin text-accent motion-reduce:animate-none" /> Waiting for the saved model to become available…
-                </p>
-                <InlineNotification
-                  v-else
-                  :tone="llmSettingsError ? 'error' : 'warning'"
-                  :message="llmSettingsError || 'The model is saved and still becoming available.'"
-                  action-label="Check again"
-                  @action="loadLLMSettings(true)"
-                />
+                <ModelActivationFeedback :loading="llmSettingsLoading" :retrying="llmSettingsRetrying" :error="llmSettingsError" @check="retryLLMSettings(true)" />
               </div>
             </section>
             <template v-else-if="!createModelSetup && !wizardOpen">
-              <InlineNotification v-if="llmSettingsError" class="mb-3" tone="error" :message="llmSettingsError" action-label="Retry" @action="loadLLMSettings" />
+              <InlineNotification v-if="llmSettingsError" class="mb-3" tone="error" :message="llmSettingsError" action-label="Retry" action-busy-label="Retrying models…" :action-busy="llmSettingsRetrying" @action="retryLLMSettings" />
               <p v-if="!llmConfigured && !llmSettingsError" class="k-inline-notification" role="status">
                 <Loader2 class="h-4 w-4 animate-spin text-accent motion-reduce:animate-none" /> Checking workspace setup…
               </p>
@@ -12786,6 +12795,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :provider-detour-active="llmProviderDetourActive"
             :connections="llmConnections"
             :connections-loading="llmConnectionsLoading"
+            :connections-loaded="llmConnectionsLoaded"
             :connections-error="llmConnectionsError"
             :connection-status-checking="llmConnectionStatusChecking"
             :connection-status-timed-out="llmConnectionStatusTimedOutFor === llmBindingConnectionRef"
