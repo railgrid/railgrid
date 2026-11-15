@@ -1,180 +1,48 @@
-<!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies under providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`. -->
+<!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Run make sync-portalkit after editing. -->
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref, useId, type Component } from 'vue'
-import { Check, ChevronDown, Grid2X2, List } from 'lucide-vue-next'
-import { layoutModes, nextLayoutMenuIndex, type LayoutMode } from './layoutPreference'
-import { useAnchoredPopover } from './useAnchoredPopover'
+import { nextTick, ref, type Component } from 'vue'
+import { Grid2X2, List } from 'lucide-vue-next'
+import { layoutModes, type LayoutMode } from './layoutPreference'
 
 const props = withDefaults(defineProps<{
   modelValue: LayoutMode
   ariaLabel?: string
   gridLabel?: string
   gridIcon?: Component
-}>(), {
-  ariaLabel: 'Layout',
-  gridLabel: 'Grid',
-})
-
-const emit = defineEmits<{
-  'update:modelValue': [mode: LayoutMode]
-}>()
-
+}>(), { ariaLabel: 'Layout', gridLabel: 'Grid' })
+const emit = defineEmits<{ 'update:modelValue': [mode: LayoutMode] }>()
 const root = ref<HTMLElement | null>(null)
-const {
-  open,
-  triggerRef: trigger,
-  panelRef,
-  panelStyle,
-  close: closePopover,
-} = useAnchoredPopover({ width: 154, gap: 5, align: 'end' })
-const instanceID = useId()
-const menuID = `k-layout-selector-menu-${instanceID}`
-const labelID = `k-layout-selector-label-${instanceID}`
-const currentLabel = computed(() => labelFor(props.modelValue))
-const triggerLabel = computed(() => `${props.ariaLabel}: ${currentLabel.value}`)
-
-function labelFor(mode: LayoutMode): string {
-  return mode === 'grid' ? props.gridLabel : 'List'
-}
-
-function menuItems(): HTMLButtonElement[] {
-  return panelRef.value
-    ? [...panelRef.value.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
-    : []
-}
-
-function focusItem(index: number): void {
-  void nextTick(() => menuItems()[index]?.focus())
-}
-
-function openMenu(index = 0): void {
-  if (open.value) return
-  open.value = true
-  focusItem(index)
-}
-
-function closeMenu(restoreFocus = false): void {
-  if (!open.value) return
-  closePopover({ restoreFocus })
-}
-
-function closeMenuAfterTab(): void {
-  // The panel is teleported after the owning trigger in document order. Close
-  // it and put focus back on that trigger before allowing the browser's native
-  // Tab default to run; this keeps exit relative to the trigger and removes
-  // teleported menu items from the sequential focus order.
-  closeMenu()
-  trigger.value?.focus()
-}
-
-function toggleMenu(): void {
-  if (open.value) closeMenu()
-  else openMenu(layoutModes.indexOf(props.modelValue))
-}
 
 function choose(mode: LayoutMode): void {
   if (mode !== props.modelValue) emit('update:modelValue', mode)
-  closeMenu(true)
 }
 
-function handleKeydown(event: KeyboardEvent): void {
-  if (!open.value) {
-    if (event.target === trigger.value && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
-      event.preventDefault()
-      openMenu(event.key === 'ArrowDown' ? 0 : layoutModes.length - 1)
-    }
-    return
-  }
-
-  if (event.key === 'Escape') {
-    event.preventDefault()
-    closeMenu(true)
-    return
-  }
-  if (event.key === 'Tab') {
-    closeMenuAfterTab()
-    return
-  }
-
-  const items = menuItems()
-  if (!items.length) return
-  const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement)
-  const nextIndex = nextLayoutMenuIndex(event.key, currentIndex)
-  if (nextIndex === null) return
+async function navigate(event: KeyboardEvent): Promise<void> {
+  if (event.isComposing || event.keyCode === 229) return
+  // Modified arrows and Home/End belong to the browser and assistive technology.
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+  const index = layoutModes.indexOf(props.modelValue)
+  let next: number
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % layoutModes.length
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (index + layoutModes.length - 1) % layoutModes.length
+  else if (event.key === 'Home') next = 0
+  else if (event.key === 'End') next = layoutModes.length - 1
+  else return
   event.preventDefault()
-  items[nextIndex]?.focus()
+  choose(layoutModes[next])
+  await nextTick()
+  root.value?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus()
 }
-
-function closeFromOutsidePointer(event: PointerEvent): void {
-  const target = event.target as Node | null
-  if (open.value && target && !root.value?.contains(target) && !panelRef.value?.contains(target)) closeMenu()
-}
-
-function closeFromOutsideFocus(event: FocusEvent): void {
-  const target = event.target as Node | null
-  if (open.value && target && !root.value?.contains(target) && !panelRef.value?.contains(target)) closeMenu()
-}
-
-onMounted(() => {
-  document.addEventListener('pointerdown', closeFromOutsidePointer)
-  document.addEventListener('focusin', closeFromOutsideFocus)
-})
-
-onDeactivated(() => closeMenu());
-
-onBeforeUnmount(() => {
-  document.removeEventListener('pointerdown', closeFromOutsidePointer)
-  document.removeEventListener('focusin', closeFromOutsideFocus)
-})
 </script>
 
 <template>
-  <div ref="root" class="k-layout-selector" @keydown="handleKeydown">
-    <button
-      ref="trigger"
-      type="button"
-      class="k-layout-selector__trigger"
-      :aria-label="triggerLabel"
-      :title="triggerLabel"
-      aria-haspopup="menu"
-      :aria-expanded="open"
-      :aria-controls="menuID"
-      @click="toggleMenu"
-    >
-      <component :is="gridIcon || Grid2X2" v-if="modelValue === 'grid'" class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
+  <div ref="root" class="k-layout-selector" role="radiogroup" :aria-label="ariaLabel" @keydown="navigate">
+    <button v-for="mode in layoutModes" :key="mode" type="button" role="radio" class="k-layout-selector__item"
+      :class="{ 'is-selected': mode === modelValue }" :aria-checked="mode === modelValue"
+      :tabindex="mode === modelValue ? 0 : -1" @click="choose(mode)">
+      <component :is="gridIcon || Grid2X2" v-if="mode === 'grid'" class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
       <List v-else class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
-      <ChevronDown class="k-layout-selector__chevron" :stroke-width="1.75" aria-hidden="true" />
+      <span>{{ mode === 'grid' ? gridLabel : 'List' }}</span>
     </button>
-
-    <Teleport to="body">
-      <div
-        v-if="open"
-        :id="menuID"
-        ref="panelRef"
-        class="k-menu k-layout-selector__menu"
-        :style="panelStyle"
-        role="menu"
-        :aria-labelledby="labelID"
-        @keydown="handleKeydown"
-      >
-        <div :id="labelID" class="k-layout-selector__label">{{ ariaLabel }}</div>
-        <button
-          v-for="mode in layoutModes"
-          :key="mode"
-          type="button"
-          class="k-menu-item k-layout-selector__item"
-          :class="{ 'is-selected': mode === modelValue }"
-          role="menuitemradio"
-          :aria-checked="mode === modelValue"
-          tabindex="-1"
-          @click="choose(mode)"
-        >
-          <component :is="gridIcon || Grid2X2" v-if="mode === 'grid'" class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
-          <List v-else class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
-          <span>{{ labelFor(mode) }}</span>
-          <Check v-if="mode === modelValue" class="k-layout-selector__check" :stroke-width="1.75" aria-hidden="true" />
-        </button>
-      </div>
-    </Teleport>
   </div>
 </template>

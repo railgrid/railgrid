@@ -237,9 +237,7 @@ describe('agents list layouts', () => {
     expect(mounted.element.querySelector('.agents-grid')).not.toBeNull()
     expect(mounted.element.querySelector('.k-table__table')).toBeNull()
 
-    mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout: Cards"]')!.click()
-    await settleVue()
-    document.querySelector<HTMLButtonElement>('[role="menuitemradio"][aria-checked="false"]')!.click()
+    mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout"] [role="radio"][aria-checked="false"]')!.click()
     await settleVue()
 
     expect(mounted.element.querySelector('.agents-grid')).toBeNull()
@@ -287,9 +285,7 @@ describe('agents list layouts', () => {
     await settleVue()
     expect(text(mounted.element.querySelector('.k-table'))).toContain('No agents match your search.')
 
-    mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout: List"]')!.click()
-    await settleVue()
-    document.querySelector<HTMLButtonElement>('[role="menuitemradio"][aria-checked="false"]')!.click()
+    mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout"] [role="radio"][aria-checked="false"]')!.click()
     await settleVue()
     expect(mounted.element.querySelector<HTMLInputElement>('.agents-layout-search input')?.value).toBe('no matching agent')
     expect(text(mounted.element.querySelector('.agents-layout-empty'))).toBe('No agents match your search.')
@@ -316,9 +312,7 @@ describe('agents list layouts', () => {
     await settleVue()
     expect(mounted.element.querySelectorAll('.k-table__row')).toHaveLength(1)
 
-    mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout: List"]')!.click()
-    await settleVue()
-    document.querySelector<HTMLButtonElement>('[role="menuitemradio"][aria-checked="false"]')!.click()
+    mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout"] [role="radio"][aria-checked="false"]')!.click()
     await settleVue()
 
     expect(mounted.element.querySelectorAll('.agents-card')).toHaveLength(2)
