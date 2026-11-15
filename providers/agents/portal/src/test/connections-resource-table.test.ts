@@ -46,6 +46,37 @@ function deferred<T>() {
 }
 
 describe('Connections resource tables', () => {
+  it('preserves native connection links while routing ordinary clicks', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.connections.data = [connection('team/slack')]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+    const view = await mountVue(ConnectionsView, { store, api, routeOwned: true })
+    await settleVue(1, 120)
+    const link = view.element.querySelector<HTMLAnchorElement>('.k-table-resource-link')!
+    expect(link.getAttribute('href')).toBe('#/connections/team%2Fslack/edit')
+    let prevented = true
+    link.addEventListener('click', event => { prevented = event.defaultPrevented; event.preventDefault() }, { once: true })
+    link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }))
+    expect(prevented).toBe(false)
+    expect(view.navigations).toEqual([])
+    link.click()
+    expect(view.navigations).toEqual([{ kind: 'edit', resource: 'connection', name: 'team/slack' }])
+    expect(view.element.querySelector<HTMLAnchorElement>('.k-resource-page__actions a')?.getAttribute('href')).toBe('#/create/connection')
+  })
+
+  it('offers a native creation link in the first-use guide', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true, data: [] })
+    const view = await mountVue(ConnectionsView, { store, api, routeOwned: true })
+    await settleVue(1, 120)
+    const link = view.element.querySelector<HTMLAnchorElement>('.k-first-run a')!
+    expect(link.getAttribute('href')).toBe('#/create/connection')
+    link.click()
+    expect(view.navigations).toEqual([{ kind: 'create', resource: 'connection' }])
+  })
+
   it('keeps a toolset creatable while tool connections fail, retry, and return an authoritative empty list', async () => {
     const response = deferred<Connection[]>()
     const listConnections = vi.fn(() => response.promise)

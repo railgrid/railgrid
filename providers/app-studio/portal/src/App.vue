@@ -2669,6 +2669,18 @@ function enterProjectTableRow(row: Record<string, unknown>) {
   if (project && !isProjectDeleting(project)) enterProject(project)
 }
 
+function projectHref(name: string): string {
+  const base = props.ctx?.navigationBasePath || portalHref('/ui/providers/app-studio', props.ctx)
+  return `${base.replace(/\/$/, '')}/${encodeURIComponent(name)}`
+}
+
+function followProjectLink(event: MouseEvent, project: Project | null): void {
+  if (!project || isProjectDeleting(project)) { event.preventDefault(); return }
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  enterProject(project)
+}
+
 function requestDeleteProjectTableRow(row: Record<string, unknown>) {
   const project = projectFromTableRow(row)
   if (project) void requestDeleteProject(project)
@@ -10813,10 +10825,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               class="group relative overflow-hidden rounded-lg border border-border-subtle bg-surface-raised transition hover:border-accent/40 hover:bg-surface-overlay"
               :aria-busy="isProjectDeleting(project) || undefined"
             >
-              <button
-                class="app-studio-touch-target block w-full text-left disabled:cursor-not-allowed"
-                :disabled="isProjectDeleting(project)"
-                @click="enterProject(project)"
+              <component
+                :is="isProjectDeleting(project) ? 'div' : 'a'"
+                class="app-studio-touch-target block w-full text-left"
+                :href="isProjectDeleting(project) ? undefined : projectHref(project.name)"
+                @click="followProjectLink($event, project)"
               >
                 <div class="relative aspect-[16/9] overflow-hidden border-b border-border-subtle bg-surface">
                   <img
@@ -10864,7 +10877,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     <span class="text-[12px] text-text-muted">{{ projectTimestamp(project) }}</span>
                   </div>
                 </div>
-              </button>
+              </component>
               <button
                 class="app-studio-touch-target app-studio-touch-visible absolute right-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-raised/90 text-text-muted opacity-0 transition hover:bg-danger-subtle hover:text-danger focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
                 type="button"
@@ -10916,15 +10929,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           @row-click="enterProjectTableRow"
         >
           <template #name="{ row }">
-            <button
+            <component
+              :is="row.deleting ? 'span' : 'a'"
               class="k-btn k-btn--ghost k-table-resource-link min-w-[220px] text-left"
-              type="button"
-              :disabled="Boolean(row.deleting)"
-              @click.stop="enterProjectTableRow(row)"
+              :href="row.deleting ? undefined : projectHref(String(row.name))"
+              @click.stop="followProjectLink($event, projectFromTableRow(row))"
             >
               <span class="block truncate font-semibold">{{ String(row.displayName || row.name) }}</span>
               <span class="mt-1 block line-clamp-2 text-[12px] leading-[17px] text-text-muted">{{ String(row.description || row.name) }}</span>
-            </button>
+            </component>
           </template>
           <template #phase="{ value }"><StatusBadge :status="String(value)" :tone="String(value) === 'Deleting…' ? 'warning' : null" /></template>
           <template #updated="{ value }"><span class="whitespace-nowrap text-text-muted">{{ String(value) }}</span></template>
