@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 67;
+  --railgrid-ui-core-version: 68;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1096,6 +1096,12 @@ railgrid-form-select {
 }
 html.light .k-form-select__panel.k-form-select__portal {
   box-shadow: 0 6px 18px color-mix(in srgb, var(--color-text-primary, #e9e9f2) 12%, transparent);
+}
+.k-form-select__portal .k-form-select__group-label {
+  padding: 8px 8px 4px;
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 12px;
+  font-weight: 600;
 }
 .k-form-select__portal .k-form-select__option {
   justify-content: space-between;

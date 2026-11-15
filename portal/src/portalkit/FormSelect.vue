@@ -15,6 +15,7 @@ export interface FormSelectOption {
   value: string
   label: string
   disabled?: boolean
+  group?: string
 }
 
 const props = withDefaults(defineProps<{
@@ -64,6 +65,19 @@ const panel = ref<HTMLElement | null>(null)
 const open = ref(false)
 const activeIndex = ref(-1)
 const panelStyle = ref<Record<string, string>>({})
+
+const optionGroups = computed(() => {
+  const groups: { label?: string; options: { option: FormSelectOption; index: number }[] }[] = []
+  props.options.forEach((option, index) => {
+    let group = groups.at(-1)
+    if (!group || group.label !== option.group) {
+      group = { label: option.group, options: [] }
+      groups.push(group)
+    }
+    group.options.push({ option, index })
+  })
+  return groups
+})
 
 const selectedOption = computed(() => props.options.find(option => option.value === props.modelValue))
 const selectedLabel = computed(() => selectedOption.value?.label || props.modelValue || props.placeholder)
@@ -367,25 +381,33 @@ onBeforeUnmount(() => {
         :aria-labelledby="accessibleLabelledby || nativeLabelID || valueID"
         @keydown="onKeydown"
       >
-        <button
-          v-for="(option, index) in options"
-          :id="optionID(index)"
-          :key="option.value"
-          class="k-menu-item k-form-select__option"
-          :class="{ 'is-selected': option.value === modelValue, 'is-active': index === activeIndex }"
-          type="button"
-          role="option"
-          :aria-selected="option.value === modelValue ? 'true' : 'false'"
-          :aria-disabled="option.disabled ? 'true' : undefined"
-          :disabled="option.disabled"
-          tabindex="-1"
-          @mouseenter="!option.disabled && (activeIndex = index)"
-          @mousedown.prevent
-          @click="selectOption(option)"
+        <div
+          v-for="(group, groupIndex) in optionGroups"
+          :key="groupIndex"
+          :role="group.label ? 'group' : 'presentation'"
+          :aria-labelledby="group.label ? `${listboxID}-group-${groupIndex}` : undefined"
         >
-          <span class="k-form-select__option-label">{{ option.label }}</span>
-          <Check v-if="option.value === modelValue" class="k-form-select__check" :size="14" :stroke-width="1.75" aria-hidden="true" />
-        </button>
+          <div v-if="group.label" :id="`${listboxID}-group-${groupIndex}`" class="k-form-select__group-label">{{ group.label }}</div>
+          <button
+            v-for="{ option, index } in group.options"
+            :id="optionID(index)"
+            :key="option.value"
+            class="k-menu-item k-form-select__option"
+            :class="{ 'is-selected': option.value === modelValue, 'is-active': index === activeIndex }"
+            type="button"
+            role="option"
+            :aria-selected="option.value === modelValue ? 'true' : 'false'"
+            :aria-disabled="option.disabled ? 'true' : undefined"
+            :disabled="option.disabled"
+            tabindex="-1"
+            @mouseenter="!option.disabled && (activeIndex = index)"
+            @mousedown.prevent
+            @click="selectOption(option)"
+          >
+            <span class="k-form-select__option-label">{{ option.label }}</span>
+            <Check v-if="option.value === modelValue" class="k-form-select__check" :size="14" :stroke-width="1.75" aria-hidden="true" />
+          </button>
+        </div>
         <p v-if="!options.length" class="k-form-select__empty" role="status">{{ placeholder }}</p>
       </div>
     </Teleport>

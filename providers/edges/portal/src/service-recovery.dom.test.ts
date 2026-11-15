@@ -209,3 +209,56 @@ it('shows invalid URL feedback when the service requires a host', async () => {
     expect(document.activeElement).toBe(input)
   } finally { app.unmount() }
 })
+
+it('keeps service type groups navigable and applies FormSelect choices', async () => {
+  const credential = { fields: [] }
+  api.fetchServiceCatalog.mockResolvedValue([
+    { type: 'home-assistant', displayName: 'Home Assistant', category: 'Home', defaultPort: 8123, defaultScheme: 'http', credential },
+    { type: 'unifi-network', displayName: 'UniFi Network', category: 'Network', defaultPort: 443, defaultScheme: 'https', schemeLocked: true, credential },
+  ])
+  api.listEdges.mockResolvedValue([edge, { name: edge.name, type: 'server' }])
+  const host = document.createElement('div')
+  document.body.append(host)
+  const app = createApp(ServiceCreate)
+  app.mount(host)
+  try {
+    await settle()
+    const edgeSelect = host.querySelector<HTMLButtonElement>('#service-create-edge')!
+    const typeSelect = host.querySelector<HTMLButtonElement>('#service-create-type')!
+    const schemeSelect = host.querySelector<HTMLButtonElement>('#service-create-scheme')!
+    expect(edgeSelect.getAttribute('aria-required')).toBe('true')
+    edgeSelect.click()
+    await settle()
+    const edgeOptions = document.querySelectorAll('#service-create-edge-listbox [role="option"]')
+    expect([...edgeOptions].map(option => option.textContent?.trim())).toEqual([
+      'edge-a (KubernetesCluster)', 'edge-a (LinuxServer)',
+    ])
+    ;(edgeOptions[1] as HTMLButtonElement).click()
+    await settle()
+    expect(edgeSelect.textContent).toContain('LinuxServer')
+
+    schemeSelect.click()
+    await settle()
+    const schemeOptions = document.querySelectorAll<HTMLButtonElement>('#service-create-scheme-listbox [role="option"]')
+    schemeOptions[1].click()
+    await settle()
+    expect(schemeSelect.textContent).toContain('https')
+
+    typeSelect.focus()
+    typeSelect.click()
+    await settle()
+    const groups = document.querySelectorAll('#service-create-type-listbox [role="group"]')
+    expect([...groups].map(group => document.getElementById(group.getAttribute('aria-labelledby')!)?.textContent)).toEqual(['Home', 'Network'])
+    expect(groups[0].querySelector('[role="option"]')?.textContent).toContain('Home Assistant')
+    expect(groups[1].querySelector('[role="option"]')?.textContent).toContain('UniFi Network')
+
+    typeSelect.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    typeSelect.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await settle()
+    expect(typeSelect.textContent).toContain('UniFi Network')
+    expect(document.activeElement).toBe(typeSelect)
+    expect(schemeSelect.textContent).toContain('https')
+    expect(schemeSelect.disabled).toBe(true)
+    expect(host.querySelector<HTMLInputElement>('#service-create-port')?.value).toBe('443')
+  } finally { app.unmount() }
+})

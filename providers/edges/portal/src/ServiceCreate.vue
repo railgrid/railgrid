@@ -6,6 +6,7 @@ import type { CatalogEntry } from './api'
 import type { Edge, EdgeServiceDraft, EdgeType, ErrorResponse } from './types'
 import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
+import FormSelect from './portalkit/FormSelect.vue'
 import { toast } from './portalkit/toast'
 import { displayServiceHost, parseServiceHost, servicePortError } from './serviceValidation'
 
@@ -49,6 +50,16 @@ const catalogGroups = computed(() => catalog.value.reduce<{ category: string; it
   return groups
 }, []))
 
+const typeOptions = computed(() => catalogGroups.value.flatMap(group => group.items.map(entry => ({
+  value: entry.type,
+  label: entry.displayName,
+  group: group.category,
+}))))
+const schemeOptions = [
+  { value: 'http', label: 'http' },
+  { value: 'https', label: 'https' },
+]
+
 const genericFallback: CatalogEntry = {
   type: 'generic',
   displayName: 'Generic HTTP service',
@@ -76,6 +87,10 @@ function edgeKey(edge: Pick<Edge, 'type' | 'name'>): string {
   return `${edge.type}/${edge.name}`
 }
 
+const edgeOptions = computed(() => edges.value.map(edge => ({
+  value: edgeKey(edge),
+  label: `${edge.name} (${edge.type === 'server' ? 'LinuxServer' : edge.type === 'macos' ? 'MacOSServer' : 'KubernetesCluster'})`,
+})))
 const selectedEdge = computed(() => edges.value.find((edge) => edgeKey(edge) === selectedEdgeKey.value))
 const selectedEdgeIsHost = computed(() => selectedEdge.value?.type !== 'kubernetes')
 const selectedCatalogEntry = computed(() => catalogFor(draft.value.serviceType))
@@ -91,12 +106,20 @@ function resetTargetMode(): void {
   targetMode.value = selectedEdgeIsHost.value || hostRequired.value ? 'host' : 'kube'
 }
 
-function onEdgeChange(): void {
+function onEdgeChange(key: string): void {
+  if (key === selectedEdgeKey.value) return
+  selectedEdgeKey.value = key
   draft.value.edgeName = selectedEdge.value?.name ?? ''
   resetTargetMode()
 }
 
-function onTypeChange(): void {
+function onTypeChange(type: string): void {
+  if (type === draft.value.serviceType) return
+  draft.value.serviceType = type
+  applyTypeDefaults()
+}
+
+function applyTypeDefaults(): void {
   const entry = catalogFor(draft.value.serviceType)
   if (entry?.defaultPort) draft.value.port = entry.defaultPort
   if (entry?.defaultScheme) draft.value.scheme = entry.defaultScheme
@@ -216,13 +239,13 @@ async function loadInputs(): Promise<void> {
     catalog.value = catalogResult.value
     if (!catalogFor(draft.value.serviceType)) {
       draft.value.serviceType = catalogResult.value[0].type
-      onTypeChange()
-    } else if (firstCatalogLoad) onTypeChange()
+      applyTypeDefaults()
+    } else if (firstCatalogLoad) applyTypeDefaults()
   } else {
     if (!catalog.value.length) catalog.value = [genericFallback]
     if (!catalogFor(draft.value.serviceType)) {
       draft.value.serviceType = genericFallback.type
-      onTypeChange()
+      applyTypeDefaults()
     }
     if (catalogResult.status === 'rejected') readError.value = (catalogResult.reason as ErrorResponse)?.message ?? 'Failed to load service types'
   }
@@ -286,33 +309,44 @@ onUnmounted(() => {
           <span class="lbl">Name (required)</span>
           <input v-model="draft.name" class="k-input" required placeholder="home-assistant" />
         </label>
-        <label class="fld">
-          <span class="lbl">Edge (required)</span>
-          <select v-model="selectedEdgeKey" class="k-input" required aria-describedby="service-create-edge-help" @change="onEdgeChange">
-            <option value="" disabled>Select an edge</option>
-            <option v-for="edge in edges" :key="edgeKey(edge)" :value="edgeKey(edge)">
-              {{ edge.name }} ({{ edge.type === 'server' ? 'LinuxServer' : edge.type === 'macos' ? 'MacOSServer' : 'KubernetesCluster' }})
-            </option>
-          </select>
+        <div class="fld">
+          <label id="service-create-edge-label" for="service-create-edge" class="lbl">Edge (required)</label>
+          <FormSelect
+            id="service-create-edge"
+            :model-value="selectedEdgeKey"
+            :options="edgeOptions"
+            placeholder="Select an edge"
+            labelledby="service-create-edge-label"
+            describedby="service-create-edge-help"
+            required
+            @update:model-value="onEdgeChange"
+          />
           <span id="service-create-edge-help" class="field-help">Choose an edge that can reach this service.</span>
-        </label>
+        </div>
       </div>
 
       <div class="service-create-grid service-create-grid--three">
-        <label class="fld">
-          <span class="lbl">Type</span>
-          <select v-model="draft.serviceType" class="k-input" @change="onTypeChange">
-            <optgroup v-for="group in catalogGroups" :key="group.category" :label="group.category">
-              <option v-for="entry in group.items" :key="entry.type" :value="entry.type">{{ entry.displayName }}</option>
-            </optgroup>
-          </select>
-        </label>
         <div class="fld">
-          <label for="service-create-scheme" class="lbl">Scheme</label>
-          <select id="service-create-scheme" v-model="draft.scheme" class="k-input" :disabled="schemeLocked" :aria-describedby="schemeLocked ? 'service-create-scheme-help' : undefined">
-            <option value="http">http</option>
-            <option value="https">https</option>
-          </select>
+          <label id="service-create-type-label" for="service-create-type" class="lbl">Type</label>
+          <FormSelect
+            id="service-create-type"
+            :model-value="draft.serviceType"
+            :options="typeOptions"
+            labelledby="service-create-type-label"
+            @update:model-value="onTypeChange"
+          />
+        </div>
+        <div class="fld">
+          <label id="service-create-scheme-label" for="service-create-scheme" class="lbl">Scheme</label>
+          <FormSelect
+            id="service-create-scheme"
+            :model-value="draft.scheme || 'http'"
+            :options="schemeOptions"
+            :disabled="schemeLocked"
+            labelledby="service-create-scheme-label"
+            :describedby="schemeLocked ? 'service-create-scheme-help' : undefined"
+            @update:model-value="draft.scheme = $event"
+          />
           <span v-if="schemeLocked" id="service-create-scheme-help" class="field-help">Fixed by the selected service type.</span>
         </div>
         <div class="fld">
