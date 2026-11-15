@@ -42,11 +42,15 @@ export class QuickstartDashboardTileElement extends HTMLElement {
   private _connected = false
   private _generation = 0
   private _identity = ''
+  private _readSerial = 0
+  private _retryTarget = 0
+  private _retryPending = false
 
   set railgridContext(v: TileContext | null) {
     const hostTransport = typeof v?.fetch === 'function'
     const identity = `${v?.tenant ?? ''}|${v?.user?.userId ?? v?.user?.sub ?? v?.user?.email ?? ''}|${hostTransport}|${hostTransport ? '' : v?.token ?? ''}`
     if (identity !== this._identity) {
+      this._retryPending = false
       this._identity = identity
       this._generation += 1
       this._items = []
@@ -57,7 +61,7 @@ export class QuickstartDashboardTileElement extends HTMLElement {
     // Coalesced by the poller: a refresh arriving mid-load is queued, not
     // dropped, which is the sequence every tile actually starts with.
     this._poller?.refresh()
-    this._render()
+    if (!this._retryPending) this._render()
   }
   get railgridContext(): TileContext | null {
     return this._ctx
@@ -74,9 +78,11 @@ export class QuickstartDashboardTileElement extends HTMLElement {
     this._connected = false
     this._generation += 1
     this._poller?.stop()
+    this._retryPending = false
   }
 
   private async _load(): Promise<void> {
+    const serial = ++this._readSerial
     const ctx = this._ctx
     const generation = this._generation
     const isCurrent = () => this._connected && generation === this._generation
@@ -89,7 +95,7 @@ export class QuickstartDashboardTileElement extends HTMLElement {
       return
     }
     this._loading = true
-    if (!this._loaded) this._render()
+    if (!this._loaded && !this._retryPending) this._render()
     try {
       const kube = createKubeClient({ fetch: providerFetch(ctx), cluster: ctx?.tenant as string })
       const items = await kube.listAll<Greeting>(greetings)
@@ -99,7 +105,7 @@ export class QuickstartDashboardTileElement extends HTMLElement {
       this._loaded = true
     } catch (err) {
       if (!isCurrent()) return
-      if (isBenignTileError(err)) {
+      if (!this._loaded && isBenignTileError(err)) {
         // A workspace that has not enabled this provider is empty, not broken.
         this._items = []
         this._error = ''
@@ -108,7 +114,16 @@ export class QuickstartDashboardTileElement extends HTMLElement {
     } finally {
       if (isCurrent()) {
         this._loading = false
+        if (this._retryPending && serial < this._retryTarget) return
+        const retry = this.querySelector<HTMLButtonElement>('[data-retry]')
+        const restoreFocus = this._retryPending && document.activeElement === retry
+        this._retryPending = false
         this._render()
+        if (restoreFocus && document.activeElement === document.body) {
+          const next = this.querySelector<HTMLButtonElement>('[data-retry]')
+          if (next) next.focus()
+          else { this.tabIndex = -1; this.focus() }
+        }
       }
     }
   }
@@ -130,7 +145,7 @@ export class QuickstartDashboardTileElement extends HTMLElement {
           <span class="${k.stat} ${k.statTotal}"><span class="${k.statNum}">${this._items.length}</span> <span class="${k.statLabel}">greetings</span></span>
           <span class="${k.stat} ${k.statOk}"><span class="${k.statNum}">${ready}</span> <span class="${k.statLabel}">ready</span></span>
         </div>
-        ${this._error ? `<p class="${k.error}" role="alert">Showing the last successful result. ${escapeHTML(this._error)} <button class="k-dashboard-action" type="button" data-retry>Retry</button></p>` : ''}
+        ${this._error ? `<p class="${k.error}" role="status">Could not refresh. Showing the last successful result. ${escapeHTML(this._error)} <button class="k-dashboard-action" type="button" data-retry>Retry</button></p>` : ''}
         ${
           recent.length === 0
             ? `<p class="${k.empty}">No greetings yet</p>`
@@ -145,7 +160,16 @@ export class QuickstartDashboardTileElement extends HTMLElement {
   }
 
   private _bindRetry(): void {
-    this.querySelector<HTMLButtonElement>('[data-retry]')?.addEventListener('click', () => this._poller?.refresh())
+    this.querySelector<HTMLButtonElement>('[data-retry]')?.addEventListener('click', (event) => {
+      if (this._retryPending || !this._poller) return
+      this._retryPending = true
+      this._retryTarget = this._readSerial + 1
+      const button = event.currentTarget as HTMLButtonElement
+      button.setAttribute('aria-disabled', 'true')
+      button.setAttribute('aria-busy', 'true')
+      button.textContent = 'Retrying…'
+      this._poller.refresh()
+    })
   }
 
   private _row(g: Greeting): string {
