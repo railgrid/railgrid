@@ -365,10 +365,13 @@ async function deleteInstance(instance: Instance) {
   const expectedInstance = instance
   deleteError.value = null
   const confirmed = await confirmDialog({
-    title: `Delete instance "${instance.name}"?`,
-    message: `This permanently deletes "${instance.name}" (${instance.template}) and the resources it provisioned.`,
+    title: 'Delete instance',
+    message: `"${instance.name}" (${instance.template}) and the resources it provisioned will be permanently deleted.`,
+    irreversibleMessage: `Deleting "${instance.name}" cannot be undone.`,
     confirmLabel: 'Delete instance',
     danger: true,
+    verificationText: instance.name,
+    verificationLabel: 'the instance name',
   })
   if (!confirmed || !active || deletingInstanceKey.value !== null) return
   const currentInstance = items.value.find(item => item.name === expectedInstance.name)

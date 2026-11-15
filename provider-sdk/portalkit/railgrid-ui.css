@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 60;
+  --railgrid-ui-core-version: 62;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1506,6 +1506,19 @@ html.light [data-k-tip]::after {
   backdrop-filter: blur(2px);
   animation: k-modal-fade 0.14s ease;
 }
+/* Confirmation overlays use the native top layer so independently mounted
+ * dialogs share the browser's focus stack. Keep the existing full-screen veil. */
+dialog.k-modal-overlay {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+}
+dialog.k-modal-overlay:not([open]) { display: none; }
+dialog.k-modal-overlay::backdrop { background: transparent; }
 .k-modal {
   width: min(440px, 100%);
   padding: 22px 22px 18px;
@@ -1578,12 +1591,12 @@ html.light [data-k-tip]::after {
   font-size: 13.5px;
 }
 .k-modal-btn--cancel {
-  background: var(--color-surface-overlay, #171927);
-  color: var(--color-text-secondary, #8a8ca6);
+  background: transparent;
+  color: var(--color-text-primary, #e9e9f2);
   border-color: var(--color-border-default, rgba(255, 255, 255, 0.11));
 }
 .k-modal-btn--cancel:hover {
-  background: var(--color-surface-hover, #1e2033);
+  background: color-mix(in srgb, var(--color-text-primary, #e9e9f2) 6%, transparent);
   color: var(--color-text-primary, #e9e9f2);
 }
 .k-modal-btn--confirm {
@@ -1635,10 +1648,44 @@ html.light [data-k-tip]::after {
 .k-modal--confirm .k-modal__message:last-child {
   margin-bottom: 0;
 }
+.k-modal--confirm.k-modal--danger .k-modal__head {
+  padding: 24px 24px 6px;
+}
+.k-modal--confirm.k-modal--danger .k-modal__title { font-size: 20px; }
+.k-modal--confirm.k-modal--danger .k-modal__body { padding: 4px 24px; }
+.k-modal--confirm.k-modal--danger .k-modal__icon { display: none; }
+.k-modal__irreversible {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 16px 24px 0;
+  padding: 12px;
+  border-radius: 4px;
+  background: var(--color-danger-subtle, rgba(255, 93, 93, .12));
+  color: var(--color-danger, #ff5d5d);
+  overflow-wrap: anywhere;
+}
+.k-modal__irreversible svg { flex: none; margin-top: 2px; }
+.k-modal__verification {
+  display: grid;
+  gap: 8px;
+  padding: 20px 24px 0;
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.k-modal__verification .k-input { width: 100%; min-width: 0; }
+.k-modal-btn:disabled { cursor: not-allowed; opacity: .5; }
 .k-modal--confirm .k-modal__foot {
   flex: 0 0 auto;
   flex-wrap: wrap;
   min-width: 0;
+}
+.k-modal--confirm.k-modal--danger .k-modal__foot {
+  justify-content: space-between;
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07));
+  margin-top: 20px;
+  padding: 16px 24px;
 }
 .k-modal--confirm .k-modal-btn {
   max-width: 100%;

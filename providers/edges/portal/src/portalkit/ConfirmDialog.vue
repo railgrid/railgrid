@@ -8,7 +8,7 @@
      self-injected + token-based, so the component drops into any Vue provider
      portal (Tailwind or plain-CSS) without an extracted CSS asset. -->
 <script setup lang="ts">
-import { computed, nextTick, ref, useId, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { Info, TriangleAlert } from 'lucide-vue-next'
 import { confirmState, resolveConfirm } from './confirm'
 import { ensureRailgridUIStyles } from '../portalkit/styles'
@@ -19,11 +19,16 @@ ensureRailgridUIStyles()
 
 const cancelBtn = ref<HTMLButtonElement | null>(null)
 const confirmBtn = ref<HTMLButtonElement | null>(null)
+const verificationInput = ref<HTMLInputElement | null>(null)
+const verification = ref('')
+const composingVerification = ref(false)
 const modalRef = ref<HTMLElement | null>(null)
+const dialogRef = ref<HTMLDialogElement | null>(null)
 const instanceID = useId()
 const titleID = `k-confirm-title-${instanceID}`
 const messageID = `k-confirm-message-${instanceID}`
-let previousFocus: HTMLElement | null = null
+const verificationID = `k-confirm-verification-${instanceID}`
+const irreversibleID = `k-confirm-irreversible-${instanceID}`
 
 // Render the message as discrete paragraphs so a multi-line message reads
 // cleanly instead of as one run-on line.
@@ -32,10 +37,19 @@ const paragraphs = computed(() =>
 )
 
 function onConfirm() {
+  if (confirmState.verificationText && verification.value !== confirmState.verificationText) return
   resolveConfirm(true)
 }
 function onCancel() {
   resolveConfirm(false)
+}
+function onNativeCancel() {
+  if (!composingVerification.value) onCancel()
+}
+function onVerificationEnter(e: KeyboardEvent) {
+  if (composingVerification.value || e.isComposing || e.keyCode === 229) return
+  e.preventDefault()
+  onConfirm()
 }
 function onKeydown(e: KeyboardEvent) {
   if (!confirmState.open) return
@@ -59,51 +73,65 @@ function onKeydown(e: KeyboardEvent) {
       first.focus()
     }
   } else if (e.key === 'Escape') {
+    if (composingVerification.value || e.isComposing || e.keyCode === 229) return
     e.preventDefault()
     e.stopPropagation()
     onCancel()
   }
 }
 
-watch(
-  () => confirmState.open,
-  (open) => {
-    if (open) {
-      previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-      nextTick(() => {
-        const initial = confirmState.danger ? cancelBtn.value : confirmBtn.value
-        initial?.focus()
-      })
-    } else {
-      const target = previousFocus
-      previousFocus = null
-      nextTick(() => target?.isConnected && target.focus())
-    }
-  },
-)
+watch(() => confirmState.open, (open) => {
+  if (!open) composingVerification.value = false
+}, { flush: 'sync' })
+
+// Native modal dialogs participate in the browser's shared top-layer stack,
+// including dialogs opened by another independently bundled provider.
+watch(() => confirmState.open, (open) => {
+  if (!open) dialogRef.value?.close()
+}, { flush: 'sync' })
+onBeforeUnmount(() => {
+  dialogRef.value?.close()
+  if (confirmState.open) resolveConfirm(false)
+})
+
+// Replacing a request does not close the shared dialog, so reset the gate and
+// focus for each request rather than only when `open` changes.
+watch(() => confirmState.revision, (revision) => {
+  verification.value = ''
+  composingVerification.value = false
+  nextTick(() => {
+    if (!confirmState.open || confirmState.revision !== revision) return
+    if (!dialogRef.value?.open) dialogRef.value?.showModal()
+    const initial = confirmState.verificationText ? verificationInput.value : confirmState.danger ? cancelBtn.value : confirmBtn.value
+    initial?.focus()
+  })
+}, { flush: 'sync' })
 </script>
 
 <template>
-  <div v-if="confirmState.open" class="k-modal-overlay" @click.self="onCancel">
+  <dialog v-if="confirmState.open" ref="dialogRef" class="k-modal-overlay" role="alertdialog" aria-modal="true"
+    :aria-labelledby="titleID"
+    :aria-describedby="[paragraphs.length ? messageID : '', confirmState.irreversibleMessage ? irreversibleID : ''].filter(Boolean).join(' ') || undefined"
+    @click.self="onCancel" @cancel.prevent="onNativeCancel">
     <div
       ref="modalRef"
       class="k-modal k-modal--confirm"
       :class="{ 'k-modal--danger': confirmState.danger }"
-      role="alertdialog"
-      aria-modal="true"
-      :aria-labelledby="titleID"
-      :aria-describedby="paragraphs.length ? messageID : undefined"
       @keydown="onKeydown"
     >
       <div class="k-modal__head">
-        <span class="k-modal__icon" aria-hidden="true">
-          <TriangleAlert v-if="confirmState.danger" :stroke-width="1.9" />
-          <Info v-else :stroke-width="1.9" />
+        <span v-if="!confirmState.danger" class="k-modal__icon" aria-hidden="true">
+          <Info :stroke-width="1.9" />
         </span>
         <h2 :id="titleID" class="k-modal__title">{{ confirmState.title }}</h2>
       </div>
       <div v-if="paragraphs.length" :id="messageID" class="k-modal__body">
         <p v-for="(line, i) in paragraphs" :key="i" class="k-modal__message">{{ line }}</p>
+      </div>
+      <div v-if="confirmState.irreversibleMessage" :id="irreversibleID" class="k-modal__irreversible"><TriangleAlert :size="18" :stroke-width="1.9" aria-hidden="true" /><span>{{ confirmState.irreversibleMessage }}</span></div>
+      <div v-if="confirmState.verificationText" class="k-modal__verification">
+        <label :for="verificationID">To confirm, type {{ confirmState.verificationLabel || 'the name' }} <strong translate="no" dir="ltr">“{{ confirmState.verificationText }}”</strong></label>
+        <input :id="verificationID" ref="verificationInput" v-model="verification" class="k-input" autocomplete="off" spellcheck="false" translate="no" dir="ltr" @compositionstart="composingVerification = true" @compositionend="composingVerification = false" @keydown.enter="onVerificationEnter" />
       </div>
       <div class="k-modal__foot">
         <button ref="cancelBtn" type="button" class="k-modal-btn k-modal-btn--cancel" @click="onCancel">{{ confirmState.cancelLabel }}</button>
@@ -112,9 +140,10 @@ watch(
           type="button"
           class="k-modal-btn k-modal-btn--confirm"
           :class="{ 'k-modal-btn--danger': confirmState.danger }"
+          :disabled="!!confirmState.verificationText && verification !== confirmState.verificationText"
           @click="onConfirm"
         >{{ confirmState.confirmLabel }}</button>
       </div>
     </div>
-  </div>
+  </dialog>
 </template>
