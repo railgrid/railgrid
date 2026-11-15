@@ -191,11 +191,11 @@ function toggle(trigger: HTMLElement | null = null): void {
 }
 
 function handleKeydown(event: KeyboardEvent): void {
-  if (event.key !== 'Escape' || event.defaultPrevented || !props.open) return
+  if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229 || !props.open) return
   // Let a nested dialog/menu consume its own Escape contract first. The
   // workspace listener is intentionally local and never binds document-wide.
   const target = event.target instanceof Element ? event.target : null
-  if (target?.closest('[role="dialog"], [data-k-modal], [data-k-menu]')) return
+  if (target?.closest('[role="dialog"], [role="alertdialog"], [data-k-modal], [data-k-menu]')) return
   event.preventDefault()
   event.stopPropagation()
   closeWorkbench()
@@ -257,6 +257,7 @@ watch(() => props.open, (open, previous) => {
     captureExternalFocus()
     focusWorkspace()
   } else if (previous) {
+    stopResize()
     restoreFocus()
   }
 })

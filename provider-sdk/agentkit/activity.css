@@ -285,6 +285,7 @@
 .k-ai-transcript-activity__list.is-bounded { max-height: 272px; overflow-y: auto; padding-bottom: 28px; mask-image: linear-gradient(to bottom, black 0, black calc(100% - 28px), transparent 100%); }
 .k-ai-transcript-activity__more { min-height: 32px; border: 0; background: transparent; color: var(--color-text-secondary); font: inherit; cursor: pointer; }
 .k-ai-transcript-activity :is(button, pre):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-@media (hover: hover) { .k-ai-execution-details__controls { opacity: 0; } .k-ai-execution-details:is(:hover, :focus-within) .k-ai-execution-details__controls { opacity: 1; } }
-@media (pointer: coarse) { .k-ai-transcript-activity :is(button, summary), .k-ai-execution-details--activity button { min-height: 44px; } }
+@media (hover: hover) { .k-ai-execution-details__controls { opacity: 0; } .k-ai-execution-details:is(:hover, :focus-within) .k-ai-execution-details__controls, .k-ai-execution-details__controls.is-error { opacity: 1; } }
+@media (any-pointer: coarse) { .k-ai-execution-details__controls { opacity: 1; } }
+@media (pointer: coarse), (any-pointer: coarse) { .k-ai-transcript-activity :is(button, summary), .k-ai-execution-details--activity button { min-width: 44px; min-height: 44px; } }
 @media (prefers-reduced-motion: reduce) { .k-ai-transcript-activity__icon.is-busy { animation: none; } .k-ai-transcript-activity__chevron { transition: none; } }
