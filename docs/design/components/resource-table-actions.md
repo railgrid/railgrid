@@ -47,7 +47,7 @@ is a text-level `.k-table-resource-link` (accent, regular weight, transparent
 at rest and hover). Cross-resource references are ordinary cell text. External
 URLs use a concise linked action plus `ExternalLink`. Resource IDs and fully
 qualified names remain ordinary text. Finite non-status enum values are muted
-square `.k-badge` tags; secondary counts are muted text. Operational and
+square `.k-badge.k-badge--label` tags; secondary counts are muted text. Operational and
 lifecycle state uses `StatusBadge`; verbose provider feedback belongs in the
 title and accessible name rather than a second visible status line. Mono is
 reserved for genuinely technical content such as schema column names and

@@ -673,8 +673,10 @@ test('settings table reads delegate initial, stale, and retry states without dup
     ['canCreateSA', 'canEditWs', 'sasReadDenied'],
   ]) {
     assert.ok(tenantSettingsPage.includes(`const ${guard} = computed(() => ${permission}.value && !${denied}.value)`))
-    assert.ok(tenantSettingsPage.includes(`<button v-if="${guard}"`))
+    assert.ok(tenantSettingsPage.includes(`<button v-if="${guard}${guard === 'canCreateSA' ? ' && !showServiceAccountFirstRun' : ''}"`))
   }
+  assert.match(tenantSettingsPage, /const showServiceAccountFirstRun = computed\(\(\) => canCreateSA\.value && sasHasSnapshot\.value && !sasLoading\.value && !sasError\.value && sas\.value\.length === 0 && !saTableQuery\.value\.trim\(\)\)/)
+  assert.match(tenantSettingsPage, /<FirstRunGuide\s+v-if="showServiceAccountFirstRun"[\s\S]*?:steps="\[\]"[\s\S]*?@click="openServiceAccountDialog"/)
   for (const [rows, loading, loaded, error, key] of [
     ['wsMembers', 'wsMembersLoading', 'wsMembersHasSnapshot', 'wsMembersError', ':key="`${tenant.orgUUID}/${selectedWorkspaceUUID}`"'],
     ['orgMembers', 'orgMembersLoading', 'orgMembersHasSnapshot', 'orgMembersError', ':key="organizationTargetUUID ?? \'\'"'],

@@ -45,6 +45,7 @@ import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
 import ResourceTableActionButton from '@/portalkit/ResourceTableActionButton.vue'
 import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '@/portalkit/StatusBadge.vue'
+import FirstRunGuide from '@/portalkit/FirstRunGuide.vue'
 import InlineNotification from '@/portalkit/InlineNotification.vue'
 import type { TableFilterDefinition } from '@/portalkit/table'
 import { toast } from '@/portalkit/toast'
@@ -1455,6 +1456,7 @@ function isCurrentServiceAccountContext(context: WorkspaceAccessContext): boolea
 const serviceAccountRows = computed<Record<string, unknown>[]>(() =>
   sas.value.map((serviceAccount) => ({ ...serviceAccount })),
 )
+const showServiceAccountFirstRun = computed(() => canCreateSA.value && sasHasSnapshot.value && !sasLoading.value && !sasError.value && sas.value.length === 0 && !saTableQuery.value.trim())
 const issuedToken = ref<TokenResponse | null>(null)
 const issuedTokenSA = ref<string | null>(null)
 const tokenVisible = ref(false)
@@ -2389,6 +2391,10 @@ function openServiceAccountDialog() {
   createSADialogOpen.value = true
 }
 
+function serviceAccountFocusFallback(): HTMLElement | null {
+  return document.getElementById('workspace-service-accounts-title')
+}
+
 watch(() => route.fullPath, dismissCreationDialogs)
 watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organization, serviceAccount]) => {
   if (memberDialog.value === 'workspace' && !workspace) memberDialog.value = null
@@ -2775,13 +2781,13 @@ watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organizatio
             <section class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 sm:p-5" aria-labelledby="workspace-service-accounts-title">
                 <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div class="min-w-0 flex-1">
-                    <h2 id="workspace-service-accounts-title" class="text-lg font-semibold text-text-primary">Service accounts</h2>
+                    <h2 id="workspace-service-accounts-title" tabindex="-1" class="text-lg font-semibold text-text-primary">Service accounts</h2>
                     <p class="mt-1 text-[12px] text-text-muted">
                       Machine identities for CI and automation in {{ selWs.displayName || selWs.uuid }}.
                       Issued bearer tokens are shown only once. Check the expiry when each token is issued.
                     </p>
                   </div>
-                  <button v-if="canCreateSA" type="button" class="k-btn k-btn--primary self-start shrink-0" :disabled="anySettingsAccessMutationBusy" @click="openServiceAccountDialog">
+                  <button v-if="canCreateSA && !showServiceAccountFirstRun" type="button" class="k-btn k-btn--primary self-start shrink-0" :disabled="anySettingsAccessMutationBusy" @click="openServiceAccountDialog">
                     <Plus class="h-4 w-4" aria-hidden="true" /> Create service account
                   </button>
                 </div>
@@ -2791,8 +2797,18 @@ watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organizatio
                   <span v-else>Only workspace admins can view and manage service accounts.</span>
                 </div>
 
+                <FirstRunGuide
+                  v-if="showServiceAccountFirstRun"
+                  title="Create a service account"
+                  description="Give CI and automation a workspace identity, then issue a token when needed."
+                  primary-label="Create service account"
+                  :steps="[]"
+                >
+                  <template #icon><KeyRound :stroke-width="1.75" aria-hidden="true" /></template>
+                  <template #actions><button type="button" class="k-btn k-btn--primary" :disabled="anySettingsAccessMutationBusy" @click="openServiceAccountDialog">Create service account</button></template>
+                </FirstRunGuide>
                 <ResourceTable
-                  v-if="canEditWs"
+                  v-else-if="canEditWs"
                   :columns="serviceAccountColumns"
                   :rows="serviceAccountRows"
                   aria-label="Workspace service accounts"
@@ -2932,9 +2948,8 @@ watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organizatio
               </div>
               <div>
                 <div class="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Role</div>
-                <span class="k-badge k-badge--muted">
-                  <span class="k-badge__dot k-badge__dot--muted" aria-hidden="true" />
-                  {{ organizationSettingsOrg.role || 'member' }}
+                <span class="k-badge k-badge--muted k-badge--label">
+                  {{ (organizationSettingsOrg.role || 'member').replace(/^./, c => c.toUpperCase()) }}
                 </span>
               </div>
               <div>
@@ -3309,6 +3324,7 @@ watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organizatio
       :workspace-name="selWs.displayName || selWs.uuid"
       :organization-name="organizationSettingsOrg?.displayName || ''"
       :create="onCreateSA"
+      :success-focus-fallback="serviceAccountFocusFallback"
       :error-message="tenant.error"
       @close="dismissCreationDialogs"
     />

@@ -189,6 +189,10 @@ function followInstancesLink(event: MouseEvent): void {
         :columns="tableColumns"
         :rows="tableRows"
         aria-label="Infrastructure templates"
+        searchable
+        search-placeholder="Search templates…"
+        :search-keys="['identity', 'name', 'description', 'category', 'kind']"
+        paginated
         row-key="name"
         :loaded="loaded"
         :loading="loading"
@@ -203,9 +207,7 @@ function followInstancesLink(event: MouseEvent): void {
       >
         <template #identity="{ value, row }">
           <a class="k-btn k-btn--ghost k-table-resource-link text-left" :href="templateHref(String(row.name))" @click.stop="followTemplateLink($event, row)">
-            <span class="template-card-title">{{ value }}</span>
-            <span class="cell-mono">{{ row.name }}</span>
-            <span class="template-card-desc">{{ row.description }}</span>
+            {{ value }}
           </a>
         </template>
         <template #kind="{ value }"><span class="cell-mono">{{ value }}</span></template>

@@ -30,6 +30,7 @@ describe('Infrastructure template catalog layouts', () => {
     expect(source).toContain('class="catalog-loading-grid k-delayed-loading"')
     expect(source).toContain('<TemplateCard')
     expect(source).toMatch(/<ResourceTable[\s\S]*:loaded="loaded"[\s\S]*:loading="loading"/)
+    expect(source).toMatch(/<ResourceTable[\s\S]*searchable[\s\S]*paginated/)
     expect(source).not.toContain('variant="simple"')
     expect(source).toContain(':row-aria-label="(row) => `Provision template ${String(row.identity)}`"')
     expect(source).toContain('@row-click="selectTemplateRow"')
@@ -42,7 +43,7 @@ describe('Infrastructure template catalog layouts', () => {
     expect(source).toContain("{ key: 'version', label: 'Version' }")
     expect(source).toContain("{ key: 'exposure', label: 'Exposure' }")
     expect(source).not.toContain("{ key: 'cloud', label: 'Cloud' }")
-    expect(source).toContain('<span class="template-card-desc">{{ row.description }}</span>')
+    expect(source).toContain(":search-keys=\"['identity', 'name', 'description', 'category', 'kind']\"")
   })
 
   it('retains true-empty refresh and filter-empty clearing in both layouts', () => {

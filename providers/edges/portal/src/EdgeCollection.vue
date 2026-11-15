@@ -41,7 +41,7 @@ const edgeColumns = [
 const edgeRows = computed(() => props.edges.map(edge => ({
   ...edge,
   rowKey: `${edge.type}/${edge.name}`,
-  typeLabel: edgeTypeLabel(edge.type),
+  typeLabel: edge.type === 'macos' ? 'macOS' : edgeTypeLabel(edge.type),
   status: edge.connected ? 'Connected' : (edge.phase || 'Disconnected'),
   agentVersion: edge.agentVersion || '—',
   lastHeartbeat: edge.lastHeartbeatTime || null,
@@ -168,7 +168,7 @@ onActivated(() => emit('activated'))
       @row-click="emit('open', $event)"
     >
       <template #name="{ value, row }"><a class="k-btn k-btn--ghost k-table-resource-link" :href="edgeHref(row)" @click.stop="openEdgeLink($event, row)">{{ value }}</a></template>
-      <template #typeLabel="{ value, row }"><span class="k-badge k-badge--muted"><component :is="row.type === 'server' ? Server : row.type === 'macos' ? Laptop : Boxes" :size="12" aria-hidden="true" />{{ value }}</span></template>
+      <template #typeLabel="{ value, row }"><span class="k-badge k-badge--muted k-badge--label"><component :is="row.type === 'server' ? Server : row.type === 'macos' ? Laptop : Boxes" :size="12" aria-hidden="true" />{{ value }}</span></template>
       <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
       <template #agentVersion="{ value }"><span class="mono muted">{{ value }}</span></template>
       <template #lastHeartbeat="{ value }"><ResourceTimestamp :value="value ? String(value) : null" label="Last heartbeat" /></template>
