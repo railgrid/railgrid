@@ -16,6 +16,7 @@ import type { ResourceReadState, ResourceRefreshMode } from '../portalkit/page-s
 import { useDelayedLoading } from './useDelayedLoading'
 
 ensureRailgridUIStyles()
+const pageElement = ref<HTMLElement | null>(null)
 
 const props = withDefaults(defineProps<{
   variant?: 'default' | 'collection'
@@ -93,17 +94,35 @@ function requestRetry() {
 // Retry is a caller-owned read transaction: once requested, keep the control
 // latched through delayed acknowledgement and release it only when the caller
 // reports a settled loading edge or clears the error.
+function finishRetry() {
+  // The Retry button is about to leave the DOM. Move focus only if it is
+  // still on this shell's button; do not pull a user back from another task.
+  // A later background read can recover after an earlier retry failed.
+  const focused = typeof document === 'undefined' ? null : document.activeElement
+  const page = pageElement.value
+  if (page && focused && focused.closest('.k-resource-page') === page
+    && focused.classList.contains('k-resource-page__retry')) {
+    const target = page.querySelector<HTMLElement>('.k-resource-page__title') ?? page
+    target.focus({ preventScroll: true })
+  }
+  retryRequested.value = false
+}
 watch(() => props.loading, (loading, wasLoading) => {
-  if (wasLoading && !loading) retryRequested.value = false
+  if (wasLoading && !loading) {
+    if (!props.error) finishRetry()
+    else retryRequested.value = false
+  }
 })
 watch(() => props.error, error => {
-  if (!error) retryRequested.value = false
+  if (!error) finishRetry()
 })
 </script>
 
 <template>
   <section
+    ref="pageElement"
     class="k-resource-page"
+    tabindex="-1"
     :class="{ 'k-resource-page--fill': fill, 'k-resource-page--collection': variant === 'collection' }"
     :aria-busy="ariaBusy"
   >
@@ -124,7 +143,7 @@ watch(() => props.error, error => {
     <header v-if="showHeader" class="k-resource-page__header" :class="{ 'k-resource-page__header--compact-actions': compactActions }">
       <slot name="header">
         <div class="k-resource-page__heading">
-          <h1 class="k-resource-page__title">{{ title }}</h1>
+          <h1 class="k-resource-page__title" tabindex="-1">{{ title }}</h1>
           <div v-if="kind || $slots.meta || $slots.status" class="k-resource-page__meta">
             <span v-if="kind" class="k-resource-page__kind">{{ kind }}</span>
             <span v-if="kind && ($slots.meta || $slots.status)" class="k-resource-page__separator" aria-hidden="true">·</span>
@@ -147,7 +166,7 @@ watch(() => props.error, error => {
         v-if="retryable"
         type="button"
         class="k-btn k-btn--ghost k-resource-page__retry"
-        :disabled="retrying"
+        :aria-disabled="retrying || undefined"
         :aria-busy="retrying || undefined"
         @click="requestRetry"
       >
@@ -187,7 +206,7 @@ watch(() => props.error, error => {
           v-if="retryable"
           type="button"
           class="k-btn k-btn--ghost k-resource-page__retry"
-          :disabled="retrying"
+          :aria-disabled="retrying || undefined"
           :aria-busy="retrying || undefined"
           @click="requestRetry"
         >
