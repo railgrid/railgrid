@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 60;
+  --railgrid-ui-core-version: 61;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1904,10 +1904,20 @@ html.light [data-k-tip]::after {
   opacity: 1;
   transition: opacity 120ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.k-delayed-loading[aria-hidden="true"] {
+.k-delayed-loading[aria-hidden="true"]:not([data-loading-visual]),
+.k-delayed-loading[data-pending-hidden="true"] {
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
+}
+.k-loading-shimmer {
+  background: linear-gradient(90deg, var(--color-surface-overlay, #171927) 25%, var(--color-surface-hover, #1e2033) 50%, var(--color-surface-overlay, #171927) 75%);
+  background-size: 200% 100%;
+  animation: k-placeholder-shimmer 1.8s ease-in-out infinite;
+}
+@keyframes k-placeholder-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
 }
 .k-loading-reveal {
   animation: k-loading-reveal 120ms cubic-bezier(0.16, 1, 0.3, 1) 180ms both;
@@ -2769,6 +2779,7 @@ railgrid-resource-table-filter { display: contents; }
 
 @media (prefers-reduced-motion: reduce) {
   .k-delayed-loading { transition-duration: 1ms; }
+  .k-loading-shimmer { animation: none; }
   .k-table-action__icon--expand { transition-duration: 1ms; }
   .k-loading-reveal { animation-duration: 1ms; }
 }
@@ -2970,7 +2981,7 @@ railgrid-resource-table-filter { display: contents; }
   font-weight: 600;
   font-size: 18px;
   letter-spacing: -.02em;
-  line-height: 1.12;
+  line-height: 1.25;
   word-break: break-word;
 }
 .k-resource-page__subtitle {
@@ -2987,12 +2998,13 @@ railgrid-resource-table-filter { display: contents; }
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-top: 7px;
+  gap: 6px;
+  margin-top: 6px;
   min-width: 0;
   max-width: 100%;
   color: var(--color-text-secondary, #8a8ca6);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.5;
   overflow-wrap: anywhere;
   text-align: start;
   word-break: break-word;
@@ -3223,20 +3235,28 @@ railgrid-resource-table-filter { display: contents; }
 }
 .k-resource-page__retry { flex: none; padding: 5px 9px; font-size: 11px; }
 .k-resource-page__loading {
-  display: flex;
-  min-height: 142px;
-  flex-direction: column;
-  justify-content: center;
-  gap: 13px;
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  border-radius: 6px;
-  background: var(--color-surface-raised, #111320);
-  padding: 20px;
+  display: grid;
+  min-width: 0;
+  gap: 18px;
 }
+.k-resource-page__loading-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.k-resource-page__loading-stat, .k-resource-page__loading-section, .k-resource-page__loading-list { border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); border-radius: 6px; background: var(--color-surface-raised, #111320); }
+.k-resource-page__loading-stat { display: grid; align-content: center; gap: 5px; min-width: 0; min-height: 64px; padding: 10px; }
+.k-resource-page__loading-section { display: grid; align-content: start; gap: 13px; min-height: 160px; padding: 24px; }
+.k-resource-page__loading-list { overflow: hidden; }
+.k-resource-page__loading-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 48px; padding: 12px 16px; }
+.k-resource-page__loading-row + .k-resource-page__loading-row { border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
 .k-resource-page__skeleton { height: 13px; border-radius: 2px; }
+.k-resource-page__skeleton--small { height: 8px; }
 .k-resource-page__skeleton--short { width: 22%; }
 .k-resource-page__skeleton--wide { width: 76%; }
 .k-resource-page__skeleton--medium { width: 54%; }
+@container resource-page (max-width: 620px) { .k-resource-page__loading-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container resource-page (max-width: 420px) { .k-resource-page__loading-summary { grid-template-columns: minmax(0, 1fr); } }
+@supports not (container-type: inline-size) {
+  @media (max-width: 620px) { .k-resource-page__loading-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 420px) { .k-resource-page__loading-summary { grid-template-columns: minmax(0, 1fr); } }
+}
 .k-resource-page__title:focus {
   outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: 4px;

@@ -1117,15 +1117,17 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
     :aria-busy="ariaBusy"
   >
     <!-- Keep the live region outside layout so background reads cannot move the table. -->
-    <span
-      class="k-table__live"
-      role="status"
-      aria-live="polite"
-      aria-atomic="true"
-      style="block-size: 1px; clip: rect(0 0 0 0); clip-path: inset(50%); inline-size: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap;"
-    >
-      {{ refreshAnnouncement }}
-    </span>
+    <Teleport :to="tableElement?.closest('dialog, [aria-modal=true]') ?? 'body'">
+      <span
+        class="k-table__live"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        style="block-size: 1px; clip: rect(0 0 0 0); clip-path: inset(50%); inline-size: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap;"
+      >
+        {{ showInitialLoading && initialReadPending ? `Loading ${tableAriaLabel.toLocaleLowerCase()}` : refreshAnnouncement }}
+      </span>
+    </Teleport>
     <div v-if="showInitialError" class="k-table__error" role="alert" aria-live="assertive">
       <AlertCircle class="k-table__error-icon" :stroke-width="1.75" aria-hidden="true" />
       <span class="k-table__error-message">{{ error }}</span>
@@ -1135,21 +1137,20 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
     <div
       v-else-if="initialReadPending"
       class="k-table__loading k-delayed-loading"
-      :role="showInitialLoading ? 'status' : undefined"
-      :aria-live="showInitialLoading ? 'polite' : undefined"
-      :aria-label="showInitialLoading ? `Loading ${tableAriaLabel.toLocaleLowerCase()}` : undefined"
-      :aria-hidden="showInitialLoading ? undefined : 'true'"
+      aria-hidden="true"
+      data-loading-visual
+      :data-pending-hidden="showInitialLoading ? undefined : 'true'"
     >
       <div v-if="hasConfiguredControls" class="k-table__loading-controls" aria-hidden="true">
-        <div v-if="searchable" class="shimmer k-table__loading-control k-table__loading-control--search" />
-        <div v-for="filter in filters" :key="filter.key" class="shimmer k-table__loading-control k-table__loading-control--filter" />
-        <div v-if="hasFacetFilters" class="shimmer k-table__loading-control k-table__loading-control--clear" />
+        <div v-if="searchable" class="k-loading-shimmer k-table__loading-control k-table__loading-control--search" />
+        <div v-for="filter in filters" :key="filter.key" class="k-loading-shimmer k-table__loading-control k-table__loading-control--filter" />
+        <div v-if="hasFacetFilters" class="k-loading-shimmer k-table__loading-control k-table__loading-control--clear" />
       </div>
       <div class="k-table__loading-head" :style="{ '--k-table-loading-columns': skeletonColumns.length }">
         <div
           v-for="(column, index) in skeletonColumns"
           :key="column.key"
-          class="shimmer k-table__skeleton"
+          class="k-loading-shimmer k-table__skeleton"
           :class="index === 0 ? 'k-table__skeleton--short' : ''"
         />
       </div>
@@ -1162,7 +1163,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         <div
           v-for="(column, index) in skeletonColumns"
           :key="column.key"
-          class="shimmer k-table__skeleton"
+          class="k-loading-shimmer k-table__skeleton"
           :class="[
             index === 0 ? 'k-table__skeleton--wide' : '',
             index === 1 ? 'k-table__skeleton--mid' : '',
