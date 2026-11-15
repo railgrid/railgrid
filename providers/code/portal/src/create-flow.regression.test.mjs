@@ -79,7 +79,7 @@ it('authoritative empty collections use the shared first-run journey', () => {
     expect(source).toContain('CODE_JOURNEY_STEPS')
     expect(source).toContain('journey-label="Code setup path"')
   }
-  expect(connectionCollection).toMatch(/oauthLoaded\.value[\s\S]*!error\.value[\s\S]*connections\.value\.length === 0/)
+  expect(connectionCollection).toMatch(/oauthLoaded\.value[^\n]*connections\.value\.length === 0/)
   expect(connectionCollection).not.toMatch(/showFirstRun = computed\([^\n]*oauthError/)
   expect(repositoryCollection).toMatch(/repositoryCollectionIsAuthoritativelyEmpty/)
   expect(repositoryCollection).toMatch(/&& repositoryCollectionEmpty\.value/)
@@ -113,5 +113,5 @@ it('connection and repository creation use the shared guidance layout', () => {
 it('repository first run owns the actions and offers import only with a connection', () => {
   expect(repositoryCollection).toContain('<ActionMenu v-if="!showFirstRun"')
   expect(repositoryCollection).toContain(':secondary-label="availableConnections.length ? \'Import repository\' : undefined"')
-  expect(repositoryCollection).toContain('@secondary="emit(\'create\', \'import\')"')
+  expect(repositoryCollection).toContain("@click=\"followRepositoryCreateLink($event, 'import')\"")
 })
