@@ -1,0 +1,138 @@
+name: Main builds
+
+# Publishes every merge to main as a deployable build, which railgrid-dev
+# follows (railgrid/ops, cicd/README.md). Releases are unaffected: they are
+# still cut by tags (images.yaml, helm-images.yaml, provider-release.yaml).
+#
+# For each component whose build context changed (hack/ci/main_builds.py):
+#
+#   image  ghcr.io/railgrid/<image>:sha-<commit>     immutable
+#   chart  oci://ghcr.io/railgrid/charts/<chart>     version 0.0.0-main,
+#                                                    appVersion sha-<commit>
+#
+# The chart version is fixed and each build overwrites it. Flux follows that
+# one tag by digest, and because the chart's appVersion (the default
+# image.tag) names an immutable image, every build changes the pod spec and
+# rolls the workload. A mutable image tag such as :latest would not: nothing
+# in the Deployment changes, so nothing restarts.
+#
+# 0.0.0-main is a semver prerelease below every release, so the version ranges
+# production follows never match it.
+#
+# linux/amd64 only: these builds exist for railgrid-dev, whose nodes are all
+# amd64. Releases stay multi-arch. Provider companion images (dev-agent,
+# universal-dev, access-proxy) are not built here and keep their release tags.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      all:
+        description: Rebuild every component, changed or not
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+# One run at a time, in order: two runs racing would let the older one
+# overwrite 0.0.0-main last. A queued run superseded by a newer push is
+# dropped, which is safe because selection compares HEAD with what is
+# published, not with the previous push.
+concurrency:
+  group: main-builds
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  CHART_VERSION: 0.0.0-main
+
+jobs:
+  select:
+    # Manual runs from another branch would publish unmerged code as main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      has-builds: ${{ steps.select.outputs.has-builds }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.12.0'
+      - name: Select components changed since their published build
+        id: select
+        env:
+          FORCE_ALL: ${{ inputs.all }}
+        run: python3 hack/ci/main_builds.py
+
+  build:
+    needs: select
+    if: needs.select.outputs.has-builds == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Image tag
+        id: tag
+        run: echo "tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push the image
+        uses: docker/build-push-action@v6
+        with:
+          # Repo-root context for every component: the hub and agent copy the
+          # whole tree, and provider Dockerfiles copy the in-tree provider-sdk.
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ matrix.image }}:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha,scope=${{ matrix.cache }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            VERSION=${{ steps.tag.outputs.tag }}
+            GIT_COMMIT=${{ github.sha }}
+            GO_BUILD_GODEBUG=http2client=0
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.12.0'
+
+      # After the image, so the chart never names an image that is not there.
+      - name: Package and push the chart
+        env:
+          CHART_DIR: ${{ matrix.chart }}
+          CHART_NAME: ${{ matrix.chart-name }}
+          APP_VERSION: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | helm registry login "${REGISTRY}" --username "${{ github.actor }}" --password-stdin
+          helm lint "${CHART_DIR}"
+          helm package "${CHART_DIR}" --version "${CHART_VERSION}" --app-version "${APP_VERSION}"
+          helm push "${CHART_NAME}-${CHART_VERSION}.tgz" "oci://${REGISTRY}/${{ github.repository_owner }}/charts"
+          echo "Pushed ${CHART_NAME}:${CHART_VERSION} (appVersion ${APP_VERSION})"

@@ -1,15 +1,14 @@
 name: Helm OCI Image Build and Push
 
 # Publishes the platform charts (deploy/charts/*) to ghcr as OCI artifacts on
-# every push to main and on v* tags. This workflow no longer runs on pull
-# requests: PR validation of every chart (platform and provider) is the
-# `make verify-charts` step of the CI workflow's `contracts` job, which costs
-# seconds instead of three billed job-minutes per push. Manual runs package
-# and lint without logging in or pushing.
+# v* tags. Merges to main are published by main-builds.yaml, as chart version
+# 0.0.0-main next to the image that build produced; this workflow used to push
+# a 0.0.0-<sha> chart per merge whose image was never built. This workflow
+# does not run on pull requests: PR validation of every chart (platform and
+# provider) is the `make verify-charts` step of the CI workflow's `contracts`
+# job. Manual runs package and lint without logging in or pushing.
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
   workflow_dispatch:

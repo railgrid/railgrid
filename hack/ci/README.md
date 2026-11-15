@@ -47,9 +47,29 @@ actual workflow jobs, direct dependencies, and `if` conditions so newly added
 jobs cannot escape it. No repository rulesets are changed. If required checks
 are introduced later, use the stable `CI result`, `E2E result` and
 `Images result` names; on pull requests the gate is the Prow jobs themselves,
-none of which is optional. The Helm workflow runs only where it publishes (push to
-main and `v*` tags) and has no result job; chart validation on PRs is the
+none of which is optional. The Helm workflow runs only where it publishes (`v*` tags;
+merges to main are published by `main-builds.yaml`, below) and has no result job; chart validation on PRs is the
 `contracts` job.
+
+## Main builds
+
+Every merge to main is also published as a deployable build, which railgrid-dev
+follows (`main-builds.yaml`): for each component with a chart (hub, agent and
+every provider) the image goes out as `sha-<commit>` and the chart as the fixed
+version `0.0.0-main` whose appVersion is that tag. The chart tag is overwritten
+by each build; the image tag never is, which is what makes a new build change
+the pod spec and roll the workload. Production follows release version ranges,
+which a `0.0.0-main` prerelease never matches.
+
+`main_builds.py` selects what to build by comparing HEAD with the commit each
+component's published `0.0.0-main` chart was built from, not with the previous
+push, so a failed or superseded run is made up for by the next one and a new
+component is published the first time the workflow runs. A provider is rebuilt
+when its `matrices.json` inputs changed; the hub and agent when anything
+outside `providers/` and the documentation changed. Runs are serialized so an
+older build cannot overwrite a newer one. The builds are linux/amd64 only and
+do not include the provider companion images, which keep their release tags.
+A manual run with `all` rebuilds every component.
 
 ## Cost shape
 
