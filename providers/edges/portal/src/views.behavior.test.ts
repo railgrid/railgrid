@@ -309,12 +309,12 @@ describe('edge dashboard read state', () => {
       await flush()
       const state = mounted.instance.setupState
       expect(state.loaded).toBe(true)
-      api.listEdges.mockRejectedValueOnce(new Error('Hub is unavailable'))
+      api.listEdges.mockRejectedValueOnce({ status: 503, message: 'raw upstream response' })
       await state.refresh.request('background')
       await flush()
       expect(state.loaded).toBe(true)
       expect(state.edges).toEqual(snapshot)
-      expect(state.error).toContain('Hub is unavailable')
+      expect(state.error).toBe('The service is unavailable.')
       expect(state.loading).toBe(false)
     } finally { mounted.unmount() }
   })
@@ -1233,6 +1233,7 @@ describe('edge list views', () => {
   it('labels blank-host services as agent loopback and treats no-auth credentials as not required', async () => {
     const detail = {
       ...service,
+      edgeKind: 'LinuxServer',
       host: '',
       targetNamespace: '',
       targetName: '',
@@ -1765,9 +1766,10 @@ describe('edge detail actions', () => {
       await flush()
       expect(state.deletingServiceName).toBe('svc-a')
       expect(confirm.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({
-        title: 'Delete service "svc-a"?',
+        title: 'Delete service',
+        message: expect.stringContaining('"svc-a"'),
         danger: true,
-        confirmLabel: 'Delete',
+        confirmLabel: 'Delete service',
       }))
 
       pendingDelete.reject({ reason: 'HTTPError', message: 'service delete failed' })
