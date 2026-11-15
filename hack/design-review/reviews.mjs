@@ -29,6 +29,7 @@ export const reviews = {
   'components.button': review('button', 'Button states', 'Compare button priority, disabled and busy feedback.', [[css]]),
   'components.textarea': review('textarea', 'Textarea states', 'Edit and vertically resize the instructions field. Compare the disabled, read-only and invalid states.', [[css]]),
   'components.text-input': review('text-input', 'Text input states', 'Compare a labeled field, its error and the disabled state.', [[css]]),
+  'components.ai-interrupt': review('studio-clarification', 'Clarification and retry', 'Answer both questions, submit, and retry the simulated failure.', [['providers/app-studio/portal/src/ReviewRequest.vue']]),
   'components.radio': review('radio', 'Radio states', 'Try arrow keys, disabled examples and required validation.', [[css]]),
   'components.checkbox': review('checkbox', 'Checkbox states', 'Compare checked, mixed, disabled and keyboard focus states.', [[css]]),
   'components.toggle': review('toggle', 'Toggle states', 'Use Space or click to change the setting. Compare the disabled setting and its help.', [[css]]),
