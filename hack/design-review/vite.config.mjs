@@ -42,6 +42,6 @@ export default {
     outDir: resolve(repo, '.kcp/design-review-dist'),
     emptyOutDir: true,
     target: 'esnext',
-    rollupOptions: { input: { review: resolve(root, 'index.html'), onboarding: resolve(root, 'onboarding.html'), dex: resolve(root, 'dex.html'), handoff: resolve(root, 'handoff.html'), materials: resolve(root, 'material-sample.html') } },
+    rollupOptions: { input: { review: resolve(root, 'index.html'), onboarding: resolve(root, 'onboarding.html'), dex: resolve(root, 'dex.html'), handoff: resolve(root, 'handoff.html'), materials: resolve(root, 'material-sample.html'), kueryImpact: resolve(root, 'kuery-impact.html'), kueryTopology: resolve(root, 'kuery-topology.html') } },
   },
 }

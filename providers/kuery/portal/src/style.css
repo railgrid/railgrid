@@ -232,6 +232,12 @@ railgrid-provider-kuery .kuery-view-btn:hover {
 }
 
 /* Cytoscape needs an explicitly sized box; it draws to a canvas inside. */
+railgrid-provider-kuery .kuery-graph-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
 railgrid-provider-kuery .kuery-graph {
   width: 100%;
   height: clamp(440px, calc(100vh - 380px), 1440px);
@@ -268,6 +274,12 @@ railgrid-provider-kuery .kuery-impact-list ul {
   padding: 0;
 }
 
+railgrid-provider-kuery .kuery-impact-list,
+railgrid-provider-kuery .kuery-impact-list section {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 railgrid-provider-kuery .kuery-related {
   width: 100%;
   min-height: 36px;
@@ -277,6 +289,7 @@ railgrid-provider-kuery .kuery-related {
   background: transparent;
   color: var(--color-text-primary, inherit);
   text-align: left;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
@@ -486,6 +499,8 @@ railgrid-provider-kuery .pg-editor .CodeMirror-hint-active {
   color: var(--color-accent);
 }
 
+railgrid-provider-kuery .kuery-shell button[aria-disabled="true"],
+railgrid-provider-kuery .kuery-playground button[aria-disabled="true"] { cursor: progress; }
 railgrid-provider-kuery .pg-fallback {
   flex: 1 1 360px;
   width: 100%;
@@ -539,6 +554,7 @@ railgrid-provider-kuery .legend-item {
   color: var(--color-text-secondary, inherit);
   flex-wrap: wrap;
   min-width: 0;
+  max-width: 100%;
 }
 
 railgrid-provider-kuery .legend-item dt {
@@ -546,6 +562,13 @@ railgrid-provider-kuery .legend-item dt {
   align-items: center;
   gap: 5px;
   font-weight: 600;
+  min-width: 0;
+  max-width: 100%;
+}
+
+railgrid-provider-kuery .legend-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 railgrid-provider-kuery .legend-item dd {
@@ -555,6 +578,7 @@ railgrid-provider-kuery .legend-item dd {
 
 railgrid-provider-kuery .legend-swatch {
   width: 18px;
+  flex-shrink: 0;
   height: 0;
   border-top-width: 2px;
   flex: none;

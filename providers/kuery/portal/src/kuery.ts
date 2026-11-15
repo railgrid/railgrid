@@ -2,6 +2,7 @@ import { computed, type Ref } from 'vue'
 
 import { createKueryApi, KueryApiError, NO_ENGAGED_EDGES_CODE, type KueryApi, type QuerySpec, type QueryStatus } from './api'
 import type { RailgridContext } from './element'
+import { KubeError } from './portalkit/kube'
 import { createKueryRequestContext } from './request-context'
 import type { KueryRequestContext } from './request-context'
 
@@ -63,6 +64,11 @@ export function errorMessage(error: unknown, recovery: string): string {
   if (error instanceof DOMException && error.name === 'AbortError') return ''
   const detail = error instanceof Error ? error.message : String(error)
   return `${detail}. ${recovery}`
+}
+
+/** A bounded diagnostic that does not expose untrusted response bodies. */
+export function safeHTTPStatus(error: unknown): number | null {
+  return (error instanceof KueryApiError || error instanceof KubeError) && Number.isInteger(error.status) && error.status >= 100 && error.status <= 599 ? error.status : null
 }
 
 export function isNoEngagedEdgesError(error: unknown): boolean {
