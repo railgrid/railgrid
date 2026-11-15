@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { PublishPageResource } from '../portalkit/page-context'
+import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import { portalHref } from '../portalkit/navigation'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Boxes, CalendarClock, FileCode2, RefreshCw } from 'lucide-vue-next'
@@ -349,7 +350,9 @@ onUnmounted(() => {
             <p>Review the controller conditions for more information about this instance.</p>
             <button class="k-btn k-btn--ghost" type="button" @click="reviewConditions">Review conditions</button>
           </div>
-          <ResourceStatCards :cards="statCards" density="compact" aria-label="Instance summary" />
+          <ResourceStatCards :cards="statCards" density="compact" aria-label="Instance summary">
+            <template #value-created><ResourceTimestamp :value="inst?.createdAt" label="Instance created" /></template>
+          </ResourceStatCards>
         </div>
       </template>
       <template #body>
