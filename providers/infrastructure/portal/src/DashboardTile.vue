@@ -15,7 +15,7 @@
 // the workspace isn't bootstrapped yet (X-Railgrid-Tenant resolver returns
 // nothing), we just render an empty state instead of bubbling errors.
 
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { AlertTriangle, ArrowRight, Check, ChevronRight, Clock, Package } from 'lucide-vue-next'
 import { api, isContextChangedError, setHostFetch, setTenant } from './api'
 import {
@@ -28,7 +28,7 @@ import {
   type TileContext,
   type TilePoller,
 } from './portalkit/dashboardtile'
-import { createResourceTombstones } from './refresh'
+import { createLatestRefreshController, createResourceTombstones } from './refresh'
 import type { Instance } from './types'
 
 const props = defineProps<{ context: TileContext | null }>()
@@ -38,6 +38,10 @@ const instances = ref<Instance[]>([])
 const loading = ref(false)
 const loaded = ref(false)
 const error = ref<string | null>(null)
+const retryPending = ref(false)
+const retryError = ref<string | null>(null)
+const displayError = computed(() => retryPending.value ? retryError.value : error.value)
+let retryGeneration = 0
 let poller: TilePoller | null = null
 let contextGeneration = 0
 const tombstones = createResourceTombstones()
@@ -104,15 +108,17 @@ async function load() {
   } catch (e) {
     if (generation !== contextGeneration || isContextChangedError(e)) return
     if (isBenignTileError(e)) {
-      // Tenant has no binding yet (or never selected a workspace) —
-      // empty tile is the right state, not an error banner.
-      instances.value = []
-      error.value = null
-      loaded.value = true
+      // A missing binding is an empty state only before the first snapshot.
+      // Afterwards the last result is stale, not proof that resources vanished.
+      if (loaded.value) {
+        error.value = tileErrorText(e)
+      } else {
+        error.value = null
+        instances.value = []
+        loaded.value = true
+      }
     } else {
       error.value = tileErrorText(e)
-      // eslint-disable-next-line no-console
-      console.warn('infrastructure tile listInstances failed', e)
     }
   } finally {
     if (generation === contextGeneration) loading.value = false
@@ -124,27 +130,44 @@ function openInstance(instance: Instance) {
   navigateFromTile(rootRef.value, 'instances/' + encodeURIComponent(instance.name))
 }
 
-function retry() {
-  poller?.refresh()
+const refresh = createLatestRefreshController(async () => { await load() })
+
+async function retry(): Promise<void> {
+  if (retryPending.value) return
+  const generation = ++retryGeneration
+  const focused = document.activeElement
+  retryError.value = error.value
+  retryPending.value = true
+  await refresh.request('foreground')
+  if (generation !== retryGeneration) return
+  retryPending.value = false
+  await nextTick()
+  if (focused && !focused.isConnected && document.activeElement === document.body) rootRef.value?.focus()
 }
 
 onMounted(() => {
-  poller = createTilePoller(load)
+  poller = createTilePoller(() => refresh.request('background'))
   poller.start()
 })
 onUnmounted(() => {
   contextGeneration += 1
+  retryGeneration += 1
   poller?.stop()
+  refresh.stop()
 })
 watch(
   [
     () => props.context === null,
     () => props.context?.tenant,
     () => props.context?.user?.userId ?? props.context?.user?.sub ?? props.context?.user?.email,
+    () => props.context?.fetch,
     () => typeof props.context?.fetch === 'function' ? '' : props.context?.token,
     () => props.context?.basePath,
   ],
   () => {
+    retryGeneration += 1
+    retryPending.value = false
+    retryError.value = null
     contextGeneration += 1
     if (tombstoneTenant !== props.context?.tenant) tombstones.clear()
     tombstoneTenant = props.context?.tenant
@@ -171,22 +194,17 @@ function dotFor(phase: string) {
 </script>
 
 <template>
-  <div ref="rootRef" :class="tileClass.root" :aria-busy="loading">
-    <div v-if="!loaded && loading" class="space-y-2" role="status" aria-live="polite" aria-busy="true" aria-label="Loading infrastructure instances">
+  <div ref="rootRef" :class="tileClass.root" :aria-busy="loading || retryPending" tabindex="-1">
+    <div v-if="displayError" :class="tileClass.error" :role="loaded ? 'status' : 'alert'" aria-live="polite">
+      {{ loaded ? 'Could not refresh. Showing the last successful result.' : 'Could not load instances.' }} {{ displayError }}
+      <button type="button" class="k-dashboard-action" :aria-disabled="retryPending || undefined" :aria-busy="retryPending || undefined" @click="retry">{{ retryPending ? 'Retrying…' : 'Retry' }}</button>
+    </div>
+    <div v-if="!loaded && loading && !displayError" class="space-y-2" role="status" aria-live="polite" aria-busy="true" aria-label="Loading infrastructure instances">
       <div class="shimmer h-3 w-32 rounded" aria-hidden="true" />
       <div v-for="i in 4" :key="i" class="shimmer h-7 w-full rounded" aria-hidden="true" />
     </div>
-    <div v-else-if="!loaded && error" :class="tileClass.error" role="alert" aria-live="assertive">
-      Failed to load: {{ error }}
-      <button type="button" class="k-dashboard-action" @click="retry">Retry</button>
-    </div>
-
-    <template v-else>
-      <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating infrastructure instances…</span>
-      <div v-if="error" :class="tileClass.error" role="alert" aria-live="assertive">
-        Showing the last successful result. {{ error }}
-        <button type="button" class="k-dashboard-action" @click="retry">Retry</button>
-      </div>
+    <template v-if="loaded">
+      <span v-if="loading && !displayError" class="sr-only" role="status" aria-live="polite">Updating infrastructure instances…</span>
       <!-- Slim horizontal status row (matches the clusters/edges tiles): a
            single inline line of icon + count + label chips rather than four
            stacked boxes, so the tile stays compact. -->
