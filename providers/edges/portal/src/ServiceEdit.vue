@@ -472,8 +472,8 @@ onUnmounted(() => {
               </div>
               <fieldset class="service-detail__target-mode service-target-fieldset">
                 <legend class="lbl">Target</legend>
-                <label class="k-checkbox-hit"><input v-model="targetMode" name="service-edit-target-mode" type="radio" value="host" :disabled="busy || !service" /> Host / IP</label>
-                <label class="k-checkbox-hit" :class="{ 'is-disabled': edgeIsHost }"><input v-model="targetMode" name="service-edit-target-mode" type="radio" value="kube" :disabled="busy || !service || edgeIsHost" /> Kubernetes Service</label>
+                <label class="k-checkbox-hit"><input v-model="targetMode" class="k-checkbox" name="service-edit-target-mode" type="radio" value="host" :disabled="busy || !service" /> Host / IP</label>
+                <label class="k-checkbox-hit" :class="{ 'is-disabled': edgeIsHost }"><input v-model="targetMode" class="k-checkbox" name="service-edit-target-mode" type="radio" value="kube" :disabled="busy || !service || edgeIsHost" /> Kubernetes Service</label>
               </fieldset>
               <div v-if="targetMode === 'host'" class="service-detail__form-grid">
                 <label class="fld"><span id="service-edit-host-label" class="lbl">Host {{ entry?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span><input v-model="form.host" class="k-input" :disabled="busy || !service" aria-labelledby="service-edit-host-label" :aria-describedby="entry?.hostHelp ? 'service-edit-host-help' : undefined" placeholder="192.168.1.1, myui.example.com" /><span v-if="entry?.hostHelp" id="service-edit-host-help" class="field-help service-detail__field-help">{{ entry.hostHelp }}</span></label>

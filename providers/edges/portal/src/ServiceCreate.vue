@@ -328,10 +328,10 @@ onUnmounted(() => {
         <legend class="lbl">Target</legend>
         <div class="service-create-target-modes">
           <label class="k-checkbox-hit">
-            <input v-model="targetMode" name="service-create-target-mode" type="radio" value="host" /> <Globe2 :size="13" aria-hidden="true" /> Host / IP
+            <input v-model="targetMode" class="k-checkbox" name="service-create-target-mode" type="radio" value="host" /> <Globe2 :size="13" aria-hidden="true" /> Host / IP
           </label>
           <label class="k-checkbox-hit" :class="{ 'is-disabled': selectedEdgeIsHost || hostRequired }">
-            <input v-model="targetMode" name="service-create-target-mode" type="radio" value="kube" :disabled="selectedEdgeIsHost || hostRequired" /> Kubernetes Service
+            <input v-model="targetMode" class="k-checkbox" name="service-create-target-mode" type="radio" value="kube" :disabled="selectedEdgeIsHost || hostRequired" /> Kubernetes Service
           </label>
         </div>
       </fieldset>
