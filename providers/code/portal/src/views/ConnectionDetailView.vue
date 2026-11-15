@@ -85,12 +85,12 @@ const connectionStatusTone = computed<'success' | 'warning' | 'danger' | 'muted'
 })
 const detailRefreshing = computed(() => loading.value)
 const foregroundRefreshing = computed(() => loading.value && refreshMode.value === 'foreground')
-const connectionActionBusy = computed(() =>
+const connectionActionUnavailable = computed(() =>
   !conn.value ||
-  foregroundRefreshing.value ||
   deleting.value ||
   operations.isLocked(operationKey('connection', conn.value?.name || props.name)),
 )
+const connectionActionBusy = computed(() => connectionActionUnavailable.value || foregroundRefreshing.value)
 const actionItems = computed<ActionMenuItem[]>(() => [{
   id: 'delete',
   label: deleting.value ? 'Deleting connection…' : 'Delete connection',
@@ -168,6 +168,10 @@ function load(mode: ResourceRefreshMode = 'foreground') {
     loading.value = true
   }
   refresh.request(mode)
+}
+
+function refreshFromHeader(): void {
+  if (!connectionActionBusy.value) load('foreground')
 }
 
 async function deleteConnection() {
@@ -292,11 +296,13 @@ onUnmounted(() => {
             <button
               type="button"
               class="k-btn k-btn--ghost"
-              :disabled="connectionActionBusy"
+              aria-label="Refresh connection"
+              :disabled="connectionActionUnavailable"
+              :aria-disabled="foregroundRefreshing || undefined"
               :aria-busy="detailRefreshing || undefined"
-              @click="load()"
+              @click="refreshFromHeader"
             >
-              <RefreshCw :size="14" :class="{ spin: foregroundRefreshing }" aria-hidden="true" />
+              <RefreshCw :size="14" :class="{ 'k-spin': foregroundRefreshing }" aria-hidden="true" />
               {{ foregroundRefreshing ? 'Refreshing…' : 'Refresh' }}
             </button>
             <ActionMenu

@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { Link2 } from 'lucide-vue-next'
-import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
+import { ArrowRight, Link2 } from 'lucide-vue-next'
+import { computed, nextTick, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import { CODE_JOURNEY_STEPS, codeFirstRunModel } from '../journey'
 import type { Connection, ErrorResponse } from '../types'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { toast } from '../portalkit/toast'
+import { portalHref } from '../portalkit/navigation'
 import {
   FAST_REFRESH_MS,
   STABLE_REFRESH_MS,
@@ -56,7 +58,11 @@ function isDeleting(connection: Pick<Connection, 'name' | 'uid' | 'deletionTimes
 const oauthEnabled = ref(false)
 const oauthLoaded = ref(false)
 const oauthError = ref<string | null>(null)
-const showFirstRun = computed(() => loaded.value && oauthLoaded.value && !error.value && connections.value.length === 0)
+const oauthLoading = ref(false)
+const oauthWarning = ref<HTMLElement | null>(null)
+const showFirstRun = computed(() => loaded.value && oauthLoaded.value && connections.value.length === 0)
+const firstRunWarning = ref<HTMLElement | null>(null)
+const pageTitle = ref<HTMLElement | null>(null)
 const firstRun = computed(() => codeFirstRunModel('connection', false, oauthEnabled.value))
 let mounted = false
 let refresh!: LatestRefreshController
@@ -78,17 +84,26 @@ function errMessage(e: unknown): string {
 }
 
 async function loadOAuthConfig(): Promise<void> {
-  oauthError.value = null
+  if (oauthLoading.value) return
+  oauthLoading.value = true
   try {
     const config = await api.oauthConfig()
     if (!mounted) return
     oauthEnabled.value = config.enabled
+    const retryHadFocus = typeof document !== 'undefined' && !!oauthWarning.value?.contains(document.activeElement)
+    oauthError.value = null
+    if (retryHadFocus) void nextTick(() => {
+      if (document.activeElement === document.body) pageTitle.value?.focus({ preventScroll: true })
+    })
   } catch (e) {
     if (!mounted) return
     oauthEnabled.value = false
     oauthError.value = errMessage(e)
   } finally {
-    if (mounted) oauthLoaded.value = true
+    if (mounted) {
+      oauthLoaded.value = true
+      oauthLoading.value = false
+    }
   }
 }
 
@@ -105,8 +120,20 @@ function openConnection(row: Record<string, unknown>) {
   if (!row.deleting && !operations.isLocked(operationKey('connection', resourceName))) emit('open', resourceName)
 }
 
-function startFirstRun(primary: boolean): void {
-  emit('create', oauthEnabled.value && primary ? 'github' : 'token')
+function openConnectionLink(event: MouseEvent, row: Record<string, unknown>): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  openConnection(row)
+}
+
+function createConnectionHref(method: 'token' | 'github'): string {
+  return portalHref(`/ui/providers/code/create/connection/${method}`)
+}
+
+function followCreateLink(event: MouseEvent, method: 'token' | 'github'): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  emit('create', method)
 }
 
 async function remove(row: Record<string, unknown>) {
@@ -145,7 +172,11 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
     next.filter(item => item.deletionTimestamp).forEach(item => props.deletions.acknowledge(deletionScope, item.name, item.uid))
     props.deletions.reconcile(deletionScope, next)
     loaded.value = true
+    const retryHadFocus = typeof document !== 'undefined' && !!firstRunWarning.value?.contains(document.activeElement)
     error.value = null
+    if (retryHadFocus) void nextTick(() => {
+      if (document.activeElement === document.body) pageTitle.value?.focus({ preventScroll: true })
+    })
   } catch (e) {
     if (!refresh.isCurrent(requestID)) return
     const err = e as ErrorResponse
@@ -177,28 +208,33 @@ onUnmounted(() => {
   <section class="page">
     <header class="page-head">
       <div>
-        <h2 class="page-title">Connections</h2>
+        <h2 ref="pageTitle" class="page-title" tabindex="-1">Connections</h2>
         <p class="page-meta">A connection binds your workspace to a git account. Repositories are created under it.</p>
       </div>
       <div v-if="!showFirstRun" class="code-form-actions">
-        <button v-if="oauthEnabled" class="k-btn k-btn--primary" :disabled="!loaded" @click="emit('create', 'github')">
+        <a v-if="oauthEnabled && loaded" class="k-btn k-btn--primary" :href="createConnectionHref('github')" @click="followCreateLink($event, 'github')">
           Connect with GitHub
-        </button>
-        <button class="k-btn" :class="oauthEnabled ? 'k-btn--ghost' : 'k-btn--primary'" :disabled="!loaded" @click="emit('create', 'token')">
+        </a>
+        <button v-else-if="oauthEnabled" class="k-btn k-btn--primary" type="button" disabled>Connect with GitHub</button>
+        <a v-if="loaded" class="k-btn" :class="oauthEnabled ? 'k-btn--ghost' : 'k-btn--primary'" :href="createConnectionHref('token')" @click="followCreateLink($event, 'token')">
           Add token manually
-        </button>
+        </a>
+        <button v-else class="k-btn" :class="oauthEnabled ? 'k-btn--ghost' : 'k-btn--primary'" type="button" disabled>Add token manually</button>
       </div>
     </header>
 
-    <p v-if="oauthError" class="error read-error" role="alert">
+    <p v-if="oauthError" ref="oauthWarning" class="error read-error" role="alert">
       <span>GitHub sign-in configuration could not be loaded: {{ oauthError }}</span>
-      <button class="k-btn k-btn--ghost" type="button" @click="loadOAuthConfig">Retry GitHub sign-in</button>
+      <button class="k-btn k-btn--ghost" type="button" :aria-disabled="oauthLoading" @click="loadOAuthConfig">{{ oauthLoading ? 'Retrying GitHub sign-in…' : 'Retry GitHub sign-in' }}</button>
     </p>
     <p v-else-if="oauthLoaded && !oauthEnabled" class="muted">
       Tip: a platform admin can enable one-click “Connect with GitHub” by configuring the provider’s GitHub OAuth app.
     </p>
 
     <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">{{ mutationError }}</p>
+    <div v-if="showFirstRun && error" ref="firstRunWarning">
+      <InlineNotification tone="warning" message="Connections could not be refreshed. Showing the last successful empty result." action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="load()" />
+    </div>
     <FirstRunGuide
       v-if="showFirstRun"
       :title="firstRun.title"
@@ -208,10 +244,12 @@ onUnmounted(() => {
       :steps="CODE_JOURNEY_STEPS"
       :current-step="firstRun.currentStep"
       journey-label="Code setup path"
-      @primary="startFirstRun(true)"
-      @secondary="startFirstRun(false)"
     >
       <template #icon><Link2 :stroke-width="1.5" /></template>
+      <template #actions>
+        <a class="k-btn k-btn--primary" :href="createConnectionHref(oauthEnabled ? 'github' : 'token')" @click="followCreateLink($event, oauthEnabled ? 'github' : 'token')">{{ firstRun.primary.label }} <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a>
+        <a v-if="firstRun.secondary" class="k-btn k-btn--ghost" :href="createConnectionHref('token')" @click="followCreateLink($event, 'token')">{{ firstRun.secondary.label }}</a>
+      </template>
     </FirstRunGuide>
 
     <ResourceTable
@@ -236,7 +274,7 @@ onUnmounted(() => {
       @retry="load"
       @row-click="openConnection"
     >
-      <template #name="{ value, row }"><span v-if="row.deleting">{{ value }}</span><button v-else class="k-btn k-btn--ghost k-table-resource-link" type="button" @click.stop="openConnection(row)">{{ value }}</button></template>
+      <template #name="{ value, row }"><span v-if="row.deleting || operations.isLocked(operationKey('connection', String(row.name)))">{{ value }}</span><a v-else class="k-btn k-btn--ghost k-table-resource-link" :href="portalHref(`/ui/providers/code/connections/${encodeURIComponent(String(row.name))}`)" @click.stop="openConnectionLink($event, row)">{{ value }}</a></template>
       <template #owner="{ value }">{{ value }}</template>
       <template #login="{ value }">{{ value || '—' }}</template>
       <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
