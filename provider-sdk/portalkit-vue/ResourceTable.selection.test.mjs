@@ -9,10 +9,10 @@ test('resource page background reads leave recovery idle and queued retries anno
   const source = readFileSync(new URL('./ResourcePage.vue', import.meta.url), 'utf8')
   const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
   const parsed = ts.createSourceFile('ResourcePage.ts', script, ts.ScriptTarget.Latest, true)
-  const names = new Set(['explicitReadState', 'showInitialError', 'initialReadPending', 'retryRequested', 'retrying', 'refreshAnnouncement', 'ariaBusy'])
+  const names = new Set(['pageElement', 'explicitReadState', 'showInitialError', 'initialReadPending', 'retryRequested', 'retrying', 'refreshAnnouncement', 'ariaBusy'])
   const declarations = parsed.statements.filter(statement =>
     (ts.isVariableStatement(statement) && statement.declarationList.declarations.some(declaration => names.has(declaration.name.getText(parsed))))
-    || (ts.isFunctionDeclaration(statement) && statement.name?.text === 'requestRetry')
+    || (ts.isFunctionDeclaration(statement) && ['requestRetry', 'finishRetry'].includes(statement.name?.text))
     || statement.getText(parsed).startsWith('watch(() => props.loading,')
     || statement.getText(parsed).startsWith('watch(() => props.error,'),
   )
