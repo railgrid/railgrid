@@ -1176,10 +1176,8 @@ html.light .k-form-select__panel.k-form-select__portal {
   color: var(--color-text-secondary, #8a8ca6);
 }
 
-/* ── Tooltip (CSS-only) ───────────────────────────────────────────────────
- * <button data-k-tip="Restart the pod">…</button> — shows after 300ms on
- * hover AND keyboard focus. Two lines max by convention; longer content is a
- * popover, not a tooltip. Never glows. */
+/* ── Tooltip ──────────────────────────────────────────────────────────────
+ * The CSS fallback remains available before the shared manager starts. */
 [data-k-tip] { position: relative; }
 [data-k-tip]::after {
   content: attr(data-k-tip);
@@ -1227,8 +1225,31 @@ html.light [data-k-tip]::after {
 [data-k-tip]:hover::after,
 [data-k-tip]:focus-visible::after {
   opacity: 1;
-  transition-delay: 0.3s;
+  transition-delay: 0.15s;
 }
+.k-tooltips-managed [data-k-tip]::after { content: none !important; }
+.k-tooltip-layer {
+  position: fixed;
+  visibility: hidden;
+  z-index: 1100;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(260px, calc(100vw - 16px));
+  padding: 4px 8px;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 4px;
+  background: var(--color-surface-overlay, #171927);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-surface, #0a0b12) 35%, transparent);
+  color: var(--color-text-primary, #e9e9f2);
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+}
+html.light .k-tooltip-layer { box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-primary) 10%, transparent); }
 
 /* ── Progress bar ─────────────────────────────────────────────────────────*/
 .k-progress {
@@ -2604,6 +2625,7 @@ railgrid-resource-table-filter { display: contents; }
 .k-table__primary-tooltip--positioned { visibility: visible; }
 .k-table-action-tooltip {
   font-family: var(--font-sans, "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif);
+  pointer-events: auto;
 }
 .k-table.k-table--resource .k-table__heading--start,
 .k-table.k-table--resource .k-table__cell--start { text-align: start; }
