@@ -1767,7 +1767,7 @@ describe('chat streaming', () => {
 
     expect(text(retry)).toContain('Retry')
     expect(text(retry)).toBe('Retry')
-    expect(retry.getAttribute('aria-disabled')).not.toBe('true')
+    expect(retry.getAttribute('aria-disabled')).toBeNull()
 
     pendingRefresh.resolve([session('s1', 'Active chat'), session('s2', 'Old chat')])
     await settle(4)
