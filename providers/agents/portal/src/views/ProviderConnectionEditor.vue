@@ -54,6 +54,7 @@ const testing = ref(false)
 const discoveryError = ref('')
 const testError = ref('')
 const fieldError = ref('')
+const fieldErrorTarget = ref<'endpoint' | 'key' | 'workspace' | 'model' | null>(null)
 const operationNotice = ref('')
 let activeOperation: AbortController | null = null
 const verifiedFingerprint = ref('')
@@ -65,6 +66,22 @@ const modelLabelChanged = computed(() => editingModelCredential.value && modelLa
 const connectionLabelValue = computed(() => connectionLabel.value.trim() || suggestedName.value)
 const connectionLabelChanged = computed(() => editingProviderConnection && connectionLabelValue.value !== originalConnectionLabel.value)
 const effectiveURL = computed(() => editingDetails.value ? baseURL.value.trim() : connection.value?.baseURL || '')
+function isValidEndpoint(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash
+  } catch { return false }
+}
+const endpointInputError = computed(() => {
+  if (preset.value !== 'custom' || !baseURL.value.trim()) return ''
+  if (!isValidEndpoint(baseURL.value.trim())) return 'Enter a valid HTTP or HTTPS API endpoint without credentials, a query, or a fragment.'
+  const url = new URL(baseURL.value.trim())
+  const path = url.pathname.replace(/\/+$/, '')
+  const suffix = ['/chat/completions', '/responses', '/messages'].find(part => path.toLowerCase().endsWith(part))
+  if (!suffix) return ''
+  const suggested = `${url.origin}${path.slice(0, -suffix.length)}`
+  return `Enter the API base URL, not the ${suffix} endpoint. Use ${suggested}; Railgrid selects the model endpoint automatically.`
+})
 const effectiveProvider = computed(() => editingDetails.value ? originalConnection && preset.value === presetFor(originalConnection).id ? originalConnection.provider || current.value.provider : current.value.provider : connection.value?.provider)
 const effectiveWorkspace = computed(() => editingDetails.value ? workspaceID.value.trim() : connection.value?.anthropicWorkspaceID || '')
 const canSaveNameOnly = computed(() => {
@@ -111,7 +128,7 @@ const fingerprint = computed(() => JSON.stringify([selectedConnection.value, eff
 watch(fingerprint, () => {
   const interrupted = Boolean(activeOperation)
   invalidateOperation()
-  verifiedFingerprint.value = ''; testError.value = ''; fieldError.value = ''
+  verifiedFingerprint.value = ''; testError.value = ''; fieldError.value = ''; fieldErrorTarget.value = null
   operationNotice.value = interrupted ? 'Connection details changed. Verify again before saving.' : ''
 })
 watch(selectedConnection, () => {
@@ -209,13 +226,11 @@ function updateModelLabel(value: string): void {
   modelLabelError.value = ''
 }
 function valid(): boolean {
-  try {
-    const url = new URL(effectiveURL.value)
-    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw Error()
-  } catch { fieldError.value = 'Enter a valid HTTP or HTTPS API endpoint.'; return false }
-  if (!canContinue.value) { fieldError.value = 'Add an API key or choose an existing provider connection.'; return false }
-  if (/\s/.test(apiKey.value.trim())) { fieldError.value = 'Paste only the API key, without spaces or line breaks.'; return false }
-  if (isAnthropic.value && effectiveWorkspace.value && !/^wrkspc_[A-Za-z0-9]+$/.test(effectiveWorkspace.value)) { fieldError.value = 'Enter a workspace ID beginning with wrkspc_, or leave it blank for a workspace-scoped key.'; return false }
+  if (editingDetails.value && endpointInputError.value) { fieldErrorTarget.value = 'endpoint'; fieldError.value = endpointInputError.value; return false }
+  if (!isValidEndpoint(effectiveURL.value)) { fieldErrorTarget.value = 'endpoint'; fieldError.value = 'Enter a valid HTTP or HTTPS API endpoint.'; return false }
+  if (!canContinue.value) { fieldErrorTarget.value = 'key'; fieldError.value = 'Add an API key or choose an existing provider connection.'; return false }
+  if (/\s/.test(apiKey.value.trim())) { fieldErrorTarget.value = 'key'; fieldError.value = 'Paste only the API key, without spaces or line breaks.'; return false }
+  if (isAnthropic.value && effectiveWorkspace.value && !/^wrkspc_[A-Za-z0-9]+$/.test(effectiveWorkspace.value)) { fieldErrorTarget.value = 'workspace'; fieldError.value = 'Enter a workspace ID beginning with wrkspc_, or leave it blank for a workspace-scoped key.'; return false }
   return true
 }
 async function probe(discover: boolean, signal: AbortSignal, candidate = model.value.trim()): Promise<CredentialTestResult | undefined> {
@@ -272,7 +287,7 @@ async function connect(): Promise<void> {
   if (locked.value || !validateModelLabel()) return
   if (canSaveNameOnly.value) { emit('rename', renameLabel.value); return }
   if (!valid() || alreadyConfigured.value) return
-  if (!standaloneConnection.value && !editingProviderConnection && !model.value.trim()) { fieldError.value = 'Choose a model or enter its exact ID.'; return }
+  if (!standaloneConnection.value && !editingProviderConnection && !model.value.trim()) { fieldErrorTarget.value = 'model'; fieldError.value = 'Choose a model or enter its exact ID.'; return }
   const operation = startOperation()
   const { serial, signal } = operation
   const snapshot = fingerprint.value
@@ -365,9 +380,10 @@ defineExpose({ cancel, locked })
           <label class="k-model-form-field"><span id="agents-model-provider-label">Provider</span>
             <select id="model-provider" aria-labelledby="agents-model-provider-label" v-model="preset" class="k-input" :disabled="locked"><option v-for="item in providers" :key="item.id" :value="item.id">{{ item.id === 'anthropic' ? 'Anthropic' : item.label }}</option></select>
           </label>
-          <label v-if="preset === 'custom'" class="k-model-form-field">API endpoint
-            <input id="model-base-url" v-model="baseURL" class="k-input" name="baseURL" type="url" required aria-required="true" placeholder="https://your-provider.example/v1" :disabled="locked" :aria-invalid="Boolean(fieldError && fieldError.includes('endpoint'))" :aria-describedby="fieldError ? 'provider-url-help provider-connection-error' : 'provider-url-help'">
+          <label v-if="preset === 'custom'" class="k-model-form-field"><span id="agents-provider-url-label">API endpoint (required)</span>
+            <input id="model-base-url" v-model="baseURL" class="k-input" name="baseURL" type="url" required aria-required="true" placeholder="https://your-provider.example/v1" :disabled="locked" aria-labelledby="agents-provider-url-label" :aria-invalid="Boolean(endpointInputError || fieldErrorTarget === 'endpoint')" :aria-describedby="fieldErrorTarget === 'endpoint' ? 'provider-url-help provider-connection-error' : endpointInputError ? 'provider-url-help provider-url-error' : 'provider-url-help'">
             <span id="provider-url-help" class="k-model-form-hint">Use an OpenAI-compatible API endpoint. You can enter a model ID if this provider does not list models.</span>
+            <span v-if="endpointInputError && fieldErrorTarget !== 'endpoint'" id="provider-url-error" class="k-model-form-hint text-danger" role="alert">{{ endpointInputError }}</span>
           </label>
           <details v-else class="agents-provider-connect__details"><summary>Connection details</summary><p class="k-model-form-hint">API endpoint: <span class="font-mono">{{ baseURL }}</span></p></details>
         </template>
@@ -376,15 +392,15 @@ defineExpose({ cancel, locked })
       <section v-if="editingDetails" class="k-model-form-section" aria-labelledby="provider-key-heading">
         <h2 id="provider-key-heading" class="k-model-form-heading">API key</h2>
         <label for="model-credential" class="sr-only">API key</label>
-        <input id="model-credential" v-model="apiKey" class="k-input" type="password" name="apiKey" autocomplete="new-password" :placeholder="canReuse ? 'Leave blank to keep the saved key' : 'Paste your API key'" :disabled="locked" :aria-required="!canReuse" :aria-invalid="Boolean(fieldError && fieldError.includes('key') && !fieldError.includes('workspace'))" :aria-describedby="fieldError ? 'provider-key-help provider-connection-error' : 'provider-key-help'">
+        <input id="model-credential" v-model="apiKey" class="k-input" type="password" name="apiKey" autocomplete="new-password" :placeholder="canReuse ? 'Leave blank to keep the saved key' : 'Paste your API key'" :disabled="locked" :aria-required="!canReuse" :aria-invalid="fieldErrorTarget === 'key'" :aria-describedby="fieldErrorTarget === 'key' ? 'provider-key-help provider-connection-error' : 'provider-key-help'">
         <p id="provider-key-help" class="k-model-form-hint">Stored in this workspace and never returned to the browser. Models on this connection reuse this key. Changing the provider or endpoint clears a typed key.</p>
         <label v-if="isAnthropic" class="k-model-form-field">Anthropic workspace ID (if required by your key)
-          <input id="anthropic-workspace-id" v-model="workspaceID" name="anthropicWorkspaceID" class="k-input" placeholder="wrkspc_…" :disabled="locked" :aria-invalid="Boolean(fieldError && fieldError.includes('workspace'))" :aria-describedby="fieldError ? 'provider-workspace-help provider-connection-error' : 'provider-workspace-help'">
+          <input id="anthropic-workspace-id" v-model="workspaceID" name="anthropicWorkspaceID" class="k-input" aria-label="Anthropic workspace ID (if required by your key)" placeholder="wrkspc_…" :disabled="locked" :aria-invalid="fieldErrorTarget === 'workspace'" :aria-describedby="fieldErrorTarget === 'workspace' ? 'provider-workspace-help provider-connection-error' : 'provider-workspace-help'">
           <span id="provider-workspace-help" class="k-model-form-hint">Leave blank for a workspace-scoped key. Otherwise, enter the workspace ID from Claude Console. Re-enter the key when changing its workspace.</span>
         </label>
       </section>
       <label v-if="standaloneConnection || editingProviderConnection" for="provider-connection-name" class="k-model-form-field">Connection name (optional)
-        <input id="provider-connection-name" v-model="connectionLabel" class="k-input" :placeholder="suggestedName" :disabled="locked" maxlength="100" aria-describedby="provider-connection-name-help">
+        <input id="provider-connection-name" v-model="connectionLabel" class="k-input" :placeholder="suggestedName" :disabled="locked" maxlength="100" aria-label="Connection name (optional)" aria-describedby="provider-connection-name-help">
         <span id="provider-connection-name-help" class="k-model-form-hint">This label identifies the saved provider credential.</span>
       </label>
       <p v-if="fieldError" id="provider-connection-error" class="k-inline-notification k-inline-notification--error" role="alert">{{ fieldError }}</p>
@@ -394,7 +410,7 @@ defineExpose({ cancel, locked })
           <button v-if="!savedBinding" type="button" class="k-btn k-btn--ghost" :disabled="locked || !canContinue" aria-describedby="provider-model-help" @click="discover"><RefreshCw :size="14" />{{ discovering ? 'Loading…' : 'Refresh models' }}</button>
         </div>
         <label for="model-id" class="k-model-form-field">{{ editingProviderConnection || standaloneConnection ? 'Verification model (optional)' : 'Model ID' }}
-          <ModelIDSelector :model-value="model" :invalid="Boolean(fieldError && fieldError.includes('model'))" :models="modelOptions.map(id => ({ id, name: id, compatibility: 'available' as const }))" :disabled="locked" :described-by="fieldError ? 'provider-model-help provider-connection-error' : 'provider-model-help'" @update:model-value="model = $event">
+          <ModelIDSelector :required="!editingProviderConnection && !standaloneConnection" :model-value="model" :invalid="fieldErrorTarget === 'model'" :models="modelOptions.map(id => ({ id, name: id, compatibility: 'available' as const }))" :disabled="locked" :described-by="fieldErrorTarget === 'model' ? 'provider-model-help provider-connection-error' : 'provider-model-help'" @update:model-value="model = $event">
             <template v-if="savedBinding" #search-action>
               <button type="button" class="k-icon-action" aria-label="Refresh models" title="Refresh models" :disabled="locked || !catalogIdentity" :aria-disabled="refreshingModels || undefined" @click="refreshModels">
                 <Loader2 v-if="refreshingModels" class="k-spin" aria-hidden="true" />
@@ -429,8 +445,7 @@ defineExpose({ cancel, locked })
       <p v-else-if="canSaveNameOnly" id="provider-verify-help" class="k-model-form-hint agents-provider-connect__charge">Only the name will change. No provider request will be sent.</p>
       <p v-else-if="modelStage" id="provider-verify-help" class="k-model-form-hint agents-provider-connect__charge">{{ standaloneConnection && !model ? 'Verification checks provider access without sending a model request. No model will be added.' : editingProviderConnection && !model && !credentials.some(item => item.connectionRef === selectedConnection && item.model) ? 'Verification checks provider access without sending a model request.' : managingConnection ? 'Verification tests each configured model on this connection. The provider may charge the account linked to the key.' : 'Verification sends a short request using this key. The provider may charge the account linked to the key.' }}</p>
       <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">{{ testing ? 'Stop verification' : discovering ? 'Stop loading' : 'Cancel' }}</button>
-      <button v-if="!modelStage" type="submit" class="k-btn k-btn--primary" :disabled="locked || !canContinue"><Loader2 v-if="locked" :size="14" class="animate-spin motion-reduce:animate-none" />{{ testing ? 'Checking provider…' : busy ? 'Saving…' : standaloneConnection ? 'Verify & connect' : 'Continue' }}</button>
-      <button v-else type="submit" class="k-btn k-btn--primary" :disabled="locked || (!canSaveNameOnly && (!canContinue || (!standaloneConnection && !editingProviderConnection && !model.trim()) || alreadyConfigured))" aria-describedby="provider-verify-help"><Loader2 v-if="locked" :size="14" class="animate-spin motion-reduce:animate-none" />{{ testing ? (standaloneConnection && !model.trim() ? 'Checking provider…' : 'Verifying…') : busy ? (canSaveNameOnly || standaloneConnection || editingProviderConnection ? 'Saving…' : 'Connecting…') : canSaveNameOnly ? 'Save changes' : standaloneConnection ? (verifiedFingerprint ? 'Save provider connection' : model.trim() ? 'Verify & connect' : 'Retry provider check') : editingProviderConnection ? (verifiedFingerprint ? 'Save changes' : 'Verify & save') : verifiedFingerprint ? 'Finish connecting' : 'Verify & connect' }}</button>
+      <button type="submit" class="k-btn k-btn--primary" :disabled="!locked && (!modelStage ? !canContinue : !canSaveNameOnly && (!canContinue || (!standaloneConnection && !editingProviderConnection && !model.trim()) || alreadyConfigured))" :aria-disabled="locked || undefined" :aria-busy="locked || undefined" :aria-describedby="modelStage ? 'provider-verify-help' : undefined"><Loader2 v-if="locked" :size="14" class="k-spin" aria-hidden="true" />{{ !modelStage ? (testing ? 'Checking provider…' : busy ? 'Saving…' : standaloneConnection ? 'Verify & connect' : 'Continue') : testing ? (standaloneConnection && !model.trim() ? 'Checking provider…' : 'Verifying…') : busy ? (canSaveNameOnly || standaloneConnection || editingProviderConnection ? 'Saving…' : 'Connecting…') : canSaveNameOnly ? 'Save changes' : standaloneConnection ? (verifiedFingerprint ? 'Save provider connection' : model.trim() ? 'Verify & connect' : 'Retry provider check') : editingProviderConnection ? (verifiedFingerprint ? 'Save changes' : 'Verify & save') : verifiedFingerprint ? 'Finish connecting' : 'Verify & connect' }}</button>
     </footer>
   </form>
 </template>
