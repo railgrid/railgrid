@@ -60,7 +60,7 @@ function remove(index: number): void {
 </script>
 
 <template>
-  <div class="k-input agents-template-list">
+  <div class="k-input agents-template-list" :class="{ 'is-invalid': invalid, 'is-disabled': disabled }">
     <span v-for="(entry, index) in entries" :key="index" class="agents-template-token">
       {{ entry }}
       <button class="k-btn k-btn--text" type="button" :disabled="disabled" :aria-label="'Remove ' + entry" @click="remove(index)">

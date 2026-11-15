@@ -1219,7 +1219,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </summary>
       <div class="agents-setting-disclosure__body">
         <p class="agents-setting-disclosure__description">{{ policyDescription }}</p>
-        <fieldset class="agents-cap-fs">
+        <fieldset class="agents-cap-fs" :aria-describedby="harnessPolicyTarget ? domID('agent-harness-permission-policy') : undefined">
           <legend>Autonomy</legend>
           <p v-if="harnessPolicyTarget" :id="domID('agent-harness-permission-policy')" class="agents-hint" role="status">
             Coding harness permission prompts are configured by Claude Code or Codex on the machine. Railgrid cannot gate harness actions; Ask is the only supported Railgrid value for this backend.
@@ -1381,7 +1381,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         :is="workbenchSections ? AIWorkbenchPane : AgentsWorkbenchSection"
         :id="domID('agent-tools-heading')"
         title="Tools &amp; toolsets"
-        description="Allow tools in chat, then separately opt in to background runs from schedules, triggers, and heartbeats. Changes save automatically."
+        description="Choose tools for chat and background runs from schedules, triggers, and heartbeats. Changes save automatically."
       >
         <!-- A harness brings its own tools. Its API rejects agent tool grants. -->
         <p v-if="harnessStored" class="agents-hint agents-warn-inline" data-tools-disabled role="status">
@@ -1389,8 +1389,9 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         </p>
         <template v-else>
           <ConfigSaveFeedback :id="domID('agent-tools-save-feedback')" action="tool access" :status="feedbackStatus('tools')" :error="feedbackError('tools')" />
+          <p :id="domID('agent-background-permission-hint')" class="agents-hint">To grant background access, first allow the tool in chat. Existing background-only access can still be removed.</p>
           <AgentsWorkbenchSection title="Toolsets">
-            <fieldset class="agents-permission-group">
+            <fieldset class="agents-permission-group" :aria-describedby="domID('agent-background-permission-hint')">
               <legend class="sr-only">Toolsets</legend>
               <div v-if="toolsetSlice.error && !toolsetSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
                 <span>Could not load toolsets. {{ toolsetSlice.error }}</span>
@@ -1439,7 +1440,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           </AgentsWorkbenchSection>
 
           <AgentsWorkbenchSection title="Built-in capabilities">
-            <fieldset class="agents-permission-group">
+            <fieldset class="agents-permission-group" :aria-describedby="domID('agent-background-permission-hint')">
               <legend class="sr-only">Built-in capabilities</legend>
               <p class="muted">Tools the agent has on its own, with nothing to wire up. Reading the web needs no connection; <strong>searching</strong> it needs a websearch tool granted below, and without one the agent can only read pages it is given a link to. Turning on fan-out also teaches the agent how to use it — you do not need to write that into the prompt.</p>
               <table class="agents-permission-table" aria-label="Built-in capability permissions">
@@ -1530,7 +1531,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           </AgentsWorkbenchSection>
 
           <AgentsWorkbenchSection title="Direct tools">
-            <fieldset class="agents-permission-group">
+            <fieldset class="agents-permission-group" :aria-describedby="domID('agent-background-permission-hint')">
               <legend class="sr-only">Direct tools</legend>
               <div v-if="connectionSlice.error && !connectionSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
                 <span>Could not load tool connections. {{ connectionSlice.error }}</span>
