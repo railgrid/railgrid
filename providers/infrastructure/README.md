@@ -1,16 +1,5 @@
 # infrastructure provider
 
-> [!IMPORTANT]
-> **Read-only mirror — do not push or open PRs here.**
-> The standalone [`railgrid/provider-infrastructure`](https://github.com/railgrid/provider-infrastructure)
-> repository is **automatically synced** from the railgrid monorepo
-> [`railgrid/railgrid`](https://github.com/railgrid/railgrid) (path `providers/infrastructure/`)
-> via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
-> the mirror, so any direct change here is overwritten. File issues and PRs
-> against [`railgrid/railgrid`](https://github.com/railgrid/railgrid) instead.
-> See [docs/provider-publishing.md](../../docs/provider-publishing.md) for how
-> the mirror is published.
-
 A railgrid provider that brokers application templates from a central
 [kro](https://github.com/kro-run/kro) (Kube Resource
 Orchestrator) cluster into railgrid tenant workspaces. A tenant picks a

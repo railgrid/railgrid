@@ -107,7 +107,7 @@ jobs:
       # These suites build the provider binaries and assert on their behaviour,
       # so they must exercise THIS commit's provider-sdk, not the last published
       # release of it. The providers deliberately carry no `replace` (see
-      # go.work.template and hack/provider-sdk-cutover.sh) — workspace mode is
+      # go.work.template) — workspace mode is
       # how the monorepo develops the SDK and its consumers together, and go.work
       # is gitignored, so CI has to create it. Without this the suites silently
       # link the published SDK and test code that is not in the diff.

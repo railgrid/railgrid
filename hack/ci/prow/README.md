@@ -26,7 +26,7 @@ What is left on GitHub Actions:
 | Workflow | Why it stays |
 | -------- | ------------ |
 | `goreleaser.yaml`, `images.yaml`, `helm-images.yaml`, `provider-release.yaml`, `actions-node-release.yaml`, `auth-node-release.yaml` | Releases: binaries, images, charts, packages. `goreleaser.yaml` also dry-runs on a pull request that changes the release configuration |
-| `split-*.yaml`, `infrastructure-examples.yaml` | Publishing on pushes to `main`: the provider mirrors and the example images |
+| `infrastructure-examples.yaml` | Publishing on pushes to `main`: the example images |
 | `ci-image.yaml` | Builds the image the Prow jobs run in |
 | `macos.yaml` | Needs a macOS runner. The only validation that still starts on pull requests |
 | `ci.yaml`, `e2e.yaml`, `infrastructure-templates-e2e.yaml`, `tilt-e2e.yaml` | Manual dispatch only: the fallback when the Prow cluster is unavailable |
@@ -39,10 +39,9 @@ job:
 | --------------------- | -------- |
 | `images.yaml` provider images, `infrastructure-examples.yaml` | `pull-railgrid-images` |
 | `infrastructure-templates-e2e.yaml` | `pull-railgrid-e2e-infrastructure-templates` |
-| `split-*.yaml` dry run | `pull-railgrid-split` |
 
 No job is optional or path-triggered: all of them start on every pull request
-that is not docs-only, and Tide waits for each. These three narrow their work
+that is not docs-only, and Tide waits for each. These two narrow their work
 inside `job.sh` to what the pull request touched (the workflows' old path
 filters and image selection) and succeed at once when that is nothing.
 
