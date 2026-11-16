@@ -5,6 +5,7 @@ export type PublishingStatusTone = 'success' | 'warning' | 'danger' | 'muted'
 export interface ProductionBindingState {
   phase?: string | null
   url?: string | null
+  outputs?: Record<string, string> | null
 }
 
 export interface PublishingAccessState {
@@ -55,6 +56,14 @@ function isFailedPhase(phase: string): boolean {
   }
 }
 
+// The Project controller reports a pull credential it could not get onto the
+// production instance under this output. Without that credential a private
+// image never pulls, so the deployment cannot become ready.
+export function productionPullCredentialProblem(binding: ProductionBindingState | null): string {
+  const problem = binding?.outputs?.imagePullCredential
+  return typeof problem === 'string' ? problem.trim() : ''
+}
+
 // Production deployment and external access are separate lifecycles. A
 // missing binding means production has never been promoted; it must not be
 // presented as a deployed app merely because an access record is present.
@@ -64,11 +73,12 @@ export function productionDeploymentState(binding: ProductionBindingState | null
   }
   const phase = normalizedPhase(binding.phase)
   const ready = isReadyPhase(phase)
+  const blocked = !ready && productionPullCredentialProblem(binding) !== ''
   return {
     deployed: true,
     ready,
     label: phase || 'Provisioning',
-    tone: ready ? 'success' : isFailedPhase(phase) ? 'danger' : 'warning',
+    tone: ready ? 'success' : isFailedPhase(phase) || blocked ? 'danger' : 'warning',
   }
 }
 
@@ -96,6 +106,10 @@ export function productionDeploymentDescription(
 ): string {
   const deployment = productionDeploymentState(binding)
   if (!deployment.ready) {
+    const problem = productionPullCredentialProblem(binding)
+    if (problem) {
+      return `Production can't pull its container images, so it isn't serving traffic. ${problem}`
+    }
     return 'The production deployment is being prepared and is not serving external traffic yet.'
   }
   if (publishing === null) {

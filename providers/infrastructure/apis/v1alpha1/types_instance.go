@@ -255,3 +255,23 @@ const FinalizerInstanceRuntime = "instances.infrastructure.railgrid.ai/runtime"
 // ("instances"). Kept as a constant so claim lists and data-plane paths
 // reference it instead of re-deriving it.
 const InstancesResource = "instances"
+
+// ImagePullCredentialVerb is the custom subresource on instances through which
+// another provider gives this one a registry pull credential for an Instance
+// (instances/{name}/image-pull-credential). The caller cannot write the
+// Secret itself: a provider's `secrets` claim reaches only Secrets labelled
+// with its own name, so no other provider can create one labelled for this
+// provider. This provider writes it, under its own label, and returns the
+// name for spec.imagePullSecretRef.
+const ImagePullCredentialVerb = "image-pull-credential"
+
+// CredentialsNamespace is the namespace in the tenant workspace that holds
+// the Secrets spec.imagePullSecretRef and spec.oidcBridgeSecretRef name.
+const CredentialsNamespace = "default"
+
+// ImagePullCredentialSecretName is the tenant Secret the image-pull-credential
+// verb writes for an Instance. The name belongs to this provider. Callers use
+// the name the verb returns, not this function.
+func ImagePullCredentialSecretName(instance string) string {
+	return instance + "-image-pull"
+}

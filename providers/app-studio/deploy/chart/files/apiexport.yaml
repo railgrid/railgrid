@@ -75,6 +75,10 @@ spec:
     resource: instances/workspace
     verbs:
     - '*'
+  - group: infrastructure.railgrid.ai
+    resource: instances/image-pull-credential
+    verbs:
+    - '*'
   - group: code.railgrid.ai
     resource: repositories
     verbs:
@@ -141,7 +145,7 @@ spec:
       crd: {}
   - group: ai.railgrid.ai
     name: projects
-    schema: v261114-7da62f359.projects.ai.railgrid.ai
+    schema: v261115-317b8239b.projects.ai.railgrid.ai
     storage:
       crd: {}
   - group: ai.railgrid.ai

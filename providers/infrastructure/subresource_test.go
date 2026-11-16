@@ -27,7 +27,7 @@ const testClusterID = "aaaaaaaaaaaaaaaa"
 
 // TestSubresourceRoutesComeFromTheManifest derives the table the way
 // serveWithConfig does — through subresourceRoutes, pointed at this provider's
-// real manifest.yaml — and proves the nine declared instance verbs come out,
+// real manifest.yaml — and proves the ten declared instance verbs come out,
 // all of them data-plane routes (this provider catalogues no actions).
 func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 	t.Setenv("RAILGRID_CATALOGENTRY_FILE", "manifest.yaml")
@@ -39,6 +39,7 @@ func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 	want := []string{
 		"instances/env",
 		"instances/exec",
+		"instances/image-pull-credential",
 		"instances/log",
 		"instances/process",
 		"instances/proxy",
