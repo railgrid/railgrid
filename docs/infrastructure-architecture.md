@@ -551,7 +551,7 @@ identity service already materializes
 
 ```yaml
 spec:
-  imagePullSecretRef: {name: my-app-prod-registry}   # dockerconfigjson
+  imagePullSecretRef: {name: my-app-prod-image-pull} # dockerconfigjson
   oidcBridgeSecretRef: {name: acme-oidc}             # key: oidc_client_secret
 ```
 
@@ -568,7 +568,29 @@ back. `status.conditions[type=SecretsBridged]` is `False` with
 `SecretRefInvalid` when it exists without the key the reference is for, and
 `BridgeSecretRefMissing` when `oidc.mode=byo` names no Secret at all. An unset
 `imagePullSecretRef` means "this instance pulls from a public registry" — a
-statement, not a gap.
+statement, not a gap. A `SecretsBridged=False` Instance is also held at
+`Ready=False` with the same reason, whatever the runtime reports: pods that
+cannot pull their private image are not serving.
+
+**How another provider supplies a pull credential.** This provider's `secrets`
+claim reaches only Secrets labelled `railgrid.ai/owner: infrastructure`, and
+kcp refuses any other provider's write of a Secret under that label. So a
+producer cannot write the pull Secret for an Instance itself. It POSTs the
+credential to the `instances/{name}/image-pull-credential` verb instead
+(`{"input": {"dockerConfigJSON": "…", "expiresAt": "…"}}`). This provider
+writes `<instance>-image-pull` in the credentials namespace, under its own
+label and owned by the Instance, and returns `{"secretRef": {"name": …}}` for
+the caller to set as `spec.imagePullSecretRef`. That Secret is the one
+tenant-side write this provider makes, and why its claim carries
+`create`/`update`. A foreign provider is authorized by its accepted claim on the
+coordinate. A tenant caller additionally needs `update` on the Instance.
+App Studio is the producer today (`docs/app-studio-runtime-decoupling.md`
+§"The pull secret is a typed reference, not a name").
+
+**Tier readiness.** kro reports a resource ready as soon as it exists unless
+it declares `readyWhen`. The `application` template's database, web, API and
+gate tiers each declare one (current generation, every replica updated and
+ready), so its Instance is Ready only when a request can be served.
 
 This also changes how a Secret event finds its Instance. There is no name to
 invert any more, so the reconciler's index remembers what each Instance

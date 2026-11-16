@@ -149,7 +149,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The verb grant itself is not repeated: kcp authorized instances/{verb}
 	// with ordinary RBAC before it forwarded the request, and a component
 	// verb collapses onto the same subresource.
-	instance, _, err := sdk.Gate(r.Context(), h.callers, instancesGVR, req)
+	instance, provider, err := sdk.Gate(r.Context(), h.callers, instancesGVR, req)
 	if err != nil {
 		// The detail stays provider-side; the caller learns only the status.
 		logger.V(3).Info("data-plane request refused", "verb", req.Verb, "component", req.Component, "instance", req.Name, "err", err)
@@ -159,6 +159,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Gate has already accepted the identity, so it is present. It is a
 	// label (who started an exec session), never a credential.
 	caller, _ := sdk.ProxiedIdentityFrom(r.Context())
+
+	// The pull credential is this provider's own concern, not a template's:
+	// it writes a tenant Secret and touches no runtime target, so it is
+	// served before the template contract is resolved.
+	if req.Verb == infrav1alpha1.ImagePullCredentialVerb {
+		if req.Component != "" {
+			sdk.WriteError(w, sdk.ErrBadPath)
+			return
+		}
+		servePullCredential(w, r, provider, caller, req, instance)
+		return
+	}
 
 	// 2. Resolve the data-plane contract of the instance's template. The
 	// template name comes from the instance the caller was just authorized

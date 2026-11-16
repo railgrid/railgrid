@@ -136,6 +136,8 @@ data:
               - name: exec
                 description: "Open an interactive shell or run a command in the instance."
                 stream: true
+              - name: image-pull-credential
+                description: "Store the registry pull credential the instance's private images need."
               - name: log
                 description: "Stream the instance's logs."
                 stream: true
@@ -172,23 +174,22 @@ data:
           resources:
             - name: subjectaccessreviews
               verbs: [create]
-        # The core group. Secrets, read-only, and ONLY the ones labelled
-        # railgrid.ai/owner: infrastructure. This provider writes no Secret in a
-        # tenant workspace at all — every Secret it creates lives in its own
-        # runtime cluster — so here the owner label does not mean "written by
-        # infrastructure", it means "entrusted TO infrastructure": the tenant's
-        # (or another provider's) explicit hand-over of one named credential,
-        # which is exactly the consent a blanket claim skipped
-        # (docs/cross-provider-simplification.md §2.1 finding 1, X-4).
+        # The core group. Secrets, and ONLY the ones labelled
+        # railgrid.ai/owner: infrastructure. The label means "entrusted TO
+        # infrastructure": the tenant's (or another provider's) explicit hand-over
+        # of one named credential, which is exactly the consent a blanket claim
+        # skipped (docs/cross-provider-simplification.md §2.1 finding 1, X-4).
         #
         # Two Secrets reach this claim, both named by a typed field on the
         # Instance and both read by the instance controller
         # (controller/instance/bridge.go):
         #
-        #   spec.imagePullSecretRef   a dockerconfigjson pull credential. App
-        #     Studio mints it on promote, AS THE CALLER, and labels it for this
-        #     provider; naming it on the Instance and labelling it are the same
-        #     act of hand-over.
+        #   spec.imagePullSecretRef   a dockerconfigjson pull credential. Another
+        #     provider (App Studio, on promote) cannot write a Secret under this
+        #     label: kcp refuses a write whose owner label is not the writer's
+        #     own. So it hands the credential to the image-pull-credential verb,
+        #     and THIS provider writes the Secret, the one tenant-side write it
+        #     makes (create/update below). The caller names it on the Instance.
         #   spec.oidcBridgeSecretRef  a BYO OIDC client secret the tenant writes
         #     by hand. The tenant labels it; an unlabelled one comes back as
         #     SecretsBridged=False/SecretRefNotFound rather than being read.
@@ -198,7 +199,7 @@ data:
         # kcp proxy, so kcp's own RBAC decides, and no claim is involved.
         - resources:
             - name: secrets
-              verbs: [get, list, watch]
+              verbs: [get, list, watch, create, update]
               selector:
                 matchLabels:
                   railgrid.ai/owner: infrastructure

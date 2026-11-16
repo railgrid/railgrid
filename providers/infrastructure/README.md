@@ -149,9 +149,13 @@ The CatalogEntry declares no inline schemas (pure broker, no CRDs leak into
 tenant workspaces — `init` installs the Template and Instance schemas into the
 provider workspace itself). `spec.requires` holds two entries, both platform
 builtins: `authorization.k8s.io/subjectaccessreviews` `create` (every provider
-serving a custom subresource needs it) and core `secrets` `get/list/watch`,
-narrowed by `selector.matchLabels: {railgrid.ai/owner: infrastructure}` so only
-Secrets explicitly handed to this provider are reachable. Everything under
+serving a custom subresource needs it) and core `secrets`
+`get/list/watch/create/update`, narrowed by
+`selector.matchLabels: {railgrid.ai/owner: infrastructure}` so only Secrets
+explicitly handed to this provider are reachable. The only Secret it writes in
+a tenant workspace is the pull credential another provider hands over through
+the `instances/{name}/image-pull-credential` verb, which no other provider can
+write under this label. Everything under
 `requires` is tenant-scoped by definition and reaches a workspace only once a
 tenant accepts it on Enable.
 
