@@ -231,9 +231,6 @@ Environment variables consumed by the binary:
 | `APP_STUDIO_ASSISTANT_MODEL_CONTEXT_TOKENS` | Active model context window used for token-pressure compaction (default `128000` when provider model metadata is unavailable). |
 | `APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY` | `true` → skip TLS verify on MCP calls (dev) |
 | `APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY` | `true` → skip TLS verification only for preview readiness probes (local dev with a self-signed Gateway) |
-| `APP_STUDIO_PREVIEW_BRIDGE_ENABLED` | Enables the signed DOM annotation bridge for supported development previews; set `false` for a deployment-wide kill switch. |
-| `APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY` | PEM-encoded P-256 private key used to sign short-lived ES256 iframe capabilities |
-| `APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID` | Stable key ID matching the public JWK independently deployed to the preview bridge |
 
 ## Health and readiness
 
@@ -371,17 +368,11 @@ The database container is named `railgrid-app-studio-postgres`, listens on
 Tiltfiles expose it as the `app-studio-db` resource, so hard-refreshing the UI
 or rebuilding the provider no longer drops prior conversation history.
 
-Both Tilt stacks also expose an `app-studio-preview-bridge-key` resource.
-It atomically generates and reuses a P-256 key under
-`.kcp/app-studio-preview-bridge/`. The App Studio process receives the private
-key and derived key ID; Infrastructure receives only the matching public JWKS
-and propagates it into development-preview init containers. The directory is
-gitignored and uses mode `0700`; the private key uses mode `0600`. Delete that
-directory only when intentionally rotating the local key, then restart the
-App Studio and Infrastructure Tilt resources so both sides receive the new
-pair. Local Make/Tilt targets intentionally ignore one-sided signing-key or
-JWKS environment overrides; use the Helm values or launch the binaries directly
-when testing a custom key pair.
+The embedded preview's annotation bridge needs no App Studio configuration.
+Infrastructure installs the portal origin allowlist (the hub's public origin by
+default, `development.previewBridge.*` in its chart) into each development
+preview, and the injected script talks only to a parent frame on one of those
+exact origins.
 
 To use your own database, set `APP_STUDIO_DATABASE_URL` in the environment or in
 `providers/app-studio/.env` (copy from `.env.example`). To intentionally use the

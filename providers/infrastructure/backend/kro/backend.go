@@ -30,6 +30,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -116,12 +117,9 @@ func New(runtime dynamic.Interface) *Backend {
 		gatewayNamespace = DefaultGatewayNamespace
 	}
 	tokens := map[string]string{
-		gatewayNameToken:      gatewayName,
-		gatewayNamespaceToken: gatewayNamespace,
-		appPublicPortToken:    appPublicPortSuffix(os.Getenv("RAILGRID_APP_PUBLIC_PORT")),
-		previewBridgeVerificationJWKSConfigKey: strings.TrimSpace(
-			os.Getenv("RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS"),
-		),
+		gatewayNameToken:                 gatewayName,
+		gatewayNamespaceToken:            gatewayNamespace,
+		appPublicPortToken:               appPublicPortSuffix(os.Getenv("RAILGRID_APP_PUBLIC_PORT")),
 		sandboxRuntimeClassNameConfigKey: strings.TrimSpace(os.Getenv("RAILGRID_SANDBOX_RUNTIME_CLASS_NAME")),
 		gatewayBackendHealthCheckConfigKey: strings.TrimSpace(
 			os.Getenv("RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK"),
@@ -129,7 +127,39 @@ func New(runtime dynamic.Interface) *Backend {
 	}
 	maps.Copy(tokens, accessGateTokens())
 	maps.Copy(tokens, devImageTokens())
+	origins, source := resolvePreviewBridgePortalOrigins(tokens[hubPublicURLToken])
+	tokens[previewBridgePortalOriginsConfigKey] = origins
+	// The bridge fails open, so a wrong allowlist only shows up as a missing
+	// Annotate action. Say once where it came from: a hub URL fallback is
+	// usually cluster-internal and no browser is on that origin.
+	klog.Background().Info("preview bridge portal origins resolved", "origins", origins, "source", source)
 	return &Backend{runtime: runtime, tokens: tokens}
+}
+
+// resolvePreviewBridgePortalOrigins returns the comma-separated portal origins
+// the injected development-preview bridge answers. The portal is served by the
+// hub, so the browser-reachable hub origin is the default and nothing else
+// needs configuring. RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS overrides it (for a
+// hub reached through more than one origin), and
+// RAILGRID_PREVIEW_BRIDGE_ENABLED=false turns the bridge off. The dev agent
+// validates every entry and fails open. The second result names where the
+// origins came from, for the startup log.
+func resolvePreviewBridgePortalOrigins(hubPublicURL string) (string, string) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("RAILGRID_PREVIEW_BRIDGE_ENABLED")), "false") {
+		return "", "disabled by RAILGRID_PREVIEW_BRIDGE_ENABLED=false"
+	}
+	if origins := strings.TrimSpace(os.Getenv("RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS")); origins != "" {
+		return origins, "RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS"
+	}
+	parsed, err := url.Parse(strings.TrimSpace(hubPublicURL))
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+		return "", "none: no usable hub URL, so the bridge is off"
+	}
+	source := "RAILGRID_ACCESS_HUB_PUBLIC_URL"
+	if strings.TrimSpace(os.Getenv("RAILGRID_ACCESS_HUB_PUBLIC_URL")) == "" {
+		source = "hub URL fallback (RAILGRID_ACCESS_HUB_PUBLIC_URL unset; set publishing.hubPublicURL if this origin is not browser-reachable)"
+	}
+	return parsed.Scheme + "://" + parsed.Host, source
 }
 
 // DefaultAccessProxyImage backs ${railgrid.accessProxyImage} when

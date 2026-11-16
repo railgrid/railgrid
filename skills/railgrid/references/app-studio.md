@@ -291,8 +291,6 @@ POST $AS/projects/<p>/restart-development[?component=]   → {<component>: agent
 GET  $AS/projects/<p>/development-logs[?component=]      streamed (default: first declared component)
 GET  $AS/projects/<p>/development-status                 raw instance status
 POST $AS/projects/<p>/authorize-development-preview      → {target,ready,previewURL,message,reason,desiredAccess,observedAccess,accessConverged}
-POST $AS/projects/<p>/preview-bridge-sessions            {generation:<uuid>,protocolVersion:1,portalInstanceID:<uuid>} + Origin header → 201 {status available,sessionID,generation,capability,previewOrigin,portalOrigin,expiresAt} | 200 {status:"unsupported"}; 409 preview not ready
-DELETE $AS/projects/<p>/preview-bridge-sessions/<session>   204
 GET|POST|DELETE $AS/projects/<p>/preview                 → {mode,url,converged,supported,grants[]}; POST {mode public|restricted} (aliases members|private; empty keeps the mode); DELETE = private again and drops every preview grant (200 even without a dev environment); default mode is `restricted`; `public` converged in ~10 s on a hosted hub (anonymous curl 200), allow 20–30 s. No CLI command; `railgrid app status` does not show the mode
 GET|POST $AS/projects/<p>/preview-grants ; POST …/preview-grants/<grant> (revoke)    same bodies and rules as publishing-grants
 ```
@@ -729,7 +727,7 @@ and its SHA-256.
 | Portal tab | Verbs |
 |---|---|
 | New project wizard | `create-readiness`, `plan`, `create-project-stream`, first turn |
-| Preview | `authorize-development-preview`, `preview-bridge-sessions` |
+| Preview | `authorize-development-preview` (annotations use a browser-only bridge, no verb) |
 | Code (edit, upload, download) | `files`, `files-content` (GET/PUT/DELETE), `files-raw`, `files-upload` |
 | Review | `sessions/<s>/review` |
 | Providers | hub `GET /api/providers` |

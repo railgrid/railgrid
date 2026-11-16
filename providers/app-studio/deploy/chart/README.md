@@ -89,11 +89,6 @@ whichever copy the tenant enabled, platform or self-hosted.
 | `assistant.limits.maxIterations` | `""` | Per-run model-call ceiling (`APP_STUDIO_ASSISTANT_MAX_ITERATIONS`). Empty keeps the provider default of 200. Only an explicit `0` or `unlimited` removes it, which the provider logs; never do this for untrusted tenants. |
 | `assistant.limits.rolloutBudgetTokens` | `""` | Per-run weighted-token budget (`APP_STUDIO_ASSISTANT_ROLLOUT_BUDGET_TOKENS`). Empty keeps the provider default of 2,000,000. Only an explicit `0` or `unlimited` disables it (logged). |
 | `assistant.limits.orgMonthlyUSDCap` | `""` | Per-organization monthly model spend cap in USD (`APP_STUDIO_ORG_MONTHLY_USD_CAP`), checked before every model call across all of the organization's projects, runs, and replicas; usage is priced from provider token counts and unknown models are charged a frontier-tier rate. Empty keeps the provider default of 100. Only an explicit `0` or `unlimited` disables it (logged). The cap bounds spend already incurred rather than reserving it up front: the check reads the shared ledger before a model call and the cost is only known after it, so a month can overshoot by at most one model call per call in flight when the cap is crossed. The overshoot does not compound — every later call fails closed. |
-| `previewBridge` |  | Signed DOM annotation sharing starts automatically while the embedded preview is open. Until both signing fields are configured, App Studio stays available but reports the optional preview bridge as unavailable. The private key signs short-lived iframe capabilities. Its matching current and previous public… |
-| `previewBridge.enabled` | `true` |  |
-| `previewBridge.signingKeyID` | `""` |  |
-| `previewBridge.signingKeySecretRef.name` | `""` |  |
-| `previewBridge.signingKeySecretRef.key` | `private-key.pem` |  |
 | `store` |  | App Studio no longer holds a kubeconfig to the runtime cluster. The development data plane (sync, logs, restart, preview readiness) is served by the infrastructure provider as subresources on the project's template instance, reached through the hub as the calling user. See docs/app-studio-runtime… |
 | `store.databaseURL` | `""` |  |
 | `store.databaseURLSecretRef.name` | `""` |  |

@@ -263,12 +263,15 @@ spec:
             - name: INFRASTRUCTURE_SERVE_CLUSTER_ROLE
               value: {{ $serveRole | quote }}
             {{- end }}
-            {{- with .Values.development.previewBridge.verificationJWKS }}
-            # Public verification keys are platform-global configuration. The
-            # operator propagates them into each managed provider Deployment;
-            # no tenant or InfrastructureProvider CR can override them.
-            - name: RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS
-              value: {{ . | quote }}
+            {{- if not .Values.development.previewBridge.enabled }}
+            - name: RAILGRID_PREVIEW_BRIDGE_ENABLED
+              value: "false"
+            {{- end }}
+            {{- with .Values.development.previewBridge.portalOrigins }}
+            # Platform-global: the operator propagates these into each managed
+            # provider Deployment; no InfrastructureProvider CR overrides them.
+            - name: RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS
+              value: {{ join "," . | quote }}
             {{- end }}
             {{- include "infrastructure.tenantNetworkPolicyEnv" . | nindent 12 }}
           resources:

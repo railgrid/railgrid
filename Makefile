@@ -2,7 +2,7 @@
 .PHONY: build-access-proxy docker-build-access-proxy load-access-proxy-image
 .PHONY: test-runner lint-runner fix-lint-runner build-runner build-runner-darwin build-runner-linux
 .PHONY: build-app-studio-provider-go
-.PHONY: dev-edge-create dev-run-edge build test lint lint-providers lint-provider-sdk fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-embedded run-hub-embedded-static dev-login dev-login-static dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider gen-agents-templates agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-kuery-provider e2e-agents-provider
+.PHONY: dev-edge-create dev-run-edge build test lint lint-providers lint-provider-sdk fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-embedded run-hub-embedded-static dev-login dev-login-static dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider gen-agents-templates agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-kuery-provider e2e-agents-provider
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -1967,10 +1967,6 @@ APP_STUDIO_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/app-studio-postgres
 APP_STUDIO_POSTGRES_USER ?= appstudio
 APP_STUDIO_POSTGRES_PASSWORD ?= appstudio
 APP_STUDIO_POSTGRES_DB ?= appstudio
-APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_DIR ?= $(KCP_DATA_DIR)/app-studio-preview-bridge
-APP_STUDIO_PREVIEW_BRIDGE_DEV_PRIVATE_KEY ?= $(APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_DIR)/private-key.pem
-APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS ?= $(APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_DIR)/verification-jwks.json
-APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_ID ?= $(APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_DIR)/key-id
 
 # --- agents provider (long-running personal AI agents) ---
 AGENTS_PORT ?= 8087
@@ -1998,7 +1994,7 @@ AGENTS_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/agents-postgres
 ## stub catalog so the UI is demoable without standing up a real central
 ## kro cluster. Point KRO_KUBECONFIG at a real kubeconfig to use the
 ## real client + your own ResourceGraphDefinitions.
-run-provider-infrastructure: build-infrastructure-provider app-studio-preview-bridge-dev-key ## Run the infrastructure provider (requires: make run-hub-embedded-static + make install-provider-infrastructure)
+run-provider-infrastructure: build-infrastructure-provider ## Run the infrastructure provider (requires: make run-hub-embedded-static + make install-provider-infrastructure)
 	@echo "Starting infrastructure provider on :$(KROMC_PORT)"
 	@echo "  hub:   $(KROMC_HUB_URL)"
 	@echo "  token: $(KROMC_TOKEN)"
@@ -2023,10 +2019,9 @@ run-provider-infrastructure: build-infrastructure-provider app-studio-preview-br
 	RAILGRID_GATEWAY_NAME=$${RAILGRID_GATEWAY_NAME:-cloudflare-tunnel} \
 	RAILGRID_GATEWAY_NAMESPACE=$${RAILGRID_GATEWAY_NAMESPACE:-cfgate-system} \
 	RAILGRID_APP_PUBLIC_PORT=$${RAILGRID_APP_PUBLIC_PORT-10443} \
-	RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider
 
-run-provider-infrastructure-operator: build-infrastructure-provider app-studio-preview-bridge-dev-key ## Run the infrastructure provider in OPERATOR mode (bootstrap reconcile + serve from a provider + runtime kubeconfig)
+run-provider-infrastructure-operator: build-infrastructure-provider ## Run the infrastructure provider in OPERATOR mode (bootstrap reconcile + serve from a provider + runtime kubeconfig)
 	@echo "Starting infrastructure provider (operator) on :$(KROMC_PORT)"
 	@echo "  hub:      $(KROMC_HUB_URL)"
 	@echo "  provider: $${INFRASTRUCTURE_PROVIDER_KUBECONFIG:-$(KROMC_KCP_KUBECONFIG)} (kcp)"
@@ -2042,7 +2037,6 @@ run-provider-infrastructure-operator: build-infrastructure-provider app-studio-p
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
 	INFRASTRUCTURE_PROVIDER_KUBECONFIG=$${INFRASTRUCTURE_PROVIDER_KUBECONFIG:-$(KROMC_KCP_KUBECONFIG)} \
 	INFRASTRUCTURE_RUNTIME_KUBECONFIG=$${INFRASTRUCTURE_RUNTIME_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
-	RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider operator
 
 # ── CRD-driven operator (controller) dev flow ───────────────────────────────
@@ -2055,7 +2049,7 @@ INFRA_OPERATOR_RUNTIME_KC ?= $(KRO_KIND_KUBECONFIG)
 INFRA_OPERATOR_KIND_NAME ?= $(KRO_KIND_NAME)
 INFRA_OPERATOR_CRD ?= providers/infrastructure/config/crds/infrastructure.railgrid.ai_infrastructureproviders.yaml
 
-run-provider-infrastructure-controller: build-infrastructure-provider app-studio-preview-bridge-dev-key ## Apply the operator CRD/Secrets/CR into the runtime cluster and run the controller (dev)
+run-provider-infrastructure-controller: build-infrastructure-provider ## Apply the operator CRD/Secrets/CR into the runtime cluster and run the controller (dev)
 	@echo "Applying operator CRD + Secrets + CR into runtime cluster ($(INFRA_OPERATOR_RUNTIME_KC))"
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f $(INFRA_OPERATOR_CRD)
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl create namespace $(INFRA_OPERATOR_NS) --dry-run=client -o yaml | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
@@ -2066,18 +2060,10 @@ run-provider-infrastructure-controller: build-infrastructure-provider app-studio
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
 	INFRASTRUCTURE_OPERATOR_SKIP_SERVE=true \
-	RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider controller
 
 ## Run the App Studio provider binary locally. Mirrors the other external
 ## providers so the heartbeat path is consistent and the UI runs on :8085.
-app-studio-preview-bridge-dev-key: ## Generate/reuse the local preview-bridge signing key and public JWKS under .kcp
-	@node providers/app-studio/hack/preview-bridge-dev-keys.mjs \
-		--output-dir "$(abspath $(APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_DIR))"
-
-verify-app-studio-preview-bridge-dev-key: ## Verify local preview-bridge key generation, repair, and concurrency
-	node --test providers/app-studio/hack/preview-bridge-dev-keys.test.mjs
-
 verify-app-studio-eval: ## Verify the terminal-aware assistant evaluation harness
 	@output="$$(node --test-reporter=tap providers/app-studio/hack/eval/terminal-turn.test.mjs 2>&1)"; \
 	status=$$?; \
@@ -2143,7 +2129,7 @@ run-provider-app-studio: build-app-studio-provider ## Build and run the App Stud
 	$(MAKE) run-provider-app-studio-prebuilt
 
 .PHONY: run-provider-app-studio-prebuilt
-run-provider-app-studio-prebuilt: app-studio-db-up app-studio-preview-bridge-dev-key ## Run App Studio using the existing provider binary
+run-provider-app-studio-prebuilt: app-studio-db-up ## Run App Studio using the existing provider binary
 	@echo "Starting App Studio provider on :$(APP_STUDIO_PORT)"
 	@echo "  hub:   $(APP_STUDIO_HUB_URL)"
 	@echo "  token: $(APP_STUDIO_TOKEN)"
@@ -2162,8 +2148,6 @@ run-provider-app-studio-prebuilt: app-studio-db-up app-studio-preview-bridge-dev
 	RAILGRID_HUB_PUBLIC_URL="$${RAILGRID_HUB_PUBLIC_URL:-$(APP_STUDIO_HUB_PUBLIC_URL)}"; \
 	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
 	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
-	APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_PRIVATE_KEY)")"; \
-	APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_ID)")"; \
 	if [ "$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-}" = "true" ]; then \
 		echo "  store: in-memory (non-durable)"; \
 		APP_STUDIO_DATABASE_URL= \
@@ -2178,8 +2162,6 @@ run-provider-app-studio-prebuilt: app-studio-db-up app-studio-preview-bridge-dev
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
-		APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY="$${APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY}" \
-		APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID="$${APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID}" \
 			$(BINDIR)/app-studio-provider; \
 	else \
 		echo "  store: $${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}"; \
@@ -2194,8 +2176,6 @@ run-provider-app-studio-prebuilt: app-studio-db-up app-studio-preview-bridge-dev
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
-		APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY="$${APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY}" \
-		APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID="$${APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID}" \
 			$(BINDIR)/app-studio-provider; \
 	fi
 
@@ -2937,7 +2917,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: test-tilt-checkout test-tilt-code-sequence test-tilt-edges-sequence test-app-studio-harness-scripts test-app-studio-harness lint-app-studio-harness verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-app-studio-sequence test-tilt-external-providers verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
+verify: test-tilt-checkout test-tilt-code-sequence test-tilt-edges-sequence test-app-studio-harness-scripts test-app-studio-harness lint-app-studio-harness verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-app-studio-sequence test-tilt-external-providers verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
 
 # --- Helm chart packaging ---
 

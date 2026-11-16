@@ -275,8 +275,7 @@ Per provider:
   `https://console.127.0.0.1.sslip.io:9443/services/providers/code/oauth/github/callback`.
   Register that URL on the OAuth App. Without the variables, tenants add a
   GitHub token as a Connection.
-- **app-studio** requires infrastructure, which is added automatically. Its
-  signed preview bridge is off, since it needs a signing key pair.
+- **app-studio** requires infrastructure, which is added automatically.
 
 With `--enable-providers` (default), every installed provider is then enabled
 in the dev user's default workspace in install order, accepting its declared
