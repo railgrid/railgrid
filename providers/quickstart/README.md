@@ -1,19 +1,8 @@
 # Quickstart provider
 
-> [!IMPORTANT]
-> **Read-only mirror — do not push or open PRs here.**
-> The standalone [`railgrid/provider-quickstart`](https://github.com/railgrid/provider-quickstart)
-> repository is **automatically synced** from the railgrid monorepo
-> [`railgrid/railgrid`](https://github.com/railgrid/railgrid) (path `providers/quickstart/`)
-> via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
-> the mirror, so any direct change here is overwritten. File issues and PRs
-> against [`railgrid/railgrid`](https://github.com/railgrid/railgrid) instead.
->
-> This is also the canonical "copy me" template for a standalone provider repo:
-> it ships its own `Dockerfile` and Helm chart (`deploy/chart/`). The image and
-> chart are built and published from the railgrid monorepo CI (every PR builds
-> them, so breaks are caught before the sync); the mirror itself carries no
-> build workflows.
+This is the canonical "copy me" template for a provider: it ships its own
+`Dockerfile` and Helm chart (`deploy/chart/`). The image and chart are built
+and published from this repository's CI, and every PR builds them.
 
 The reference railgrid provider: the smallest thing that demonstrates all three
 pillars of the provider contract, written to be copied. The contract itself is

@@ -16,9 +16,7 @@
 //	                                                  railgrid-agent)
 //	quickstart      providers/quickstart/v<X.Y.Z>     provider-release.yaml builds
 //	                                                  the image + chart stamped with
-//	                                                  this version; the source is
-//	                                                  also mirrored to railgrid/
-//	                                                  provider-<name> (source only)
+//	                                                  this version
 //	infrastructure  providers/infrastructure/v<X.Y.Z>
 //	code            providers/code/v<X.Y.Z>
 //
@@ -69,20 +67,20 @@ type component struct {
 }
 
 // provider-sdk is first: the providers depend on it, so when releasing `all`
-// the SDK tag is cut (and published to the mirror) before the providers that
-// will eventually `require` that published version.
+// the SDK tag is cut before the providers that will eventually `require` that
+// version.
 var componentOrder = []string{"provider-sdk", "hub", "quickstart", "kuery", "app-studio", "infrastructure", "code", "edges", "agents"}
 
 var components = map[string]component{
-	"provider-sdk":   {"provider-sdk/v", "split → railgrid/provider-sdk; publishes the go-gettable SDK module (providers require this version once the replace is dropped)"},
+	"provider-sdk":   {"provider-sdk/v", "tag only; versions the SDK module, no workflow builds from it"},
 	"hub":            {"v", "goreleaser CLI release + hub/agent images + platform Helm charts (ghcr.io/railgrid)"},
-	"quickstart":     {"providers/quickstart/v", "provider-release.yaml builds the image + chart at this version; source mirror → railgrid/provider-quickstart"},
-	"kuery":          {"providers/kuery/v", "provider-release.yaml builds the image + chart at this version; source mirror → railgrid/provider-kuery"},
-	"app-studio":     {"providers/app-studio/v", "provider-release.yaml builds the image + chart at this version; source mirror → railgrid/provider-app-studio"},
-	"infrastructure": {"providers/infrastructure/v", "provider-release.yaml builds the image + chart at this version; source mirror → railgrid/provider-infrastructure"},
-	"code":           {"providers/code/v", "provider-release.yaml builds the image + chart at this version; source mirror → railgrid/provider-code"},
-	"edges":          {"providers/edges/v", "provider-release.yaml builds the image (ghcr.io/railgrid/railgrid-edges-provider) + chart at this version; source mirror → railgrid/provider-edges"},
-	"agents":         {"providers/agents/v", "provider-release.yaml builds the image (ghcr.io/railgrid/railgrid-agents-provider) + chart at this version; no source mirror"},
+	"quickstart":     {"providers/quickstart/v", "provider-release.yaml builds the image + chart at this version"},
+	"kuery":          {"providers/kuery/v", "provider-release.yaml builds the image + chart at this version"},
+	"app-studio":     {"providers/app-studio/v", "provider-release.yaml builds the image + chart at this version"},
+	"infrastructure": {"providers/infrastructure/v", "provider-release.yaml builds the image + chart at this version"},
+	"code":           {"providers/code/v", "provider-release.yaml builds the image + chart at this version"},
+	"edges":          {"providers/edges/v", "provider-release.yaml builds the image (ghcr.io/railgrid/railgrid-edges-provider) + chart at this version"},
+	"agents":         {"providers/agents/v", "provider-release.yaml builds the image (ghcr.io/railgrid/railgrid-agents-provider) + chart at this version"},
 }
 
 func main() {
@@ -485,7 +483,7 @@ Several components can be listed in one run; they are tagged in the order
 shown below (provider-sdk first), whatever order you type them in.
 
 Components:
-  provider-sdk    provider-sdk/v<X.Y.Z>             (split → railgrid/provider-sdk)
+  provider-sdk    provider-sdk/v<X.Y.Z>             (tag only)
   hub             v<X.Y.Z>                          (repo-wide release)
   quickstart      providers/quickstart/v<X.Y.Z>
   kuery           providers/kuery/v<X.Y.Z>

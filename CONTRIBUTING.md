@@ -263,8 +263,8 @@ but the contracts job. No job is optional: a red one blocks the merge until it
 passes or an approver waives it with `/override`.
 
 A few GitHub Actions workflows also run on pull requests: image builds on
-every one, and the macOS, infrastructure-template, release and
-provider-mirror workflows when the paths they watch change.
+every one, and the macOS, infrastructure-template and release workflows
+when the paths they watch change.
 
 ### Review and merge
 

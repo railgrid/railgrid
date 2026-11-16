@@ -66,9 +66,8 @@ the Makefile and the Tiltfile, a new provider today needs:
 | 17 | Init container bootstraps schemas, APIExport, slice, bind grant, CatalogEntry | provider-sdk/install/install.go:138 | automatic |
 | 18 | Heartbeat, Ready condition | provider-sdk/hubclient | automatic |
 | 19 | Enable per workspace | POST .../providers/{name}/enable | yes, by design |
-| 20 | Publish a standalone mirror: deploy key, secret, splitsh workflow | provider-publishing.md:113-212 | yes |
 
-Sixteen of twenty steps are manual. Steps 2, 6, 7, 11, 13 and 15 are pure
+Fifteen of nineteen steps are manual. Steps 2, 6, 7, 11, 13 and 15 are pure
 toil with no design content.
 
 ### 2.2 The pain, grouped

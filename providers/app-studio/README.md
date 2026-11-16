@@ -1,16 +1,5 @@
 # app-studio provider
 
-> [!IMPORTANT]
-> **Read-only mirror — do not push or open PRs here.**
-> The standalone [`railgrid/provider-app-studio`](https://github.com/railgrid/provider-app-studio)
-> repository is **automatically synced** from the railgrid monorepo
-> [`railgrid/railgrid`](https://github.com/railgrid/railgrid) (path `providers/app-studio/`)
-> via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
-> the mirror, so any direct change here is overwritten. File issues and PRs
-> against [`railgrid/railgrid`](https://github.com/railgrid/railgrid) instead.
-> See [docs/provider-publishing.md](../../docs/provider-publishing.md) for how
-> the mirror is published.
-
 App Studio is a railgrid provider that gives each tenant a **persistent AI project
 workspace**: named Projects with durable "memory" (goals / requirements /
 constraints) and a chat surface backed by the tenant's own LLM credentials,
