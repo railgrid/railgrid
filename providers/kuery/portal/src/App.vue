@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import InlineNotification from './portalkit/InlineNotification.vue'
+import StatusBadge from './portalkit/StatusBadge.vue'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ArrowRight, Braces, ChevronDown, Inbox, Network, TableProperties } from 'lucide-vue-next'
 
@@ -132,11 +134,9 @@ onBeforeUnmount(() => { requestID += 1 })
     <div v-show="!impact" class="kuery-collection-surfaces">
       <div class="kuery-topbar">
         <Tabs :tabs="tabs" :active="active" aria-label="Kuery views" @select="selectTab" />
-        <span v-if="loaded && edges.length > 0" class="k-badge k-badge--success" role="status" aria-live="polite" aria-atomic="true">
-          {{ edgeStatus }}
-        </span>
+        <StatusBadge v-if="loaded && edges.length > 0" :status="edgeStatus" tone="success" role="status" aria-live="polite" aria-atomic="true" />
       </div>
-      <div v-if="error && loaded" class="kuery-inline-error" role="alert">
+      <InlineNotification v-if="error && loaded" tone="error" :action-label="edges.length > 0 ? 'Retry' : ''" action-busy-label="Retrying…" :action-busy="loading" @action="retryLoad">
         <div class="kuery-error-copy">
           <span>Could not refresh workspace setup. The last loaded state is still shown.</span>
           <details v-if="errorDetail" class="k-resource-technical">
@@ -152,11 +152,10 @@ onBeforeUnmount(() => { requestID += 1 })
             </div>
           </details>
         </div>
-        <button v-if="edges.length > 0" type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Retrying…' : 'Retry' }}</button>
-      </div>
+      </InlineNotification>
       <div v-if="!requestContext.ready" class="kuery-read-state" role="status">Waiting for workspace context…</div>
       <div v-else-if="loading && !loaded && !error" class="kuery-read-state" role="status">Checking workspace setup…</div>
-      <div v-else-if="error && !loaded" class="kuery-read-state kuery-error" role="alert">
+      <InlineNotification v-else-if="error && !loaded" tone="error" action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="retryLoad">
         <div class="kuery-error-copy">
           <span>{{ error }}</span>
           <details v-if="errorDetail" class="k-resource-technical">
@@ -172,8 +171,7 @@ onBeforeUnmount(() => { requestID += 1 })
             </div>
           </details>
         </div>
-        <button type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Retrying…' : 'Retry' }}</button>
-      </div>
+      </InlineNotification>
       <FirstRunGuide
         v-else-if="loaded && edges.length === 0"
         title="Connect your first Kubernetes edge"

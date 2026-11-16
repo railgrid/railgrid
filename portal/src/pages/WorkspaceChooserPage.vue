@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowRight, FolderTree, Loader2, RefreshCw } from 'lucide-vue-next'
+import { ArrowRight, FolderTree, Loader2 } from 'lucide-vue-next'
+import InlineNotification from '@/portalkit/InlineNotification.vue'
 import { useAuthStore } from '@/stores/auth'
 import { authFetch } from '@/auth/session'
 import { isWorkspaceAvailable, isWorkspaceUsable, useTenantStore, type OrgRow, type WorkspaceRow } from '@/stores/tenant'
@@ -18,8 +19,13 @@ const org = computed(() => loadedOrg.value ?? tenant.activeOrg)
 const rows = computed(() => (tenant.workspacesByOrg[orgID.value] ?? []).filter(isWorkspaceAvailable))
 const search = ref('')
 const visible = computed(() => rows.value.filter(row => `${row.displayName ?? ''} ${row.uuid}`.toLowerCase().includes(search.value.toLowerCase())))
-const loading = ref(true)
+const loading = ref(false)
 const error = ref('')
+const hasSnapshot = ref(false)
+const heading = ref<HTMLElement | null>(null)
+const createError = ref('')
+const navigationError = ref<{ workspace: WorkspaceRow; message: string } | null>(null)
+const opening = ref<string | null>(null)
 const creating = ref(false)
 const name = ref('')
 const waiting = ref(false)
@@ -30,21 +36,34 @@ let timer: ReturnType<typeof setTimeout> | undefined
 let started = 0
 
 async function enter(workspace: WorkspaceRow) {
-  if (!isWorkspaceUsable(workspace) || loading.value || error.value) return
+  if (!isWorkspaceUsable(workspace) || loading.value || error.value || opening.value || creating.value) return
+  const revision = generation
+  const target = orgID.value
+  opening.value = workspace.uuid
   try {
     const failure = await router.replace({
       name: 'dashboard',
-      params: { orgID: orgID.value, workspaceID: workspace.uuid },
+      params: { orgID: target, workspaceID: workspace.uuid },
       ...(route.query.firstTask === 'personal' || route.query.firstTask === 'team' ? { query: { firstTask: route.query.firstTask } } : {}),
     })
     if (failure) throw new Error('Navigation failed')
-  } catch { error.value = 'Unable to open this workspace. Try again.' }
+    if (revision === generation) navigationError.value = null
+  } catch {
+    if (revision === generation) navigationError.value = { workspace, message: 'Unable to open this workspace. Try again.' }
+  } finally { if (revision === generation) opening.value = null }
+}
+
+const navigationRetryTarget = computed(() => rows.value.find(row =>
+  row.uuid === navigationError.value?.workspace.uuid && isWorkspaceUsable(row),
+))
+
+function retryNavigation() {
+  if (navigationRetryTarget.value) return enter(navigationRetryTarget.value)
 }
 
 async function load(revision = generation) {
   const target = orgID.value
   loading.value = true
-  error.value = ''
   try {
     // Read lifecycle first: a completed response must precede the workspace
     // list, otherwise a concurrent pre-creation list could look permanently empty.
@@ -71,8 +90,13 @@ async function load(revision = generation) {
     waiting.value = false
     return
   }
+  hasSnapshot.value = true
+  error.value = ''
+  if (!navigationRetryTarget.value) navigationError.value = null
   const workspace = preferredWorkspace(rows.value, readOrganizationWorkspace(auth.user, target))
   if (workspace) {
+    waiting.value = false
+    timedOut.value = false
     await enter(workspace)
     return
   }
@@ -81,33 +105,45 @@ async function load(revision = generation) {
   timedOut.value = waiting.value && Date.now() - started >= 60_000
   if (waiting.value && !timedOut.value) timer = setTimeout(() => { void load(revision) }, 2500)
 }
-function retry() {
+async function retry() {
+  if (loading.value || creating.value || opening.value) return
+  const focused = typeof document === 'undefined' ? null : document.activeElement
   clearTimeout(timer)
   timedOut.value = false
   started = Date.now()
-  return load(++generation)
+  const revision = ++generation
+  await load(revision)
+  await nextTick()
+  if (revision === generation && focused && !focused.isConnected && document.activeElement === document.body) heading.value?.focus()
 }
 async function create() {
-  if (!name.value.trim() || !canCreate.value || creating.value) return
+  if (!name.value.trim() || !canCreate.value || creating.value || loading.value || error.value || opening.value) return
   const revision = generation
   const target = orgID.value
   creating.value = true
-  error.value = ''
   try {
     const created = await tenant.createWorkspace(target, name.value.trim(), { selectCreated: false })
     if (revision !== generation) return
     if (!created) throw new Error('Unable to create the workspace. Try again.')
+    createError.value = ''
     name.value = ''
     creating.value = false
     await retry()
   } catch (e) {
-    if (revision === generation) error.value = e instanceof Error ? e.message : 'Unable to create workspace.'
+    if (revision === generation) createError.value = e instanceof Error ? e.message : 'Unable to create workspace.'
   } finally { if (revision === generation) creating.value = false }
 }
 watch(orgID, () => {
   clearTimeout(timer)
   search.value = ''
+  name.value = ''
   loadedOrg.value = null
+  hasSnapshot.value = false
+  loading.value = false
+  error.value = ''
+  createError.value = ''
+  navigationError.value = null
+  opening.value = null
   creating.value = false
   waiting.value = false
   retry()
@@ -118,22 +154,25 @@ onBeforeUnmount(() => { generation++; clearTimeout(timer) })
 <template>
   <main class="mx-auto w-full max-w-3xl px-4 py-10 sm:px-8">
     <router-link to="/organizations" class="k-btn k-btn--text mb-6">Change organization</router-link>
-    <h1 class="break-words text-2xl font-semibold text-text-primary">Choose a workspace in {{ org?.displayName || 'your organization' }}</h1>
+    <h1 ref="heading" tabindex="-1" class="break-words text-2xl font-semibold text-text-primary">Choose a workspace in {{ org?.displayName || 'your organization' }}</h1>
     <p class="mt-2 text-sm text-text-secondary">Open a workspace to use its tools and resources.</p>
 
-    <div v-if="error" role="alert" class="mt-6 k-alert k-alert--error">
-      <p>{{ error }}</p>
-      <button class="k-btn k-btn--secondary mt-3" @click="retry"><RefreshCw class="h-4 w-4" />Try again</button>
-    </div>
-    <div v-else-if="loading && !rows.length" role="status" class="flex items-center gap-3 py-10 text-text-secondary">
+    <InlineNotification v-if="error" class="mt-6" :tone="hasSnapshot ? 'warning' : 'error'"
+      title="Could not load workspaces" :message="`${hasSnapshot ? 'Showing the last successful result. ' : ''}${error}`"
+      action-label="Try again" action-busy-label="Trying again…" :action-busy="loading" @action="retry" />
+    <InlineNotification v-if="navigationError" class="mt-6" tone="error"
+      :title="`Could not open ${navigationError.workspace.displayName || navigationError.workspace.uuid}`" :message="navigationError.message"
+      :action-label="navigationRetryTarget ? 'Open workspace' : ''" action-busy-label="Opening…"
+      :action-busy="!!opening || loading || !!error" @action="retryNavigation" />
+    <div v-if="!error && loading && !hasSnapshot" role="status" class="flex items-center gap-3 py-10 text-text-secondary">
       <Loader2 class="h-5 w-5 animate-spin" />Loading workspaces…
     </div>
-    <template v-else>
+    <template v-else-if="hasSnapshot || !error">
       <input v-if="rows.length > 5" v-model="search" type="search" class="k-input mt-6" aria-label="Search workspaces" placeholder="Search workspaces" />
       <div v-if="rows.length" class="mt-6 divide-y divide-border-subtle border-y border-border-subtle" :aria-busy="loading">
         <button v-for="workspace in visible" :key="workspace.uuid" type="button"
           class="flex min-h-16 w-full items-center gap-4 px-3 py-4 text-left transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-wait"
-          :disabled="!isWorkspaceUsable(workspace) || loading" @click="enter(workspace)">
+          :disabled="!isWorkspaceUsable(workspace) || loading || !!error || !!opening" @click="enter(workspace)">
           <FolderTree class="h-5 w-5 shrink-0 text-accent" aria-hidden="true" />
           <span class="min-w-0 flex-1"><span class="block truncate font-medium text-text-primary">{{ workspace.displayName || workspace.uuid.slice(0, 8) }}</span>
             <span v-if="rows.filter(row => row.displayName === workspace.displayName).length > 1" class="text-xs text-text-secondary">{{ workspace.uuid.slice(0, 8) }}</span>
@@ -142,17 +181,18 @@ onBeforeUnmount(() => { generation++; clearTimeout(timer) })
         </button>
         <p v-if="!visible.length" class="py-6 text-sm text-text-secondary">No workspaces match your search.</p>
       </div>
-      <div v-if="waiting" role="status" class="mt-6 text-sm text-text-secondary">
+      <div v-if="waiting && !error" role="status" class="mt-6 text-sm text-text-secondary">
         <p class="font-medium text-text-primary">Preparing your workspace…</p>
         <p v-if="timedOut" class="mt-1">This is taking longer than expected. Check again to resume waiting.</p>
         <p v-else class="mt-1">We’ll open it when it’s ready if it’s your only workspace or your last visited one.</p>
-        <button class="k-btn k-btn--text mt-3" :disabled="loading" @click="retry">Check again</button>
+        <button class="k-btn k-btn--text mt-3" :aria-disabled="loading ? 'true' : undefined" :aria-busy="loading" @click="retry">{{ loading ? 'Checking…' : 'Check again' }}</button>
       </div>
       <div v-else-if="!rows.length" class="mt-8">
-        <h2 class="text-lg font-medium text-text-primary">No workspaces yet</h2>
+        <h2 class="text-lg font-medium text-text-primary">{{ error ? 'No workspaces in the last successful result' : 'No workspaces yet' }}</h2>
+        <InlineNotification v-if="createError" class="mt-4" tone="error" title="Could not create workspace" :message="createError" />
         <form v-if="canCreate" class="mt-4 flex flex-wrap items-end gap-3" @submit.prevent="create">
-          <label class="min-w-0 flex-1 text-sm text-text-secondary">Workspace name<input v-model="name" class="k-input mt-2" required placeholder="e.g. Development" :disabled="creating" /></label>
-          <button class="k-btn k-btn--primary" :disabled="creating || !name.trim()">{{ creating ? 'Creating…' : 'Create workspace' }}</button>
+          <label class="min-w-0 flex-1 text-sm text-text-secondary">Workspace name<input v-model="name" class="k-input mt-2" required placeholder="e.g. Development" :disabled="creating || loading || !!error" /></label>
+          <button class="k-btn k-btn--primary" :disabled="creating || loading || !!error || !name.trim()">{{ creating ? 'Creating…' : 'Create workspace' }}</button>
         </form>
         <p v-else class="mt-2 text-sm text-text-secondary">Ask an organization admin to create a workspace or give you access.</p>
       </div>

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { containModalTab } from '../portalkit/modal-focus'
+
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ArrowLeft, Check, ChevronRight, ExternalLink, LayoutTemplate, X } from 'lucide-vue-next'
 import AgentTemplateCards from '../components/AgentTemplateCards.vue'
@@ -622,7 +624,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
       </button>
     </header>
 
-    <dialog ref="templatePicker" class="k-modal agents-template-picker" aria-labelledby="agents-template-picker-title">
+    <dialog @keydown="containModalTab" ref="templatePicker" class="k-modal agents-template-picker" aria-labelledby="agents-template-picker-title">
       <div class="agents-template-picker-header">
         <h2 id="agents-template-picker-title" class="k-modal__title">Templates</h2>
         <button class="k-icon-action" type="button" aria-label="Close templates" autofocus @click="templatePicker?.close()">

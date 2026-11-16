@@ -1,9 +1,11 @@
 // jsdom shims for browser APIs the components touch. Kept to the minimum —
 // anything stubbed here is something a test can't assert on.
 
-import { afterEach, vi } from 'vitest'
-import { nextTick } from 'vue'
+import { afterEach, beforeEach, vi } from 'vitest'
+import { createApp, nextTick } from 'vue'
 import { clearToasts } from '../ui/toast'
+import ToastHost from '../portalkit/ToastHost.vue'
+import { dismissToast, subscribeToasts } from '../portalkit/toast'
 import { unmountVueApps } from './vue-helper'
 
 // Some Node 25 installations expose an incomplete experimental localStorage
@@ -64,13 +66,30 @@ if (!HTMLDialogElement.prototype.showModal) {
   HTMLDialogElement.prototype.close = function () { this.open = false }
 }
 
+let toastApp: ReturnType<typeof createApp>
+function clearTestToastLedger() {
+  let ids: number[] = []
+  const stop = subscribeToasts(commands => { ids = commands.map(command => command.id) })
+  stop()
+  for (const id of ids) dismissToast(id)
+}
+beforeEach(() => {
+  clearTestToastLedger()
+  const node = document.createElement('div')
+  document.body.append(node)
+  toastApp = createApp(ToastHost, { owner: 'fallback' })
+  toastApp.mount(node)
+})
+
 afterEach(async () => {
   unmountVueApps()
   // Toasts own real auto-dismiss timers. Clear them before the jsdom document
   // is replaced so a callback cannot run after the test environment is torn
   // down and dereference an unavailable document.
   clearToasts()
+  clearTestToastLedger()
   await nextTick()
+  toastApp.unmount()
   for (const id of pendingFrames) clearTimeout(id)
   pendingFrames.clear()
   document.body.replaceChildren()

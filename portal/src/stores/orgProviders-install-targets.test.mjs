@@ -87,6 +87,43 @@ test('late inventory from a previous organization cannot replace the current lis
   assert.equal(store.loading, false)
 })
 
+test('inventory retry retains the scoped failure until successful recovery', async () => {
+  globalThis.__tenantSelection = { orgUUID: 'org-a' }
+  const store = storeModule.useOrgProvidersStore()
+  globalThis.__orgProviderAuthFetch = async () => ({ ok: false, status: 503 })
+  await store.load()
+  assert.equal(store.loaded, false)
+  assert.equal(store.error, 'list self-hosted providers: 503')
+  const retry = deferred()
+  let attempts = 0
+  globalThis.__orgProviderAuthFetch = () => { attempts++; return retry.promise }
+  const pending = store.load()
+  await store.load()
+  assert.equal(attempts, 1)
+  assert.equal(store.loading, true)
+  assert.equal(store.error, 'list self-hosted providers: 503')
+  retry.resolve({ ok: true, json: async () => ({ items: [] }) })
+  await pending
+  assert.equal(store.error, null)
+  assert.equal(store.loaded, true)
+})
+
+test('organization reset and an unsupported endpoint clear obsolete inventory errors', async () => {
+  for (const recovery of ['reset', 'unsupported']) {
+    globalThis.__tenantSelection = { orgUUID: 'org-a' }
+    const store = storeModule.useOrgProvidersStore()
+    globalThis.__orgProviderAuthFetch = async () => ({ ok: false, status: 503 })
+    await store.load()
+    if (recovery === 'reset') store.resetForOrganization()
+    else {
+      globalThis.__orgProviderAuthFetch = async () => ({ ok: false, status: 501 })
+      await store.load()
+      assert.equal(store.supported, false)
+    }
+    assert.equal(store.error, null)
+  }
+})
+
 test('late install targets cannot enable registration in a new organization', async () => {
   const store = storeModule.useOrgProvidersStore()
   globalThis.__tenantSelection = { orgUUID: 'org-a' }

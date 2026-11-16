@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ChevronDown } from 'lucide-vue-next'
 
@@ -413,7 +414,7 @@ onBeforeUnmount(() => { loadGeneration += 1; fullscreenGeneration += 1; loadCont
       </div>
       <button type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Checking…' : 'Check again' }}</button>
     </div>
-    <div v-else-if="error && !currentSnapshot" class="kuery-read-state kuery-error" role="alert">
+    <InlineNotification v-else-if="error && !currentSnapshot" tone="error" action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="retryLoad">
       <div class="kuery-error-copy">
         <span>{{ error }}</span>
         <details v-if="errorDetail" class="k-resource-technical">
@@ -429,14 +430,13 @@ onBeforeUnmount(() => { loadGeneration += 1; fullscreenGeneration += 1; loadCont
           </div>
         </details>
       </div>
-      <button type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Retrying…' : 'Retry' }}</button>
-    </div>
+    </InlineNotification>
     <div v-else-if="currentSnapshot">
       <div v-if="notEngaged && loaded" class="kuery-warning" role="status">
         <span>The last successful topology is still shown, but Kuery is not currently syncing an edge in this workspace.</span>
         <button type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Checking…' : 'Check again' }}</button>
       </div>
-      <div v-if="error" class="kuery-inline-error" role="alert">
+      <InlineNotification v-if="error" tone="error" action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="retryLoad">
         <div class="kuery-error-copy">
           <span>Could not refresh the topology. The last successful result is still shown.</span>
           <details v-if="errorDetail" class="k-resource-technical">
@@ -452,8 +452,7 @@ onBeforeUnmount(() => { loadGeneration += 1; fullscreenGeneration += 1; loadCont
             </div>
           </details>
         </div>
-        <button type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Retrying…' : 'Retry' }}</button>
-      </div>
+      </InlineNotification>
       <div v-if="rows.length === 0" class="kuery-read-state" role="status">No clusters engaged. Connect a Kubernetes edge, then retry.</div>
       <div v-else-if="tree.edges.length === 0" class="kuery-read-state" role="status">No resources match the current topology filters.</div>
       <div v-else-if="representation === 'list'" class="kuery-topology-list" role="region" aria-label="Fleet topology list">
@@ -463,7 +462,7 @@ onBeforeUnmount(() => { loadGeneration += 1; fullscreenGeneration += 1; loadCont
         </section>
       </div>
       <div v-else>
-        <div v-if="graphError" class="kuery-inline-error" role="alert">{{ graphError }} <button type="button" class="k-btn k-btn--ghost" :aria-disabled="graphRetrying || undefined" :aria-busy="graphRetrying || undefined" @click="retryGraph">{{ graphRetrying ? 'Retrying graph…' : 'Retry graph' }}</button></div>
+        <InlineNotification v-if="graphError" tone="error" :message="graphError" action-label="Retry graph" action-busy-label="Retrying graph…" :action-busy="graphRetrying" @action="retryGraph" />
         <div v-if="expansionFailure" class="kuery-inline-error" role="alert"><span>{{ expansionFailure.message }}</span><button type="button" class="k-btn k-btn--ghost" @click="retryExpansion">Retry expansion</button></div>
         <p class="kuery-sr-only" role="status" aria-live="polite" aria-atomic="true">{{ expansionStatus }}</p>
         <p v-if="layoutRunning" class="meta" role="status">Force layout is settling {{ layoutNodeCount.toLocaleString() }} nodes in the background; the graph stays interactive. Stop layout keeps the current positions.</p>

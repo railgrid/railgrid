@@ -335,7 +335,7 @@ onUnmounted(() => {
         <CornerDownRight v-else class="muted" :size="14" aria-label="Same repository as above" />
       </template>
       <template #name="{ row }"><strong><a v-if="row.htmlURL && !row.deleting" class="k-table-resource-link" :href="String(row.htmlURL)" target="_blank" rel="noopener">{{ row.name }}</a><template v-else>{{ row.name }}</template></strong></template>
-      <template #type="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
+      <template #type="{ value }"><span class="k-badge k-badge--muted k-badge--label">{{ value }}</span></template>
       <template #visibility="{ value }"><span class="muted">{{ value === 'unknown' ? '—' : value }}</span></template>
       <template #versionCount="{ value }"><span class="muted mono tabular-nums">{{ value || 0 }}</span></template>
       <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>

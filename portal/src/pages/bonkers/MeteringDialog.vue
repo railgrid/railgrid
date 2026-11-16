@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { containModalTab } from '@/portalkit/modal-focus'
+
 import { nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import { TriangleAlert, X } from 'lucide-vue-next'
 
@@ -44,7 +46,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <dialog ref="dialog" class="k-modal metering-dialog" :class="{ 'k-modal--confirm k-modal--danger metering-dialog--confirm': discard }" :role="discard ? 'alertdialog' : undefined" :aria-labelledby="discard ? discardTitleId : titleId" :aria-describedby="discard ? discardMessageId : undefined" :aria-busy="busy" @cancel.prevent="requestClose">
+  <dialog @keydown="containModalTab" ref="dialog" class="k-modal metering-dialog" :class="{ 'k-modal--confirm k-modal--danger metering-dialog--confirm': discard }" :role="discard ? 'alertdialog' : undefined" :aria-labelledby="discard ? discardTitleId : titleId" :aria-describedby="discard ? discardMessageId : undefined" :aria-busy="busy" @cancel.prevent="requestClose">
     <template v-if="discard">
       <div class="k-modal__head">
         <span class="k-modal__icon" aria-hidden="true"><TriangleAlert :stroke-width="1.9" /></span>

@@ -3,7 +3,7 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
-import { computed, reactive, ref } from 'vue'
+import { computed, nextTick, reactive, ref } from 'vue'
 
 // Execute the component's setup and async actions, with controlled API replies
 // and timers. This exercises polling, error handling and teardown rather than
@@ -33,7 +33,7 @@ function setup() {
   const route = { params: { orgID: 'org-a' }, query: {} }
   const state = {
     org, rows: [], orgStatus: 200, workspaceStatus: 'ready',
-    orgRead: null, createResult: null, createCalls: 0,
+    orgRead: null, createResult: null, createCalls: 0, navigate: null, create: null,
   }
   const tenant = reactive({
     activeOrg: org, workspacesByOrg: {}, workspaceLoadStateByOrg: {},
@@ -41,11 +41,11 @@ function setup() {
       this.workspacesByOrg[id] = state.rows
       this.workspaceLoadStateByOrg[id] = state.workspaceStatus
     },
-    async createWorkspace() { state.createCalls++; return state.createResult },
+    async createWorkspace() { state.createCalls++; return state.create ? state.create() : state.createResult },
   })
-  const api = runInNewContext(`${code}\n({ load, retry, create, loading, error, waiting, timedOut, creating, name, org })`, {
-    ref, computed, useRoute: () => route,
-    useRouter: () => ({ replace: async to => { navigations.push(to) } }),
+  const api = runInNewContext(`${code}\n({ load, retry, retryNavigation, enter, create, loading, error, createError, navigationError, opening, hasSnapshot, waiting, timedOut, creating, name, org })`, {
+    ref, computed, nextTick, useRoute: () => route,
+    useRouter: () => ({ replace: async to => { navigations.push(to); return state.navigate?.(to) } }),
     useTenantStore: () => tenant, useAuthStore: () => ({ user: { userId: 'alice' } }),
     authFetch: async () => state.orgRead ? state.orgRead() : new Response(JSON.stringify(state.org), { status: state.orgStatus }),
     isWorkspaceAvailable: available, isWorkspaceUsable: usable, preferredWorkspace,
@@ -78,6 +78,23 @@ test('completed empty orgs stop waiting and do not poll based on a stale prepari
   state.org = { ...state.org, initialWorkspacePending: false }
   await api.retry()
   assert.equal(api.waiting.value, false)
+  assert.equal(timers.size, 0)
+})
+
+test('a ready workspace stops showing preparation even when automatic navigation fails', async () => {
+  const { api, state, timers, advance } = setup()
+  await api.retry()
+  timers.clear()
+  advance(60_001)
+  await api.load()
+  assert.equal(api.timedOut.value, true)
+  state.org.initialWorkspacePending = false
+  state.rows = [{ uuid: 'ws-a', clusterName: 'cluster-a' }]
+  state.navigate = async () => { throw new Error('Navigation unavailable') }
+  await api.load()
+  assert.equal(api.waiting.value, false)
+  assert.equal(api.timedOut.value, false)
+  assert.equal(api.navigationError.value.workspace.uuid, 'ws-a')
   assert.equal(timers.size, 0)
 })
 
@@ -142,4 +159,108 @@ test('reads completed organization readiness before taking the workspace snapsho
   resolve(new Response(JSON.stringify({ ...state.org, initialWorkspacePending: false })))
   await pending
   assert.equal(navigations.length, 1)
+})
+
+test('read retry retains its failure and snapshot while preventing duplicate reads', async () => {
+  const { api, state } = setup()
+  state.org.initialWorkspacePending = false
+  await api.retry()
+  state.orgStatus = 503
+  await api.retry()
+  const failure = api.error.value
+  let resolve, calls = 0
+  state.orgRead = () => { calls++; return new Promise(done => { resolve = done }) }
+  const retry = api.retry()
+  await api.retry()
+  assert.equal(calls, 1)
+  assert.equal(api.error.value, failure)
+  assert.equal(api.hasSnapshot.value, true)
+  resolve(new Response(JSON.stringify(state.org)))
+  await retry
+  assert.equal(api.error.value, '')
+  assert.equal(api.loading.value, false)
+})
+
+test('failed creation preserves its draft and read state through a guarded explicit resubmit', async () => {
+  const { api, state } = setup()
+  state.org.initialWorkspacePending = false
+  await api.retry()
+  api.name.value = 'Development'
+  state.create = async () => { throw new Error('Create unavailable') }
+  await api.create()
+  assert.equal(api.createError.value, 'Create unavailable')
+  assert.equal(api.error.value, '')
+  assert.equal(api.name.value, 'Development')
+  let resolve
+  state.create = () => new Promise(done => { resolve = done })
+  const pending = api.create()
+  await api.create()
+  assert.equal(state.createCalls, 2)
+  assert.equal(api.createError.value, 'Create unavailable')
+  resolve({ uuid: 'ws-new' })
+  await pending
+  assert.equal(api.createError.value, '')
+  assert.equal(api.name.value, '')
+})
+
+test('navigation retry opens the failed target rather than refreshing or creating', async () => {
+  const { api, state, navigations } = setup()
+  state.org.initialWorkspacePending = false
+  state.rows = ['a', 'b'].map(id => ({ uuid: `ws-${id}`, clusterName: `cluster-${id}` }))
+  await api.retry()
+  state.navigate = async () => { throw new Error('Navigation unavailable') }
+  await api.enter(state.rows[1])
+  assert.equal(api.navigationError.value.workspace.uuid, 'ws-b')
+  assert.equal(api.error.value, '')
+  let resolve
+  state.navigate = () => new Promise(done => { resolve = done })
+  const retry = api.retryNavigation()
+  api.retryNavigation()
+  assert.equal(navigations.length, 2)
+  assert.equal(navigations[1].params.workspaceID, 'ws-b')
+  assert.equal(state.createCalls, 0)
+  assert.ok(api.navigationError.value)
+  resolve()
+  await retry
+  assert.equal(api.navigationError.value, null)
+})
+
+test('a previous organization cannot publish late creation or navigation failures', async () => {
+  for (const action of ['create', 'navigation']) {
+    const { api, state, route, changeOrg } = setup()
+    state.org.initialWorkspacePending = false
+    await api.retry()
+    let reject
+    const pending = new Promise((_resolve, no) => { reject = no })
+    state.create = () => pending
+    state.navigate = () => pending
+    api.name.value = 'Old draft'
+    const request = action === 'create' ? api.create() : api.enter({ uuid: 'old-workspace', clusterName: 'old-cluster' })
+    route.params.orgID = 'org-b'
+    state.org = { ...state.org, uuid: 'org-b' }
+    changeOrg()
+    reject(new Error('Old failure'))
+    await request
+    assert.equal(api.createError.value, '')
+    assert.equal(api.navigationError.value, null)
+    assert.equal(api.name.value, '')
+  }
+})
+
+test('refresh clears navigation failures for removed or unusable workspaces', async () => {
+  for (const unavailable of [null, { uuid: 'ws-b', clusterName: 'cluster-b', deletionRequestedAt: '2026-11-16' }]) {
+    const { api, state, navigations } = setup()
+    state.org.initialWorkspacePending = false
+    state.rows = [{ uuid: 'ws-a', clusterName: 'cluster-a' }, { uuid: 'ws-b', clusterName: 'cluster-b' }]
+    await api.retry()
+    state.navigate = async () => { throw new Error('Navigation unavailable') }
+    await api.enter(state.rows[1])
+    assert.equal(api.navigationError.value.workspace.uuid, 'ws-b')
+    state.rows = [state.rows[0], { uuid: 'ws-c', clusterName: 'cluster-c' }]
+    if (unavailable) state.rows.push(unavailable)
+    await api.retry()
+    assert.equal(api.navigationError.value, null)
+    await api.retryNavigation()
+    assert.equal(navigations.length, 1)
+  }
 })

@@ -23,6 +23,49 @@ describe('Workspace skills library', () => {
     expect(view.element.querySelector('button[aria-label^="Review."]')).not.toBeNull()
   })
 
+  it('does not present first-load catalog failure as an authoritative empty result', async () => {
+    const skill = { id: 'workspace:review', name: 'Review', description: 'Review changes.', scope: 'workspace', enabled: true, editable: true, resources: [] }
+    const retryResult = deferred<{ skills: typeof skill[]; warnings: string[] }>()
+    const getSkillLibrary = vi.fn()
+      .mockRejectedValueOnce(new Error('Fixture catalog failure'))
+      .mockImplementationOnce(() => retryResult.promise)
+    const api = stubApi({ getSkillLibrary })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(SkillsLibrary, { store, api })
+
+    try {
+      const notice = view.element.querySelector('[role="alert"]')!
+      expect(text(notice)).toContain('Could not load the skill library. Fixture catalog failure')
+      expect(text(view.element)).not.toContain('No skills have been published in this workspace.')
+      expect(view.element.querySelector('[aria-label="Skill catalog"] h3')).toBeNull()
+
+      const retry = notice.querySelector<HTMLButtonElement>('button')!
+      retry.focus()
+      retry.click()
+      await settleVue(3)
+
+      expect(notice.isConnected).toBe(true)
+      expect(text(notice)).toContain('Fixture catalog failure')
+      expect(retry.getAttribute('aria-label')).toBe('Retrying catalog…')
+      expect(retry.getAttribute('aria-busy')).toBe('true')
+      expect(retry.getAttribute('aria-disabled')).toBe('true')
+      expect(document.activeElement).toBe(retry)
+      retry.click()
+      await settleVue(2)
+      expect(getSkillLibrary).toHaveBeenCalledTimes(2)
+
+      retryResult.resolve({ skills: [skill], warnings: [] })
+      await settleVue(8)
+
+      expect(view.element.querySelector('[role="alert"]')).toBeNull()
+      expect(view.element.querySelector('button[aria-label^="Review."]')).not.toBeNull()
+      expect(document.activeElement).toBe(view.element.querySelector('[aria-label="Skill catalog"]'))
+    } finally {
+      view.unmount()
+    }
+  })
+
   it('retries a failed skill detail read without leaving the selected skill', async () => {
     const skill = {
       id: 'workspace:release-review',
@@ -36,10 +79,11 @@ describe('Workspace skills library', () => {
       resources: [],
     }
     let attempts = 0
+    const retryDetail = deferred<typeof skill & { instructions: string; resources: never[] }>()
     const getSkillLibraryDetail = vi.fn(async () => {
       attempts += 1
       if (attempts === 1) throw new Error('Temporary detail read failure')
-      return { ...skill, instructions: 'Check the changelog.', resources: [] }
+      return retryDetail.promise
     })
     const api = stubApi({
       getSkillLibrary: async () => ({ skills: [skill], catalogDigest: 'catalog', warnings: [] }),
@@ -56,13 +100,30 @@ describe('Workspace skills library', () => {
     await settleVue(8)
     expect(text(view.element)).toContain('Temporary detail read failure')
 
+    const notice = view.element.querySelector('[role="alert"]')!
     const retry = [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button) === 'Retry')
     expect(retry).toBeTruthy()
+    retry!.focus()
     retry!.click()
+    await settleVue(3)
+
+    expect(notice.isConnected).toBe(true)
+    expect(text(notice)).toContain('Temporary detail read failure')
+    expect(retry!.getAttribute('aria-label')).toBe('Retrying detail…')
+    expect(retry!.getAttribute('aria-busy')).toBe('true')
+    expect(retry!.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(retry)
+    retry!.click()
+    await settleVue(2)
+    expect(getSkillLibraryDetail).toHaveBeenCalledTimes(2)
+
+    retryDetail.resolve({ ...skill, instructions: 'Check the changelog.', resources: [] })
     await settleVue(8)
 
     expect(getSkillLibraryDetail).toHaveBeenCalledTimes(2)
     expect(text(view.element)).toContain('Check the changelog.')
+    expect(view.element.querySelector('[aria-label="Skill details"] [role="alert"]')).toBeNull()
+    expect(document.activeElement).toBe(view.element.querySelector('[aria-label="Skill details"]'))
     view.unmount()
   })
 

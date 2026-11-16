@@ -52,7 +52,7 @@ const deletionScope = 'repository'
 const repos = ref<Repository[]>([])
 const connections = ref<Connection[]>([])
 const error = ref<string | null>(null)
-const mutationError = ref<string | null>(null)
+const mutationErrors = ref<Record<string, { name: string; message: string }>>({})
 const loading = ref(false)
 const loaded = ref(false)
 const repositoryMode = ref<RepositoryPaginationMode>('server')
@@ -288,6 +288,17 @@ function handleRepositoryChange(change: ResourceTableChange): void {
   if (transition.reload) loadRepositories()
 }
 
+function clearMutationError(name: string) {
+  const next = { ...mutationErrors.value }
+  delete next[name]
+  mutationErrors.value = next
+}
+async function dismissMutationError(name: string) {
+  clearMutationError(name)
+  await nextTick()
+  pageTitle.value?.focus({ preventScroll: true })
+}
+
 async function remove(row: Record<string, unknown>) {
   const repository = row as unknown as Repository
   if (isDeleting(repository)) return
@@ -300,15 +311,15 @@ async function remove(row: Record<string, unknown>) {
   if (!ok || !mounted) return
   const lock = operationKey('repository', repository.name)
   if (!operations.acquire(lock, 'deleting')) return
-  mutationError.value = null
   try {
     await api.deleteRepository(repository.name)
     if (!mounted) return
+    clearMutationError(`${repository.name}:${repository.uid || ""}`)
     props.deletions.acknowledge(deletionScope, repository.name, repository.uid)
     toast('info', `Repository deletion requested for ${repository.name}.`)
     loadRepositories()
   } catch (e) {
-    mutationError.value = errMessage(e)
+    if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged') mutationErrors.value = { ...mutationErrors.value, [`${repository.name}:${repository.uid || ""}`]: { name: repository.name, message: errMessage(e) } }
   } finally {
     operations.release(lock)
   }
@@ -452,7 +463,7 @@ onUnmounted(() => {
       <InlineNotification :tone="connectionsLoaded ? 'warning' : 'error'" :message="connectionsLoaded ? 'Connections could not be refreshed. Showing the last successful connection choices.' : 'Connections could not be loaded.'" action-label="Retry connections" action-busy-label="Retrying connections…" :action-busy="connectionsLoading" @action="loadConnections()" />
     </div>
     <span v-else-if="connectionsLoading && connectionsLoaded" class="sr-only" role="status" aria-live="polite">Updating connections…</span>
-    <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">{{ mutationError }}</p>
+    <InlineNotification v-for="(failure, key) in mutationErrors" :key="key" tone="error" :title="`Could not delete repository ${failure.name}`" :message="`${failure.message} Try again using the repository delete action.`" dismissible @dismiss="dismissMutationError(String(key))" />
     <div v-if="showFirstRun && error" ref="repositoryWarning">
       <InlineNotification tone="warning" message="Repositories could not be refreshed. Showing the last successful empty result." action-label="Retry repositories" action-busy-label="Retrying repositories…" :action-busy="loading" @action="loadRepositories()" />
     </div>

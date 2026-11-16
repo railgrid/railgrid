@@ -3,9 +3,7 @@
 Canonical source for shared PortalKit assets. The vanilla-TS kit is vendored into
 the string-building Quickstart portal; Vue portals use the SFC kit in
 `provider-sdk/portalkit-vue` plus shared plain assets where appropriate. Agents
-is the temporary toast exception: its Vue portal still receives the frozen
-framework-neutral `toast.ts` for its existing compatibility adapter instead of
-the Vue toast files.
+and Quickstart share the Vue toast transport and host with the rest of the portal.
 
 - `icons.ts` — inline SVG icon set (`ic(name)` returns an `<svg class="k-icon">`
   string). Use in HTML template literals instead of emoji.
@@ -28,11 +26,11 @@ the Vue toast files.
   `provider-sdk/portalkit/railgrid-ui.css`. The Vue
   counterpart is `provider-sdk/portalkit-vue/Tabs.vue`; it emits `select` and
   exposes `data-k-tab-id`, while routing remains caller-owned.
+- `modal-focus.ts` — scoped Tab containment for native form dialogs; callers own dismissal and focus return.
 - `modal.ts` — promise-based `confirmModal()` / `alertModal()`, replacing native
   `window.confirm` / `window.alert` with an on-brand in-page dialog.
-- `toast.ts` — frozen framework-neutral toast bus retained in the Quickstart
-  TypeScript kit and for Agents' existing compatibility adapter. It is not the
-  Vue toast implementation.
+- Toast transport and rendering live in `provider-sdk/portalkit-vue/toast.ts`
+  and `ToastHost.vue`, including for Quickstart and Agents.
 - `styles.ts` — the standalone handoff for the exact canonical
   `provider-sdk/portalkit/railgrid-ui.css` bytes.
 - `FirstRunGuide.vue` — Vue first-use value, action, and ordered journey

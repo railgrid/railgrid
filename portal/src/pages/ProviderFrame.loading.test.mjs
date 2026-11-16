@@ -300,7 +300,7 @@ test('mounted-element cleanup clears the override and removes the mount listener
   const makeCleanup = new Function(
     'pageResource', 'resourceSource', 'routeFocus', 'boundMount',
     'onRouteReady', 'onNavigate', 'onLayoutChange', 'onProviderBootstrapRetry',
-    'elementRef', 'mountRef', 'loadState', 'loadError', 'providerFullBleedOverride',
+    'elementRef', 'mountRef', 'loadState', 'loadError', 'providerFullBleedOverride', 'bundleReloading',
     `let mountGeneration = 0; return function () { ${body} }`,
   )
   const removedListeners = []
@@ -322,6 +322,7 @@ test('mounted-element cleanup clears the override and removes the mount listener
     loadState,
     loadError,
     state,
+    { value: true },
   )
 
   clear()
@@ -442,11 +443,11 @@ test('provider status refresh is a same-scope catalog read with a distinct recov
   assert.deepEqual(stateFor({ loaded: true, loading: true, catalogOrgUUID: 'org-b' }), { refreshing: false, loading: true })
 
   const calls = []
-  const retryCatalog = new Function('providers', 'tenant', 'props', `return function () { ${functionBody('retryCatalog')} }`)({
+  const retryCatalog = new Function('providers', 'tenant', 'props', 'restoreRetryFocus', `return function () { ${functionBody('retryCatalog')} }`)({
     load: orgUUID => { calls.push(orgUUID); return Promise.resolve() },
     isEnabled: name => name === 'edges',
     refreshBindings: () => { calls.push('bindings'); return Promise.resolve() },
-  }, { orgUUID: 'org-a' }, { providerName: 'edges' })
+  }, { orgUUID: 'org-a' }, { providerName: 'edges' }, action => action())
   retryCatalog()
   assert.deepEqual(calls, ['org-a', 'bindings'])
 })

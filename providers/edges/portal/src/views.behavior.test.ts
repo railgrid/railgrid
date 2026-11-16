@@ -27,6 +27,7 @@ const api = vi.hoisted(() => ({
   setToken: vi.fn(),
   setTenant: vi.fn(),
   setHostFetch: vi.fn(),
+  isContextChangedError: (error: unknown) => (error as { reason?: string } | null)?.reason === 'ContextChanged',
 }))
 const confirm = vi.hoisted(() => ({
   confirmDialog: vi.fn(),
@@ -345,6 +346,105 @@ describe('edge dashboard read state', () => {
 })
 
 describe('edge shell read authority', () => {
+  it('retains failures from other edges when another deletion succeeds', async () => {
+    const mounted = await mount(App, { ctx: { tenant: 'tenant-a', subPath: '' } })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      confirm.confirmDialog.mockResolvedValue(true)
+      api.deleteEdge.mockRejectedValueOnce(new Error('First delete unavailable'))
+      await state.onDelete(edge)
+      await state.onDelete({ ...edge, name: 'other-edge' })
+      expect(state.deleteFailures[`${edge.type}/${edge.name}`]?.message).toBe('First delete unavailable')
+      api.deleteEdge.mockRejectedValueOnce({ reason: 'ContextChanged', message: 'old context' })
+      await state.onDelete(edge)
+      expect(state.deleteFailures[`${edge.type}/${edge.name}`]?.message).toBe('First delete unavailable')
+      state.dismissDeleteFailure(`${edge.type}/${edge.name}`)
+      expect(state.deleteFailures).toEqual({})
+    } finally { mounted.unmount() }
+  })
+  it('retains the failed read and rows until a foreground retry succeeds', async () => {
+    const mounted = await mount(App, { ctx: { tenant: 'tenant-a', subPath: '' } })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      api.listEdges.mockRejectedValueOnce(new Error('Refresh unavailable'))
+      await state.refresh('background')
+      const retry = deferred<unknown[]>()
+      api.listEdges.mockReturnValueOnce(retry.promise)
+      const reading = state.refresh('foreground')
+      await flush()
+      expect(state.error).toBe('Refresh unavailable')
+      expect(state.edges).toEqual([edge])
+      expect(state.foregroundLoading).toBe(true)
+      retry.resolve([edge])
+      await reading
+      expect(state.error).toBeNull()
+    } finally { mounted.unmount() }
+  })
+
+  it('keeps delete failure separate from successful reads and clears it after a successful delete', async () => {
+    const mounted = await mount(App, { ctx: { tenant: 'tenant-a', subPath: '' } })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      confirm.confirmDialog.mockResolvedValue(true)
+      api.deleteEdge.mockRejectedValueOnce(new Error('Delete unavailable'))
+      await state.onDelete(edge)
+      expect(state.error).toBeNull()
+      expect(state.deleteFailures[`${edge.type}/${edge.name}`]).toEqual({ name: edge.name, message: 'Delete unavailable' })
+      await state.refresh('background')
+      expect(state.deleteFailures[`${edge.type}/${edge.name}`]?.message).toBe('Delete unavailable')
+      const deletion = deferred<void>()
+      api.deleteEdge.mockReturnValueOnce(deletion.promise)
+      const deleting = state.onDelete(edge)
+      await flush()
+      expect(state.deletingEdge).toBe('kubernetes/edge-a')
+      await state.onDelete(edge)
+      expect(api.deleteEdge).toHaveBeenCalledTimes(2)
+      deletion.resolve()
+      await deleting
+      expect(state.deleteFailures).toEqual({})
+      expect(state.deletingEdge).toBeNull()
+    } finally { mounted.unmount() }
+  })
+
+  it('ignores a late failed deletion after the workspace changes', async () => {
+    const mounted = await mount(App, { ctx: { tenant: 'tenant-a', subPath: '' } })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      confirm.confirmDialog.mockResolvedValue(true)
+      const deletion = deferred<void>()
+      api.deleteEdge.mockReturnValueOnce(deletion.promise)
+      const deleting = state.onDelete(edge)
+      await flush()
+      mounted.instance.props.ctx = { tenant: 'tenant-b', subPath: '' }
+      await flush()
+      deletion.reject(new Error('Previous workspace failure'))
+      await deleting
+      expect(state.deleteFailures).toEqual({})
+      expect(state.error).toBeNull()
+      expect(state.deletingEdge).toBeNull()
+    } finally { mounted.unmount() }
+  })
+
+  it('discards a deletion confirmation when the workspace changes before confirmation', async () => {
+    const mounted = await mount(App, { ctx: { tenant: 'tenant-a', subPath: '' } })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      const confirmation = deferred<boolean>()
+      confirm.confirmDialog.mockReturnValueOnce(confirmation.promise)
+      const deleting = state.onDelete(edge)
+      mounted.instance.props.ctx = { tenant: 'tenant-b', subPath: '' }
+      await flush()
+      confirmation.resolve(true)
+      await deleting
+      expect(api.deleteEdge).not.toHaveBeenCalled()
+    } finally { mounted.unmount() }
+  })
+
   it('preserves collection identity on token renewal and clears the actual host caller change', async () => {
     const mounted = await mount(App, { ctx: { tenant: 'tenant-a', token: 'old-token', user: { userId: 'user-a' }, subPath: '' } })
     try {
@@ -368,6 +468,34 @@ describe('edge shell read authority', () => {
       await flush()
       await flush()
       expect(state.edges).toEqual([{ ...edge, name: 'caller-b-edge' }])
+    } finally { mounted.unmount() }
+  })
+})
+
+describe('collection mutation feedback ownership', () => {
+  it.each([
+    ['services', Services, 'deleteEdgeService', service],
+    ['workloads', Workloads, 'deleteWorkload', workload],
+  ] as const)('preserves independent %s failures through refresh and unrelated success', async (_kind, component, method, resource) => {
+    const mounted = await mount(component)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      confirm.confirmDialog.mockResolvedValue(true)
+      api[method].mockRejectedValueOnce({ message: 'First failure' })
+      await state.onDelete(resource)
+      api[method].mockRejectedValueOnce({ message: 'Second failure' })
+      await state.onDelete({ ...resource, name: 'other' })
+      expect(Object.keys(state.deleteFailures)).toHaveLength(2)
+      api[method].mockResolvedValueOnce(undefined)
+      await state.onDelete({ ...resource, name: 'other' })
+      expect(state.deleteFailures[resource.name]?.message).toBe('First failure')
+      expect(state.deleteFailures.other).toBeUndefined()
+      api[method].mockRejectedValueOnce({ reason: 'ContextChanged', message: 'old context' })
+      await state.onDelete(resource)
+      expect(state.deleteFailures[resource.name]?.message).toBe('First failure')
+      await state.dismissDeleteFailure(resource.name)
+      expect(state.deleteFailures).toEqual({})
     } finally { mounted.unmount() }
   })
 })
@@ -1775,10 +1903,106 @@ describe('edge detail actions', () => {
       pendingDelete.reject({ reason: 'HTTPError', message: 'service delete failed' })
       await deletePromise
       expect(state.deletingServiceName).toBeNull()
-      expect(state.svcError).toBe('service delete failed')
+      expect(state.svcError).toBeNull()
+      expect(state.svcMutationErrors['svc-a:delete']).toEqual({ name: 'svc-a', action: 'delete', message: 'service delete failed' })
+      await state.load('foreground')
+      expect(state.svcMutationErrors['svc-a:delete']?.message).toBe('service delete failed')
+      expect(state.servicesCardDetail).toBe('service')
+      confirm.confirmDialog.mockResolvedValueOnce(false)
+      await state.removeService('svc-a')
+      expect(state.svcMutationErrors['svc-a:delete']?.message).toBe('service delete failed')
+      api.deleteEdgeService.mockResolvedValueOnce(undefined)
+      await state.removeService('svc-a')
+      expect(state.svcMutationErrors).toEqual({})
     } finally {
       mounted.unmount()
     }
+  })
+
+  it('retains the service snapshot and read failure through a guarded retry', async () => {
+    const service = { name: 'svc-a', serviceType: 'generic', port: 8080 }
+    api.getEdge.mockResolvedValue(edgeDetail)
+    api.listEdgeServices.mockResolvedValue([service])
+    const mounted = await mount(Detail, { name: edgeDetail.name, type: edgeDetail.type, cluster: null, token: null })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      api.listEdgeServices.mockRejectedValueOnce({ message: 'services unavailable' })
+      await state.load('foreground')
+      const retry = deferred<unknown[]>()
+      api.listEdgeServices.mockImplementationOnce(() => retry.promise)
+      api.listEdgeServices.mockClear()
+      state.retryServiceRead()
+      state.retryServiceRead()
+      await flush()
+      expect(api.listEdgeServices).toHaveBeenCalledTimes(1)
+      expect(state.svcError).toBe('services unavailable')
+      expect(state.services).toEqual([service])
+      expect(state.loading).toBe(true)
+      retry.resolve([service])
+      await flush()
+      expect(state.svcError).toBeNull()
+      expect(state.loading).toBe(false)
+    } finally { mounted.unmount() }
+  })
+
+  it('keeps a failed credential save and draft separate from service reads and guards duplicate saves', async () => {
+    api.getEdge.mockResolvedValue(edgeDetail)
+    api.listEdgeServices.mockResolvedValue([{ name: 'svc-a', serviceType: 'generic', port: 8080 }])
+    const mounted = await mount(Detail, { name: edgeDetail.name, type: edgeDetail.type, cluster: null, token: null })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.startConnect('svc-a')
+      state.tokenInput = 'synthetic-placeholder'
+      const request = deferred<void>()
+      api.connectEdgeService.mockReturnValueOnce(request.promise)
+      const save = state.submitConnect()
+      await state.submitConnect()
+      expect(api.connectEdgeService).toHaveBeenCalledTimes(1)
+      state.startConnect('svc-b')
+      expect(state.connectFor).toBe('svc-a')
+      await state.removeService('svc-b')
+      expect(api.deleteEdgeService).not.toHaveBeenCalled()
+      request.reject({ message: 'save unavailable' })
+      await save
+      expect(state.svcMutationErrors['svc-a:connect']).toEqual({ name: 'svc-a', action: 'connect', message: 'save unavailable' })
+      expect(state.tokenInput).toBe('synthetic-placeholder')
+      expect(state.connectFor).toBe('svc-a')
+      await state.load('foreground')
+      expect(state.svcError).toBeNull()
+      expect(state.svcMutationErrors['svc-a:connect']?.message).toBe('save unavailable')
+      confirm.confirmDialog.mockResolvedValueOnce(true)
+      await state.removeService('svc-b')
+      expect(state.svcMutationErrors['svc-a:connect']?.message).toBe('save unavailable')
+      api.connectEdgeService.mockResolvedValueOnce(undefined)
+      await state.submitConnect()
+      expect(state.svcMutationErrors).toEqual({})
+      expect(state.tokenInput).toBe('')
+    } finally { mounted.unmount() }
+  })
+
+  it('does not let a credential save erase an unresolved deletion failure for the same service', async () => {
+    api.getEdge.mockResolvedValue(edgeDetail)
+    api.listEdgeServices.mockResolvedValue([{ name: 'svc-a', serviceType: 'generic', port: 8080 }])
+    const mounted = await mount(Detail, { name: edgeDetail.name, type: edgeDetail.type, cluster: null, token: null })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      confirm.confirmDialog.mockResolvedValueOnce(true)
+      api.deleteEdgeService.mockRejectedValueOnce({ message: 'delete unavailable' })
+      await state.removeService('svc-a')
+      state.startConnect('svc-a')
+      state.tokenInput = 'synthetic-placeholder'
+      await state.submitConnect()
+      expect(state.svcMutationErrors['svc-a:delete']).toEqual({ name: 'svc-a', action: 'delete', message: 'delete unavailable' })
+      confirm.confirmDialog.mockResolvedValueOnce(true)
+      api.deleteEdgeService.mockRejectedValueOnce({ message: 'another delete unavailable' })
+      await state.removeService('svc-b')
+      expect(Object.keys(state.svcMutationErrors)).toHaveLength(2)
+      state.dismissServiceMutationError('svc-b:delete')
+      expect(Object.keys(state.svcMutationErrors)).toEqual(['svc-a:delete'])
+    } finally { mounted.unmount() }
   })
 })
 

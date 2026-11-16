@@ -450,10 +450,6 @@ railgrid-provider-agents .agents-iconbtn-danger:hover { color: var(--color-dange
 railgrid-provider-agents .agents-badge { margin-left: 6px; }
 railgrid-provider-agents .agents-badge:first-child { margin-left: 0; }
 railgrid-provider-agents .agents-badge-muted { opacity: 0.75; font-style: italic; }
-railgrid-provider-agents .agents-badge-cat { font-weight: 600; }
-railgrid-provider-agents .agents-cat-tool { background: var(--color-accent-subtle); color: var(--color-accent, #8b6bff); }
-railgrid-provider-agents .agents-cat-channel { background: var(--color-success-subtle); color: var(--color-success, #2fd6a0); }
-railgrid-provider-agents .agents-cat-connection { background: var(--color-surface-overlay, #171927); color: var(--color-text-secondary, currentColor); }
 railgrid-provider-agents .agents-inbound-on { color: var(--color-success, #2fd6a0); font-weight: 700; }
 
 /* Workspace skill forms are provider-owned, so define their critical geometry

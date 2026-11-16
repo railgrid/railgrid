@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { portalHref } from './portalkit/navigation'
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
 import { ArrowUpCircle, Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Globe2, Home, Laptop, Plug, Plus, RefreshCw, Server, TerminalSquare } from 'lucide-vue-next'
-import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, deleteEdgeService } from './api'
+import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, deleteEdgeService, isContextChangedError } from './api'
 import { MACOS_MASKED_JOIN_TOKEN, macosJoinSnippet } from './macos'
 import { edgeStatusLabel } from './edge-status'
 import { EDGE_DELETE_MESSAGE } from './edge-delete'
@@ -18,6 +18,7 @@ import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue
 import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from './portalkit/ResourceStatCards.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
+import InlineNotification from './portalkit/InlineNotification.vue'
 import {
   FAST_REFRESH_MS,
   STABLE_REFRESH_MS,
@@ -117,15 +118,15 @@ async function onDelete() {
   if (!(await confirmDialog({ title: `Delete ${edgeDeleteLabel.value} "${props.name}"?`, message: EDGE_DELETE_MESSAGE, danger: true, confirmLabel: 'Delete' }))) return
   if (stopped || generation !== scopeGeneration || deleting.value || props.name !== scope.name || props.type !== scope.type || props.cluster !== scope.cluster) return
   deleting.value = true
-  mutationError.value = null
   try {
     await deleteEdge(current)
     if (stopped || generation !== scopeGeneration) return
+    mutationError.value = null
     toast('info', `${edgeMutationLabel.value} deletion requested for ${current.name}.`)
     emit('deleted')
   } catch (e) {
     if (stopped || generation !== scopeGeneration) return
-    mutationError.value = (e as ErrorResponse)?.message ?? 'Delete failed'
+    if (!isContextChangedError(e)) mutationError.value = (e as ErrorResponse)?.message ?? 'Delete failed'
     deleting.value = false
   }
 }
@@ -311,10 +312,25 @@ sudo launchctl kickstart -k system/com.railgrid.agent.${props.name}`,
 const services = ref<EdgeService[]>([])
 const servicesLoaded = ref(false)
 const svcError = ref<string | null>(null)
+const svcMutationErrors = ref<Record<string, { name: string; action: 'delete' | 'connect'; message: string }>>({})
+const servicesContent = ref<HTMLElement | null>(null)
+const servicesToggle = ref<HTMLButtonElement | null>(null)
 const deletingServiceName = ref<string | null>(null)
 const connectFor = ref<string | null>(null) // Service name being connected
 const tokenInput = ref('')
 const connecting = ref(false)
+
+// Read recovery and a completed deletion can remove the focused retry or card.
+// Keep focus in this section, including when recovery arrives from polling.
+watch([services, svcError, () => connectFor.value], () => {
+  if (!edge.value || typeof document === 'undefined') return
+  const focused = document.activeElement
+  if (!focused || !servicesContent.value?.contains(focused)) return
+  const generation = scopeGeneration
+  void nextTick(() => {
+    if (generation === scopeGeneration && !focused.isConnected && document.activeElement === document.body) servicesToggle.value?.focus()
+  })
+})
 const actionItems = computed<ActionMenuItem[]>(() => [{
   id: 'delete',
   label: deleting.value ? `Deleting ${edgeDeleteLabel.value}…` : `Delete ${edgeDeleteLabel.value}`,
@@ -395,45 +411,68 @@ function loadServices() {
   return load('foreground')
 }
 
+function retryServiceRead() {
+  if (loading.value || deleting.value || connecting.value) return
+  void loadServices()
+}
+
+function clearServiceMutationError(key: string) {
+  const next = { ...svcMutationErrors.value }
+  delete next[key]
+  svcMutationErrors.value = next
+}
+
+async function dismissServiceMutationError(key: string) {
+  clearServiceMutationError(key)
+  await nextTick()
+  servicesToggle.value?.focus()
+}
+
 async function removeService(name: string) {
-  if (deleting.value || deletingServiceName.value) return
+  if (deleting.value || deletingServiceName.value || connecting.value) return
+  const focused = typeof document === 'undefined' ? null : document.activeElement
   const scope = { name: props.name, type: props.type, cluster: props.cluster }
   const generation = scopeGeneration
   if (!(await confirmDialog({ title: 'Delete service', message: `"${name}" will be deleted, and its MCP tools will no longer be available.`, danger: true, confirmLabel: 'Delete service' }))) return
-  if (stopped || generation !== scopeGeneration || deleting.value || deletingServiceName.value || props.name !== scope.name || props.type !== scope.type || props.cluster !== scope.cluster) return
+  if (stopped || generation !== scopeGeneration || deleting.value || deletingServiceName.value || connecting.value || props.name !== scope.name || props.type !== scope.type || props.cluster !== scope.cluster) return
   deletingServiceName.value = name
   try {
     await deleteEdgeService(name)
     if (stopped || generation !== scopeGeneration) return
+    clearServiceMutationError(`${name}:delete`)
+    clearServiceMutationError(`${name}:connect`)
     toast('info', `Service deletion requested for ${name}.`)
     await loadServices()
+    await nextTick()
+    if (!stopped && generation === scopeGeneration && focused && !focused.isConnected && document.activeElement === document.body) servicesToggle.value?.focus()
   } catch (e) {
-    if (!stopped && generation === scopeGeneration) svcError.value = (e as ErrorResponse)?.message ?? 'Delete failed'
+    if (!stopped && generation === scopeGeneration && !isContextChangedError(e)) svcMutationErrors.value = { ...svcMutationErrors.value, [`${name}:delete`]: { name, action: 'delete', message: (e as ErrorResponse)?.message ?? 'The request failed.' } }
   } finally {
     if (generation === scopeGeneration && deletingServiceName.value === name) deletingServiceName.value = null
   }
 }
 
 function startConnect(name: string) {
+  if (connecting.value || deleting.value || deletingServiceName.value) return
   connectFor.value = name
   tokenInput.value = ''
 }
 
 async function submitConnect() {
-  if (!connectFor.value || !tokenInput.value.trim()) return
+  if (!connectFor.value || !tokenInput.value.trim() || connecting.value || deleting.value || deletingServiceName.value) return
   const name = connectFor.value
   const generation = scopeGeneration
   connecting.value = true
-  svcError.value = null
   try {
     await connectEdgeService(name, tokenInput.value.trim())
     if (stopped || generation !== scopeGeneration || connectFor.value !== name) return
+    clearServiceMutationError(`${name}:connect`)
     connectFor.value = null
     tokenInput.value = ''
     toast('ok', `Service credentials saved for ${name}.`)
     await loadServices()
   } catch (e) {
-    if (!stopped && generation === scopeGeneration) svcError.value = (e as ErrorResponse)?.message ?? 'Connect failed'
+    if (!stopped && generation === scopeGeneration && connectFor.value === name && !isContextChangedError(e)) svcMutationErrors.value = { ...svcMutationErrors.value, [`${name}:connect`]: { name, action: 'connect', message: (e as ErrorResponse)?.message ?? 'The request failed.' } }
   } finally {
     if (generation === scopeGeneration) connecting.value = false
   }
@@ -453,9 +492,6 @@ detailRefresh = createLatestRefreshController(async (requestID, mode) => {
   if (deleting.value) return
   refreshMode.value = mode
   loading.value = true
-  if (mode === 'foreground') {
-    svcError.value = null
-  }
   try {
     const [edgeReadSucceeded] = await Promise.all([loadEdgeSnapshot(requestID), loadServicesSnapshot(requestID)])
     if (edgeReadSucceeded && detailRefresh.isCurrent(requestID)) error.value = null
@@ -485,6 +521,7 @@ watch(() => [props.name, props.type, props.cluster], () => {
   servicesLoaded.value = false
   error.value = null
   svcError.value = null
+  svcMutationErrors.value = {}
   void load('foreground')
 }, { immediate: true })
 onUnmounted(() => {
@@ -569,7 +606,7 @@ onUnmounted(() => {
         </template>
 
         <template #body>
-          <div v-if="mutationError" class="banner error" role="alert">{{ mutationError }}</div>
+          <InlineNotification v-if="mutationError" tone="error" :title="`Could not delete edge ${name}`" :message="mutationError" />
           <div v-if="deleting" class="waiting" role="status">Deleting this edge. The last successful snapshot remains visible until the hub confirms removal.</div>
 
           <div class="edge-detail__sections">
@@ -764,6 +801,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
               <template #actions>
                 <span class="edge-section-card__count"><strong>{{ servicesLoaded ? services.length : '—' }}</strong> {{ servicesLoaded ? (services.length === 1 ? 'service' : 'services') : 'services' }}</span>
                 <button
+                  ref="servicesToggle"
                   type="button"
                   class="k-btn k-btn--ghost"
                   :disabled="!edge"
@@ -776,8 +814,22 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                 </button>
               </template>
 
-              <div v-if="edge && servicesExpanded" id="edges-services-content" class="edge-services-content">
-                <div v-if="svcError" class="banner error" role="alert">{{ svcError }}</div>
+              <div v-if="edge && servicesExpanded" id="edges-services-content" ref="servicesContent" class="edge-services-content">
+                <InlineNotification
+                  v-if="svcError"
+                  :tone="servicesLoaded ? 'warning' : 'error'"
+                  :title="servicesLoaded ? 'Could not refresh services' : 'Could not load services'"
+                  :message="`${servicesLoaded ? 'Showing the last successful result. ' : ''}${svcError}`"
+                  action-label="Retry" action-busy-label="Retrying…"
+                  :action-busy="loading || deleting || connecting"
+                  @action="retryServiceRead"
+                />
+                <InlineNotification
+                  v-for="(failure, key) in svcMutationErrors" :key="key"
+                  tone="error"
+                  :title="failure.action === 'delete' ? `Could not delete service ${failure.name}` : `Could not save credentials for ${failure.name}`"
+                  :message="failure.message" dismissible @dismiss="dismissServiceMutationError(String(key))"
+                />
 
                 <div class="edge-services-content__actions">
                   <button
@@ -813,7 +865,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                           :label="`Delete service ${es.name}`"
                           :busy-label="`Deleting service ${es.name}`"
                           :busy="deletingServiceName === es.name"
-                          :disabled="deleting || (deletingServiceName !== null && deletingServiceName !== es.name)"
+                          :disabled="deleting || connecting || (deletingServiceName !== null && deletingServiceName !== es.name)"
                           @click="removeService(es.name)"
                         />
                       </div>
@@ -822,8 +874,8 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                       <span v-if="es.version" class="mono">v{{ es.version }}</span>
                       <span v-if="es.targetNamespace" class="mono">{{ es.targetName }}.{{ es.targetNamespace }}.svc:{{ es.port }}</span>
                       <span v-else class="mono">:{{ es.port }}</span>
-                      <span v-if="es.installType" class="k-badge k-badge--muted">{{ es.installType }}</span>
-                      <span v-if="es.hasCredentials" class="k-badge k-badge--success">token set</span>
+                      <span v-if="es.installType" class="k-badge k-badge--muted k-badge--label">{{ es.installType }}</span>
+                      <StatusBadge v-if="es.hasCredentials" status="token set" tone="success" />
                     </div>
 
                     <!-- Connect form. -->
@@ -850,7 +902,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                       </p>
                     </div>
                     <div v-else class="wiz-actions" style="justify-content: flex-start;">
-                      <button class="k-btn k-btn--ghost" type="button" :disabled="deleting" @click="startConnect(es.name)">
+                      <button class="k-btn k-btn--ghost" type="button" :disabled="deleting || connecting || deletingServiceName !== null" @click="startConnect(es.name)">
                         <Plug :size="14" aria-hidden="true" /> {{ es.hasCredentials ? 'Update token' : 'Connect' }}
                       </button>
                     </div>

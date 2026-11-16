@@ -534,6 +534,7 @@ test('settings teardown retires requests and mutation contexts even when tenant 
   const state = {
     ...Object.fromEntries(generations.map(name => [name, 7])),
     creationFeedbackGeneration: 0, pageDisposed: false, workspaceDeleteScopeGeneration: 0,
+    orgRenameGeneration: { value: 0 }, wsRenameGeneration: { value: 0 },
     settingsBulkScopeGeneration: { value: 0 },
     orgMemberBulkScopeGeneration: { value: 0 },
     saBulk: { resetSelection() {} },
@@ -1116,7 +1117,7 @@ test('workspace trigger is borderless at rest, has no count, and filters lifecyc
   assert.doesNotMatch(switcher, /\{\{\s*workspaces\.length\s*\}\}/)
   assert.match(switcher, /:disabled="workspaceUnavailable\(workspace\)"/)
   assert.match(switcher, /if \(!isWorkspaceUsable\(workspace\)\) return/)
-  assert.match(switcher, /k-badge--warning/)
+  assert.match(switcher, /:tone="workspaceStatus\(workspace\) === 'Pending' \? 'warning' : 'muted'"/)
   assert.match(switcher, /isWorkspaceAvailable/)
   assert.match(switcher, /function workspaceStatus\(workspace: WorkspaceRow\): WorkspaceStatus/)
   assert.match(switcher, /type WorkspaceStatus = 'Ready' \| 'Pending' \| 'Unverified'/)
@@ -1245,10 +1246,9 @@ test('workspace search is thresholded and clears its query when hidden', () => {
 
 test('workspace option badges omit Ready while Pending and Unverified remain accessible', () => {
   const optionStart = switcher.indexOf('<button\n              v-for="workspace in filteredWorkspaces"')
-  const badgeClassStart = switcher.indexOf('class="k-badge shrink-0', optionStart)
-  const badgeStart = switcher.lastIndexOf('<span', badgeClassStart)
-  const badgeEnd = switcher.indexOf('\n              </span>', badgeStart)
-  assert.ok(optionStart >= 0 && badgeClassStart > optionStart && badgeStart > optionStart && badgeEnd > badgeStart)
+  const badgeStart = switcher.indexOf('<StatusBadge', optionStart)
+  const badgeEnd = switcher.indexOf('\n              />', badgeStart)
+  assert.ok(optionStart >= 0 && badgeStart > optionStart && badgeEnd > badgeStart)
   const badge = switcher.slice(badgeStart, badgeEnd)
   assert.match(badge, /v-if="workspaceStatus\(workspace\) !== 'Ready'"/)
   assert.match(badge, /workspaceStatus\(workspace\)/)
@@ -1433,7 +1433,7 @@ test('workspace popover keeps AA contrast tokens and coarse-pointer targets', ()
   assert.match(switcher, /text-text-secondary/)
   assert.match(switcher, /placeholder:text-text-secondary/)
   assert.match(switcher, /focus-visible:ring-2 focus-visible:ring-accent/)
-  assert.match(switcher, /<span class="text-text-primary">\{\{ workspaceStatus\(workspace\) \}\}<\/span>/)
+  assert.match(switcher, /<StatusBadge[\s\S]*?:status="workspaceStatus\(workspace\)"[\s\S]*?:tone="workspaceStatus\(workspace\) === 'Pending' \? 'warning' : 'muted'"/)
   assert.match(switcher, /@media \(pointer: coarse\)/)
   assert.match(switcher, /min-height: 44px/)
   assert.match(switcher, /workspace-switcher-trigger--compact/)
@@ -1551,11 +1551,11 @@ test('provider catalog and binding checks have finite loading, missing, error, a
   assert.match(providerFrame, /const catalogError = computed/)
   assert.match(providerFrame, /const catalogMissing = computed/)
   assert.match(providerFrame, /Failed to load provider catalog/)
-  assert.match(providerFrame, /@click="retryCatalog"/)
+  assert.match(providerFrame, /<InlineNotification\b[^>]*@action="retryCatalog"/)
   assert.match(providerFrame, /Provider <code class="font-mono text-text-secondary">\{\{ props\.providerName \}\}<\/code> is not available/)
   assert.match(providerFrame, /Checking provider access&hellip;/)
   assert.match(providerFrame, /Could not check provider access/)
-  assert.match(providerFrame, /@click="retryBindings"/)
+  assert.match(providerFrame, /<InlineNotification\b[^>]*@action="retryBindings"/)
   assert.match(providerFrame, /This provider does not publish a portal UI\./)
   assert.match(providerFrame, /loadState\.value !== 'ready'/)
   assert.match(providersStore, /const bindingsLoadState = ref<ProviderBindingsLoadState>\('idle'\)/)
@@ -1587,7 +1587,7 @@ test('provider hard refresh waits for the hydrated AppLayout mount outlet', () =
 })
 
 test('provider mount chain can shrink wide provider content into its local overflow boundary', () => {
-  assert.match(providerFrame, /<div class="flex h-full min-h-0 min-w-0 flex-col">/)
+  assert.match(providerFrame, /<div\b[^>]*class="flex h-full min-h-0 min-w-0 flex-col"[^>]*>/)
   assert.match(providerFrame, /ref="mountRef"[\s\S]*class="min-h-0 min-w-0 flex-1"/)
 })
 

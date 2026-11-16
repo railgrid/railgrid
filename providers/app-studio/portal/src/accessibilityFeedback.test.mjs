@@ -67,7 +67,7 @@ test('keeps compact controls touch-sized on coarse pointers', () => {
   assert.ok((skillsWorkbench.match(/class="app-studio-touch-target/g) ?? []).length >= 2)
   assert.match(preProjectComposer, /ref="attachmentMenuTriggerRef"[\s\S]*class="app-studio-touch-target/)
   assert.match(app, /aria-label="Search projects"/)
-  assert.match(app, /aria-label="Clear project search"[\s\S]*title="Clear search"[\s\S]*@click="projectQuery = ''"/)
+  assert.match(app, /aria-label="Clear project search"[\s\S]*title="Clear search"[\s\S]*@click="clearProjectSearch"/)
   assert.match(app, /class="app-studio-touch-target absolute right-1\.5 top-1\.5/)
   assert.match(app, /class="app-studio-touch-target k-btn k-btn--primary[^"]*"[^>]*>\s*Review project/)
   assert.match(app, /class="app-studio-touch-target flex h-8 w-8[^>]*aria-label="Delete annotation"/)

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { portalHref } from '../portalkit/navigation'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { AlertTriangle, ArrowLeftRight, ExternalLink, Eye, GitBranch, Github, Package as PackageIcon, PackageOpen, Plug, RefreshCw, User, Users, X } from 'lucide-vue-next'
 import { api } from '../api'
 import type { Collaborator, Connection, DeployKey, ErrorResponse, Package, RepositoryDetail } from '../types'
 import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
@@ -52,6 +53,7 @@ const repo = ref<RepositoryDetail | null>(null)
 const repoLoading = ref(true)
 const repoLoaded = ref(false)
 const repoError = ref<string | null>(null)
+const detailRoot = ref<HTMLElement | null>(null)
 const repositoryMutationError = ref<string | null>(null)
 const connectionExpanded = ref(false)
 const accessExpanded = ref(false)
@@ -61,6 +63,8 @@ const connections = ref<Connection[]>([])
 const connectionsLoading = ref(true)
 const connectionsLoaded = ref(false)
 const connectionsError = ref<string | null>(null)
+const connectionWarning = ref<HTMLElement | null>(null)
+const connectionSelect = ref<HTMLSelectElement | null>(null)
 const selectedConn = ref('')
 const changingConn = ref(false)
 const connError = ref<string | null>(null)
@@ -74,7 +78,7 @@ const keyPublic = ref('')
 const keyReadOnly = ref(true)
 const keySubmitting = ref(false)
 const keyError = ref<string | null>(null)
-const keyDeleteError = ref<string | null>(null)
+const keyDeleteErrors = ref<Record<string, string>>({})
 
 const collabs = ref<Collaborator[]>([])
 const collabsLoading = ref(true)
@@ -84,7 +88,7 @@ const collabUser = ref('')
 const collabPerm = ref('push')
 const collabSubmitting = ref(false)
 const collabError = ref<string | null>(null)
-const collabDeleteError = ref<string | null>(null)
+const collabDeleteErrors = ref<Record<string, string>>({})
 
 const packages = ref<Package[]>([])
 const packagesLoading = ref(true)
@@ -308,7 +312,14 @@ function loadConnections(mode: ResourceRefreshMode = 'foreground') {
     connectionRefreshMode.value = 'foreground'
     connectionsLoading.value = true
   }
-  connectionRefresh.request(mode)
+  return connectionRefresh.request(mode)
+}
+async function retryConnections() {
+  if (connectionsLoading.value) return
+  const focused = typeof document !== 'undefined' && !!connectionWarning.value?.contains(document.activeElement)
+  await loadConnections()
+  await nextTick()
+  if (focused && !connectionsError.value && typeof document !== 'undefined' && document.activeElement === document.body) connectionSelect.value?.focus()
 }
 function loadKeys(mode: ResourceRefreshMode = 'foreground') {
   if (mode === 'foreground') {
@@ -382,6 +393,24 @@ const poller = createAdaptiveRefreshTimer(() => loadAllMode('background'), () =>
   return repositoryPending || connectionPending || accessPending || packagesPending ? FAST_REFRESH_MS : STABLE_REFRESH_MS
 })
 
+function clearDeleteError(target: { value: Record<string, string> }, name: string) {
+  const next = { ...target.value }
+  delete next[name]
+  target.value = next
+}
+async function focusDetailHeading() {
+  await nextTick()
+  detailRoot.value?.querySelector<HTMLElement>('.k-resource-page__title')?.focus({ preventScroll: true })
+}
+async function dismissRepositoryError() {
+  repositoryMutationError.value = null
+  await focusDetailHeading()
+}
+async function dismissDeleteError(kind: 'key' | 'collaborator', name: string) {
+  clearDeleteError(kind === 'key' ? keyDeleteErrors : collabDeleteErrors, name)
+  await focusDetailHeading()
+}
+
 async function deleteRepository() {
   const current = repo.value
   if (!current || repositoryDeleting.value) return
@@ -394,15 +423,15 @@ async function deleteRepository() {
   if (!ok || !mounted) return
   const lock = operationKey('repository', current.name)
   if (!operations.acquire(lock, 'deleting')) return
-  repositoryMutationError.value = null
   try {
     await api.deleteRepository(current.name)
     if (!mounted || repo.value?.name !== current.name || repo.value?.uid !== current.uid) return
+    repositoryMutationError.value = null
     props.deletions.acknowledge(repositoryScope, current.name, current.uid)
     toast('info', `Repository deletion requested for ${current.name}.`)
     loadRepository()
   } catch (e) {
-    repositoryMutationError.value = errMessage(e)
+    if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged' && repo.value?.name === current.name && repo.value?.uid === current.uid) repositoryMutationError.value = errMessage(e)
   } finally {
     operations.release(lock)
   }
@@ -584,15 +613,15 @@ async function removeKey(row: Record<string, unknown>) {
   if (!ok || !mounted) return
   const lock = operationKey('deploy-key', key.name)
   if (!operations.acquire(lock, 'deleting')) return
-  keyDeleteError.value = null
   try {
     await api.deleteDeployKey(key.name)
     if (!mounted || props.name !== key.repositoryRef) return
+    clearDeleteError(keyDeleteErrors, `${key.name}:${key.uid || ""}`)
     props.deletions.acknowledge(keyScope, key.name, key.uid)
     toast('info', `Deploy key update requested for ${props.name}.`)
     loadKeys()
   } catch (e) {
-    keyDeleteError.value = errMessage(e)
+    if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged' && props.name === key.repositoryRef) keyDeleteErrors.value = { ...keyDeleteErrors.value, [`${key.name}:${key.uid || ""}`]: `${key.title || key.name}: ${errMessage(e)}` }
   } finally {
     operations.release(lock)
   }
@@ -633,15 +662,15 @@ async function removeCollab(row: Record<string, unknown>) {
   if (!ok || !mounted) return
   const lock = operationKey('collaborator', collab.name)
   if (!operations.acquire(lock, 'deleting')) return
-  collabDeleteError.value = null
   try {
     await api.deleteCollaborator(collab.name)
     if (!mounted || props.name !== collab.repositoryRef) return
+    clearDeleteError(collabDeleteErrors, `${collab.name}:${collab.uid || ''}`)
     props.deletions.acknowledge(collaboratorScope, collab.name, collab.uid)
     toast('info', `Collaborator update requested for ${props.name}.`)
     loadCollaborators()
   } catch (e) {
-    collabDeleteError.value = errMessage(e)
+    if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged' && props.name === collab.repositoryRef) collabDeleteErrors.value = { ...collabDeleteErrors.value, [`${collab.name}:${collab.uid || ""}`]: `${collab.username}: ${errMessage(e)}` }
   } finally {
     operations.release(lock)
   }
@@ -830,7 +859,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="repo-detail">
+  <div ref="detailRoot" class="repo-detail">
     <ResourceBackLink class="repo-detail__back" :href="portalHref('/ui/providers/code/repositories')" @back="emit('back')">
       Repositories
     </ResourceBackLink>
@@ -887,7 +916,7 @@ onUnmounted(() => {
     </template>
 
     <template #body>
-      <p v-if="repositoryMutationError" class="error mutation-error" role="alert" aria-live="assertive">{{ repositoryMutationError }}</p>
+      <InlineNotification v-if="repositoryMutationError" tone="error" :title="`Could not delete repository ${repo?.repo || name}`" :message="`${repositoryMutationError} Try again using the repository delete action.`" dismissible @dismiss="dismissRepositoryError" />
       <p v-if="repositoryDeleting" class="repo-detail__deleting" role="status" aria-live="polite">
         Deleting this repository. The last successful snapshot remains visible until the hub confirms removal.
       </p>
@@ -917,14 +946,14 @@ onUnmounted(() => {
               <div v-if="connectionExpanded" id="repository-integration-editor" class="repo-integration-editor">
               <div class="conn-edit" :aria-busy="connectionsLoading">
                 <label class="sr-only" for="repository-managing-connection">Managing connection</label>
-                <select id="repository-managing-connection" v-model="selectedConn" class="k-input" :disabled="repositoryDeleting || changingConn || !connectionsLoaded">
+                <select id="repository-managing-connection" ref="connectionSelect" v-model="selectedConn" class="k-input" :disabled="repositoryDeleting || changingConn || !connectionsLoaded">
                   <option v-for="c in connectionChoices" :key="c.name" :value="c.name">{{ c.name }} ({{ c.owner }})</option>
                 </select>
                 <button class="k-btn k-btn--ghost" type="button" :disabled="repositoryDeleting || changingConn || !connectionsLoaded || selectedConn === repo.connectionRef" @click="changeConnection"><ArrowLeftRight :size="14" aria-hidden="true" />{{ changingConn ? 'Changing…' : 'Change' }}</button>
               </div>
-              <span v-if="connectionsLoading && !connectionsLoaded" class="muted" role="status" aria-live="polite">Loading connections…</span>
-              <div v-if="connectionsError" class="error read-error" role="alert" aria-live="assertive">
-                <span>{{ connectionsLoaded ? 'Showing cached connection choices. ' : '' }}{{ connectionsError }}</span><button class="k-btn k-btn--ghost" type="button" @click="loadConnections()">Retry</button>
+              <span v-if="connectionsLoading && !connectionsLoaded && !connectionsError" class="muted" role="status" aria-live="polite">Loading connections…</span>
+              <div v-if="connectionsError" ref="connectionWarning">
+                <InlineNotification :tone="connectionsLoaded ? 'warning' : 'error'" :message="connectionsLoaded ? `Could not refresh connections. Showing cached connection choices. ${connectionsError}` : `Could not load connections. ${connectionsError}`" action-label="Retry" action-busy-label="Retrying…" :action-busy="connectionsLoading" @action="retryConnections" />
               </div>
               <span v-else-if="connectionsLoading && connectionsLoaded" class="sr-only" role="status" aria-live="polite">Updating connections…</span>
               <p v-if="ownerWillChange" class="conn-warn"><AlertTriangle :size="15" class="warn-ic" aria-hidden="true" /> Owner <code>{{ newOwner }}</code> differs from current <code>{{ currentOwner }}</code> — this re-targets the repo to a different account and may create a new repo there.</p>
@@ -955,10 +984,10 @@ onUnmounted(() => {
               <div class="code-form-actions"><button class="k-btn k-btn--ghost" type="submit" :disabled="repositoryDeleting || keySubmitting || !keysLoaded">{{ keySubmitting ? 'Adding…' : 'Add deploy key' }}</button><span v-if="keyError" class="error" role="alert">{{ keyError }}</span></div>
               <p class="muted">A generated key's private half is written to a Secret in your workspace.</p>
             </form>
-            <p v-if="keyDeleteError" class="error mutation-error" role="alert" aria-live="assertive">{{ keyDeleteError }}</p>
+            <InlineNotification v-for="(message, key) in keyDeleteErrors" :key="key" tone="error" title="Could not delete deploy key" :message="`${message} Try again using the deploy key delete action.`" dismissible @dismiss="dismissDeleteError('key', String(key))" />
             <ResourceTable aria-label="Deploy keys" :columns="keyColumns" :rows="keyRows" row-key="name" :loaded="keysLoaded" :loading="keysLoading" :refresh-mode="keyRefreshMode" :error="keysError" :stale="keysLoaded && !!keysError" retryable searchable search-placeholder="Search deploy keys…" :filters="[{ key: 'access', label: 'Access' }, { key: 'status', label: 'Status', allLabel: 'Any status' }]" paginated :page-size="10" empty-text="No deploy keys." :interactive="false" @retry="loadKeys">
               <template #title="{ row }"><strong>{{ row.title }}</strong><div v-if="row.generated && row.secretName" class="muted">secret: <code>{{ row.secretName }}</code></div></template>
-              <template #access="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
+              <template #access="{ value }"><span class="k-badge k-badge--muted k-badge--label">{{ value }}</span></template>
               <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
               <template #actions="{ row }"><div class="code-row-actions"><ResourceTableDeleteButton :label="`Delete deploy key ${String(row.title)}`" :busy-label="`Deleting deploy key ${String(row.title)}…`" :busy="Boolean(row.deleting) || operations.phase(operationKey('deploy-key', String(row.name))) === 'deleting'" :disabled="repositoryDeleting || Boolean(row.deleting) || operations.isLocked(operationKey('deploy-key', String(row.name)))" @click="removeKey(row)" /></div></template>
             </ResourceTable>
@@ -970,10 +999,10 @@ onUnmounted(() => {
               <label class="field"><span class="field-label">Permission</span><select v-model="collabPerm" class="k-input" :disabled="repositoryDeleting"><option value="pull">pull</option><option value="push">push</option><option value="admin">admin</option></select></label>
               <div class="code-form-actions"><button class="k-btn k-btn--ghost" type="submit" :disabled="repositoryDeleting || collabSubmitting || !collabsLoaded">{{ collabSubmitting ? 'Adding…' : 'Add collaborator' }}</button><span v-if="collabError" class="error" role="alert">{{ collabError }}</span></div>
             </form>
-            <p v-if="collabDeleteError" class="error mutation-error" role="alert" aria-live="assertive">{{ collabDeleteError }}</p>
+            <InlineNotification v-for="(message, key) in collabDeleteErrors" :key="key" tone="error" title="Could not remove collaborator" :message="`${message} Try again using the collaborator remove action.`" dismissible @dismiss="dismissDeleteError('collaborator', String(key))" />
             <ResourceTable aria-label="Repository collaborators" :columns="collabColumns" :rows="collabRows" row-key="name" :loaded="collabsLoaded" :loading="collabsLoading" :refresh-mode="collabRefreshMode" :error="collabsError" :stale="collabsLoaded && !!collabsError" retryable searchable search-placeholder="Search collaborators…" :filters="[{ key: 'permission', label: 'Permission' }, { key: 'status', label: 'Status', allLabel: 'Any status' }]" paginated :page-size="10" empty-text="No collaborators." :interactive="false" @retry="loadCollaborators">
               <template #username="{ value }"><strong>{{ value }}</strong></template>
-              <template #permission="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
+              <template #permission="{ value }"><span class="k-badge k-badge--muted k-badge--label">{{ value }}</span></template>
               <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
               <template #actions="{ row }"><div class="code-row-actions"><ResourceTableDeleteButton :label="`Remove collaborator ${String(row.username)}`" :busy-label="`Removing collaborator ${String(row.username)}…`" :busy="Boolean(row.deleting) || operations.phase(operationKey('collaborator', String(row.name))) === 'deleting'" :disabled="repositoryDeleting || Boolean(row.deleting) || operations.isLocked(operationKey('collaborator', String(row.name)))" @click="removeCollab(row)" /></div></template>
             </ResourceTable>
@@ -996,7 +1025,7 @@ onUnmounted(() => {
             <div class="panel-head"><h3 class="panel-title">Packages</h3><span v-if="packagesLoaded && packageMode === 'client'" class="muted">{{ packageRows.length }}</span></div>
             <ResourceTable aria-label="Repository packages" :columns="packageColumns" :rows="packageRows" row-key="rowKey" :loaded="packagesLoaded" :loading="packagesLoading" :refresh-mode="packageRefreshMode" :error="packagesError" :stale="packagesLoaded && !!packagesError" retryable searchable search-placeholder="Search packages…" :filters="PACKAGE_FILTERS" :pagination-mode="packageMode" :page="packagePage" :page-size="packagePageSize" :query="packageQuery" :filter-values="packageFilters" :cursor="packageCursor" :page-info="packagePageInfo" empty-text="No packages published to this repository yet." :interactive="false" @retry="loadPackages" @change="handlePackageChange">
               <template #name="{ row }"><strong><a v-if="row.htmlURL && !repositoryDeleting && !row.deleting" class="k-table-resource-link" :href="String(row.htmlURL)" target="_blank" rel="noopener">{{ row.name }}</a><template v-else>{{ row.name }}</template></strong></template>
-              <template #type="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
+              <template #type="{ value }"><span class="k-badge k-badge--muted k-badge--label">{{ value }}</span></template>
               <template #visibility="{ value }"><span class="muted">{{ value === 'unknown' ? '—' : value }}</span></template>
               <template #versionCount="{ value }"><span class="muted mono tabular-nums">{{ value || 0 }}</span></template>
               <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>

@@ -548,3 +548,81 @@ for (const scenario of ['removed action', 'user moved focus', 'scope changed']) 
     assert.deepEqual(focusCalls, scenario === 'removed action' ? ['heading'] : [])
   })
 }
+
+for (const moveFocus of [false, true]) {
+  test(`workspace rename locks duplicate saves and ${moveFocus ? 'preserves focus outside the editor' : 'restores lost editor focus'} on failure`, async () => {
+    const result = deferred()
+    const calls = []
+    let focus = 0
+    class Node {}
+    const body = new Node(), input = new Node(), other = new Node()
+    let onFocus
+    const document = {
+      body, activeElement: input,
+      addEventListener: (_name, listener) => { onFocus = listener },
+      removeEventListener: (_name, listener) => { assert.equal(onFocus, listener); onFocus = undefined },
+    }
+    const context = {
+      selectedTarget: () => ({ org: 'org-a', ws: 'workspace-a' }),
+      canEditWs: { value: true }, wsNameDraft: { value: 'Draft' }, wsRenameGeneration: { value: 1 }, wsRenamePending: { value: false },
+      isCurrentTarget: () => true,
+      wsBusy: { value: false }, editingWsName: { value: true },
+      wsNameInput: { value: { focus: () => focus++ } },
+      wsRenameButton: { value: { focus: () => {} } },
+      wsRenameEditor: { value: { contains: (target) => target === input } },
+      document,
+      trackRenameFocus: loadFunction('trackRenameFocus', { document, Node }),
+      nextTick: (fn) => fn(), toast: () => {},
+      tenant: { patchWorkspaceDisplayName: (...args) => { calls.push(args); return result.promise } },
+    }
+    const save = loadFunction('saveWsName', context)
+    const pending = save()
+    await save()
+    assert.equal(calls.length, 1)
+    assert.equal(context.wsBusy.value, true)
+    document.activeElement = moveFocus ? other : body
+    if (moveFocus) onFocus({ target: other })
+    result.resolve(false)
+    await pending
+    assert.equal(context.wsNameDraft.value, 'Draft')
+    assert.equal(context.editingWsName.value, true)
+    assert.equal(context.wsBusy.value, false)
+    assert.equal(focus, moveFocus ? 0 : 1)
+    assert.equal(onFocus, undefined)
+  })
+}
+
+for (const success of [true, false]) {
+  for (const scope of ['workspace', 'organization']) {
+    test(`late ${scope} rename ${success ? 'success' : 'failure'} leaves a newer editor untouched`, async () => {
+      const result = deferred()
+      let focused = 0
+      let toasts = 0
+      const generation = { value: 1 }, draft = { value: 'Old' }, busy = { value: false }, editing = { value: true }
+      const input = { value: { focus: () => focused++ } }
+      const context = {
+        selectedTarget: () => ({ org: 'org-a', ws: 'workspace-a' }), isCurrentTarget: () => true,
+        canEditWs: { value: true }, wsNameDraft: draft, wsRenameGeneration: generation, wsRenamePending: { value: false }, wsBusy: busy, editingWsName: editing,
+        wsNameInput: input, wsRenameButton: input,
+        wsRenameEditor: { value: null }, orgRenameEditor: { value: null },
+        trackRenameFocus: () => () => false,
+        organizationTargetUUID: { value: 'org-a' }, canEditOrg: { value: true }, orgMemberBulkLocked: { value: false },
+        orgNameDraft: draft, orgRenameGeneration: generation, orgRenamePending: { value: false }, orgBusy: busy, editingOrgName: editing,
+        orgNameInput: input, orgRenameButton: input,
+        nextTick: (fn) => fn(), toast: () => toasts++,
+        tenant: { patchWorkspaceDisplayName: () => result.promise, patchOrgDisplayName: () => result.promise },
+      }
+      const pending = loadFunction(scope === 'workspace' ? 'saveWsName' : 'saveOrgName', context)()
+      generation.value++
+      draft.value = 'New draft'
+      busy.value = true
+      result.resolve(success)
+      await pending
+      assert.equal(editing.value, true)
+      assert.equal(draft.value, 'New draft')
+      assert.equal(busy.value, true)
+      assert.equal(focused, 0)
+      assert.equal(toasts, 0)
+    })
+  }
+}

@@ -33,7 +33,7 @@ const deletionScope = 'connection'
 
 const connections = ref<Connection[]>([])
 const error = ref<string | null>(null)
-const mutationError = ref<string | null>(null)
+const mutationErrors = ref<Record<string, { name: string; message: string }>>({})
 const loading = ref(false)
 const loaded = ref(false)
 const operations = createOperationLocks()
@@ -136,6 +136,17 @@ function followCreateLink(event: MouseEvent, method: 'token' | 'github'): void {
   emit('create', method)
 }
 
+function clearMutationError(name: string) {
+  const next = { ...mutationErrors.value }
+  delete next[name]
+  mutationErrors.value = next
+}
+async function dismissMutationError(name: string) {
+  clearMutationError(name)
+  await nextTick()
+  pageTitle.value?.focus({ preventScroll: true })
+}
+
 async function remove(row: Record<string, unknown>) {
   const connection = row as unknown as Connection
   if (isDeleting(connection)) return
@@ -148,15 +159,15 @@ async function remove(row: Record<string, unknown>) {
   if (!ok || !mounted) return
   const lock = operationKey('connection', connection.name)
   if (!operations.acquire(lock, 'deleting')) return
-  mutationError.value = null
   try {
     await api.deleteConnection(connection.name)
     if (!mounted) return
+    clearMutationError(`${connection.name}:${connection.uid || ""}`)
     props.deletions.acknowledge(deletionScope, connection.name, connection.uid)
     toast('info', `Connection deletion requested for ${connection.name}.`)
     load()
   } catch (e) {
-    mutationError.value = errMessage(e)
+    if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged') mutationErrors.value = { ...mutationErrors.value, [`${connection.name}:${connection.uid || ""}`]: { name: connection.name, message: errMessage(e) } }
   } finally {
     operations.release(lock)
   }
@@ -231,7 +242,7 @@ onUnmounted(() => {
       Tip: a platform admin can enable one-click “Connect with GitHub” by configuring the provider’s GitHub OAuth app.
     </p>
 
-    <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">{{ mutationError }}</p>
+    <InlineNotification v-for="(failure, key) in mutationErrors" :key="key" tone="error" :title="`Could not delete connection ${failure.name}`" :message="`${failure.message} Try again using the connection delete action.`" dismissible @dismiss="dismissMutationError(String(key))" />
     <div v-if="showFirstRun && error" ref="firstRunWarning">
       <InlineNotification tone="warning" message="Connections could not be refreshed. Showing the last successful empty result." action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="load()" />
     </div>

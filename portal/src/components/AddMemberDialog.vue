@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { containModalTab } from '@/portalkit/modal-focus'
+
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import { Loader2, User as UserIcon } from 'lucide-vue-next'
 import type { MemberRow } from '@/stores/tenant'
@@ -119,6 +121,7 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <dialog
+      @keydown="containModalTab"
       ref="dialogRef"
       class="add-member-dialog k-modal"
       :aria-labelledby="`${id}-title`"

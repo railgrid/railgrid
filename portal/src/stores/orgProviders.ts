@@ -160,11 +160,13 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
   const installTargetsLoaded = ref(false)
 
   let scopeGeneration = 0
+  let errorURL: string | null = null
   function resetForOrganization() {
     scopeGeneration += 1
     items.value = []
     loading.value = false
     error.value = null
+    errorURL = null
     loaded.value = false
     supported.value = true
     installTargets.value = []
@@ -204,7 +206,7 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
     if (!url || loading.value) return false
     const generation = scopeGeneration
     loading.value = true
-    error.value = null
+    if (errorURL !== url) error.value = null
     try {
       const res = await authFetch(url, { tenant: true })
       if (generation !== scopeGeneration || url !== orgURL()) return false
@@ -213,6 +215,8 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
         supported.value = false
         items.value = []
         loaded.value = true
+        error.value = null
+        errorURL = null
         return false
       }
       if (!res.ok) throw new Error(`list self-hosted providers: ${res.status}`)
@@ -221,10 +225,13 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
       supported.value = true
       items.value = body.items ?? []
       loaded.value = true
+      error.value = null
+      errorURL = null
       return true
     } catch (e) {
       if (generation !== scopeGeneration || url !== orgURL()) return false
       error.value = e instanceof Error ? e.message : String(e)
+      errorURL = url
       return false
     } finally {
       if (generation === scopeGeneration) loading.value = false

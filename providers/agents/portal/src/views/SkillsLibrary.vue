@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { Download, FileUp, Loader2, Plus, Save, Trash2, Upload, X } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
@@ -10,6 +10,7 @@ import { providerFetch } from '../portalkit/tenant'
 import { createKubeClient, type KubeObject, type KubeResourceRef } from '../portalkit/kube'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import { hashFor, type Route } from '../router'
@@ -35,11 +36,16 @@ const SKILLS_REF: KubeResourceRef = { group: 'agents.railgrid.ai', version: 'v1a
 const catalog = ref<AgentSkill[]>([])
 const catalogWarnings = ref<string[]>([])
 const catalogLoading = ref(false)
+const catalogHasSnapshot = ref(false)
 const catalogError = ref('')
+const catalogNotice = ref<HTMLElement | null>(null)
+const catalogSection = ref<HTMLElement | null>(null)
 const selectedSkill = ref<AgentKitSkill | null>(null)
 const detail = ref<AgentSkillDetail | null>(null)
 const detailLoading = ref(false)
 const detailError = ref('')
+const detailNotice = ref<HTMLElement | null>(null)
+const detailSection = ref<HTMLElement | null>(null)
 const search = ref('')
 const mode = ref<'detail' | 'create' | 'edit'>('detail')
 const packageName = ref('')
@@ -71,12 +77,14 @@ async function loadCatalog(selectID?: string): Promise<void> {
   const api = props.api
   const authority = captureAuthority()
   catalogLoading.value = true
-  catalogError.value = ''
   try {
     const result = await api.getSkillLibrary()
     if (serial !== catalogSerial || !authorityIsCurrent(authority) || props.api !== api) return
+    const restoreFocus = Boolean(catalogError.value && catalogNotice.value?.contains(document.activeElement))
     catalog.value = result.skills || []
     catalogWarnings.value = result.warnings || []
+    catalogHasSnapshot.value = true
+    catalogError.value = ''
     if (selectID) {
       const next = catalog.value.find((skill) => skill.id === selectID)
       if (next) await selectSkill(next, true)
@@ -86,6 +94,14 @@ async function loadCatalog(selectID?: string): Promise<void> {
       if (current) selectedSkill.value = current
       else { selectedSkill.value = null; detail.value = null }
     }
+    await nextTick()
+    if (
+      restoreFocus &&
+      serial === catalogSerial &&
+      authorityIsCurrent(authority) &&
+      props.api === api &&
+      focusWasLost()
+    ) catalogSection.value?.focus({ preventScroll: true })
   } catch (error) {
     if (serial === catalogSerial && authorityIsCurrent(authority) && props.api === api) catalogError.value = (error as Error).message
   } finally {
@@ -93,12 +109,11 @@ async function loadCatalog(selectID?: string): Promise<void> {
   }
 }
 
-async function selectSkill(skill: AgentKitSkill, allowLocked = false): Promise<void> {
-  if (workbenchLocked.value && !allowLocked) return
-  selectedSkill.value = skill
-  detail.value = null
-  detailError.value = ''
-  mode.value = 'detail'
+function focusWasLost(): boolean {
+  return !document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected
+}
+
+async function loadSkillDetail(skill: AgentKitSkill): Promise<void> {
   const serial = ++detailSerial
   const api = props.api
   const authority = captureAuthority()
@@ -106,17 +121,40 @@ async function selectSkill(skill: AgentKitSkill, allowLocked = false): Promise<v
   try {
     const result = await api.getSkillLibraryDetail(skill.id)
     if (serial !== detailSerial || !authorityIsCurrent(authority) || props.api !== api || selectedSkill.value?.id !== skill.id) return
+    const restoreFocus = Boolean(detailError.value && detailNotice.value?.contains(document.activeElement))
     detail.value = result
+    detailError.value = ''
+    await nextTick()
+    if (
+      restoreFocus &&
+      serial === detailSerial &&
+      authorityIsCurrent(authority) &&
+      props.api === api &&
+      selectedSkill.value?.id === skill.id &&
+      focusWasLost()
+    ) detailSection.value?.focus({ preventScroll: true })
   } catch (error) {
-    if (serial === detailSerial && authorityIsCurrent(authority) && selectedSkill.value?.id === skill.id) detailError.value = (error as Error).message
+    if (serial === detailSerial && authorityIsCurrent(authority) && props.api === api && selectedSkill.value?.id === skill.id) detailError.value = (error as Error).message
   } finally {
     if (serial === detailSerial) detailLoading.value = false
   }
 }
 
+async function selectSkill(skill: AgentKitSkill, allowLocked = false): Promise<void> {
+  if (workbenchLocked.value && !allowLocked) return
+  const sameSkill = selectedSkill.value?.id === skill.id
+  selectedSkill.value = skill
+  if (!sameSkill) {
+    detail.value = null
+    detailError.value = ''
+  }
+  mode.value = 'detail'
+  await loadSkillDetail(skill)
+}
+
 function retrySkillDetail(): void {
   const skill = selectedSkill.value
-  if (skill && !detailLoading.value) void selectSkill(skill)
+  if (skill && !detailLoading.value) void loadSkillDetail(skill)
 }
 
 function startCreate(): void {
@@ -306,9 +344,17 @@ async function importFile(event: Event): Promise<void> {
 }
 
 watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], () => {
+  catalogSerial += 1
+  detailSerial += 1
   catalog.value = []
+  catalogWarnings.value = []
+  catalogHasSnapshot.value = false
+  catalogLoading.value = false
+  catalogError.value = ''
   selectedSkill.value = null
   detail.value = null
+  detailLoading.value = false
+  detailError.value = ''
   mode.value = 'detail'
   void loadCatalog()
 }, { immediate: true })
@@ -323,15 +369,22 @@ watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], ()
       <input ref="fileInput" type="file" class="hidden" accept=".md,.markdown,.json,application/json,text/markdown,text/plain" :disabled="workbenchLocked" @change="importFile" />
     </template>
 
-    <div v-if="catalogError" class="k-inline-notification k-inline-notification--error mb-3" role="alert">
-      <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load skill library. {{ catalogError }}</span></span>
-      <button class="k-inline-notification__action" type="button" :disabled="catalogLoading" @click="loadCatalog()">{{ catalogLoading ? 'Retrying…' : 'Retry' }}</button>
+    <div v-if="catalogError" ref="catalogNotice" class="mb-3">
+      <InlineNotification
+        :tone="catalogHasSnapshot ? 'warning' : 'error'"
+        :message="catalogHasSnapshot ? `Could not refresh the skill library. Showing the last loaded catalog. ${catalogError}` : `Could not load the skill library. ${catalogError}`"
+        action-label="Retry"
+        action-busy-label="Retrying catalog…"
+        :action-busy="catalogLoading"
+        @action="loadCatalog()"
+      />
     </div>
     <p v-for="warning in catalogWarnings" :key="warning" class="agents-hint" role="status">{{ warning }}</p>
 
     <div class="agents-skill-workbench__columns grid min-h-0 gap-4 xl:grid-cols-[minmax(300px,0.8fr)_minmax(0,1.2fr)]">
-      <section class="min-w-0 rounded-xl border border-border-subtle bg-surface p-4" aria-label="Skill catalog">
+      <section ref="catalogSection" tabindex="-1" class="min-w-0 rounded-xl border border-border-subtle bg-surface p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="Skill catalog">
         <AISkillCatalogList
+          v-if="catalogHasSnapshot || !catalogError"
           v-model:query="search"
           :skills="sortedCatalog"
           :show-status="false"
@@ -344,7 +397,7 @@ watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], ()
         />
       </section>
 
-      <section class="min-w-0 rounded-xl border border-border-subtle bg-surface p-4" aria-label="Skill details">
+      <section ref="detailSection" tabindex="-1" class="min-w-0 rounded-xl border border-border-subtle bg-surface p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="Skill details">
         <template v-if="mode === 'create' || mode === 'edit'">
           <div class="mb-4 flex items-start justify-between gap-3">
             <div><h3 class="text-[16px] font-semibold text-text-primary">{{ mode === 'create' ? 'Create a workspace skill' : 'Edit workspace skill' }}</h3><p class="mt-1 text-[12px] text-text-secondary">The SKILL.md frontmatter supplies the skill name and description.</p></div>
@@ -382,8 +435,17 @@ watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], ()
               <button type="button" class="k-icon-action agents-iconbtn-danger" :disabled="workbenchLocked" aria-label="Delete workspace skill" title="Delete workspace skill" @click="removeSkill"><Trash2 class="agents-skill-workbench__button-icon" aria-hidden="true" /></button>
             </div>
           </div>
-          <div v-if="detailError" class="agents-skill-workbench__detail-error agents-fielderr" role="alert"><span>Could not load skill detail. {{ detailError }}</span><button type="button" class="k-btn k-btn--ghost secondary" :disabled="detailLoading" @click="retrySkillDetail">{{ detailLoading ? 'Retrying…' : 'Retry' }}</button></div>
-          <p v-else-if="detailLoading" class="agents-state agents-state-loading" role="status"><Loader2 class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" /> Loading skill…</p>
+          <div v-if="detailError" ref="detailNotice" class="agents-skill-workbench__detail-error mb-3">
+            <InlineNotification
+              :tone="detail ? 'warning' : 'error'"
+              :message="detail ? `Could not refresh this skill detail. Showing the last loaded details. ${detailError}` : `Could not load skill detail. ${detailError}`"
+              action-label="Retry"
+              action-busy-label="Retrying detail…"
+              :action-busy="detailLoading"
+              @action="retrySkillDetail"
+            />
+          </div>
+          <p v-if="detailLoading && !detail" class="agents-state agents-state-loading" role="status"><Loader2 class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" /> Loading skill…</p>
           <template v-else-if="detail">
             <ResourceSectionCard class="mb-3" variant="document" title="Instructions" description="This guidance is added to the agent context when the skill is selected.">
               <pre class="max-h-[50vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-raised p-3 text-[11px] leading-5 text-text-secondary">{{ detail.instructions }}</pre>

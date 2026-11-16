@@ -33,3 +33,31 @@ it('keeps a failed catalog retry focused until recovery and ignores repeated act
     vi.clearAllMocks()
   }
 })
+
+it.each(['grid', 'list'])('keeps an empty %s snapshot with one retry after refresh fails', async mode => {
+  localStorage.clear()
+  vi.mocked(api.listTemplates).mockResolvedValueOnce({ items: [] } as never).mockRejectedValueOnce(new Error('Refresh unavailable'))
+  const host = document.createElement('div')
+  document.body.append(host)
+  const app = createApp(CatalogPage)
+  try {
+    app.mount(host)
+    await vi.waitFor(() => expect(host.textContent).toContain('No infrastructure templates are available'))
+    if (mode === 'list') {
+      const list = [...host.querySelectorAll('[role="radio"]')].find(button => button.textContent?.includes('List')) as HTMLButtonElement
+      list.click()
+      await nextTick()
+    }
+    const refresh = [...host.querySelectorAll('button')].find(button => button.textContent === 'Refresh catalog')!
+    refresh.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('Refresh unavailable'))
+    expect(host.textContent).toContain('No infrastructure templates are available')
+    expect([...host.querySelectorAll('button')].filter(button => button.textContent === 'Retry')).toHaveLength(1)
+    expect([...host.querySelectorAll('button')].some(button => button.textContent === 'Refresh catalog')).toBe(false)
+  } finally {
+    app.unmount()
+    host.remove()
+    localStorage.clear()
+    vi.clearAllMocks()
+  }
+})

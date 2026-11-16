@@ -1,5 +1,6 @@
 import { createApp, h, ref } from 'vue'
-import { clearToasts, toast } from '../../provider-sdk/portalkit/toast'
+import { clearToasts, toast } from '../../providers/agents/portal/src/ui/toast'
+import ToastHost from '../../provider-sdk/portalkit-vue/ToastHost.vue'
 import '@fontsource-variable/instrument-sans'
 import '@/assets/main.css'
 import './kuery-impact.css'
@@ -26,7 +27,7 @@ createApp({
         h('button', { type: 'button', class: 'k-btn k-btn--ghost', onClick: toggleTheme }, `Switch to ${theme.value === 'light' ? 'dark' : 'light'} theme`),
       ]),
       h('h1', 'Agents notification examples'),
-      h('p', { class: 'impact-fixture__note' }, 'Uses the same framework-neutral renderer as Agents. All messages and actions are simulated.'),
+      h('p', { class: 'impact-fixture__note' }, 'Uses the shared queue and host as Agents. All messages and actions are simulated.'),
       h('div', { class: 'impact-fixture__controls' }, [
         h('button', { type: 'button', class: 'k-btn k-btn--ghost', onClick: () => toast('ok', 'Settings saved.') }, 'Show success'),
         h('button', { type: 'button', class: 'k-btn k-btn--ghost', onClick: () => toast('error', 'Could not save. Check the settings and try again.') }, 'Show error'),
@@ -37,6 +38,7 @@ createApp({
         h('button', { type: 'button', class: 'k-btn k-btn--ghost', onClick: clearToasts }, 'Clear notifications'),
       ]),
       h('p', { role: 'status', class: 'impact-fixture__note' }, outcome.value),
+      h(ToastHost, { owner: 'fallback' }),
     ])
   },
 }).mount('#app')

@@ -44,7 +44,7 @@ test('keeps the composer free of explicit skill selection controls', () => {
 test('uses the generic detail and activation routes for focused skills', () => {
   assert.match(api, /projectURL\(ctx, name, 'skill-detail'\)\}\?id=\$\{encodeURIComponent\(id\)\}/)
   assert.match(api, /projectURL\(ctx, name, 'skills-activation'\)/)
-  assert.match(workbench, /api\.getAssistantSkillDetail\(props\.ctx, props\.projectName, skill\.id\)/)
+  assert.match(workbench, /api\.getAssistantSkillDetail\(requestContext, projectName, skill\.id\)/)
   assert.match(workbench, /api\.setAssistantSkillActivation\(props\.ctx, props\.projectName, skill\.id, skill\.enabled === false\)/)
 })
 
@@ -53,6 +53,10 @@ test('preserves loading, empty, error, and refresh states', () => {
   assert.match(workbench, /return 'No skills are installed for this project yet\.'/)
   assert.match(workbench, /No skills are installed for this project yet\./)
   assert.match(workbench, /role="alert"/)
+  assert.match(workbench, /<InlineNotification[\s\S]*action-label="Retry"[\s\S]*action-busy-label="Retrying skills…"[\s\S]*:action-busy="catalogLoading \|\| actionBusy \|\| props\.loading"/)
+  assert.match(workbench, /props\.hasSnapshot \? 'No skills were listed in the last successful catalog\.'/)
+  assert.match(workbench, /<AISkillCatalogList\s+v-if="props\.hasSnapshot"/)
+  assert.match(workbench, /'Skill count is unavailable until the catalog loads\.'/)
   assert.match(workbench, /aria-label="Refresh skills"/)
   const refreshStart = workbench.indexOf('async function refreshCatalog')
   const refreshEnd = workbench.indexOf('async function toggleSelectedSkill', refreshStart)
@@ -61,6 +65,24 @@ test('preserves loading, empty, error, and refresh states', () => {
   assert.match(refreshBody, /return false/)
   assert.match(refreshBody, /assistantSkillsRequestIsCurrent\(requestScope, catalogRequestSerial, props\.projectName, props\.ctx\)/)
   assert.ok((refreshBody.match(/assistantSkillsRequestIsCurrent\(requestScope, catalogRequestSerial, props\.projectName, props\.ctx\)/g) || []).length >= 3)
+  assert.match(refreshBody, /catalogError\.value = null/)
+  assert.match(refreshBody, /catalogError\.value = friendlyError\(error, 'Could not refresh the skill catalog\.'\)/)
+  assert.doesNotMatch(refreshBody, /clearManagementError\(\)/)
+})
+
+test('clears the parent catalog failure only after applying a current catalog response', () => {
+  const responseStart = app.indexOf('function applyAssistantSkillsCatalogResponse')
+  const responseEnd = app.indexOf('\nasync function loadAssistantSkills', responseStart)
+  const responseBody = app.slice(responseStart, responseEnd)
+  assert.match(responseBody, /applyAssistantSkillsCatalog\(response\.skills\)/)
+  assert.match(responseBody, /assistantSkillsHasSnapshot\.value = true/)
+  assert.match(responseBody, /assistantSkillsError\.value = null/)
+  assert.match(app, /assistantSkillsHasSnapshot\.value = false/)
+  assert.match(app, /applyAssistantSkillsCatalogResponse\(catalog\)/)
+  assert.match(app, /:has-snapshot="assistantSkillsHasSnapshot"/)
+  const loadStart = app.indexOf('async function loadAssistantSkills')
+  const loadTry = app.indexOf('  try {', loadStart)
+  assert.doesNotMatch(app.slice(loadStart, loadTry), /assistantSkillsError\.value = null/)
 })
 
 test('keeps activation feedback scoped to the changing skill and preserves detail content', () => {
@@ -119,7 +141,17 @@ test('keeps skill buttons native and contains detail focus inside the provider o
   assert.match(workbench, /inertWorkspace\.inert = true/)
   assert.match(workbench, /if \(inertWorkspace && !workspaceWasInert\) inertWorkspace\.inert = false/)
   assert.match(workbench, /function retrySkillDetail\(\)[\s\S]*loadDetail\(skill\)/)
-  assert.match(workbench, /class="flex items-center justify-between gap-3[\s\S]*detailError[\s\S]*Retrying…/)
+  assert.match(workbench, /v-if="detailError" ref="detailErrorNotice"[\s\S]*<InlineNotification[\s\S]*action-busy-label="Retrying detail…"[\s\S]*:action-busy="detailLoading"/)
+  assert.match(workbench, /detailError\.value = null[\s\S]*focusWasLost\(\).*detailCloseRef\.value\?\.focus/s)
+  const detailStart = workbench.indexOf('async function loadDetail')
+  const detailEnd = workbench.indexOf('\nfunction retrySkillDetail', detailStart)
+  const detailBody = workbench.slice(detailStart, detailEnd)
+  const detailCatch = detailBody.slice(detailBody.indexOf('} catch (error)'))
+  assert.match(detailCatch, /props\.projectName !== projectName/)
+  assert.match(detailCatch, /props\.ctx !== requestContext/)
+  assert.match(detailCatch, /selectedSkillID\.value !== skillID/)
+  assert.match(workbench, /props\.projectName !== projectName[\s\S]*props\.ctx !== requestContext[\s\S]*selectedSkillID\.value !== skillID/)
+  assert.match(workbench, /props\.projectName !== projectName[\s\S]*props\.ctx !== requestContext[\s\S]*selectedSkillID\.value !== selectedID/)
 })
 
 test('keeps the skill switch compact inside a full touch target', () => {

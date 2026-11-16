@@ -208,7 +208,7 @@ describe('Code connection resource detail cards', () => {
   })
 
   it('uses compact stat cards and keeps overview, credential, and health sections', () => {
-    expect(connectionDetail).toMatch(/<div class="connection-detail">/)
+    expect(connectionDetail).toMatch(/<div ref="detailRoot" class="connection-detail">/)
     expect(connectionDetail).toMatch(/import ResourceStatCards, \{ type ResourceStatCard \}/)
     expect(connectionDetail).toMatch(/import ResourceSectionCard from '..\/portalkit\/ResourceSectionCard\.vue'/)
     expect(connectionDetail).toMatch(/const connectionStatCards = computed<ResourceStatCard\[\]>\(\(\) => \{/)

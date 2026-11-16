@@ -44,7 +44,7 @@ const pageHeading = ref<HTMLElement | null>(null)
 const firstRunWarning = ref<HTMLElement | null>(null)
 const firstRunRetryPending = ref(false)
 const deletingInstanceKey = ref<string | null>(null)
-const deleteError = ref<string | null>(null)
+const deleteErrors = ref<Record<string, { name: string; message: string }>>({})
 const viewByTemplate = ref<Map<string, TemplateView>>(new Map())
 const templateFilterOptions = ref<Array<{ value: string; label: string }>>([])
 const tombstones = props.tombstones
@@ -396,7 +396,6 @@ function handleTableChange(change: ResourceTableChange) {
 async function deleteInstance(instance: Instance) {
   if (deletingInstanceKey.value !== null || instanceIsDeleting(instance)) return
   const expectedInstance = instance
-  deleteError.value = null
   const confirmed = await confirmDialog({
     title: 'Delete instance',
     message: `"${instance.name}" (${instance.template}) and the resources it provisioned will be permanently deleted.`,
@@ -414,6 +413,7 @@ async function deleteInstance(instance: Instance) {
   try {
     await api.deleteInstance(currentInstance.name)
     if (active) {
+      clearDeleteError(`${currentInstance.name}:${currentInstance.uid || ""}`)
       tombstones.add(instanceKey(currentInstance), currentInstance.uid)
       toast('info', `Instance deletion requested for ${currentInstance.name}.`)
       reconcileAfterNextServerRead = true
@@ -425,10 +425,22 @@ async function deleteInstance(instance: Instance) {
       await load()
     }
   } catch (caught) {
-    if (active && !isContextChangedError(caught)) deleteError.value = errorMessage(caught, 'delete failed')
+    if (active && !isContextChangedError(caught)) deleteErrors.value = { ...deleteErrors.value, [`${currentInstance.name}:${currentInstance.uid || ''}`]: { name: currentInstance.name, message: errorMessage(caught, 'delete failed') } }
   } finally {
     deletingInstanceKey.value = null
   }
+}
+
+
+function clearDeleteError(key: string) {
+  const next = { ...deleteErrors.value }
+  delete next[key]
+  deleteErrors.value = next
+}
+async function dismissDeleteError(key: string) {
+  clearDeleteError(key)
+  await nextTick()
+  pageHeading.value?.focus({ preventScroll: true })
 }
 
 function selectInstance(row: Record<string, unknown>) {
@@ -474,10 +486,7 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <div v-if="deleteError" class="mutation-error" role="alert" aria-live="assertive">
-      <span>{{ deleteError }}</span>
-      <button type="button" class="k-btn k-btn--ghost" @click="deleteError = null">Dismiss</button>
-    </div>
+    <InlineNotification v-for="(failure, key) in deleteErrors" :key="key" tone="error" :title="`Could not delete instance ${failure.name}`" :message="`${failure.message} Try again using the instance delete action.`" dismissible @dismiss="dismissDeleteError(String(key))" />
 
     <template v-if="firstRun">
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating infrastructure instances…</span>

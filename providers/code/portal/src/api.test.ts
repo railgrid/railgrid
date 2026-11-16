@@ -743,3 +743,15 @@ describe('repository registration', () => {
     })
   })
 })
+
+describe('delete request authority', () => {
+  it('rejects a pending delete response after a same-workspace token rotation', async () => {
+    setAPIContext({ tenant: 'delete-context', token: 'old-token' })
+    let resolveResponse!: (value: Response) => void
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { resolveResponse = resolve })))
+    const pending = api.deleteRepository('orders')
+    setAPIContext({ tenant: 'delete-context', token: 'new-token' })
+    resolveResponse(kubeStatus(500, 'InternalError', 'old failure'))
+    await expect(pending).rejects.toMatchObject({ reason: 'ContextChanged' })
+  })
+})

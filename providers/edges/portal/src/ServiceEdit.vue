@@ -473,7 +473,7 @@ onUnmounted(() => {
             <ResourceSectionCard class="service-detail__card" id="service-provider" eyebrow="Provider" title="Provider info" description="The catalog definition determines authentication, reachability, and exposed AI tools.">
               <div class="service-detail__facts">
                 <div><span class="lbl">Type</span><strong>{{ entry?.displayName || service?.serviceType || '—' }}</strong></div>
-                <div><span class="lbl">Auth</span><StatusBadge :status="authLabel(entry?.auth)" tone="muted" /></div>
+                <div><span class="lbl">Auth</span><span class="k-badge k-badge--muted k-badge--label">{{ authLabel(entry?.auth) }}</span></div>
                 <div><span class="lbl">Default port</span><strong class="mono">{{ entry?.defaultPort ?? '—' }}</strong></div>
                 <div><span class="lbl">Default scheme</span><strong class="mono">{{ entry?.defaultScheme || 'http' }}{{ entry?.schemeLocked ? ' (fixed)' : '' }}</strong></div>
                 <div><span class="lbl">Reachability</span><strong>{{ targetSummary === 'Target not specified' ? 'Not specified' : entry?.hostRequired ? 'LAN host (required)' : targetMode === 'kube' ? 'Kubernetes Service' : 'Agent loopback' }}</strong></div>

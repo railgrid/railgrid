@@ -680,6 +680,7 @@ const unthreadedReasoningEfforts = ref<Record<string, string>>({})
 const landingReasoningEfforts = ref<Record<string, string>>({})
 const assistantSkills = ref<ProjectAssistantSkill[]>([])
 const assistantSkillsLoading = ref(false)
+const assistantSkillsHasSnapshot = ref(false)
 const assistantSkillsError = ref<string | null>(null)
 const assistantSkillsWarnings = ref<string[]>([])
 let assistantSkillsLoadSerial = 0
@@ -869,6 +870,11 @@ const approvalModeLoading = ref(false)
 const approvalModeSaving = ref(false)
 const approvalModeError = ref<string | null>(null)
 const projectQuery = ref('')
+const projectSearchInput = ref<HTMLInputElement | null>(null)
+function clearProjectSearch(): void {
+  projectQuery.value = ''
+  nextTick(() => projectSearchInput.value?.focus())
+}
 const providerQuery = ref('')
 const providerSearchInput = ref<HTMLInputElement | null>(null)
 const workbenchLauncherQuery = ref('')
@@ -931,6 +937,7 @@ const publishingBusyTarget = ref<string | null>(null)
 const publishingActionError = ref<string | null>(null)
 type PublishingLoadState = 'idle' | 'loading' | 'partial' | 'ready' | 'error'
 const publishingLoadState = ref<PublishingLoadState>('idle')
+const publishingReadBusy = ref(false)
 const publishingLoadError = ref<string | null>(null)
 const publishingMembersError = ref<string | null>(null)
 const shareDialogOpen = ref(false)
@@ -1614,6 +1621,7 @@ function invalidateProjectContextState() {
   assistantSkillsLoadSerial += 1
   promotionLoadSerial += 1
   publishingLoadSerial += 1
+  publishingReadBusy.value = false
   importRepositoriesLoadSerial += 1
   developmentTemplatesLoadSerial += 1
   providerCatalogLoadSerial += 1
@@ -1792,6 +1800,7 @@ function resetAssistantSkillsState() {
   assistantSkillsLoadSerial++
   assistantSkills.value = []
   assistantSkillsLoading.value = false
+  assistantSkillsHasSnapshot.value = false
   assistantSkillsError.value = null
   assistantSkillsWarnings.value = []
 }
@@ -1802,6 +1811,8 @@ function applyAssistantSkillsCatalog(skills: ProjectAssistantSkill[]) {
 
 function applyAssistantSkillsCatalogResponse(response: ProjectAssistantSkillsResponse) {
   applyAssistantSkillsCatalog(response.skills)
+  assistantSkillsHasSnapshot.value = true
+  assistantSkillsError.value = null
   assistantSkillsWarnings.value = response.warnings ?? []
 }
 
@@ -1809,7 +1820,6 @@ async function loadAssistantSkills(projectName: string) {
   if (!projectName || !props.ctx?.token || isCreateRoute.value || isCreateModelRoute.value || selected.value?.name !== projectName || selected.value.phase === 'Creating') return
   const serial = ++assistantSkillsLoadSerial
   assistantSkillsLoading.value = true
-  assistantSkillsError.value = null
   try {
     const catalog = await api.listAssistantSkills(props.ctx, projectName)
     if (
@@ -1818,8 +1828,7 @@ async function loadAssistantSkills(projectName: string) {
       isCreateRoute.value ||
       isCreateModelRoute.value
     ) return
-    applyAssistantSkillsCatalog(catalog.skills)
-    assistantSkillsWarnings.value = catalog.warnings ?? []
+    applyAssistantSkillsCatalogResponse(catalog)
   } catch (e) {
     if (serial !== assistantSkillsLoadSerial || selected.value?.name !== projectName || isCreateRoute.value || isCreateModelRoute.value) return
     // Skill discovery is intentionally scoped to the Skills workbench. A
@@ -3442,6 +3451,7 @@ watch(
     historyError.value = null
     historyFeedback.value = null
     publishingLoadSerial += 1
+    publishingReadBusy.value = false
     publishing.value = null
     publishingStateAvailable.value = false
     publishingMembers.value = []
@@ -4594,6 +4604,7 @@ async function loadPublishing() {
   const name = selected.value?.name
   if (!name) {
     publishingLoadSerial += 1
+    publishingReadBusy.value = false
     publishing.value = null
     publishingStateAvailable.value = false
     publishingMembers.value = []
@@ -4610,64 +4621,71 @@ async function loadPublishing() {
   const authorizationAtStart = developmentPreviewAuthorizedPolicy.value
   const stateWasLoaded = publishingStateAvailable.value
   const membersWereLoaded = publishingMembersLoaded.value
-  if (!stateWasLoaded && !membersWereLoaded) publishingLoadState.value = 'loading'
-  publishingLoadError.value = null
-  publishingMembersError.value = null
+  const hasReadError = Boolean(publishingLoadError.value || publishingMembersError.value)
+  if (!stateWasLoaded && !membersWereLoaded && !hasReadError) publishingLoadState.value = 'loading'
+  publishingReadBusy.value = true
 
-  // Preview access rides the same poll — it is the second half of one dialog.
-  // Settled with the rest so a preview failure cannot blank publishing, and
-  // vice versa.
-  const [stateResult, membersResult, previewResult] = await Promise.allSettled([
-    api.getPublishing(props.ctx, name),
-    api.listPublishingMembers(props.ctx, name),
-    api.getPreviewAccess(props.ctx, name),
-  ])
-  if (requestSerial !== publishingLoadSerial || selected.value?.name !== name) return
+  try {
+    // Preview access rides the same poll — it is the second half of one dialog.
+    // Settled with the rest so a preview failure cannot blank publishing, and
+    // vice versa.
+    const [stateResult, membersResult, previewResult] = await Promise.allSettled([
+      api.getPublishing(props.ctx, name),
+      api.listPublishingMembers(props.ctx, name),
+      api.getPreviewAccess(props.ctx, name),
+    ])
+    if (requestSerial !== publishingLoadSerial || selected.value?.name !== name) return
 
-  const stateSucceeded = stateResult.status === 'fulfilled'
-  const membersSucceeded = membersResult.status === 'fulfilled'
-  if (stateSucceeded) {
-    publishing.value = stateResult.value
-    publishingStateAvailable.value = true
-    if (!shareDialogOpen.value) {
-      shareMode.value = publishingAccessSelection(stateResult.value) === 'public' ? 'public' : 'restricted'
+    const stateSucceeded = stateResult.status === 'fulfilled'
+    const membersSucceeded = membersResult.status === 'fulfilled'
+    if (stateSucceeded) {
+      publishing.value = stateResult.value
+      publishingStateAvailable.value = true
+      publishingLoadError.value = null
+      if (!shareDialogOpen.value) {
+        shareMode.value = publishingAccessSelection(stateResult.value) === 'public' ? 'public' : 'restricted'
+      }
+    } else if (!isProjectAPIInitializingError(stateResult.reason)) {
+      publishingLoadError.value = stateResult.reason instanceof Error ? stateResult.reason.message : String(stateResult.reason)
     }
-  } else if (!isProjectAPIInitializingError(stateResult.reason)) {
-    publishingLoadError.value = stateResult.reason instanceof Error ? stateResult.reason.message : String(stateResult.reason)
-  }
-  if (membersSucceeded) {
-    publishingMembers.value = membersResult.value
-    publishingMembersLoaded.value = true
-  } else if (!isProjectAPIInitializingError(membersResult.reason)) {
-    publishingMembersError.value = membersResult.reason instanceof Error ? membersResult.reason.message : String(membersResult.reason)
-  }
-  // Preview visibility is advisory for this surface: it drives one toggle, so a
-  // failure leaves the previous value rather than degrading the whole dialog.
-  if (previewResult.status === 'fulfilled' && accessRevision === previewAccessRevision) {
-    const state = previewResult.value
-    const authorization = developmentPreviewAuthorizedPolicy.value
-    applyPreviewAccessState(state)
-    // The two verbs may read the runtime in a different order than they started.
-    if (state.supported && authorization && authorization !== authorizationAtStart &&
-      (authorization.mode !== developmentPreviewDesiredAccess.value || authorization.converged !== state.converged)) {
-      previewAccessUnverified.value = true
-      scheduleDevelopmentPreviewAuthorizationRetry(name, developmentPreviewAuthorizationKey.value, true)
+    if (membersSucceeded) {
+      publishingMembers.value = membersResult.value
+      publishingMembersLoaded.value = true
+      publishingMembersError.value = null
+    } else if (!isProjectAPIInitializingError(membersResult.reason)) {
+      publishingMembersError.value = membersResult.reason instanceof Error ? membersResult.reason.message : String(membersResult.reason)
+    }
+    // Preview visibility is advisory for this surface: it drives one toggle, so a
+    // failure leaves the previous value rather than degrading the whole dialog.
+    if (previewResult.status === 'fulfilled' && accessRevision === previewAccessRevision) {
+      const state = previewResult.value
+      const authorization = developmentPreviewAuthorizedPolicy.value
+      applyPreviewAccessState(state)
+      // The two verbs may read the runtime in a different order than they started.
+      if (state.supported && authorization && authorization !== authorizationAtStart &&
+        (authorization.mode !== developmentPreviewDesiredAccess.value || authorization.converged !== state.converged)) {
+        previewAccessUnverified.value = true
+        scheduleDevelopmentPreviewAuthorizationRetry(name, developmentPreviewAuthorizationKey.value, true)
+      }
+    }
+
+    const stateAvailable = publishingStateAvailable.value
+    const membersAvailable = publishingMembersLoaded.value
+    publishingLoadState.value = stateSucceeded && membersSucceeded
+      ? 'ready'
+      : stateAvailable || membersAvailable
+        ? 'partial'
+        : 'error'
+  } finally {
+    if (requestSerial === publishingLoadSerial && selected.value?.name === name) {
+      publishingReadBusy.value = false
+      schedulePublishingPoll()
     }
   }
-
-  const stateAvailable = publishingStateAvailable.value
-  const membersAvailable = publishingMembersLoaded.value
-  publishingLoadState.value = stateSucceeded && membersSucceeded
-    ? 'ready'
-    : stateAvailable || membersAvailable
-    ? 'partial'
-    : 'error'
-  if (requestSerial !== publishingLoadSerial || selected.value?.name !== name) return
-  schedulePublishingPoll()
 }
 
 function retryPublishing() {
-  if (publishingActionBusy.value) return
+  if (publishingActionBusy.value || publishingReadBusy.value) return
   void loadPublishing()
 }
 
@@ -10766,6 +10784,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <div class="relative w-full max-w-[260px]">
             <Search class="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
             <input
+              ref="projectSearchInput"
               v-model="projectQuery"
               class="k-input pl-8 pr-8"
               placeholder="Search"
@@ -10779,7 +10798,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               class="app-studio-touch-target absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary"
               aria-label="Clear project search"
               title="Clear search"
-              @click="projectQuery = ''"
+              @click="clearProjectSearch"
             >
               <X class="h-3.5 w-3.5" :stroke-width="1.75" />
             </button>
@@ -10917,10 +10936,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           row-key="rowKey"
           :loaded="projectsLoaded"
           :loading="loading"
-          :interactive="!projectTableRows.some((row) => row.deleting)"
-          :row-aria-label="(row) => row.deleting
-            ? `Deleting project ${String(row.displayName || row.name)}`
-            : `Open project ${String(row.displayName || row.name)}`"
+          :row-interactive="(row) => !row.deleting"
+          :row-aria-label="(row) => `Open project ${String(row.displayName || row.name)}`"
           :empty-text="!projectsLoaded || loading ? 'Loading projects…' : error ? 'Projects are unavailable.' : 'No projects match this search.'"
           @row-click="enterProjectTableRow"
         >
@@ -12121,6 +12138,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           :ctx="props.ctx"
           :project-name="selected?.name || ''"
           :skills="assistantSkills"
+          :has-snapshot="assistantSkillsHasSnapshot"
           :loading="assistantSkillsLoading"
           :error="assistantSkillsError"
           :warnings="assistantSkillsWarnings"
@@ -12675,7 +12693,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         </div>
                         <StatusBadge :status="productionPublicationStatus.label" :tone="productionPublicationStatus.tone" />
                       </div>
-                      <p v-if="publishing?.publication?.error && !publishing?.publication?.ready" class="text-[12px] leading-5 text-danger" role="alert">{{ publishing.publication.error }}</p>
+                      <InlineNotification v-if="publishing?.publication?.error && !publishing?.publication?.ready" tone="error" :message="publishing.publication.error" />
                       <div class="flex flex-wrap justify-end gap-2"><button type="button" class="k-btn k-btn--ghost" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />Manage sharing</button></div>
                     </div>
                     <div v-else-if="productionDeployment.ready && publishing && !publishing.published" class="flex flex-wrap items-center gap-3">
@@ -12683,7 +12701,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       <p class="text-[12px] leading-5 text-text-secondary">App sign-in is managed in Railgrid Auth.</p>
                     </div>
                   </div>
-                  <div v-if="publishingActionError" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ publishingActionError }}</div>
+                  <InlineNotification v-if="publishingActionError" tone="error" :message="publishingActionError" />
                   <div v-if="promotionFeedback" role="status" aria-live="polite" class="wrap-anywhere text-[12px] leading-5" :class="promotionFeedback.tone === 'success' ? 'text-success' : 'text-warning'">{{ promotionFeedback.message }}</div>
               </template>
               <div v-else class="flex min-h-[190px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
@@ -12899,6 +12917,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     :busy-action="publishingBusyAction"
     :busy-target="publishingBusyTarget ?? undefined"
     :loading="publishingLoadState === 'loading'"
+    :refreshing="publishingReadBusy"
     :error="publishingActionError"
     :load-state="publishingLoadState"
     :load-error="publishingLoadError"

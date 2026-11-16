@@ -50,7 +50,7 @@ const searchKeys = computed(() => ['name', 'model', connectionColumn.value.key, 
       <template #name="{ row }">
         <slot name="name-prefix" :row="row as T" />
         {{ row.name }}
-        <StatusBadge v-if="row.default" status="Default" tone="muted" />
+        <span v-if="row.default" class="k-badge k-badge--muted k-badge--label">Default</span>
       </template>
       <template #providerConnection="{ row }"><slot name="provider-connection" :row="row as T">{{ row.providerConnection }}</slot></template>
       <template #status="{ row }">

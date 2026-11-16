@@ -2012,7 +2012,71 @@ describe('Automation.vue', () => {
     expect(text(rows.find(row => text(row).includes('pr-review')))).toContain('gh')
     const broken = rows.find(row => text(row).includes('deploys'))!
     expect(text(broken)).toContain('gone')
-    expect(text(broken.querySelector('.agents-badge-warn'))).toContain('webhook "gone" does not exist')
+    expect(text(broken.querySelector('.k-status-badge.k-badge--warning'))).toBe('Invalid')
+    broken.querySelector<HTMLButtonElement>('[aria-label="Show status details for deploys"]')!.click()
+    await settleVue()
+    expect(text(view.element)).toContain('webhook "gone" does not exist')
+  })
+
+  it('shows a concise disabled state and retains the schedule diagnostic in the row', async () => {
+    const api = stubApi()
+    const store = storeWithAgent(api)
+    store.schedules.data = [{ metadata: { name: 'daily' }, spec: { agentRef: 'scout', type: 'cron', schedule: '0 9 * * *', task: 'Check' }, status: { disabledReason: 'The credential was revoked; choose another credential.' } }]
+    store.schedules.hasSnapshot = true
+    const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout' })
+    await settleVue()
+    const row = view.element.querySelector('.k-table__row')!
+    expect(text(row.querySelector('.k-status-badge'))).toBe('Disabled')
+    row.querySelector<HTMLButtonElement>('[aria-label="Show status details for daily"]')!.click()
+    await settleVue()
+    expect(text(view.element)).toContain('The credential was revoked; choose another credential.')
+  })
+
+  it('closes focused status details when agent authority changes even if a name is reused', async () => {
+    const api = stubApi()
+    const store = storeWithAgent(api)
+    store.schedules.data = [
+      { metadata: { name: 'daily' }, spec: { agentRef: 'scout', type: 'cron', schedule: '0 9 * * *' }, status: { disabledReason: 'Old agent detail' } },
+      { metadata: { name: 'daily' }, spec: { agentRef: 'other', type: 'cron', schedule: '0 9 * * *' }, status: { disabledReason: 'New agent detail' } },
+    ]
+    store.schedules.hasSnapshot = true
+    const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout' })
+    const control = view.element.querySelector<HTMLButtonElement>('[aria-label="Show status details for daily"]')!
+    control.focus(); control.click(); await settleVue()
+    expect(text(view.element)).toContain('Old agent detail')
+    await view.setProps({ agent: 'other' }); await settleVue()
+    expect(text(view.element)).not.toContain('Old agent detail')
+    expect(text(view.element)).not.toContain('New agent detail')
+    expect(view.element.querySelector('[aria-expanded="true"]')).toBeNull()
+    expect(document.activeElement?.textContent).toContain('New schedule')
+  })
+
+  it('restores focus when an agent change removes the expanded row', async () => {
+    const api = stubApi()
+    const store = storeWithAgent(api)
+    store.schedules.data = [{ metadata: { name: 'daily' }, spec: { agentRef: 'scout', type: 'cron', schedule: '0 9 * * *' }, status: { disabledReason: 'Check the credential.' } }]
+    store.schedules.hasSnapshot = true
+    const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout' })
+    const control = view.element.querySelector<HTMLButtonElement>('[aria-label="Show status details for daily"]')!
+    control.focus(); control.click(); await settleVue()
+    await view.setProps({ agent: 'other' }); await settleVue()
+    expect(document.activeElement?.textContent).toContain('No schedules yet.')
+    expect(text(view.element)).not.toContain('Check the credential.')
+  })
+
+  it('closes details on authority epoch change without stealing moved focus', async () => {
+    const api = stubApi()
+    const store = storeWithAgent(api)
+    store.schedules.data = [{ metadata: { name: 'daily' }, spec: { agentRef: 'scout', type: 'cron', schedule: '0 9 * * *' }, status: { disabledReason: 'Check the credential.' } }]
+    store.schedules.hasSnapshot = true
+    const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout', authorityEpoch: 1 })
+    const control = view.element.querySelector<HTMLButtonElement>('[aria-label="Show status details for daily"]')!
+    control.focus(); control.click(); await settleVue()
+    const elsewhere = document.createElement('button'); document.body.append(elsewhere); elsewhere.focus()
+    await view.setProps({ authorityEpoch: 2 }); await settleVue()
+    expect(text(view.element)).not.toContain('Check the credential.')
+    expect(document.activeElement).toBe(elsewhere)
+    elsewhere.remove()
   })
 
   it('requires a webhook, creates a trigger with the parsed filter, and leaves the filter out when the editor is empty', async () => {
@@ -2208,6 +2272,8 @@ describe('Automation.vue', () => {
     store.triggers.hasSnapshot = true
     const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout' })
 
+    view.element.querySelector<HTMLButtonElement>('[aria-label="Show status details for on-pr"]')!.click()
+    await settleVue()
     expect(text(view.element)).toContain('2MiB protocol limit')
     const healthyMenu = await openAutomationMenu(view.element, 'on-push')
     expect([...healthyMenu.querySelectorAll('[role="menuitem"]')].map(text)).not.toContain('Enable')
@@ -2240,6 +2306,8 @@ describe('Automation.vue', () => {
     await settleVue(2)
     expect(enableSchedule).toHaveBeenCalledWith('daily')
     expect(schedule.status?.disabledReason).toContain('agent gone')
+    view.element.querySelector<HTMLButtonElement>('[aria-label="Show status details for daily"]')!.click()
+    await settleVue()
     expect(text(view.element)).toContain('agent gone')
     const menu = await openAutomationMenu(view.element, 'daily')
     expect([...menu.querySelectorAll('[role="menuitem"]')].map(text)).toContain('Enable')

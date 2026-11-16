@@ -296,11 +296,11 @@ async function testCredential(name: string): Promise<void> {
     const result = presentModelProbeResult(await authority.api.testCredential(name))
     if (probeGenerations.get(key) !== generation || !authorityIsCurrent(authority)) return
     tested.value = setMap(tested.value, key, result)
-    toast(result.ok ? 'ok' : 'error', result.ok ? `${labelForName(name)}: model responded · ${result.latencyMS}ms` : `${labelForName(name)}: ${result.error || 'failed'}`)
+    if (result.ok) toast('ok', `${labelForName(name)}: model responded · ${result.latencyMS}ms`)
   } catch (error) {
     if (probeGenerations.get(key) !== generation || !authorityIsCurrent(authority)) return
     const message = (error as Error).message
-    tested.value = setMap(tested.value, key, { ok: false, latencyMS: 0, error: message, technicalDiagnostic: errorTechnicalDiagnostic(error) }); toast('error', `${labelForName(name)}: ${message}`)
+    tested.value = setMap(tested.value, key, { ok: false, latencyMS: 0, error: message, technicalDiagnostic: errorTechnicalDiagnostic(error) })
   } finally {
     if (probeGenerations.get(key) === generation) { const next = new Set(testing.value); next.delete(key); testing.value = next }
   }
@@ -645,7 +645,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
         </ResourceTable>
       </section>
       </template>
-      <WorkspaceAssistantCard v-if="!setupNavigation && activeTab === 'workspace-assistant' && overlayControl" :store="store" :overlay-control="overlayControl" />
+      <WorkspaceAssistantCard v-if="!setupNavigation && activeTab === 'workspace-assistant' && overlayControl" :store="store" :api="api" :overlay-control="overlayControl" />
       <div v-else-if="!setupNavigation && activeTab === 'workspace-assistant'" class="k-card agents-models-empty"><h3>Workspace assistant unavailable</h3><p>Open Agents in the workspace portal to configure your assistant.</p></div>
       <AgentUsage v-if="!setupNavigation && activeTab === 'usage'" ref="usagePanel" :store="store" :api="api" />
     </template>

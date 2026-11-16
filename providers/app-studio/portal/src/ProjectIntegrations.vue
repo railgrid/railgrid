@@ -697,7 +697,7 @@ onBeforeUnmount(() => {
                 <div class="flex min-w-0 flex-wrap items-center gap-2">
                   <span class="min-w-0 break-words text-[12px] font-medium text-text-primary [overflow-wrap:anywhere]">{{ action.displayName || action.id }}</span>
 
-                  <span class="k-badge k-badge--muted">{{ action.readOnly ? 'Read-only' : 'Can make changes' }}</span>
+                  <span class="k-badge k-badge--muted k-badge--label">{{ action.readOnly ? 'Read-only' : 'Can make changes' }}</span>
                   <StatusBadge
                     v-if="action.consent?.required"
                     :status="consentStatusLabel(entry, action)"

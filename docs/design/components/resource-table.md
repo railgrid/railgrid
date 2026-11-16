@@ -53,7 +53,7 @@ below the primary value. Callers still select which columns fit the task.
 
 Interactive row hover uses a 4% accent tint with primary text. Interactive rows
 use `tabindex="0"` and Enter/Space emits `rowClick`; nested links, buttons,
-inputs, selects, summaries, and other explicit controls remain independent.
+inputs, selects, summaries, and other explicit controls remain independent. When only some rows can be opened, `row-interactive` may exclude individual rows from row activation, hover affordance, and the tab order; nested controls remain independent. Use it only when the row is genuinely unavailable.
 
 Client pagination searches and filters the complete loaded row set before
 slicing the page; opted-in sortable columns sort that complete filtered set

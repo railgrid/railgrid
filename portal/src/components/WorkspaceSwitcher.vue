@@ -15,6 +15,7 @@ limitations under the License.
 -->
 
 <script setup lang="ts">
+import StatusBadge from '@/portalkit/StatusBadge.vue'
 import { computed, nextTick, onMounted, ref, useId, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -531,14 +532,12 @@ onMounted(() => { void ensureContextLoaded() })
                 <span class="block truncate font-mono text-[11px] text-text-primary">{{ workspaceName(workspace) }}</span>
                 <span v-if="workspaceIdentifier(workspace)" class="mt-0.5 block truncate font-mono text-[9px] text-text-secondary">{{ workspaceIdentifier(workspace) }}</span>
               </span>
-              <span
+              <StatusBadge
                 v-if="workspaceStatus(workspace) !== 'Ready'"
-                class="k-badge shrink-0 px-1.5 py-0.5 text-[10px]"
-                :class="workspaceStatus(workspace) === 'Pending' ? 'k-badge--warning' : 'k-badge--muted'"
-              >
-                <span class="k-badge__dot" aria-hidden="true" />
-                <span class="text-text-primary">{{ workspaceStatus(workspace) }}</span>
-              </span>
+                class="shrink-0"
+                :status="workspaceStatus(workspace)"
+                :tone="workspaceStatus(workspace) === 'Pending' ? 'warning' : 'muted'"
+              />
               <Check
                 v-if="tenant.workspaceUUID === workspace.uuid"
                 class="h-3.5 w-3.5 shrink-0 text-accent"

@@ -253,7 +253,7 @@ describe('Webhooks.vue', () => {
     const deploys = rows.find(row => text(row).includes('deploys'))!
     expect(text(deploys)).toContain('0 triggers')
     expect(text(deploys)).toContain('Nothing received')
-    expect(text(deploys.querySelector('.agents-badge-warn'))).toContain('NotMinted')
+    expect(text(deploys.querySelector('.k-status-badge.k-badge--warning'))).toContain('NotMinted')
     // Only a minted webhook has a URL to copy.
     expect(deploys.querySelector('button[aria-label^="Copy webhook URL"]')).toBeNull()
     org.querySelector<HTMLButtonElement>('button[aria-label="Copy webhook URL for github-org"]')!.click()

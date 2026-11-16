@@ -250,7 +250,7 @@ test('presents Publishing as a release review with separate configuration and ac
   assert.match(pane, /<ReleasePipeline[\s\S]*:pipeline="releasePipeline"[\s\S]*@refresh="refreshProduction"/)
   assert.match(pane, /Set up sharing/)
   assert.match(pane, /publishing\?\.publication\?\.error && !publishing\?\.publication\?\.ready/)
-  assert.match(pane, /publishingActionError[^\n]*text-danger/)
+  assert.match(pane, /<InlineNotification v-if="publishingActionError" tone="error" :message="publishingActionError" \/>/)
   // Share is the single user-facing owner for visibility and grants. The
   // generic schema form must not duplicate template-native access controls.
   assert.match(pane, /Manage sharing/)
@@ -421,8 +421,8 @@ test('routes sharing through the modular dialog and current access contracts onl
 test('suppresses stale publication errors for a ready URL and keeps copy actions destination-scoped', () => {
   assert.match(dialog, /props\.publication\?\.error && !props\.publication\?\.ready/)
   assert.match(dialog, /props\.publication\?\.ready \? 'Ready' : 'Pending'/)
-  assert.match(dialog, /v-if="published && publication\?\.error && !publication\?\.ready"[^>]*text-danger[^>]*role="alert"/)
-  assert.match(dialog, /v-if="error"[^>]*text-danger/)
+  assert.match(dialog, /<InlineNotification v-if="published && publication\?\.error && !publication\?\.ready" tone="error" :message="publication\.error" \/>/)
+  assert.match(dialog, /<InlineNotification v-if="error" tone="error" :message="error" \/>/)
   const footerStart = dialog.indexOf('<footer')
   const copyStart = dialog.indexOf("copyChannelLink('production')")
   assert.ok(copyStart >= 0 && footerStart > copyStart)
@@ -442,7 +442,7 @@ test('keeps Share independently useful through partial loads and traps modal key
   assert.match(dialog, /loadState === 'error'/)
   assert.match(dialog, /loadState === 'partial'/)
   assert.match(dialog, /membersError/)
-  assert.match(dialog, /@click="emit\('retry'\)"/)
+  assert.match(dialog, /@action="retryRead"/)
   assert.match(dialog, /event\.defaultPrevented/)
   assert.match(dialog, /event\.defaultPrevented \|\| confirmState\.open/)
   assert.match(dialog, /querySelectorAll<HTMLElement>/)

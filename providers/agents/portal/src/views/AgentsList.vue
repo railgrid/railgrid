@@ -6,10 +6,11 @@ import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import ResourceTableFilter from '../portalkit/ResourceTableFilter.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { readLayoutPreference, writeLayoutPreference } from '../portalkit/layoutPreference'
-import type { TableFilterDefinition, TableFilterState } from '../portalkit/table'
+import { filterTableRows, type TableFilterDefinition, type TableFilterState } from '../portalkit/table'
 import { hashFor, type Route } from '../router'
 import type { AgentTemplate } from '../agent-template'
 import { mutate } from '../mutate'
@@ -29,16 +30,7 @@ const layoutPreferenceKey = 'railgrid:agents:agents:layout'
 const layout = ref(readLayoutPreference(layoutPreferenceKey))
 const query = ref('')
 const filterValues = ref<TableFilterState>({ backendType: '', configuration: '' })
-const filtersClearedForCards = ref(false)
-watch(layout, (value, previous) => {
-  if (value === 'grid' && previous === 'list') {
-    filtersClearedForCards.value = Object.values(filterValues.value).some(Boolean)
-    filterValues.value = { backendType: '', configuration: '' }
-  } else if (value === 'list') {
-    filtersClearedForCards.value = false
-  }
-  writeLayoutPreference(layoutPreferenceKey, value)
-})
+watch(layout, value => writeLayoutPreference(layoutPreferenceKey, value))
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 
@@ -168,13 +160,18 @@ const agentRows = computed(() => {
   })
 })
 
-const filteredAgents = computed(() => {
-  const needle = query.value.trim().toLocaleLowerCase()
-  return agentRows.value.filter(row => !needle || [row.name, row.resourceName, row.backendKind, row.backend, row.blocker, row.channel, row.automation, row.configurationLabel]
-    .some(value => value.toLocaleLowerCase().includes(needle)))
-})
-
-const cardEmptyText = computed(() => 'No agents match your search.')
+const searchKeys = ['name', 'resourceName', 'backendKind', 'backend', 'blocker', 'channel', 'automation', 'configurationLabel']
+const filteredAgents = computed(() => filterTableRows(agentRows.value, query.value, searchKeys, filterValues.value) as typeof agentRows.value)
+const hasFilters = computed(() => Object.values(filterValues.value).some(Boolean))
+const cardEmptyText = computed(() => query.value.trim() && hasFilters.value
+  ? 'No agents match your search and filters.'
+  : hasFilters.value ? 'No agents match your filters.' : 'No agents match your search.')
+const cardSearch = ref<HTMLInputElement | null>(null)
+function clearCardConstraints(): void {
+  query.value = ''
+  filterValues.value = { backendType: '', configuration: '' }
+  nextTick(() => cardSearch.value?.focus())
+}
 
 function openAgentRow(row: Record<string, unknown>): void {
   navigate({ kind: 'agent', name: String(row.resourceName), tab: 'chat' })
@@ -207,17 +204,15 @@ function openAgentRow(row: Record<string, unknown>): void {
         <template v-if="layout === 'grid'">
           <label class="agents-layout-search">
             <Search :size="16" :stroke-width="1.75" aria-hidden="true" />
-            <input v-model="query" type="search" class="k-input" aria-label="Search agents" placeholder="Search agents…" autocomplete="off">
+            <input ref="cardSearch" v-model="query" type="search" class="k-input" aria-label="Search agents" placeholder="Search agents…" autocomplete="off">
           </label>
+          <ResourceTableFilter v-for="filter in filters" :key="filter.key" v-model="filterValues[filter.key]" :definition="filter" :options="filter.options || []" />
           <span class="agents-layout-count" role="status">
-            {{ filteredAgents.length }}{{ query.trim() ? ` of ${agentRows.length}` : '' }} agent{{ agentRows.length === 1 ? '' : 's' }}
+            {{ filteredAgents.length }}{{ query.trim() || hasFilters ? ` of ${agentRows.length}` : '' }} agent{{ agentRows.length === 1 ? '' : 's' }}
           </span>
         </template>
         <LayoutSelector v-model="layout" aria-label="Agent layout" grid-label="Cards" />
       </div>
-      <p v-if="layout === 'grid' && filtersClearedForCards" class="sr-only" role="status">
-        List filters were cleared for Cards.
-      </p>
       <template v-if="showAgentCards">
         <div class="agents-grid">
           <button class="k-card agents-starter-card agents-new-agent" type="button" aria-labelledby="agents-new-agent-label" aria-describedby="agents-new-agent-description" @click="navigate({ kind: 'create', resource: 'agent' })">
@@ -254,7 +249,7 @@ function openAgentRow(row: Record<string, unknown>): void {
             />
           </article>
         </div>
-        <p v-if="agentRows.length && !filteredAgents.length" class="agents-layout-empty">{{ cardEmptyText }}</p>
+        <div v-if="agentRows.length && !filteredAgents.length" class="agents-layout-empty" role="status">{{ cardEmptyText }} <button type="button" class="k-btn k-btn--ghost" @click="clearCardConstraints">Clear search and filters</button></div>
       </template>
       <ResourceTable
         v-else
@@ -274,7 +269,7 @@ function openAgentRow(row: Record<string, unknown>): void {
         :loading="agents.loading"
         searchable
         search-placeholder="Search agents…"
-        :search-keys="['name', 'resourceName', 'backendKind', 'backend', 'blocker', 'channel', 'automation', 'configurationLabel']"
+        :search-keys="searchKeys"
         :filters="filters"
         filter-empty-text="No agents match your filters."
         search-empty-text="No agents match your search."

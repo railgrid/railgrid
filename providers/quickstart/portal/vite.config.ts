@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
 
 // The railgrid hub serves this provider under /ui/providers/quickstart/. The
 // ProviderFrame component injects a <script src="/ui/providers/quickstart/main.js">
@@ -17,6 +18,8 @@ import { defineConfig } from 'vite'
 // the portal's mount prefix so dynamic chunks resolve via the hub's UI proxy
 // even when the page itself was navigated to from inside the portal SPA.
 export default defineConfig({
+  plugins: [vue()],
+  define: { 'process.env.NODE_ENV': JSON.stringify('production') },
   base: '/ui/providers/quickstart/',
   build: {
     outDir: 'dist',

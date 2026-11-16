@@ -17,7 +17,7 @@ function harness(client, render = false) {
   const exports = {}
   vm.runInNewContext(javascript, {
     exports, HTMLElement: class { querySelector() { return null } querySelectorAll() { return [] } dispatchEvent() { return true } },
-    require: name => name.endsWith('/kube') ? { createKubeClient: options => client(options) }
+    require: name => name.endsWith('/toastFallback') ? { mountToastFallback: () => () => {} } : name.endsWith('/kube') ? { createKubeClient: options => client(options) }
       : name.endsWith('/tenant') ? { providerFetch: ctx => ctx.fetch } : name.endsWith('/toast') ? { toast: () => {} } : { ic: () => '' },
     Set, Map, Date, CustomEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init) } },
   })
@@ -227,7 +227,7 @@ function tileHarness(client) {
   const exports = {}
   vm.runInNewContext(tileJavascript, {
     exports, HTMLElement: class { querySelector() { return null } querySelectorAll() { return [] } },
-    require: name => name.endsWith('/kube') ? { createKubeClient: options => client(options) }
+    require: name => name.endsWith('/toastFallback') ? { mountToastFallback: () => () => {} } : name.endsWith('/kube') ? { createKubeClient: options => client(options) }
       : name.endsWith('/tenant') ? { providerFetch: ctx => ctx?.fetch }
       : name.endsWith('/element') ? { escapeHTML: value => value }
       : {
@@ -300,4 +300,20 @@ test('observed timestamps offer exact timezone-aware details without inventing m
   const missing = element._renderRow({ metadata: { name: 'hello' } })
   assert.match(missing, /not observed yet/)
   assert.doesNotMatch(missing, /data-observed-time=/)
+})
+
+test('greeting readiness uses understandable labels and visible escaped explanations', () => {
+  const element = harness(() => ({}))
+  const item = (status, reason, message) => ({ metadata: { name: 'example' }, status: { conditions: [{ type: 'Ready', status, reason, message }] } })
+  const missing = element._renderRow(item('False', 'MessageEmpty', 'spec.message is empty'))
+  assert.match(missing, /Message needed/)
+  assert.match(missing, /Add a message before greeting\./)
+  assert.doesNotMatch(missing, /MessageEmpty|spec\.message/)
+  const other = element._renderRow(item('False', 'ProviderUnavailable', '<unavailable>'))
+  assert.match(other, /Needs attention/)
+  assert.match(other, /&lt;unavailable&gt;/)
+  assert.doesNotMatch(other, /ProviderUnavailable/)
+  assert.match(element._renderRow(item('True', 'GreetingReady', 'Ready')), />\s*Ready\s*<\/span>/)
+  assert.match(element._renderRow(item('Unknown', '', '')), />\s*Status unknown\s*<\/span>/)
+  assert.match(element._renderRow({ metadata: { name: 'new' } }), />\s*Pending\s*<\/span>/)
 })

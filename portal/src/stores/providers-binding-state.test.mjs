@@ -466,3 +466,82 @@ test('enable surfaces its single authoritative binding read failure', async () =
   assert.equal(reads, 1)
   assert.equal(store.bindingsLoadState, 'error')
 })
+
+test('current-scope read failures remain through retry and clear only on current success', async () => {
+  setSelection('org-a', 'ws-a')
+  const store = storeModule.useProvidersStore()
+  globalThis.__providerAuthFetch = async () => response({}, { ok: false, status: 503, statusText: 'Unavailable' })
+  await store.load('org-a', false, false)
+  assert.match(store.error, /503/)
+  const retry = deferred()
+  globalThis.__providerAuthFetch = () => retry.promise
+  const loading = store.load('org-a', false, false)
+  assert.equal(store.loading, true)
+  assert.match(store.error, /503/)
+  retry.resolve(response({ items: [] }))
+  await loading
+  assert.equal(store.error, null)
+  assert.equal(store.catalogOrgUUID, 'org-a')
+
+  globalThis.__providerAuthFetch = async () => response({}, { ok: false, status: 503 })
+  await assert.rejects(store.refreshBindings())
+  assert.match(store.bindingsError, /503/)
+  const binding = deferred()
+  globalThis.__providerAuthFetch = () => binding.promise
+  const refreshing = store.refreshBindings()
+  assert.equal(store.bindingsLoadState, 'loading')
+  assert.match(store.bindingsError, /503/)
+  binding.resolve(response({ bindingNamesByProvider: {}, bindingsByProvider: {} }))
+  await refreshing
+  assert.equal(store.bindingsError, null)
+  assert.equal(store.bindingsLoadState, 'ready')
+})
+
+test('retained read failures never cross scopes and late results cannot restore them', async () => {
+  setSelection('org-a', 'ws-a')
+  const store = storeModule.useProvidersStore()
+  globalThis.__providerAuthFetch = async () => response({}, { ok: false, status: 503 })
+  await store.load('org-a', false, false)
+  await assert.rejects(store.refreshBindings())
+  const oldCatalog = deferred(), oldBinding = deferred()
+  globalThis.__providerAuthFetch = url => url === '/api/providers' ? oldCatalog.promise : oldBinding.promise
+  const oldLoad = store.load('org-a', false, false)
+  const oldRefresh = store.refreshBindings()
+  setSelection('org-b', 'ws-b')
+  const newCatalog = deferred(), newBinding = deferred()
+  globalThis.__providerAuthFetch = url => url === '/api/providers' ? newCatalog.promise : newBinding.promise
+  const newLoad = store.load('org-b', false, false)
+  const newRefresh = store.refreshBindings()
+  assert.equal(store.error, null)
+  assert.equal(store.bindingsError, null)
+  oldCatalog.resolve(response({}, { ok: false, status: 500 }))
+  oldBinding.resolve(response({}, { ok: false, status: 500 }))
+  await Promise.all([oldLoad, oldRefresh])
+  assert.equal(store.error, null)
+  assert.equal(store.bindingsError, null)
+  newCatalog.resolve(response({ items: [] }))
+  newBinding.resolve(response({ bindingNamesByProvider: {}, bindingsByProvider: {} }))
+  await Promise.all([newLoad, newRefresh])
+  assert.equal(store.catalogOrgUUID, 'org-b')
+  assert.equal(store.bindingsWorkspace, 'ws-b')
+})
+
+test('catalog retry retains failure until its current binding follow-up settles', async () => {
+  setSelection('org-a', 'ws-a')
+  const store = storeModule.useProvidersStore()
+  globalThis.__providerAuthFetch = async () => response({}, { ok: false, status: 503 })
+  await store.load('org-a', false, false)
+  const binding = deferred()
+  globalThis.__providerAuthFetch = url => url === '/api/providers'
+    ? Promise.resolve(response({ items: [] }))
+    : binding.promise
+  const pending = store.load('org-a')
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(store.loading, true)
+  assert.match(store.error, /503/)
+  binding.resolve(response({ bindingNamesByProvider: {}, bindingsByProvider: {} }))
+  await pending
+  assert.equal(store.error, null)
+  assert.equal(store.bindingsLoadState, 'ready')
+})

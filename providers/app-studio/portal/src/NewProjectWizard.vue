@@ -493,7 +493,7 @@ onMounted(async () => {
                         <div class="font-medium">{{ resource.kind }}</div>
                         <p v-if="resource.description" class="text-[12px] text-text-secondary">{{ resource.description }}</p>
                       </div>
-                      <span v-if="resource.conditional" class="k-badge k-badge--muted">If enabled</span>
+                      <span v-if="resource.conditional" class="k-badge k-badge--muted k-badge--label">If enabled</span>
                     </div>
                   </li>
                 </ul>

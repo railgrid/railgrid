@@ -54,7 +54,7 @@ test('summarizes only acknowledged preview policy and matching runtime evidence'
     const previewAccess = ref(null), previewMode = ref('restricted'), shareDialogOpen = ref(true), previewAccessUnverified = ref(false)
     const publishing = ref(null), publishingStateAvailable = ref(false), publishingLoadError = ref(null)
     const publishingMembers = ref([]), publishingMembersLoaded = ref(false), publishingMembersError = ref(null)
-    const publishingLoadState = ref('idle'), shareMode = ref('restricted')
+    const publishingLoadState = ref('idle'), publishingReadBusy = ref(false), shareMode = ref('restricted')
     const publishingActionBusy = ref(false), publishingActionError = ref(null)
     const developmentPreviewAccessConverged = ref(true), developmentPreviewAccessBusy = ref(false)
     const developmentPreviewAccessError = ref(null), developmentPreviewAuthorizedPolicy = ref(null)

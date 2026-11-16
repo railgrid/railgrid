@@ -26,6 +26,7 @@ export function assistantSkillsRequestIsCurrent(
 <script setup lang="ts">
 import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
 import AISkillCatalogList from './agentkit/AISkillCatalogList.vue'
+import InlineNotification from './portalkit/InlineNotification.vue'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   Check,
@@ -47,11 +48,13 @@ const props = withDefaults(defineProps<{
   ctx: RailgridContext | null
   projectName: string
   skills: ProjectAssistantSkill[]
+  hasSnapshot?: boolean
   loading?: boolean
   error?: string | null
   warnings?: string[]
 }>(), {
   loading: false,
+  hasSnapshot: false,
   error: null,
   warnings: () => [],
 })
@@ -67,9 +70,16 @@ const focusedSkill = ref<ProjectAssistantSkill | null>(null)
 const selectedDetail = ref<ProjectAssistantSkillDetail | null>(null)
 const detailLoading = ref(false)
 const detailError = ref<string | null>(null)
+const detailErrorNotice = ref<HTMLElement | null>(null)
 let detailLoadSerial = 0
 const catalogLoading = ref(false)
+const catalogError = ref<string | null>(null)
+const catalogErrorNotice = ref<HTMLElement | null>(null)
+const detailCatalogErrorNotice = ref<HTMLElement | null>(null)
+const skillsRegion = ref<HTMLElement | null>(null)
 let catalogRequestSerial = 0
+let catalogScopeGeneration = 0
+let catalogFailureGeneration = 0
 const actionBusy = ref(false)
 const activationSkillID = ref('')
 let activationRequestSerial = 0
@@ -95,6 +105,7 @@ watch(() => props.skills, (skills) => {
 }, { deep: true })
 
 watch(() => [props.projectName, props.ctx] as const, () => {
+  catalogScopeGeneration++
   detailLoadSerial++
   catalogRequestSerial++
   activationRequestSerial++
@@ -104,6 +115,7 @@ watch(() => [props.projectName, props.ctx] as const, () => {
   focusedSkill.value = null
   selectedDetail.value = null
   detailError.value = null
+  catalogError.value = null
   managementError.value = null
   statusMessage.value = null
   catalogLoading.value = false
@@ -115,10 +127,46 @@ const normalizedQuery = computed(() => query.value.trim().toLowerCase())
 const selectedSkill = computed(() => localSkills.value.find((skill) => skill.id === selectedSkillID.value) ?? focusedSkill.value)
 const selectedDigest = computed(() => selectedDetail.value?.digest || selectedSkill.value?.digest || selectedDetail.value?.contentDigest || selectedSkill.value?.contentDigest || '')
 const detailInstructions = computed(() => selectedDetail.value?.instructions || selectedDetail.value?.content || selectedDetail.value?.authorInstructions || '')
+const catalogFailure = computed(() => catalogError.value || props.error)
 const emptyStateText = computed(() => {
-  if (props.error) return 'The catalog could not be loaded. Retry to browse skills.'
+  if (catalogFailure.value) {
+    if (normalizedQuery.value && props.hasSnapshot) return 'No skills in the last successful catalog match your search.'
+    return props.hasSnapshot ? 'No skills were listed in the last successful catalog.' : 'The catalog is unavailable. Retry to browse skills.'
+  }
   if (normalizedQuery.value) return 'No skills match your search.'
+  if (!props.hasSnapshot) return 'Skills are not available until the first catalog read completes.'
   return 'No skills are installed for this project yet.'
+})
+
+function focusWasLost(): boolean {
+  return !document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected
+}
+
+watch(catalogFailure, async (error, previous) => {
+  if (error) {
+    catalogFailureGeneration = catalogScopeGeneration
+    return
+  }
+  if (!previous || catalogFailureGeneration !== catalogScopeGeneration) return
+  const notice = selectedSkill.value ? detailCatalogErrorNotice : catalogErrorNotice
+  if (!notice.value?.contains(document.activeElement)) return
+  const scopeGeneration = catalogScopeGeneration
+  const failureGeneration = catalogFailureGeneration
+  const projectName = props.projectName
+  const requestContext = props.ctx
+  const selectedID = selectedSkillID.value
+  await nextTick()
+  if (
+    scopeGeneration !== catalogScopeGeneration ||
+    failureGeneration !== catalogFailureGeneration ||
+    catalogFailure.value ||
+    props.projectName !== projectName ||
+    props.ctx !== requestContext ||
+    selectedSkillID.value !== selectedID ||
+    !focusWasLost()
+  ) return
+  const target = selectedSkill.value ? detailCloseRef : skillsRegion
+  target.value?.focus({ preventScroll: true })
 })
 
 function packageNameFor(skill: ProjectAssistantSkill | null | undefined): string {
@@ -233,14 +281,33 @@ async function loadDetail(skill: ProjectAssistantSkill) {
   if (!props.projectName) return
   const skillID = skill.id.trim()
   if (!skillID) return
+  const projectName = props.projectName
+  const requestContext = props.ctx
   const serial = ++detailLoadSerial
   detailLoading.value = true
-  detailError.value = null
   try {
-    const detail = await api.getAssistantSkillDetail(props.ctx, props.projectName, skill.id)
-    if (serial === detailLoadSerial && selectedSkillID.value === skillID) selectedDetail.value = detail
+    const detail = await api.getAssistantSkillDetail(requestContext, projectName, skill.id)
+    if (serial === detailLoadSerial && selectedSkillID.value === skillID) {
+      const restoreFocus = Boolean(detailError.value && detailErrorNotice.value?.contains(document.activeElement))
+      selectedDetail.value = detail
+      detailError.value = null
+      await nextTick()
+      if (
+        restoreFocus &&
+        serial === detailLoadSerial &&
+        props.projectName === projectName &&
+        props.ctx === requestContext &&
+        selectedSkillID.value === skillID &&
+        focusWasLost()
+      ) detailCloseRef.value?.focus({ preventScroll: true })
+    }
   } catch (error) {
-    if (serial !== detailLoadSerial || selectedSkillID.value !== skillID) return
+    if (
+      serial !== detailLoadSerial ||
+      props.projectName !== projectName ||
+      props.ctx !== requestContext ||
+      selectedSkillID.value !== skillID
+    ) return
     detailError.value = friendlyError(error, 'Could not load this skill detail.')
   } finally {
     if (serial === detailLoadSerial) detailLoading.value = false
@@ -252,7 +319,7 @@ function retrySkillDetail() {
   if (skill && !detailLoading.value) void loadDetail(skill)
 }
 
-async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { preserveDetail?: boolean; keepError?: boolean } = {}): Promise<boolean> {
+async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { preserveDetail?: boolean } = {}): Promise<boolean> {
   const projectName = props.projectName
   const requestContext = props.ctx
   if (!projectName || catalogLoading.value) return false
@@ -262,15 +329,11 @@ async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { 
     ctx: requestContext,
   }
   catalogLoading.value = true
-  // Refreshing the catalog may be part of a successful lifecycle action. It
-  // should clear a stale error, but must not erase the action result before
-  // the user can read it.
-  if (!options.keepError) clearManagementError()
   try {
     const response = await api.listAssistantSkills(requestContext, projectName)
     if (!assistantSkillsRequestIsCurrent(requestScope, catalogRequestSerial, props.projectName, props.ctx)) return false
     localSkills.value = response.skills
-    clearManagementError()
+    catalogError.value = null
     emit('catalogUpdated', response)
     if (selectSkillID) {
       const next = response.skills.find((skill) => skill.id === selectSkillID)
@@ -285,7 +348,7 @@ async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { 
     return true
   } catch (error) {
     if (!assistantSkillsRequestIsCurrent(requestScope, catalogRequestSerial, props.projectName, props.ctx)) return false
-    managementError.value = friendlyError(error, 'Could not refresh the skill catalog.')
+    catalogError.value = friendlyError(error, 'Could not refresh the skill catalog.')
     return false
   } finally {
     if (assistantSkillsRequestIsCurrent(requestScope, catalogRequestSerial, props.projectName, props.ctx)) catalogLoading.value = false
@@ -295,14 +358,9 @@ async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { 
 async function retryDetailCatalog() {
   if (actionBusy.value) return
   actionBusy.value = true
-  let recovered = false
   try {
-    recovered = await refreshCatalog(selectedSkillID.value, { preserveDetail: true, keepError: true })
+    await refreshCatalog(selectedSkillID.value, { preserveDetail: true })
   } finally { actionBusy.value = false }
-  if (recovered && selectedSkill.value) {
-    await nextTick()
-    detailCloseRef.value?.focus({ preventScroll: true })
-  }
 }
 
 async function toggleSelectedSkill() {
@@ -348,7 +406,8 @@ function friendlyError(error: unknown, fallback: string): string {
       <button
         type="button"
         class="k-btn k-btn--ghost"
-        :disabled="catalogLoading || actionBusy || !projectName"
+        :disabled="catalogLoading || actionBusy || props.loading || !projectName"
+        :aria-busy="catalogLoading ? 'true' : undefined"
         aria-label="Refresh skills"
         @click="refreshCatalog()"
       >
@@ -361,10 +420,19 @@ function friendlyError(error: unknown, fallback: string): string {
       Open an existing project to manage its skills. Bundled skills become available when a project is selected.
     </div>
 
-    <div v-if="(managementError && !selectedSkill) || props.error" class="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] leading-5 text-danger" role="alert">
+    <div v-if="catalogFailure && !selectedSkill" ref="catalogErrorNotice" class="mb-3">
+      <InlineNotification
+        :tone="props.hasSnapshot ? 'warning' : 'error'"
+        :message="props.hasSnapshot ? `Could not refresh the skills catalog. Showing the last successful result. ${catalogFailure}` : `Could not load the skills catalog. ${catalogFailure}`"
+        action-label="Retry"
+        action-busy-label="Retrying skills…"
+        :action-busy="catalogLoading || actionBusy || props.loading"
+        @action="refreshCatalog()"
+      />
+    </div>
+    <div v-if="managementError && !selectedSkill" class="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] leading-5 text-danger" role="alert">
       <TriangleAlert class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
-      <span>{{ managementError || props.error }}</span>
-      <button v-if="props.error" type="button" class="app-studio-touch-target ml-auto shrink-0 font-medium underline underline-offset-2" @click="refreshCatalog()">Retry</button>
+      <span>{{ managementError }}</span>
     </div>
     <div v-if="props.warnings.length" class="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning-subtle p-3 text-[12px] leading-5 text-warning" role="status">
       <TriangleAlert class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
@@ -377,19 +445,25 @@ function friendlyError(error: unknown, fallback: string): string {
       {{ statusMessage }}
     </div>
 
-    <AISkillCatalogList
-      variant="workbench"
-      title="Installed skills"
-      :skills="localSkills"
-      :query="query"
-      :selected-i-d="selectedSkillID"
-      :loading="props.loading || catalogLoading"
-      :busy="actionBusy"
-      detail-presentation="dialog"
-      :empty-text="emptyStateText"
-      @update:query="query = $event"
-      @select="selectSkill($event)"
-    />
+    <div ref="skillsRegion" tabindex="-1" role="region" aria-label="Installed skills" class="min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
+      <AISkillCatalogList
+        v-if="props.hasSnapshot"
+        variant="workbench"
+        title="Installed skills"
+        :skills="localSkills"
+        :query="query"
+        :selected-i-d="selectedSkillID"
+        :loading="props.loading || catalogLoading"
+        :busy="actionBusy"
+        detail-presentation="dialog"
+        :empty-text="emptyStateText"
+        @update:query="query = $event"
+        @select="selectSkill($event)"
+      />
+      <p v-else class="px-4 py-8 text-center text-[12px] text-text-muted" role="status">
+        {{ props.loading || catalogLoading ? 'Loading the skills catalog…' : catalogFailure ? 'Skill count is unavailable until the catalog loads.' : 'Skills will appear after the first catalog read.' }}
+      </p>
+    </div>
 
     <Teleport to="#app-studio-overlay-root">
       <div v-if="selectedSkill" class="fixed inset-0 flex items-center justify-center bg-surface/60 p-4 [z-index:var(--app-studio-z-modal-backdrop)] backdrop-blur-[2px]" role="presentation" @mousedown.self="closeSkillDetail">
@@ -435,11 +509,30 @@ function friendlyError(error: unknown, fallback: string): string {
           </header>
 
           <div class="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle px-6 py-5">
-            <div v-if="managementError" class="mb-4 rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">{{ managementError }} <button v-if="statusMessage" type="button" class="k-agentkit-touch-target font-medium underline underline-offset-2" :aria-disabled="actionBusy ? 'true' : undefined" @click="retryDetailCatalog">{{ catalogLoading ? 'Retrying…' : 'Retry' }}</button></div>
+            <div v-if="catalogFailure" ref="detailCatalogErrorNotice" class="mb-4">
+              <InlineNotification
+                :tone="props.hasSnapshot ? 'warning' : 'error'"
+                :message="props.hasSnapshot ? `Could not refresh the skills catalog. Showing the last successful result. ${catalogFailure}` : `Could not load the skills catalog. ${catalogFailure}`"
+                action-label="Retry"
+                action-busy-label="Retrying skills…"
+                :action-busy="catalogLoading || actionBusy || props.loading"
+                @action="retryDetailCatalog"
+              />
+            </div>
+            <div v-if="managementError" class="mb-4 rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">{{ managementError }}</div>
             <div v-if="statusMessage" class="mb-4 rounded-xl border border-success/30 bg-success-subtle p-3 text-[12px] text-success" role="status">{{ statusMessage }}</div>
-            <div v-if="detailLoading" class="flex min-h-48 items-center justify-center gap-2 text-[12px] text-text-muted" role="status"><Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" /> Loading skill…</div>
-            <div v-else class="grid gap-4">
-              <div v-if="detailError" class="flex items-center justify-between gap-3 rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert"><span>{{ detailError }}</span><button type="button" class="k-agentkit-touch-target shrink-0 font-medium underline underline-offset-2" :disabled="detailLoading" @click="retrySkillDetail">{{ detailLoading ? 'Retrying…' : 'Retry' }}</button></div>
+            <div v-if="detailError" ref="detailErrorNotice" class="mb-4">
+              <InlineNotification
+                :tone="selectedDetail ? 'warning' : 'error'"
+                :message="selectedDetail ? `Could not refresh this skill detail. Showing the last loaded details. ${detailError}` : `Could not load this skill detail. ${detailError}`"
+                action-label="Retry"
+                action-busy-label="Retrying detail…"
+                :action-busy="detailLoading"
+                @action="retrySkillDetail"
+              />
+            </div>
+            <div v-if="detailLoading && !selectedDetail" class="flex min-h-48 items-center justify-center gap-2 text-[12px] text-text-muted" role="status"><Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" /> Loading skill…</div>
+            <div v-else-if="selectedDetail" class="grid gap-4">
               <div class="rounded-xl border border-border-subtle bg-surface p-5">
                 <pre v-if="detailInstructions" class="whitespace-pre-wrap font-sans text-[13px] leading-6 text-text-secondary">{{ detailInstructions }}</pre>
                 <div v-else class="text-[12px] text-text-muted">No author-visible instructions were provided for this skill.</div>

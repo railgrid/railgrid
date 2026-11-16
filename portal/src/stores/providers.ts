@@ -388,6 +388,7 @@ export const useProvidersStore = defineStore('providers', () => {
   const catalogOrgUUID = ref<string | null>(null)
   let catalogRequestSequence = 0
   let catalogRequestOrg: string | null = null
+  let catalogErrorOrg: string | null = null
 
   // bindingNamesByProvider maps provider-name → kcp APIBinding name in the
   // user's tenant workspace. Empty when the provider is not enabled for
@@ -714,6 +715,7 @@ export const useProvidersStore = defineStore('providers', () => {
     items.value = []
     categories.value = []
     error.value = null
+    catalogErrorOrg = null
     clearBindings()
   }
 
@@ -730,7 +732,7 @@ export const useProvidersStore = defineStore('providers', () => {
     const requestSequence = ++catalogRequestSequence
     catalogRequestOrg = targetOrgUUID
     loading.value = true
-    error.value = null
+    if (catalogErrorOrg !== targetOrgUUID) error.value = null
     try {
       // The catalog is org-scoped, but this request may begin in the same
       // tick as the tenant store's persistence watcher. Pass the captured
@@ -763,12 +765,17 @@ export const useProvidersStore = defineStore('providers', () => {
           /* surfaced via Disable button being unavailable */
         })
       }
+      if (requestSequence !== catalogRequestSequence ||
+          (!hasExplicitOrg && readTenantSelection().orgUUID !== targetOrgUUID)) return
+      error.value = null
+      catalogErrorOrg = null
     } catch (e) {
       if (
         requestSequence !== catalogRequestSequence ||
         (!hasExplicitOrg && readTenantSelection().orgUUID !== targetOrgUUID)
       ) return
       error.value = e instanceof Error ? e.message : String(e)
+      catalogErrorOrg = targetOrgUUID
     } finally {
       if (requestSequence === catalogRequestSequence) {
         loading.value = false
@@ -796,9 +803,11 @@ export const useProvidersStore = defineStore('providers', () => {
     // same-target deduplication here would let a later completion merely join
     // an earlier request that started before its write was applied.
     const requestSequence = ++bindingRequestSequence
+    const sameRequestScope = bindingsRequestOrgUUID.value === t.orgUUID &&
+      bindingsRequestWorkspaceUUID.value === t.workspaceUUID && t.workspaceMode !== 'organization'
     bindingsRequestOrgUUID.value = t.orgUUID
     bindingsRequestWorkspaceUUID.value = t.workspaceUUID
-    bindingsError.value = null
+    if (!sameRequestScope) bindingsError.value = null
     // Keep an established projection only while re-reading the exact same
     // org/workspace. This is the last-known navigation state and is safe to
     // retain as explicitly non-authoritative while loading or on error. Any
@@ -835,6 +844,7 @@ export const useProvidersStore = defineStore('providers', () => {
       bindingsOrgUUID.value = t.orgUUID
       bindingsWorkspace.value = t.workspaceUUID
       bindingsStale.value = false
+      bindingsError.value = null
       bindingsLoadState.value = 'ready'
     } catch (e: unknown) {
       // A late failure belongs to the request's captured tenant, not to the

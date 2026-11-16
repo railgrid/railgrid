@@ -1,127 +1,85 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AppStore } from '../store'
-import { AgentsElement } from '../element'
-import { clearToasts, subscribeToasts, toast } from '../ui/toast'
-import { settle } from './helpers'
+import { createApp, nextTick } from 'vue'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import ToastHost from '../portalkit/ToastHost.vue'
+import { toast as sharedToast, clearToasts as clearShared } from '../portalkit/toast'
+import { clearToasts, dismissToast, subscribeToasts, toast } from '../ui/toast'
 
-async function flushToastLifecycle(): Promise<void> {
-  // PortalKit removes cards synchronously, while the adapter observes those
-  // removals through MutationObserver. Two microtasks cover jsdom's observer
-  // delivery without depending on a real-time delay.
+let host: HTMLDivElement
+let app: ReturnType<typeof createApp>
+beforeEach(() => {
+  host = document.createElement('div')
+  document.body.append(host)
+  app = createApp(ToastHost, { owner: 'fallback' })
+  app.mount(host)
+})
+afterEach(() => { clearToasts(); clearShared('external'); app.unmount(); host.remove(); vi.useRealTimers() })
+
+it('queues provider notices behind a higher-priority host error and isolates clear', async () => {
+  const snapshots: string[][] = []
+  const off = subscribeToasts(items => snapshots.push(items.map(item => item.message)))
+  sharedToast('error', 'host failure', { scope: 'external' })
+  const id = toast('ok', 'agent saved')
+  await nextTick()
+  expect(document.querySelector('.k-toast__message')?.textContent).toContain('host failure')
+  expect(snapshots.at(-1)).toEqual(['agent saved'])
+  clearToasts()
+  expect(snapshots.at(-1)).toEqual([])
+  expect(document.querySelector('.k-toast__message')?.textContent).toContain('host failure')
+  dismissToast(id)
+  off()
+})
+
+it('removes action callbacks and reports timeout from the shared host', async () => {
+  vi.useFakeTimers()
+  const snapshots: number[][] = []
+  const off = subscribeToasts(items => snapshots.push(items.map(item => item.id)))
+  toast('ok', 'saved')
+  await nextTick()
+  await vi.advanceTimersByTimeAsync(5000)
+  await nextTick()
+  expect(snapshots.at(-1)).toEqual([])
+  const action = vi.fn()
+  toast('info', 'open', { label: 'Open', run: action })
+  await nextTick()
+  await vi.advanceTimersByTimeAsync(500)
+  document.querySelector<HTMLButtonElement>('.k-toast__action')!.click()
   await Promise.resolve()
-  await Promise.resolve()
-}
+  await nextTick()
+  expect(action).toHaveBeenCalledOnce()
+  expect(snapshots.at(-1)).toEqual([])
+  off()
+})
 
-describe('Agents toast adapter lifecycle', () => {
-  afterEach(() => {
-    clearToasts()
-  })
+it('keeps a failed action available without leaking its thrown details', async () => {
+  const action = vi.fn().mockRejectedValueOnce(new Error('sensitive details')).mockResolvedValueOnce(undefined)
+  toast('error', 'Needs attention', { label: 'Retry', run: action })
+  await nextTick()
+  const button = document.querySelector<HTMLButtonElement>('.k-toast__action')!
+  button.focus()
+  button.click()
+  await vi.waitFor(() => expect(document.body.textContent).toContain('Action failed. Try again.'))
+  expect(document.body.textContent).not.toContain('sensitive details')
+  expect(document.activeElement).toBe(button)
+  button.click()
+  await vi.waitFor(() => expect(document.querySelector('.k-toast__action')).toBeNull())
+  expect(action).toHaveBeenCalledTimes(2)
+})
 
-  it('synchronizes adapter state when a toast auto-dismisses', async () => {
-    vi.useFakeTimers()
-    try {
-      const snapshots: Array<Array<{ id: number; message: string }>> = []
-      const off = subscribeToasts((items) => snapshots.push(items.map(({ id, message }) => ({ id, message }))))
-      const id = toast('ok', 'saved')
-
-      expect(snapshots.at(-1)).toEqual([{ id, message: 'saved' }])
-      await vi.advanceTimersByTimeAsync(5000)
-      await flushToastLifecycle()
-
-      expect(snapshots.at(-1)).toEqual([])
-      expect(document.getElementById(`k-toast-${id}`)).toBeNull()
-      off()
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('drops action callbacks when an action dismisses its toast', async () => {
-    const action = vi.fn()
-    const snapshots: Array<Array<{ id: number; action?: () => void }>> = []
-    const off = subscribeToasts((items) => snapshots.push(items.map((item) => ({ id: item.id, action: item.action?.run }))))
-    const id = toast('info', 'open run', { label: 'View run', run: action })
-
-    document.querySelector<HTMLButtonElement>(`#k-toast-${id} .k-toast__action`)?.click()
-    await flushToastLifecycle()
-
-    expect(action).toHaveBeenCalledOnce()
-    expect(snapshots.at(-1)).toEqual([])
-    off()
-  })
-
-  it('preserves an actionable toast when the visible stack fills', () => {
-    const firstAction = vi.fn()
-    const snapshots: Array<Array<{ id: number; action?: () => void }>> = []
-    const off = subscribeToasts((items) => snapshots.push(items.map((item) => ({ id: item.id, action: item.action?.run }))))
-    const first = toast('ok', 'first', { label: 'first action', run: firstAction })
-    const second = toast('ok', 'second')
-    const third = toast('ok', 'third')
-    const fourth = toast('ok', 'fourth')
-
-    expect(snapshots.at(-1)?.map((item) => item.id)).toEqual([first, third, fourth])
-    expect(snapshots.at(-1)?.some((item) => item.id === second)).toBe(false)
-    expect(snapshots.at(-1)?.find(item => item.id === first)?.action).toBe(firstAction)
-    off()
-  })
-
-  it('clears rendered and subscribed state together', () => {
-    const snapshots: number[][] = []
-    const off = subscribeToasts((items) => snapshots.push(items.map((item) => item.id)))
-    toast('error', 'failed')
-
-    clearToasts()
-
-    expect(snapshots.at(-1)).toEqual([])
-    expect(document.getElementById('k-toasts')).toBeNull()
-    off()
-  })
-
-  it('keeps IDs isolated when two standalone bundles share the toast host', async () => {
-    // Query imports force two independent Vite module instances, matching
-    // two separately loaded provider bundles while retaining one global DOM.
-    // @ts-expect-error Vite query imports intentionally create independent bundles.
-    const bundleOne = await import('../portalkit/toast?bundle=one')
-    // @ts-expect-error Vite query imports intentionally create independent bundles.
-    const bundleTwo = await import('../portalkit/toast?bundle=two')
-    document.getElementById('k-toasts')?.remove()
-    bundleOne.clearToasts()
-    bundleTwo.clearToasts()
-
-    const first = bundleOne.toast('ok', 'bundle one')
-    const second = bundleTwo.toast('ok', 'bundle two')
-    expect(second).not.toBe(first)
-    expect(document.getElementById(`k-toast-${first}`)).not.toBeNull()
-    expect(document.getElementById(`k-toast-${second}`)).not.toBeNull()
-
-    bundleOne.dismissToast(first)
-    expect(document.getElementById(`k-toast-${first}`)).toBeNull()
-    expect(document.getElementById(`k-toast-${second}`)).not.toBeNull()
-    bundleTwo.dismissToast(second)
-  })
-
-  it('clears action-bearing state when the host switches tenants', async () => {
-    const action = vi.fn()
-    const snapshots: Array<Array<{ id: number; action?: () => void }>> = []
-    const off = subscribeToasts((items) => snapshots.push(items.map((item) => ({ id: item.id, action: item.action?.run }))))
-    toast('ok', 'workspace A', { label: 'View', run: action })
-
-    const loadAll = vi.spyOn(AppStore.prototype, 'loadAll').mockImplementation(() => undefined)
-    const connect = vi.spyOn(AppStore.prototype, 'connect').mockImplementation(() => undefined)
-    const tag = 'test-agents-toast-lifecycle'
-    if (!customElements.get(tag)) customElements.define(tag, AgentsElement)
-    const element = document.createElement(tag) as AgentsElement
-    document.body.appendChild(element)
-    element.railgridContext = { basePath: '/ui/providers/agents', orgUUID: 'org-a', workspaceUUID: 'ws-a' }
-    await settle(element)
-    element.railgridContext = { basePath: '/ui/providers/agents', orgUUID: 'org-b', workspaceUUID: 'ws-b' }
-    await settle(element)
-
-    expect(snapshots.at(-1)).toEqual([])
-    expect(document.getElementById('k-toasts')).toBeNull()
-    expect(action).not.toHaveBeenCalled()
-    loadAll.mockRestore()
-    connect.mockRestore()
-    off()
-  })
+it('isolates independent adapter instances while sharing one queue', async () => {
+  // @ts-expect-error Vite query imports simulate separate bundles.
+  const other = await import('../ui/toast?other-bundle')
+  const first = toast('error', 'first bundle')
+  const second = other.toast('ok', 'second bundle')
+  const snapshots: number[][] = []
+  const stop = other.subscribeToasts((items: Array<{ id: number }>) => snapshots.push(items.map(item => item.id)))
+  await nextTick()
+  other.dismissToast(first)
+  expect(document.querySelector('.k-toast__message')?.textContent).toContain('first bundle')
+  clearToasts()
+  await nextTick()
+  expect(snapshots.at(-1)).toEqual([second])
+  expect(document.querySelector('.k-toast__message')?.textContent).toContain('second bundle')
+  other.clearToasts()
+  expect(snapshots.at(-1)).toEqual([])
+  stop()
 })

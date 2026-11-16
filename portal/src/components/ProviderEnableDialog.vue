@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { X, ShieldCheck, ShieldAlert, Loader2 } from 'lucide-vue-next'
+import { X, ShieldCheck, Loader2 } from 'lucide-vue-next'
+import InlineNotification from '@/portalkit/InlineNotification.vue'
 import type { ProviderDTO, ProviderLabelSelector, AcceptedClaim, HubAccessRequest, AcceptedHubAccess, AcceptedComposition } from '@/stores/providers'
 
 const props = defineProps<{
@@ -316,16 +317,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
       </div>
 
       <div class="max-h-[60vh] overflow-y-auto px-4 py-3">
-        <div
+        <InlineNotification
           v-if="error"
           id="provider-enable-error"
-          class="mb-3 flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[11px] text-danger"
-          role="alert"
-          aria-live="assertive"
-        >
-          <ShieldAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="2" />
-          <span>{{ error }}</span>
-        </div>
+          class="mb-3"
+          tone="error"
+          :message="error"
+        />
 
         <!-- Nothing at all under requires[]: no platform claim and no
              composition. A provider with compositions but no platform claim

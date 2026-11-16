@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.toast","title":"Toast notifications","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"Vue PortalKit ships a versioned cross-bundle transport, primary/fallback hosts, and contextual inline notifications; Agents uses the separate framework-neutral compatibility bus."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/toast.md#toast-notifications","role":"design"},{"path":"provider-sdk/portalkit-vue/toast.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ToastHost.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/InlineNotification.vue","role":"implementation"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"},{"path":"portal/src/App.vue","role":"implementation"},{"path":"portal/src/composables/useToastBottomOffset.ts","role":"implementation"},{"path":"providers/app-studio/portal/src/App.vue","role":"reference"},{"path":"provider-sdk/portalkit/toast.ts","role":"reference"},{"path":"providers/agents/portal/src/ui/toast.ts","role":"reference"},{"path":"provider-sdk/portalkit-vue/Toast.conformance.test.mjs","role":"reference"},{"path":"provider-sdk/portalkit-vue/Toast.behavior.test.mjs","role":"reference"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"test","ref":"node provider-sdk/portalkit-vue/Toast.conformance.test.mjs","status":"passing","evidence":"Six source-contract tests passed after the final rebase."},{"kind":"test","ref":"node provider-sdk/portalkit-vue/Toast.behavior.test.mjs","status":"passing","evidence":"Seven transport behavior tests passed in this checkout; these do not mount the host."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.patterns.navigation-and-feedback","relation":"implements","path":"docs/design/patterns/navigation-and-feedback.md"},{"id":"design.content.ui-copy","relation":"prerequisite","path":"docs/design/content/ui-copy.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.quality.review-checklist","relation":"see-also","path":"docs/design/quality/review-checklist.md"},{"id":"design.foundations.layering","relation":"see-also","path":"docs/design/implementation/layering.md"}]}
+{"schema":1,"id":"design.components.toast","title":"Toast notifications","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"PortalKit ships a shared cross-bundle transport, primary/fallback hosts, and contextual inline notifications."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/toast.md#toast-notifications","role":"design"},{"path":"provider-sdk/portalkit-vue/toast.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ToastHost.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/InlineNotification.vue","role":"implementation"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"},{"path":"portal/src/App.vue","role":"implementation"},{"path":"portal/src/composables/useToastBottomOffset.ts","role":"implementation"},{"path":"providers/app-studio/portal/src/App.vue","role":"reference"},{"path":"providers/agents/portal/src/ui/toast.ts","role":"reference"},{"path":"provider-sdk/portalkit-vue/Toast.conformance.test.mjs","role":"reference"},{"path":"provider-sdk/portalkit-vue/Toast.behavior.test.mjs","role":"reference"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"test","ref":"node provider-sdk/portalkit-vue/Toast.conformance.test.mjs","status":"passing","evidence":"Six source-contract tests passed after the final rebase."},{"kind":"test","ref":"node provider-sdk/portalkit-vue/Toast.behavior.test.mjs","status":"passing","evidence":"Seven transport behavior tests passed in this checkout; these do not mount the host."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.patterns.navigation-and-feedback","relation":"implements","path":"docs/design/patterns/navigation-and-feedback.md"},{"id":"design.content.ui-copy","relation":"prerequisite","path":"docs/design/content/ui-copy.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.quality.review-checklist","relation":"see-also","path":"docs/design/quality/review-checklist.md"},{"id":"design.foundations.layering","relation":"see-also","path":"docs/design/implementation/layering.md"}]}
 ---
 
 # Toast notifications
@@ -35,9 +35,7 @@ contextual failure, and do not mount a second primary host.
 4. **Dismiss:** an explicitly named control closes the notification.
 
 The active Vue host renders one bottom-right card with 6px corners, a raised
-surface, a subtle border, and restrained elevation. The framework-neutral
-compatibility renderer can show a stack; its queue behavior differs as noted
-below.
+surface, a subtle border, and restrained elevation. All providers use this same queue and host.
 
 ## Behavior
 
@@ -76,11 +74,7 @@ focused toast is replaced, focus transfers to the next toast or its origin;
 the host does not reclaim focus if the user has moved it elsewhere during the
 render.
 
-Agents uses the framework-neutral bus through a provider-local adapter; Quickstart also uses that bus. Its success and informational messages expire after 5s and 6s, pausing for hover, focus, or a hidden document and resuming with the remaining time. Errors and action-bearing messages persist until dismissed or acted on. Action promises keep their toast and focused control available while pending, and failed actions show a safe retry message. When the stack is full, transient notices yield before persistent ones. If persistent notices exceed the usual three-card limit, the stack scrolls instead of discarding a recovery action. The legacy bus does not implement the Vue host’s priority queue, host takeover, or native-link API. Its `clearToasts()` removes notices created by that module instance, not every notice in the document; independently bundled copies share the rendered stack but retain separate ownership. The Vue transport and legacy bus are separate, so clearing either does not clear the other.
-
-The scrolling stack follows new arrivals when the reader is already at its
-end. It does not jump while focus or a pointer is inside the stack, or while
-the reader has scrolled away from the end.
+Agents and Quickstart publish to the same transport. Each standalone provider mounts a fallback host; the primary shell host takes precedence. Agents scopes its compatibility adapter so it clears only its own notices.
 
 ## Content
 
@@ -105,25 +99,17 @@ toast or its recorded origin. Reduced motion removes toast transitions and
 action-spinner animation. Follow the [accessible interaction
 policy](../accessibility/interaction.md) for the wider contract.
 
-The framework-neutral renderer also supports Escape and focus return, and it
-does not evict a focused transient notice. Clearing its stack returns focus to
-another remaining notification or the focused notification's origin. Its live region is created when the
-first notice appears, so it does not have the Vue host's pre-mounted channels;
-screen-reader behavior across products remains to be reviewed.
-
 ## Code and evidence
 
 The canonical Vue implementation is `provider-sdk/portalkit-vue/toast.ts`,
 `provider-sdk/portalkit-vue/ToastHost.vue`, and
 `provider-sdk/portalkit-vue/InlineNotification.vue`, with shared styles in
-`provider-sdk/portalkit/railgrid-ui.css`. The framework-neutral
-`provider-sdk/portalkit/toast.ts` is a compatibility implementation. Verify
-distribution with `make verify-portalkit`.
+`provider-sdk/portalkit/railgrid-ui.css`. Verify distribution with `make verify-portalkit`.
 Use the [toast review](http://127.0.0.1:5197/?entry=design.components.toast)
 to compare a short success receipt, persistent error, a native link, a retry
 that fails once, and Undo. The
 [Agents notification fixture](http://127.0.0.1:5197/agents-toast.html)
-uses the framework-neutral renderer and simulated actions.
+uses the shared host and simulated actions.
 
 ## Related guidance
 

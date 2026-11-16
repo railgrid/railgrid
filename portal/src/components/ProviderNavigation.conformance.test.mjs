@@ -29,7 +29,7 @@ test('provider page and dashboard consumers coordinate versioned bootstrap reloa
     assert.doesNotMatch(source, /document\.createElement\('script'\)/)
   }
   assert.match(frame, /invalidateProviderScript\(name, version\)/)
-  assert.match(frame, /@click="retryProviderBundle"/)
+  assert.match(frame, /<InlineNotification\b[^>]*@action="retryProviderBundle"/)
 })
 
 test('provider hosts recover a retained wrapper after its lazy chunk is retired', () => {

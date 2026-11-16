@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Check, Copy, ExternalLink, Link2, Loader2, MonitorPlay, Rocket, Users, X } from 'lucide-vue-next'
 import { copyTextWithFallback } from './clipboard'
+import InlineNotification from './portalkit/InlineNotification.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import { confirmDialog, confirmState } from './portalkit/confirm'
 import { sharePreviewAccessDraftState } from './sharePreviewAccess'
@@ -45,6 +46,7 @@ const props = withDefaults(defineProps<{
   busyAction?: null | 'save' | 'grant' | 'invite' | 'revoke' | 'disable'
   busyTarget?: string
   loading?: boolean
+  refreshing?: boolean
   error?: string | null
   loadState?: ShareLoadState
   loadError?: string | null
@@ -63,6 +65,7 @@ const props = withDefaults(defineProps<{
   busyAction: null,
   busyTarget: '',
   loading: false,
+  refreshing: false,
   error: null,
   loadState: 'ready',
   loadError: null,
@@ -94,6 +97,10 @@ const initialMode = ref(props.mode)
 const modeTouched = ref(false)
 const editingChannel = ref<ShareChannel | null>(null)
 const dialogCloseButton = ref<HTMLButtonElement | null>(null)
+const readRecoveryNotification = ref<HTMLElement | null>(null)
+const productionHeading = ref<HTMLElement | null>(null)
+const restoreReadFocusAfterSuccess = ref(false)
+const retryProjectName = ref('')
 const productionLinkInput = ref<HTMLInputElement | null>(null)
 const previewLinkInput = ref<HTMLInputElement | null>(null)
 const dialogRef = ref<HTMLElement | null>(null)
@@ -319,6 +326,36 @@ watch(() => props.loading, (loading, wasLoading) => {
   if (!editingChannel.value) editingChannel.value = defaultEditingChannel()
 })
 
+function isReadRecoveryState(state: ShareLoadState | undefined): boolean {
+  return state === 'error' || state === 'partial'
+}
+
+function retryRead() {
+  restoreReadFocusAfterSuccess.value = Boolean(
+    readRecoveryNotification.value?.contains(document.activeElement),
+  )
+  retryProjectName.value = props.projectName
+  emit('retry')
+}
+
+watch(() => props.loadState, (state, previous) => {
+  if (!props.open || !isReadRecoveryState(previous) || isReadRecoveryState(state)) return
+
+  const retryStillOwnsFocus = restoreReadFocusAfterSuccess.value &&
+    readRecoveryNotification.value?.contains(document.activeElement)
+  restoreReadFocusAfterSuccess.value = false
+  if (!retryStillOwnsFocus) return
+
+  const projectName = retryProjectName.value
+  void nextTick(() => {
+    if (
+      props.open &&
+      props.projectName === projectName &&
+      document.activeElement === document.body
+    ) productionHeading.value?.focus()
+  })
+}, { flush: 'pre' })
+
 watch(() => [props.published, props.publication?.mode] as const, ([published, publicationMode]) => {
   if (!props.open || props.loading || !modeTouched.value) return
   if (published && publicationMode === selectedMode.value) {
@@ -414,14 +451,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
     >
       <section
         ref="dialogRef"
-        class="k-modal k-modal--vanilla project-share-dialog relative [z-index:var(--app-studio-z-modal)] grid w-full max-w-xl gap-0"
+        class="k-modal k-modal--vanilla project-share-dialog relative [z-index:var(--app-studio-z-modal)] flex w-full max-w-xl flex-col gap-0"
         role="dialog"
         aria-modal="true"
-        :aria-busy="loading"
+        :aria-busy="loading || refreshing"
         aria-labelledby="project-share-dialog-title"
         aria-describedby="project-share-dialog-description"
       >
-        <header class="flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
+        <header class="flex shrink-0 items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
           <div class="min-w-0">
             <h2 id="project-share-dialog-title" class="text-[16px] font-semibold text-text-primary">Share {{ projectName }}</h2>
             <p id="project-share-dialog-description" class="mt-1 text-[12px] leading-5 text-text-muted">Choose who can open your Production and Preview links. App sign-in is managed in Railgrid Auth.</p>
@@ -439,7 +476,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
           </button>
         </header>
 
-        <div class="grid gap-3 px-5 py-4">
+        <div class="project-share-dialog__body grid min-h-0 flex-1 auto-rows-max gap-3 overflow-y-auto px-5 py-4">
           <div
             v-if="loading"
             class="grid min-h-[28rem] content-start gap-4"
@@ -466,17 +503,28 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
             </div>
           </div>
 
-          <div v-else-if="loadState === 'error'" class="grid gap-3 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-3 text-[12px] leading-5 text-danger" role="alert">
-            <p>{{ loadError || 'Sharing settings could not be loaded.' }}</p>
-            <button type="button" class="k-btn k-btn--text app-studio-touch-target justify-self-start text-[11px] font-semibold underline underline-offset-2" style="padding: 0" @click="emit('retry')">Retry</button>
-          </div>
-
           <template v-else>
-            <div v-if="loadState === 'partial'" class="grid gap-2 rounded-lg border border-warning/30 bg-warning-subtle px-3 py-3 text-[12px] leading-5 text-warning" role="status">
-              <p>Some sharing details could not be refreshed. The data that did load is still available.</p>
-              <p v-if="loadError || membersError" class="text-[11px]">{{ loadError || membersError }}</p>
-              <button type="button" class="k-btn k-btn--text app-studio-touch-target justify-self-start text-[11px] font-semibold underline underline-offset-2" style="padding: 0" @click="emit('retry')">Retry</button>
+            <div
+              v-if="loadState === 'error' || loadState === 'partial'"
+              ref="readRecoveryNotification"
+              class="min-w-0"
+            >
+              <InlineNotification
+                :tone="loadState === 'error' ? 'error' : 'warning'"
+                :title="loadState === 'error' ? 'Sharing settings could not be loaded.' : 'Some sharing details could not be refreshed.'"
+                action-label="Retry"
+                :action-busy-label="loadState === 'error' ? 'Retrying sharing settings…' : 'Refreshing sharing details…'"
+                :action-busy="refreshing"
+                @action="retryRead"
+              >
+                <p v-if="loadState === 'partial'">The data that did load is still available.</p>
+                <p v-if="loadError">Production sharing: {{ loadError }}</p>
+                <p v-if="membersError">Workspace members: {{ membersError }}</p>
+                <p v-if="loadState === 'error' && !loadError && !membersError">Production and viewer access could not be confirmed.</p>
+              </InlineNotification>
             </div>
+
+            <template v-if="loadState !== 'error'">
 
             <section
               class="overflow-hidden rounded-lg border bg-surface transition-colors"
@@ -489,7 +537,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                     <Rocket class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
                   </div>
                   <div class="min-w-0">
-                    <h3 id="project-share-production-title" tabindex="-1" class="text-[14px] font-semibold text-text-primary">Production app</h3>
+                    <h3 ref="productionHeading" id="project-share-production-title" tabindex="-1" class="text-[14px] font-semibold text-text-primary">Production app</h3>
                     <p class="mt-1 text-[12px] leading-4 text-text-muted">Stable release for customers and external users.</p>
                   </div>
                 </div>
@@ -583,8 +631,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                       <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Production access only.</p>
                     </div>
                   </div>
-                  <p v-if="membersError" class="rounded-lg bg-warning-subtle px-2.5 py-2 text-[11px] leading-4 text-warning" role="status">
-                    Viewer membership could not be refreshed. Existing viewers remain visible. <button type="button" class="app-studio-touch-target font-semibold underline underline-offset-2" @click="emit('retry')">Retry</button>
+                  <p v-if="membersError" class="rounded-lg bg-warning-subtle px-2.5 py-2 text-[11px] leading-4 text-warning">
+                    Viewer membership could not be refreshed. Existing viewers remain visible.
                   </p>
                   <p v-if="modeDirty" class="text-[11px] leading-4 text-warning" role="status">Save Production access before managing people.</p>
                   <div class="flex flex-wrap items-center gap-2">
@@ -751,12 +799,13 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
               </div>
             </section>
 
-            <p v-if="error" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ error }}</p>
-            <p v-if="published && publication?.error && !publication?.ready" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ publication.error }}</p>
+            <InlineNotification v-if="error" tone="error" :message="error" />
+            <InlineNotification v-if="published && publication?.error && !publication?.ready" tone="error" :message="publication.error" />
+            </template>
           </template>
         </div>
 
-        <footer class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle px-5 py-3">
+        <footer class="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border-subtle px-5 py-3">
           <p class="text-[11px] leading-4 text-text-muted">Production and Preview access are saved separately.</p>
           <button
             type="button"
@@ -776,6 +825,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
 .project-share-dialog {
   box-sizing: border-box;
   width: min(36rem, 100%);
+  max-height: calc(100dvh - 2rem);
 }
 
 .share-inline-action {
