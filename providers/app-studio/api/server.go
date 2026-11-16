@@ -226,9 +226,6 @@ type Server struct {
 	previewEdgeProbe            func(context.Context, string) error
 	edgeReadyURLs               edgeReadyURLsCache
 	previewEdgeProbeInflight    map[string]*previewEdgeProbeInflight
-	previewBridgeEnabled        bool
-	previewBridgeStore          *previewBridgeStore
-	previewBridgeSigner         *previewBridgeCapabilitySigner
 	previewInspector            projectAssistantPreviewInspector
 	previewInspectionResolveURL func(context.Context, identity, *aiv1alpha1.Project) (string, error)
 	projectThumbnailContext     context.Context

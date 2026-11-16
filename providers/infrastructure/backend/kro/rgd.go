@@ -44,12 +44,12 @@ const (
 	// (RAILGRID_DEV_AGENT_IMAGE).
 	devAgentImageToken = "${railgrid.devAgentImage}"
 
-	// previewBridgeVerificationJWKSConfigKey is internal backend configuration,
+	// previewBridgePortalOriginsConfigKey is internal backend configuration,
 	// not a template substitution token. The provider passes the platform-owned
-	// current/previous public ES256 keys to dev-agent init containers, which
-	// install them beside the Vite plugin. Private signing keys never enter the
-	// infrastructure provider or tenant pod.
-	previewBridgeVerificationJWKSConfigKey = "railgrid.previewBridgeVerificationJWKS"
+	// portal origin allowlist (comma-separated) to dev-agent init containers,
+	// which install it beside the Vite plugin. The injected preview bridge
+	// answers only a parent frame on one of these exact origins.
+	previewBridgePortalOriginsConfigKey = "railgrid.previewBridgePortalOrigins"
 
 	// sandboxRuntimeClassNameConfigKey is internal backend configuration, not
 	// a template substitution token. When the operator sets
@@ -407,7 +407,7 @@ func substituteTokens(raw []byte, tokens map[string]string) []byte {
 		resolved[appPublicPortToken] = ""
 	}
 	for token, value := range resolved {
-		if token == previewBridgeVerificationJWKSConfigKey || token == sandboxRuntimeClassNameConfigKey ||
+		if token == previewBridgePortalOriginsConfigKey || token == sandboxRuntimeClassNameConfigKey ||
 			token == gatewayBackendHealthCheckConfigKey {
 			continue
 		}

@@ -135,8 +135,6 @@ spec:
             readOnly: true
           - name: publishing-grants
             description: "List, create or revoke individual publishing grants."
-          - name: preview-bridge-sessions
-            description: "Open or close a sandboxed preview-bridge session."
           - name: integrations
             description: "List, add, edit or remove the project's provider integrations."
           - name: integration-actions

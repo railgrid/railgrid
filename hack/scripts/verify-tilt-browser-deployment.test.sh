@@ -94,8 +94,6 @@ def run_infrastructure_make(env_contents, resolved_domain, resolved_port,
         bindir = fixture / "bin"
         bindir.mkdir()
         capture = fixture / "captured.json"
-        jwks = fixture / "preview-bridge-jwks.json"
-        jwks.write_text("{}\n")
         fake_provider = bindir / "infrastructure-provider"
         fake_provider.write_text(
             "#!/usr/bin/env python3\n"
@@ -125,18 +123,15 @@ def run_infrastructure_make(env_contents, resolved_domain, resolved_port,
             "--no-print-directory",
             "-f",
             str(root / "Makefile"),
-            # The target recipe below runs, while real provider build/key
-            # prerequisites are treated as already current.
+            # The target recipe below runs, while the real provider build
+            # prerequisite is treated as already current.
             "-o",
             "build-infrastructure-provider",
-            "-o",
-            "app-studio-preview-bridge-dev-key",
             *nested_args[1:],
             "BINDIR=" + str(bindir),
             # The recipe echoes its token; never inherit a real one into test
             # diagnostics if the stub fails.
             "KROMC_TOKEN=fixture-token",
-            "APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS=" + str(jwks),
         ]
         env = dict(os.environ)
         for name in ("MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS"):

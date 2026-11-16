@@ -33,14 +33,16 @@ export type PreviewBridgeConnectionState =
   | 'connected'
   | 'unavailable'
 
-export interface PreviewBridgeSession {
-  status: 'available' | 'unsupported'
+/**
+ * One bridge session is one MessagePort bound to one preview document. The
+ * portal mints the session ID itself; there is no server-side session. Trust
+ * comes from the browser: the portal accepts READY only from the preview
+ * iframe's window on the preview origin, and the injected bridge answers only
+ * a parent on a platform-configured portal origin.
+ */
+interface PreviewBridgeSession {
   sessionID: string
   generation: string
-  capability: string
-  previewOrigin: string
-  portalOrigin: string
-  expiresAt: string
 }
 
 export interface PreviewBridgeAnnotationRect {
@@ -98,13 +100,7 @@ export interface PreviewBridgeAnnotationPinSelection {
   viewport: { width: number; height: number }
 }
 
-export interface PreviewBridgeAPI {
-  createSession(project: string, generation: string, portalInstanceID: string): Promise<PreviewBridgeSession>
-  deleteSession(project: string, sessionID: string): Promise<void>
-}
-
 interface PreviewBridgeControllerOptions {
-  api: PreviewBridgeAPI
   getFrame: () => HTMLIFrameElement | null
   onState: (state: PreviewBridgeConnectionState) => void
   onAnnotation?: (selection: PreviewBridgeAnnotationSelection) => void
@@ -139,7 +135,6 @@ interface BridgePortMessage {
 }
 
 export class PreviewBridgeController {
-  private readonly api: PreviewBridgeAPI
   private readonly getFrame: () => HTMLIFrameElement | null
   private readonly onState: (state: PreviewBridgeConnectionState) => void
   private readonly onAnnotation?: (selection: PreviewBridgeAnnotationSelection) => void
@@ -152,7 +147,6 @@ export class PreviewBridgeController {
   private session: PreviewBridgeSession | null = null
   private port: MessagePort | null = null
   private connectionTimer: number | undefined
-  private renewalTimer: number | undefined
   private started = false
   private readyGeneration = ''
   private expectedOrigin = ''
@@ -160,10 +154,8 @@ export class PreviewBridgeController {
   private annotationMode = false
   private bridgeConnected = false
   private annotationPins: PreviewBridgeAnnotationPin[] = []
-  private readonly portalInstanceID = previewBridgePortalInstanceID()
 
   constructor(options: PreviewBridgeControllerOptions) {
-    this.api = options.api
     this.getFrame = options.getFrame
     this.onState = options.onState
     this.onAnnotation = options.onAnnotation
@@ -178,11 +170,7 @@ export class PreviewBridgeController {
   async connect(project: string): Promise<void> {
     const serial = ++this.serial
     const projectChanged = project !== this.project
-    // Same-project reconnects intentionally leave remote cleanup to the next
-    // create call, which atomically replaces only this portal tab's session.
-    // Do not block bridge recovery on a best-effort DELETE.
-    await this.closeSession(projectChanged)
-    if (serial !== this.serial) return
+    this.closeSession()
     if (projectChanged) this.annotationPins = []
     this.readyGeneration = ''
     this.project = project
@@ -198,19 +186,17 @@ export class PreviewBridgeController {
         if (serial !== this.serial) return
         this.readyGeneration = ''
         this.onState('unavailable')
-        void this.closeSession()
+        this.closeSession()
       }, 3_000)
       // Probe after the iframe load so an early bootstrap-ready message cannot
-      // be missed. The bridge's document ID is the immutable generation; a new
-      // document therefore cannot replay a capability issued to its predecessor.
+      // be missed. The bridge's document ID is the immutable generation; START
+      // must echo it, so a session can never bind to a predecessor document.
       this.getFrame()?.contentWindow?.postMessage({
         type: 'railgrid.preview-bridge.probe',
         version: PREVIEW_BRIDGE_PROTOCOL_VERSION,
       }, this.expectedOrigin)
-    } catch (error) {
-      if (serial === this.serial) {
-        this.onState((error as { status?: number })?.status === 404 ? 'disabled' : 'unavailable')
-      }
+    } catch {
+      if (serial === this.serial) this.onState('unavailable')
     }
   }
 
@@ -224,16 +210,15 @@ export class PreviewBridgeController {
   }
 
   async disconnect(): Promise<void> {
-    const serial = ++this.serial
-    await this.closeSession()
-    if (serial !== this.serial) return
+    ++this.serial
+    this.closeSession()
     this.project = ''
     this.readyGeneration = ''
     this.annotationPins = []
     this.onState('disabled')
   }
 
-  /** Start element-pick mode only after the authenticated bridge is connected. */
+  /** Start element-pick mode only after the bridge is connected. */
   startAnnotationMode(): boolean {
     const session = this.session
     const port = this.port
@@ -266,7 +251,6 @@ export class PreviewBridgeController {
           generation: session.generation,
         })
       } catch {
-        // Session cleanup remains authoritative when the port is unavailable.
         this.handlePortFailure(port)
       }
     }
@@ -305,7 +289,7 @@ export class PreviewBridgeController {
         sessionID: session.sessionID,
         generation: session.generation,
         // Pin provenance retains the document that was annotated, while the
-        // transport is rebound to the currently authenticated preview
+        // transport is rebound to the currently connected preview
         // generation. The bridge still requires an exact pagePath and unique
         // locator match before it renders anything.
         pins: this.annotationPins.map((pin) => ({ ...pin, documentID: session.generation })),
@@ -320,7 +304,7 @@ export class PreviewBridgeController {
   destroy(): void {
     ++this.serial
     window.removeEventListener('message', this.handleWindowMessage)
-    void this.closeSession()
+    this.closeSession()
   }
 
   private readonly handleWindowMessage = (event: MessageEvent): void => {
@@ -356,84 +340,28 @@ export class PreviewBridgeController {
       return
     }
     if (this.started || this.readyGeneration || this.session) {
-      // A hot reload replaces the bridge and therefore its authenticated
-      // document generation. Drop the old port before authorizing the new
-      // document. Desired pins survive, but are rebound only after the new
-      // capability is authenticated and remain pagePath/locator gated.
-      const project = this.project
-      const serial = ++this.serial
-      this.readyGeneration = generation
+      // A hot reload replaces the bridge and therefore its document
+      // generation. Drop the old port before binding the new document.
+      // Desired pins survive, but are rebound only once the new document
+      // connects and remain pagePath/locator gated.
+      ++this.serial
+      this.closeSession()
       this.onState('connecting')
-      void this.closeSession(false).then(() => {
-        if (serial !== this.serial || this.project !== project) return
-        this.started = true
-        this.expectedOrigin = event.origin
-        void this.authorizeBridge(project, generation, event.origin, serial, transferredPort)
-      })
-      return
     }
     this.readyGeneration = generation
     this.started = true
-    void this.authorizeBridge(this.project, generation, event.origin, this.serial, transferredPort)
+    this.expectedOrigin = event.origin
+    this.bindBridge(generation, this.serial, transferredPort)
   }
 
-  private async authorizeBridge(project: string, generation: string, origin: string, serial: number, port: MessagePort): Promise<void> {
-    let session: PreviewBridgeSession
-    try {
-      session = await this.api.createSession(project, generation, this.portalInstanceID)
-    } catch (error) {
+  private bindBridge(generation: string, serial: number, port: MessagePort): void {
+    const frame = this.getFrame()
+    if (!frame?.contentWindow) {
       try { port.close() } catch {}
-      if (serial === this.serial) {
-        this.readyGeneration = ''
-        this.onState((error as { status?: number })?.status === 404 ? 'disabled' : 'unavailable')
-        void this.closeSession()
-      }
       return
     }
-    if (serial !== this.serial || this.project !== project) {
-      try { port.close() } catch {}
-      if (session.sessionID) void this.api.deleteSession(project, session.sessionID)
-      return
-    }
-    if (session.status !== 'available') {
-      try { port.close() } catch {}
-      this.readyGeneration = ''
-      this.onState('disabled')
-      void this.closeSession()
-      return
-    }
-    let scopeMatches = false
-    try {
-      scopeMatches =
-        session.generation === generation &&
-        session.previewOrigin === origin &&
-        session.portalOrigin === window.location.origin &&
-        new URL(session.previewOrigin).origin === session.previewOrigin
-    } catch {
-      scopeMatches = false
-    }
-    if (!scopeMatches) {
-      try { port.close() } catch {}
-      this.readyGeneration = ''
-      this.onState('unavailable')
-      void this.api.deleteSession(project, session.sessionID).catch(() => {})
-      return
-    }
+    const session: PreviewBridgeSession = { sessionID: previewBridgeRandomID(), generation }
     this.session = session
-    this.expectedOrigin = origin
-    const expiresAt = Date.parse(session.expiresAt)
-    if (Number.isFinite(expiresAt)) {
-      this.renewalTimer = window.setTimeout(() => {
-        this.renewalTimer = undefined
-        if (this.session?.sessionID === session.sessionID && this.project === project) {
-          void this.reconnect()
-        }
-      }, Math.max(1_000, expiresAt - Date.now() - 30_000))
-    }
-    if (!this.getFrame()?.contentWindow) {
-      try { port.close() } catch {}
-      return
-    }
     this.port?.close()
     this.port = port
     this.port.onmessage = this.handlePortMessage
@@ -447,16 +375,15 @@ export class PreviewBridgeController {
         this.connectionTimer = undefined
         if (serial !== this.serial || this.session?.sessionID !== session.sessionID) return
         this.onState('unavailable')
-        void this.closeSession()
+        this.closeSession()
       }, 3_000)
-      // The capability stays on the bridge-created MessagePort. It is never
-      // included in a window message visible to same-document app scripts.
+      // START travels only on the bridge-created MessagePort, never in a
+      // window message visible to same-document app scripts.
       this.port.postMessage({
         type: 'railgrid.preview-bridge.start',
         version: PREVIEW_BRIDGE_PROTOCOL_VERSION,
         sessionID: session.sessionID,
         generation: session.generation,
-        capability: session.capability,
       })
     } catch {
       this.handlePortFailure(port)
@@ -538,10 +465,6 @@ export class PreviewBridgeController {
       window.clearTimeout(this.connectionTimer)
       this.connectionTimer = undefined
     }
-    if (this.renewalTimer !== undefined) {
-      window.clearTimeout(this.renewalTimer)
-      this.renewalTimer = undefined
-    }
     this.port = null
     this.bridgeConnected = false
     this.started = false
@@ -549,21 +472,14 @@ export class PreviewBridgeController {
     this.annotationMode = false
     this.onAnnotationMode?.(false)
     this.onState('unavailable')
-    const session = this.session
-    const project = this.project
     this.session = null
-    if (session?.sessionID && project) void this.api.deleteSession(project, session.sessionID).catch(() => {})
   }
 
-  private async closeSession(deleteRemote = true): Promise<void> {
+  private closeSession(): void {
     if (this.annotationMode) this.stopAnnotationMode()
     if (this.connectionTimer !== undefined) {
       window.clearTimeout(this.connectionTimer)
       this.connectionTimer = undefined
-    }
-    if (this.renewalTimer !== undefined) {
-      window.clearTimeout(this.renewalTimer)
-      this.renewalTimer = undefined
     }
     this.port?.close()
     this.port = null
@@ -572,16 +488,7 @@ export class PreviewBridgeController {
     if (this.annotationMode) this.onAnnotationMode?.(false)
     this.annotationMode = false
     this.expectedOrigin = ''
-    const session = this.session
-    const project = this.project
     this.session = null
-    if (deleteRemote && session?.sessionID && project) {
-      try {
-        await this.api.deleteSession(project, session.sessionID)
-      } catch {
-        // Server-side expiry is the cleanup fallback.
-      }
-    }
   }
 }
 
@@ -594,7 +501,7 @@ function clonePreviewBridgeAnnotationRect(rect: PreviewBridgeAnnotationRect): Pr
   }
 }
 
-function previewBridgePortalInstanceID(): string {
+function previewBridgeRandomID(): string {
   try {
     if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID()
   } catch {}
@@ -645,10 +552,10 @@ function previewBridgePagePath(value: unknown): string {
   return pagePath
 }
 
-function previewBridgeAnnotationSelection(value: BridgePortMessage, authenticatedDocumentID: string): PreviewBridgeAnnotationSelection | null {
+function previewBridgeAnnotationSelection(value: BridgePortMessage, connectedDocumentID: string): PreviewBridgeAnnotationSelection | null {
   if (value.type !== PREVIEW_BRIDGE_ANNOTATION_SELECTED || !value.target || typeof value.target !== 'object') return null
   const documentID = typeof value.documentID === 'string' ? value.documentID.slice(0, 128) : ''
-  if (!documentID || documentID !== authenticatedDocumentID) return null
+  if (!documentID || documentID !== connectedDocumentID) return null
   const raw = value.target as Record<string, unknown>
   const target = previewBridgeAnnotationTarget(raw)
   if (!target) return null
@@ -678,10 +585,10 @@ function previewBridgeAnnotationAnchor(value: unknown): { x: number; y: number }
   return x === null || y === null ? null : { x, y }
 }
 
-function previewBridgeAnnotationPinHover(value: BridgePortMessage, authenticatedDocumentID: string): PreviewBridgeAnnotationPinHover | null {
+function previewBridgeAnnotationPinHover(value: BridgePortMessage, connectedDocumentID: string): PreviewBridgeAnnotationPinHover | null {
   if (value.type !== PREVIEW_BRIDGE_ANNOTATION_PIN_HOVER || typeof value.id !== 'string' || typeof value.active !== 'boolean') return null
   const documentID = typeof value.documentID === 'string' ? value.documentID.slice(0, 128) : ''
-  if (!documentID || documentID !== authenticatedDocumentID) return null
+  if (!documentID || documentID !== connectedDocumentID) return null
   const id = value.id.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 96)
   if (!id) return null
   const pagePath = previewBridgePagePath(value.path)
@@ -691,10 +598,10 @@ function previewBridgeAnnotationPinHover(value: BridgePortMessage, authenticated
   return { id, active: value.active, pagePath, rect }
 }
 
-function previewBridgeAnnotationPinSelection(value: BridgePortMessage, authenticatedDocumentID: string): PreviewBridgeAnnotationPinSelection | null {
+function previewBridgeAnnotationPinSelection(value: BridgePortMessage, connectedDocumentID: string): PreviewBridgeAnnotationPinSelection | null {
   if (value.type !== PREVIEW_BRIDGE_ANNOTATION_PIN_SELECTED || typeof value.id !== 'string') return null
   const documentID = typeof value.documentID === 'string' ? value.documentID.slice(0, 128) : ''
-  if (!documentID || documentID !== authenticatedDocumentID) return null
+  if (!documentID || documentID !== connectedDocumentID) return null
   const id = value.id.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 96)
   const pagePath = previewBridgePagePath(value.path)
   const rect = previewBridgeAnnotationPinHoverRect(value.rect)

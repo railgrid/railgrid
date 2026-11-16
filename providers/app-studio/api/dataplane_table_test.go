@@ -152,5 +152,6 @@ func TestRetiredRouteFixtureIsNotASecondRouteTable(t *testing.T) {
 	}
 }
 
-// retiredRouteCount is the size of the /api table this migration replaced.
-const retiredRouteCount = 85
+// retiredRouteCount is the size of the /api table this migration replaced,
+// less the two preview-bridge session routes removed with that verb.
+const retiredRouteCount = 83

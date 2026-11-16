@@ -699,25 +699,6 @@ type PreviewRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
-// PreviewBridgeSessionsRequest is the payload of the "preview-bridge-sessions" custom subresource on projects.
-//
-// +kubebuilder:object:root=true
-// +kubebuilder:storageversion
-// +kubebuilder:resource:path=preview-bridge-sessions,scope=Cluster
-type PreviewBridgeSessionsRequest struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	// Input is the request body's "input" member.
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Input runtime.RawExtension `json:"input,omitempty"`
-	// Result is the response's "result" member.
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Result runtime.RawExtension `json:"result,omitempty"`
-}
-
 // PreviewGrantsRequest is the payload of the "preview-grants" custom subresource on projects.
 //
 // +kubebuilder:object:root=true
@@ -1299,7 +1280,6 @@ func init() {
 			&ItemsRequest{},
 			&PlanRequest{},
 			&PreviewRequest{},
-			&PreviewBridgeSessionsRequest{},
 			&PreviewGrantsRequest{},
 			&PromoteRequest{},
 			&PromotionRequest{},

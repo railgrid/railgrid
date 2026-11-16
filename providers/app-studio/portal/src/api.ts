@@ -50,7 +50,6 @@ import type {
   ProjectFileWriteResult,
 } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
-import type { PreviewBridgeSession } from './previewBridge'
 import { providerFetch, readTenant, tenantHeaders } from './portalkit/tenant'
 import { createKubeClient, isKubeNotFound, kubeVerbPath, type KubeObject, type KubeResourceRef } from './portalkit/kube'
 import { RequestTimeoutError, withRequestTimeout } from './requestTimeout'
@@ -274,7 +273,6 @@ interface ProjectAPIRequestOptions {
 const ASSISTANT_THREAD_PAGE_SIZE = 500
 const MAX_ASSISTANT_THREAD_PAGES = 100
 const ASSISTANT_THREAD_ITEM_PAGE_TURNS = 20
-const PREVIEW_BRIDGE_TIMEOUT_MESSAGE = 'preview bridge request timed out'
 
 export interface ProjectAssistantThreadItemPage {
   items: ProjectAssistantThreadItem[]
@@ -1721,35 +1719,6 @@ export const api = {
       'PATCH',
       `${projectURL(ctx, name, 'approval-mode')}`,
       { mode },
-    )
-  },
-
-  async createPreviewBridgeSession(
-    ctx: RailgridContext | null,
-    name: string,
-    generation: string,
-    portalInstanceID: string,
-  ): Promise<PreviewBridgeSession> {
-    return request<PreviewBridgeSession>(
-      ctx,
-      'POST',
-      `${projectURL(ctx, name, 'preview-bridge-sessions')}`,
-      { generation, protocolVersion: 1, portalInstanceID },
-      { timeoutMS: 8_000, timeoutMessage: PREVIEW_BRIDGE_TIMEOUT_MESSAGE },
-    )
-  },
-
-  async deletePreviewBridgeSession(
-    ctx: RailgridContext | null,
-    name: string,
-    sessionID: string,
-  ): Promise<void> {
-    await request<unknown>(
-      ctx,
-      'DELETE',
-      `${projectURL(ctx, name, 'preview-bridge-sessions', sessionID)}`,
-      undefined,
-      { timeoutMS: 3_000, timeoutMessage: PREVIEW_BRIDGE_TIMEOUT_MESSAGE },
     )
   },
 }

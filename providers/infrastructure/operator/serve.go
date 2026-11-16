@@ -162,14 +162,16 @@ func EnsureProviderServe(
 	if cr.Spec.Development.AgentImage != "" {
 		env = append(env, corev1.EnvVar{Name: "RAILGRID_DEV_AGENT_IMAGE", Value: cr.Spec.Development.AgentImage})
 	}
-	if verificationJWKS := strings.TrimSpace(os.Getenv("RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS")); verificationJWKS != "" {
-		env = append(env, corev1.EnvVar{
-			Name:  "RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS",
-			Value: verificationJWKS,
-		})
+	// Preview-bridge portal origins are platform-global: the operator
+	// propagates its own settings and no tenant or InfrastructureProvider CR can
+	// override them. Unset, the provider defaults to the hub public URL.
+	for _, name := range []string{"RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS", "RAILGRID_PREVIEW_BRIDGE_ENABLED"} {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			env = append(env, corev1.EnvVar{Name: name, Value: value})
+		}
 	}
 	// Tenant runtime-namespace isolation policy: platform-global security
-	// configuration like the JWKS above, so it travels on the operator's own
+	// configuration like the preview-bridge origins above, so it travels on the operator's own
 	// environment (the chart's tenantNetworkPolicy.* values) rather than the CR.
 	// The CRD ships in the chart's crds/ directory, which helm never upgrades:
 	// a new CR field would be pruned on every existing install and silently

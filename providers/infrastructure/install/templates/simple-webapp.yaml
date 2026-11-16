@@ -202,7 +202,7 @@ spec:
   # root. The start command reuses the proven vite shim from the application
   # template's frontend tier: it forces server.host + server.allowedHosts so
   # the dev server accepts the proxied preview Host header, then dynamically
-  # loads the platform preview-bridge plugin when trusted keys are installed.
+  # loads the platform preview-bridge plugin when its portal origins are installed.
   # A missing plugin/config fails open and leaves the ordinary preview intact.
   # The shim is written into the workspace root but never added to
   # .gitignore by the start command: rewriting a synced file at every

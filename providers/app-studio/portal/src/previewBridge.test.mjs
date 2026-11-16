@@ -43,6 +43,18 @@ const { outputText } = ts.transpileModule(source, {
 const moduleURL = `data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`
 const { PreviewBridgeController, PREVIEW_BRIDGE_ANNOTATION_PIN_HOVER, PREVIEW_BRIDGE_ANNOTATION_PIN_SELECTED } = await import(moduleURL)
 
+// The controller mints the session ID itself and sends it in START; the
+// bridge echoes it on every port message.
+function startOf(port) {
+  const start = port.messages.find((message) => message.type === 'railgrid.preview-bridge.start')
+  assert.ok(start, 'controller must send START on the bridge-created port')
+  return start
+}
+
+function connected(port, generation, path = '/app') {
+  port.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: startOf(port).sessionID, generation, path } })
+}
+
 function dispatchReady(frameWindow, generation, origin = 'https://preview.example.test') {
   const port = readyPort()
   listeners.get('message')({
@@ -54,7 +66,7 @@ function dispatchReady(frameWindow, generation, origin = 'https://preview.exampl
   return port
 }
 
-test('App preview keeps the signed bridge and annotation contract without console-event transport', async () => {
+test('App preview keeps the origin-bound bridge and annotation contract without console-event transport', async () => {
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const apiSource = await readFile(new URL('./api.ts', import.meta.url), 'utf8')
 	assert.match(appSource, /if \(projectName\) \{[\s\S]*?previewBridgeController\.connect\(projectName\)/)
@@ -62,11 +74,8 @@ test('App preview keeps the signed bridge and annotation contract without consol
   assert.doesNotMatch(appSource, /Console shared/)
   assert.doesNotMatch(appSource, /uploadEvents|uploadPreviewBridgeEvents|preview-bridge\.events/)
   assert.doesNotMatch(apiSource, /PreviewBridgeEvent|uploadPreviewBridgeEvents|preview-bridge\.events/)
-  assert.match(apiSource, /portalInstanceID[\s\S]*\{ generation, protocolVersion: 1, portalInstanceID \}/)
-  assert.match(apiSource, /timeoutMS: 8_000/)
-  assert.match(apiSource, /timeoutMS: 3_000/)
-  assert.equal((apiSource.match(/timeoutMessage: PREVIEW_BRIDGE_TIMEOUT_MESSAGE/g) ?? []).length, 2)
-  assert.match(apiSource, /PREVIEW_BRIDGE_TIMEOUT_MESSAGE = 'preview bridge request timed out'/)
+  assert.doesNotMatch(apiSource, /preview-bridge-sessions|PreviewBridgeSession/, 'the bridge has no server-side session API')
+  assert.doesNotMatch(appSource, /createPreviewBridgeSession|deletePreviewBridgeSession/)
 
   const recoveryStart = appSource.indexOf('function scheduleDevelopmentPreviewRecovery()')
 	  const recoveryEnd = appSource.indexOf('function handleDevelopmentPreviewVisibilityChange()', recoveryStart)
@@ -79,7 +88,7 @@ test('App preview keeps the signed bridge and annotation contract without consol
 	  assert.match(appSource, /!developmentPreviewFrameLoaded && \(developmentPreviewDocumentState === 'connecting'/)
 })
 
-test('transfers the capability only to the exact iframe window and preview origin', async () => {
+test('binds only a READY from the exact iframe window and preview origin', async () => {
   const calls = []
   const frameWindow = {
     postMessage(message, origin, ports) {
@@ -88,20 +97,6 @@ test('transfers the capability only to the exact iframe window and preview origi
   }
   const states = []
   const controller = new PreviewBridgeController({
-    api: {
-      async createSession(_project, generation) {
-        return {
-          status: 'available',
-          sessionID: 'session-1',
-          generation,
-          capability: 'signed',
-          previewOrigin: 'https://preview.example.test',
-          portalOrigin: 'https://console.example.test',
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        }
-      },
-      async deleteSession() {},
-    },
     getFrame: () => ({ src: 'https://preview.example.test/app', contentWindow: frameWindow }),
     onState: (state) => states.push(state),
   })
@@ -124,9 +119,11 @@ test('transfers the capability only to the exact iframe window and preview origi
   const handshakePort = readyPort()
   listeners.get('message')({ source: frameWindow, origin: 'https://preview.example.test', data: ready, ports: [handshakePort] })
   await new Promise((resolve) => setImmediate(resolve))
-  assert.equal(calls.length, 1, 'the capability must stay on the bridge-created port')
+  assert.equal(calls.length, 1, 'START must stay on the bridge-created port')
   assert.equal(handshakePort.messages[0].type, 'railgrid.preview-bridge.start')
-  assert.equal(handshakePort.messages[0].capability, 'signed')
+  assert.equal(handshakePort.messages[0].generation, ready.documentID)
+  assert.match(handshakePort.messages[0].sessionID, /^[0-9a-f-]{36}$/)
+  assert.equal(Object.hasOwn(handshakePort.messages[0], 'capability'), false)
   const replayPort = readyPort()
   listeners.get('message')({ source: frameWindow, origin: 'https://preview.example.test', data: ready, ports: [replayPort] })
   assert.equal(replayPort.closed, true, 'a replayed ready message must close its unused endpoint')
@@ -134,25 +131,9 @@ test('transfers the capability only to the exact iframe window and preview origi
   controller.destroy()
 })
 
-test('keeps annotation mode behind the authenticated port and rebinds route-scoped pins on a new document', async () => {
+test('keeps annotation mode behind the connected port and rebinds route-scoped pins on a new document', async () => {
   const frameWindow = { postMessage() {} }
-  const documents = []
   const controller = new PreviewBridgeController({
-    api: {
-      async createSession(_project, generation) {
-        documents.push(generation)
-        return {
-          status: 'available',
-          sessionID: `session-${documents.length}`,
-          generation,
-          capability: 'signed',
-          previewOrigin: 'https://preview.example.test',
-          portalOrigin: 'https://console.example.test',
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        }
-      },
-      async deleteSession() {},
-    },
     getFrame: () => ({ src: 'https://preview.example.test/app', contentWindow: frameWindow }),
     onState() {},
   })
@@ -167,7 +148,7 @@ test('keeps annotation mode behind the authenticated port and rebinds route-scop
   const reactiveTarget = new Proxy({ locator: '#target', locatorStrategy: 'css', rect: reactiveRect, ancestors: new Proxy(['main'], {}) }, {})
   const initialPins = [{ id: 'a', number: 1, documentID: firstGeneration, pagePath: '/app', boundingRect: reactiveRect, target: reactiveTarget, anchor: new Proxy({ x: 0.25, y: 0.75 }, {}), comment: 'Make this blue' }]
   assert.equal(controller.setAnnotationPins(initialPins), false, 'desired pins should be retained while the bridge connects')
-  firstChannel.port1.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'session-1', generation: firstGeneration, path: '/app' } })
+  connected(firstChannel.port1, firstGeneration)
   assert.equal(firstChannel.port1.messages.at(-1).type, 'railgrid.preview-bridge.annotation.pins')
   assert.equal(Object.hasOwn(firstChannel.port1.messages.at(-1).pins[0], 'comment'), false)
   assert.deepEqual(firstChannel.port1.messages.at(-1).pins[0].target, { locator: '#target', locatorStrategy: 'css', rect: { x: 1, y: 2, width: 3, height: 4 }, ancestors: ['main'] })
@@ -184,12 +165,13 @@ test('keeps annotation mode behind the authenticated port and rebinds route-scop
   dispatchReady(frameWindow, secondGeneration)
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(firstChannel.port1.messages.some((message) => message.type === 'railgrid.preview-bridge.annotation.stop'), true)
-  assert.deepEqual(documents, [firstGeneration, secondGeneration])
   const secondChannel = channels.at(-1)
-  secondChannel.port1.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'session-2', generation: secondGeneration, path: '/admin.html' } })
+  assert.equal(startOf(secondChannel.port1).generation, secondGeneration)
+  assert.notEqual(startOf(secondChannel.port1).sessionID, startOf(firstChannel.port1).sessionID, 'each document gets a fresh session')
+  connected(secondChannel.port1, secondGeneration, '/admin.html')
   assert.equal(secondChannel.port1.messages.at(-1).type, 'railgrid.preview-bridge.annotation.pins')
   assert.equal(secondChannel.port1.messages.at(-1).pins.length, 1)
-  assert.equal(secondChannel.port1.messages.at(-1).pins[0].documentID, secondGeneration, 'transport must bind the pin to the authenticated document')
+  assert.equal(secondChannel.port1.messages.at(-1).pins[0].documentID, secondGeneration, 'transport must bind the pin to the connected document')
   assert.equal(secondChannel.port1.messages.at(-1).pins[0].pagePath, '/app', 'the annotated route must remain stable across document navigation')
   controller.destroy()
 })
@@ -219,31 +201,12 @@ test('hydrates composer drafts per active thread and clears only after accepted 
   assert.match(appSource, /function updateAssistantComposerParts\(parts: ProjectAssistantContentPart\[\]\) \{\s+assistantComposerParts\.value = parts\.slice\(0, MAX_ASSISTANT_COMPOSER_PARTS\)\s+persistCurrentAssistantComposerDraft\(\)/)
 })
 
-test('hot reload replaces only the local bridge without waiting for remote deletion', async () => {
+test('hot reload replaces the bridge port for the new document', async () => {
   const frameWindow = { postMessage() {} }
   const firstGeneration = '826e6fa5-c38b-4bdb-8f8f-098198b74f65'
   const secondGeneration = '5ac4b288-a1fa-4c99-936c-07467cd3cadb'
   const states = []
-  const created = []
-  let deleteCount = 0
   const controller = new PreviewBridgeController({
-    api: {
-      async createSession(_project, generation) {
-        created.push(generation)
-        return {
-          status: 'available',
-          sessionID: `session-${created.length}`,
-          generation,
-          capability: 'signed',
-          previewOrigin: 'https://preview.example.test',
-          portalOrigin: 'https://console.example.test',
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        }
-      },
-      async deleteSession() {
-        deleteCount++
-      },
-    },
     getFrame: () => ({ src: 'https://preview.example.test/app', contentWindow: frameWindow }),
     onState: (state) => states.push(state),
   })
@@ -251,7 +214,7 @@ test('hot reload replaces only the local bridge without waiting for remote delet
   await controller.connect('project-a')
   const firstPort = dispatchReady(frameWindow, firstGeneration)
   await new Promise((resolve) => setImmediate(resolve))
-  firstPort.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'session-1', generation: firstGeneration, path: '/app' } })
+  connected(firstPort, firstGeneration)
   assert.equal(states.at(-1), 'connected')
 
   const secondPort = dispatchReady(frameWindow, secondGeneration)
@@ -260,142 +223,38 @@ test('hot reload replaces only the local bridge without waiting for remote delet
   assert.equal(duplicatePort.closed, true, 'duplicate READY must not start a second replacement')
   await new Promise((resolve) => setImmediate(resolve))
   await new Promise((resolve) => setImmediate(resolve))
-  assert.deepEqual(created, [firstGeneration, secondGeneration])
-  assert.equal(deleteCount, 0, 'same-tab bridge replacement must not wait on best-effort DELETE')
+  assert.equal(firstPort.closed, true, 'the previous document port is closed')
   assert.equal(secondPort.messages.at(-1).type, 'railgrid.preview-bridge.start')
-  secondPort.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'session-2', generation: secondGeneration, path: '/app' } })
+  assert.equal(startOf(secondPort).generation, secondGeneration)
+  connected(secondPort, secondGeneration)
   assert.equal(states.at(-1), 'connected')
   controller.destroy()
 })
 
-test('uses a stable, distinct portal instance ID for each App Studio tab', async () => {
+test('ignores port messages that do not carry the bound session', async () => {
   const frameWindow = { postMessage() {} }
-  const created = []
-  const buildController = () => new PreviewBridgeController({
-    api: {
-      async createSession(project, generation, portalInstanceID) {
-        created.push({ project, generation, portalInstanceID })
-        return {
-          status: 'available',
-          sessionID: `session-${created.length}`,
-          generation,
-          capability: 'signed',
-          previewOrigin: 'https://preview.example.test',
-          portalOrigin: 'https://console.example.test',
-          expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
-        }
-      },
-      async deleteSession() {},
-    },
-    getFrame: () => ({ src: 'https://preview.example.test/app', contentWindow: frameWindow }),
-    onState() {},
-  })
-
-  const first = buildController()
-  await first.connect('project-a')
-  dispatchReady(frameWindow, '826e6fa5-c38b-4bdb-8f8f-098198b74f65')
-  await new Promise((resolve) => setImmediate(resolve))
-
-  const second = buildController()
-  await second.connect('project-a')
-  dispatchReady(frameWindow, '5ac4b288-a1fa-4c99-936c-07467cd3cadb')
-  await new Promise((resolve) => setImmediate(resolve))
-
-  assert.equal(created.length, 2)
-  assert.match(created[0].portalInstanceID, /^[0-9a-f-]{36}$/)
-  assert.match(created[1].portalInstanceID, /^[0-9a-f-]{36}$/)
-  assert.notEqual(created[0].portalInstanceID, created[1].portalInstanceID)
-  second.destroy()
-  first.destroy()
-})
-
-test('renews the console bridge before the 15-minute boundary without reloading the iframe', async () => {
-  const originalNow = Date.now
-  const originalSetTimeout = fakeWindow.setTimeout
-  const originalClearTimeout = fakeWindow.clearTimeout
-  const clock = Date.parse('2026-08-17T12:00:00Z')
-  const timers = new Map()
-  let nextTimer = 1
-  Date.now = () => clock
-  fakeWindow.setTimeout = (callback, delay) => {
-    const id = nextTimer++
-    timers.set(id, { callback, delay })
-    return id
-  }
-  fakeWindow.clearTimeout = (id) => timers.delete(id)
-
-  const frameMessages = []
-  const frameWindow = { postMessage(message) { frameMessages.push(message) } }
-  const created = []
-  const deleted = []
   const generation = '826e6fa5-c38b-4bdb-8f8f-098198b74f65'
+  const states = []
   const controller = new PreviewBridgeController({
-    api: {
-      async createSession(project, currentGeneration, portalInstanceID) {
-        created.push({ project, generation: currentGeneration, portalInstanceID })
-        return {
-          status: 'available',
-          sessionID: `session-${created.length}`,
-          generation: currentGeneration,
-          capability: 'signed',
-          previewOrigin: 'https://preview.example.test',
-          portalOrigin: 'https://console.example.test',
-          expiresAt: new Date(clock + 15 * 60_000).toISOString(),
-        }
-      },
-      async deleteSession(_project, sessionID) { deleted.push(sessionID) },
-    },
     getFrame: () => ({ src: 'https://preview.example.test/app', contentWindow: frameWindow }),
-    onState() {},
+    onState: (state) => states.push(state),
   })
-
-  try {
-    await controller.connect('project-a')
-    dispatchReady(frameWindow, generation)
-    await new Promise((resolve) => setImmediate(resolve))
-    const firstPort = channels.at(-1).port1
-    firstPort.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'session-1', generation, path: '/app' } })
-    const renewal = [...timers.values()].find((timer) => timer.delay === 14 * 60_000 + 30_000)
-    assert.ok(renewal, 'renewal should be scheduled 30 seconds before the 15-minute expiry')
-
-    renewal.callback()
-    await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(frameMessages.filter((message) => message.type === 'railgrid.preview-bridge.probe').length, 2)
-    assert.deepEqual(deleted, [], 'renewal must not block on deleting its prior session')
-
-    dispatchReady(frameWindow, generation)
-    await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(created.length, 2)
-    assert.equal(created[0].portalInstanceID, created[1].portalInstanceID, 'renewal must retain the tab identity')
-  } finally {
-    await controller.disconnect()
-    controller.destroy()
-    Date.now = originalNow
-    fakeWindow.setTimeout = originalSetTimeout
-    fakeWindow.clearTimeout = originalClearTimeout
-  }
+  await controller.connect('project-a')
+  const port = dispatchReady(frameWindow, generation)
+  port.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'guessed', generation, path: '/app' } })
+  assert.equal(states.at(-1), 'connecting', 'a foreign session ID must not connect the bridge')
+  port.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: startOf(port).sessionID, generation: 'other-document', path: '/app' } })
+  assert.equal(states.at(-1), 'connecting', 'a foreign document must not connect the bridge')
+  connected(port, generation)
+  assert.equal(states.at(-1), 'connected')
+  controller.destroy()
 })
 
 test('port failure closes the session and rejects oversized pin state explicitly', async () => {
   const frameWindow = { postMessage() {} }
   const generation = '826e6fa5-c38b-4bdb-8f8f-098198b74f65'
   const states = []
-  const deleted = []
   const controller = new PreviewBridgeController({
-    api: {
-      async createSession(_project, currentGeneration) {
-        return {
-          status: 'available',
-          sessionID: 'session-failure',
-          generation: currentGeneration,
-          capability: 'signed',
-          previewOrigin: 'https://preview.example.test',
-          portalOrigin: 'https://console.example.test',
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        }
-      },
-      async deleteSession(_project, sessionID) { deleted.push(sessionID) },
-    },
     getFrame: () => ({ src: 'https://preview.example.test/app', contentWindow: frameWindow }),
     onState: (state) => states.push(state),
   })
@@ -403,7 +262,7 @@ test('port failure closes the session and rejects oversized pin state explicitly
   await controller.connect('project-a')
   const port = dispatchReady(frameWindow, generation)
   await new Promise((resolve) => setImmediate(resolve))
-  port.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'session-failure', generation, path: '/app' } })
+  connected(port, generation)
   assert.equal(states.at(-1), 'connected')
   const acceptedPins = Array.from({ length: 64 }, (_, index) => ({
     id: `accepted-${index}`,
@@ -436,7 +295,6 @@ test('port failure closes the session and rejects oversized pin state explicitly
   }]), false, 'a failed port must report an unsuccessful pin update')
   assert.equal(port.closed, true)
   assert.equal(states.at(-1), 'unavailable')
-  assert.deepEqual(deleted, ['session-failure'])
   assert.equal(controller.startAnnotationMode(), false)
   controller.destroy()
 })
@@ -450,20 +308,6 @@ test('projects only current-document annotation selections and relays mode cance
   const pinHovers = []
   const pinSelections = []
   const controller = new PreviewBridgeController({
-    api: {
-      async createSession(_project, documentID) {
-        return {
-          status: 'available',
-          sessionID: 'session-selection',
-          generation: documentID,
-          capability: 'signed',
-          previewOrigin: 'https://preview.example.test',
-          portalOrigin: 'https://console.example.test',
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        }
-      },
-      async deleteSession() {},
-    },
     getFrame: () => ({ src: 'https://preview.example.test/app', contentWindow: frameWindow }),
     onState() {},
     onAnnotation: (selection) => selections.push(selection),
@@ -479,7 +323,7 @@ test('projects only current-document annotation selections and relays mode cance
   const channel = channels.at(-1)
   const envelope = {
     version: 1,
-    sessionID: 'session-selection',
+    sessionID: startOf(channel.port1).sessionID,
     generation,
     viewport: { width: 1024, height: 768 },
     anchor: { x: 0.25, y: 0.75 },
@@ -598,106 +442,56 @@ test('projects only current-document annotation selections and relays mode cance
   controller.destroy()
 })
 
-test('treats a missing feature endpoint as disabled rather than connected', async () => {
+test('a preview without the bridge reports unavailable rather than connected', async () => {
+  const originalSetTimeout = fakeWindow.setTimeout
+  const originalClearTimeout = fakeWindow.clearTimeout
+  const timers = new Map()
+  let nextTimer = 1
+  fakeWindow.setTimeout = (callback, delay) => {
+    const id = nextTimer++
+    timers.set(id, { callback, delay })
+    return id
+  }
+  fakeWindow.clearTimeout = (id) => timers.delete(id)
   const states = []
   const frameWindow = { postMessage() {} }
   const controller = new PreviewBridgeController({
-    api: {
-      async createSession() {
-        throw Object.assign(new Error('not found'), { status: 404 })
-      },
-      async deleteSession() {},
-    },
     getFrame: () => ({ src: 'https://preview.example.test/app', contentWindow: frameWindow }),
     onState: (state) => states.push(state),
   })
-  await controller.connect('project-a')
-  dispatchReady(frameWindow, '826e6fa5-c38b-4bdb-8f8f-098198b74f65')
-  await new Promise((resolve) => setImmediate(resolve))
-  assert.deepEqual(states, ['connecting', 'disabled'])
-  controller.destroy()
+  try {
+    await controller.connect('project-a')
+    const timeout = [...timers.values()].find((timer) => timer.delay === 3_000)
+    assert.ok(timeout, 'connect must bound the wait for READY')
+    timeout.callback()
+    assert.deepEqual(states, ['connecting', 'unavailable'])
+  } finally {
+    controller.destroy()
+    fakeWindow.setTimeout = originalSetTimeout
+    fakeWindow.clearTimeout = originalClearTimeout
+  }
 })
 
-test('a stale connect cannot replace the newest project after session deletion', async () => {
+test('the newest connect or disconnect wins', async () => {
   const frameWindow = { postMessage() {} }
-  const createdProjects = []
-  let resolveDelete
+  const states = []
   const controller = new PreviewBridgeController({
-    api: {
-      async createSession(project, generation) {
-        createdProjects.push(project)
-        return {
-          status: 'available',
-          sessionID: `session-${project}`,
-          generation,
-          capability: 'signed',
-          previewOrigin: 'https://preview.example.test',
-          portalOrigin: 'https://console.example.test',
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        }
-      },
-      async deleteSession() {
-        await new Promise((resolve) => { resolveDelete = resolve })
-      },
-    },
     getFrame: () => ({ src: 'https://preview.example.test/app', contentWindow: frameWindow }),
-    onState() {},
+    onState: (state) => states.push(state),
   })
 
   await controller.connect('initial')
-  dispatchReady(frameWindow, '826e6fa5-c38b-4bdb-8f8f-098198b74f65')
-  await new Promise((resolve) => setImmediate(resolve))
-
-  const staleConnect = controller.connect('stale')
-  const latestConnect = controller.connect('latest')
-  await latestConnect
-  resolveDelete()
-  await staleConnect
-  dispatchReady(frameWindow, '5ac4b288-a1fa-4c99-936c-07467cd3cadb')
-  await new Promise((resolve) => setImmediate(resolve))
-
-  assert.deepEqual(createdProjects, ['initial', 'latest'])
-  controller.destroy()
-})
-
-test('a stale disconnect cannot clear a newer automatic connection', async () => {
-  const frameWindow = { postMessage() {} }
-  const createdProjects = []
-  let resolveDelete
-  const controller = new PreviewBridgeController({
-    api: {
-      async createSession(project, generation) {
-        createdProjects.push(project)
-        return {
-          status: 'available',
-          sessionID: `session-${project}`,
-          generation,
-          capability: 'signed',
-          previewOrigin: 'https://preview.example.test',
-          portalOrigin: 'https://console.example.test',
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        }
-      },
-      async deleteSession() {
-        await new Promise((resolve) => { resolveDelete = resolve })
-      },
-    },
-    getFrame: () => ({ src: 'https://preview.example.test/app', contentWindow: frameWindow }),
-    onState() {},
-  })
-
-  await controller.connect('initial')
-  dispatchReady(frameWindow, '826e6fa5-c38b-4bdb-8f8f-098198b74f65')
-  await new Promise((resolve) => setImmediate(resolve))
+  const initialPort = dispatchReady(frameWindow, '826e6fa5-c38b-4bdb-8f8f-098198b74f65')
+  connected(initialPort, '826e6fa5-c38b-4bdb-8f8f-098198b74f65')
 
   const staleDisconnect = controller.disconnect()
   const latestConnect = controller.connect('latest')
-  await latestConnect
-  resolveDelete()
-  await staleDisconnect
-  dispatchReady(frameWindow, '5ac4b288-a1fa-4c99-936c-07467cd3cadb')
-  await new Promise((resolve) => setImmediate(resolve))
+  await Promise.all([staleDisconnect, latestConnect])
+  assert.equal(initialPort.closed, true)
+  assert.equal(states.at(-1), 'connecting', 'a stale disconnect must not clear the newer connection')
 
-  assert.deepEqual(createdProjects, ['initial', 'latest'])
+  const latestPort = dispatchReady(frameWindow, '5ac4b288-a1fa-4c99-936c-07467cd3cadb')
+  connected(latestPort, '5ac4b288-a1fa-4c99-936c-07467cd3cadb')
+  assert.equal(states.at(-1), 'connected')
   controller.destroy()
 })

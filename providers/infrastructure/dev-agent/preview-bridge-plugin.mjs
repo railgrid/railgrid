@@ -16,12 +16,16 @@ limitations under the License.
 
 import { readFileSync } from "node:fs";
 
-export const previewBridgeJWKSPath = "/railgrid/bin/preview-bridge-jwks.json";
+export const previewBridgeConfigPath = "/railgrid/bin/preview-bridge-config.json";
+const maxPortalOrigins = 8;
 
 const previewBridgeClient = String.raw`(() => {
   "use strict";
 
-  const TRUSTED_VERIFICATION_KEYS = __RAILGRID_PREVIEW_BRIDGE_VERIFICATION_KEYS__;
+  // Platform-configured portal origins. The browser stamps event.origin on
+  // every message and enforces postMessage targetOrigin, so an exact match is
+  // the whole trust decision: no other parent can open or drive the bridge.
+  const PORTAL_ORIGINS = __RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS__;
   const VERSION = 1;
   const READY = "railgrid.preview-bridge.ready";
   const PROBE = "railgrid.preview-bridge.probe";
@@ -54,13 +58,9 @@ const previewBridgeClient = String.raw`(() => {
 
   const documentID = randomID();
   let port = null;
-  let handshakePort = null;
   let connected = false;
-  let connecting = false;
-  let probedOrigin = "";
   let sessionID = "";
   let generation = null;
-  const consumedCapabilityIDs = new Set();
   let annotationMode = false;
   let annotationOverlay = null;
   let annotationPinLayer = null;
@@ -336,7 +336,6 @@ const previewBridgeClient = String.raw`(() => {
   const failPort = () => {
     const failedPort = port;
     connected = false;
-    connecting = false;
     port = null;
     sessionID = "";
     generation = null;
@@ -986,120 +985,51 @@ const previewBridgeClient = String.raw`(() => {
     path: path(),
   });
 
-  const emitReady = (targetOrigin = "*") => {
-    if (typeof MessageChannel !== "function") return;
+  const portalOrigin = (origin) => typeof origin === "string" && PORTAL_ORIGINS.includes(origin);
+
+  // One outstanding handshake endpoint per configured origin. Only the copy
+  // addressed to the real parent's origin is ever delivered.
+  const handshakePorts = new Map();
+
+  const closeHandshakePorts = () => {
+    for (const candidate of handshakePorts.values()) {
+      try { candidate.close(); } catch {}
+    }
+    handshakePorts.clear();
+  };
+
+  const emitReady = (targetOrigin) => {
+    if (typeof MessageChannel !== "function" || !portalOrigin(targetOrigin)) return;
     const channel = new MessageChannel();
-    const previousHandshakePort = handshakePort;
-    handshakePort = channel.port1;
-    handshakePort.onmessage = onStart;
-    try { previousHandshakePort?.close(); } catch {}
-    if (typeof handshakePort.start === "function") handshakePort.start();
+    const nextPort = channel.port1;
+    try { handshakePorts.get(targetOrigin)?.close(); } catch {}
+    handshakePorts.set(targetOrigin, nextPort);
+    nextPort.onmessage = (event) => onStart(event, nextPort, targetOrigin);
+    if (typeof nextPort.start === "function") nextPort.start();
     try {
+      // targetOrigin is an exact configured portal origin, so the browser
+      // delivers the handshake endpoint only to a parent on that origin.
       window.parent.postMessage(readyMessage(), targetOrigin, [channel.port2]);
     } catch {
       // The bridge is optional; a parent that cannot receive it is harmless.
-      try { handshakePort?.close(); } catch {}
-      handshakePort = null;
-    }
-  };
-
-  const decodeBase64URL = (value) => {
-    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
-    const binary = atob(padded);
-    return Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  };
-
-  const decodeJSON = (value) => JSON.parse(new TextDecoder().decode(decodeBase64URL(value)));
-
-  const claimMatches = (claims, data, parentOrigin) => {
-    const now = Math.floor(Date.now() / 1000);
-    return claims &&
-      claims.iss === "app-studio" &&
-      claims.aud === "preview-bridge" &&
-      claims.v === VERSION &&
-      String(claims.sid || "") === String(data.sessionID || "") &&
-      String(claims.gen) === String(data.generation) &&
-      claims.po === location.origin &&
-      claims.ao === parentOrigin &&
-      Number.isFinite(claims.exp) && claims.exp > now &&
-      Number.isFinite(claims.iat) && claims.iat <= now + 60 &&
-      typeof claims.jti === "string" && claims.jti.length > 0;
-  };
-
-  const verifyCapability = async (compact, data, parentOrigin) => {
-    if (!crypto.subtle || typeof compact !== "string") return null;
-    const parts = compact.split(".");
-    if (parts.length !== 3 || parts.some((part) => part.length === 0)) return null;
-    let header;
-    let claims;
-    try {
-      header = decodeJSON(parts[0]);
-      claims = decodeJSON(parts[1]);
-    } catch {
-      return null;
-    }
-    if (header.alg !== "ES256" || typeof header.kid !== "string" || !claimMatches(claims, data, parentOrigin)) {
-      return null;
-    }
-    const candidates = TRUSTED_VERIFICATION_KEYS.filter((key) =>
-      key.kid === header.kid &&
-      (!key.alg || key.alg === "ES256") &&
-      (!key.use || key.use === "sig")
-    );
-    if (candidates.length === 0) return null;
-    const signed = new TextEncoder().encode(parts[0] + "." + parts[1]);
-    let signature;
-    try {
-      signature = decodeBase64URL(parts[2]);
-    } catch {
-      return null;
-    }
-    for (const jwk of candidates) {
-      try {
-        const key = await crypto.subtle.importKey(
-          "jwk",
-          jwk,
-          { name: "ECDSA", namedCurve: "P-256" },
-          false,
-          ["verify"],
-        );
-        if (await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, signature, signed)) {
-          return claims;
-        }
-      } catch {
-        // Try the previous/current key candidate with the same kid, if any.
-      }
-    }
-    return null;
-  };
-
-  const onStart = async (event) => {
-    const data = event?.data;
-    if (!data || data.version !== VERSION || data.type !== START || connecting) return;
-    const nextPort = handshakePort;
-    if (!nextPort || !probedOrigin || String(data.generation || "") !== documentID) return;
-    connecting = true;
-    let claims = null;
-    try {
-      claims = await verifyCapability(data.capability, data, probedOrigin);
-    } catch {
-      claims = null;
-    } finally {
-      connecting = false;
-    }
-    if (!claims || consumedCapabilityIDs.has(claims.jti)) {
       try { nextPort.close(); } catch {}
-      if (handshakePort === nextPort) handshakePort = null;
-      return;
+      if (handshakePorts.get(targetOrigin) === nextPort) handshakePorts.delete(targetOrigin);
     }
-    consumedCapabilityIDs.add(claims.jti);
+  };
+
+  const onStart = (event, nextPort, origin) => {
+    const data = event?.data;
+    if (!data || data.version !== VERSION || data.type !== START) return;
+    if (handshakePorts.get(origin) !== nextPort || String(data.generation || "") !== documentID) return;
+    const nextSessionID = typeof data.sessionID === "string" ? data.sessionID.slice(0, 128) : "";
+    if (!nextSessionID) return;
+    handshakePorts.delete(origin);
+    closeHandshakePorts();
     const previousPort = port;
     stopAnnotationMode("session-replaced", false);
     connected = true;
     port = nextPort;
-    handshakePort = null;
-    sessionID = String(data.sessionID || "");
+    sessionID = nextSessionID;
     generation = documentID;
     if (previousPort && previousPort !== nextPort) {
       try { previousPort.close(); } catch {}
@@ -1128,8 +1058,8 @@ const previewBridgeClient = String.raw`(() => {
       port.postMessage({
         type: CONNECTED,
         version: VERSION,
-        sessionID: data.sessionID,
-        generation: data.generation,
+        sessionID,
+        generation,
         documentID,
         path: path(),
       });
@@ -1142,11 +1072,10 @@ const previewBridgeClient = String.raw`(() => {
   const onMessage = (event) => {
     if (event.source !== window.parent || !event.data || event.data.version !== VERSION) return;
     if (event.data.type === PROBE) {
-      if (typeof event.origin !== "string" || event.origin.length === 0 || event.origin === "null") return;
+      if (!portalOrigin(event.origin)) return;
       // A probe intentionally carries no generation: this document announces
-      // its own unforgeable documentID in READY, and the backend-issued
-      // capability must bind that value as generation before START can pass.
-      probedOrigin = event.origin;
+      // its own documentID in READY, and START must echo it, so a handshake
+      // can never bind to a predecessor document.
       emitReady(event.origin);
       return;
     }
@@ -1158,51 +1087,68 @@ const previewBridgeClient = String.raw`(() => {
   window.addEventListener("click", interceptAnnotationClick, true);
   window.addEventListener("keydown", interceptAnnotationKeydown, true);
   // START is intentionally handled only on the endpoint sent outbound in
-  // READY. No capability or transferred port is exposed to same-document
-  // application message listeners.
-  emitReady();
+  // READY. No transferred port is exposed to same-document application
+  // message listeners. Announce to each configured origin; the browser drops
+  // every copy except the one addressed to the actual parent's origin.
+  if (window.parent !== window) {
+    for (const origin of PORTAL_ORIGINS) emitReady(origin);
+  }
 })();`;
 
-function verificationKeys(configuration) {
-  if (!configuration || !Array.isArray(configuration.keys)) {
-    throw new Error("preview bridge JWKS must be an object with a keys array");
+function portalOrigins(configuration) {
+  if (!configuration || !Array.isArray(configuration.portalOrigins)) {
+    throw new Error("preview bridge configuration must have a portalOrigins array");
   }
-  if (configuration.keys.length < 1 || configuration.keys.length > 2) {
-    throw new Error("preview bridge JWKS must contain the current key and optional previous key");
+  const origins = configuration.portalOrigins;
+  if (origins.length < 1 || origins.length > maxPortalOrigins) {
+    throw new Error(`preview bridge configuration must list 1-${maxPortalOrigins} portal origins`);
   }
   const seen = new Set();
-  return configuration.keys.map((key) => {
-    if (!key || key.kty !== "EC" || key.crv !== "P-256" || key.alg && key.alg !== "ES256" ||
-        key.use && key.use !== "sig" || typeof key.kid !== "string" || key.kid.length === 0 ||
-        typeof key.x !== "string" || typeof key.y !== "string" || "d" in key) {
-      throw new Error("preview bridge JWKS contains an invalid or private ES256 key");
+  for (const origin of origins) {
+    let parsed;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new Error(`preview bridge portal origin ${JSON.stringify(origin)} is not a URL`);
     }
-    if (seen.has(key.kid)) throw new Error("preview bridge JWKS key ids must be unique");
-    seen.add(key.kid);
-    return {
-      kty: "EC",
-      crv: "P-256",
-      kid: key.kid,
-      x: key.x,
-      y: key.y,
-      alg: "ES256",
-      use: "sig",
-    };
-  });
+    if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.origin !== origin) {
+      throw new Error(`preview bridge portal origin ${JSON.stringify(origin)} must be an exact http(s) origin`);
+    }
+    seen.add(origin);
+  }
+  return [...seen];
 }
 
 export function previewBridgeClientSource(configuration) {
-  const keys = verificationKeys(configuration);
-  const encoded = JSON.stringify(keys).replaceAll("<", "\\u003c");
-  return previewBridgeClient.replace("__RAILGRID_PREVIEW_BRIDGE_VERIFICATION_KEYS__", encoded);
+  const encoded = JSON.stringify(portalOrigins(configuration)).replaceAll("<", "\\u003c");
+  // A replacer function: a string replacement would expand $&, $` and $' in
+  // the origins, and `$` is a legal host character.
+  return previewBridgeClient.replace("__RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS__", () => encoded);
+}
+
+// frame-ancestors keeps every other site from embedding the development
+// preview at all. Top-level navigation (a new tab, the agent browser) is not
+// affected. It is set only on HTML documents the dev server returns.
+export function previewBridgeFrameAncestors(configuration) {
+  return `frame-ancestors 'self' ${portalOrigins(configuration).join(" ")}`;
 }
 
 export function createPreviewBridgePlugin(configuration) {
   const client = previewBridgeClientSource(configuration);
+  const frameAncestors = previewBridgeFrameAncestors(configuration);
   return {
     name: "railgrid-preview-bridge-v1",
     enforce: "pre",
     apply: "serve",
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const accept = String(request.headers?.accept || "");
+        if (request.method === "GET" && accept.includes("text/html")) {
+          response.setHeader("Content-Security-Policy", frameAncestors);
+        }
+        next();
+      });
+    },
     transformIndexHtml() {
       return [{
         tag: "script",
@@ -1215,6 +1161,6 @@ export function createPreviewBridgePlugin(configuration) {
 }
 
 export default function previewBridgePlugin() {
-  const configuration = JSON.parse(readFileSync(previewBridgeJWKSPath, "utf8"));
+  const configuration = JSON.parse(readFileSync(previewBridgeConfigPath, "utf8"));
   return createPreviewBridgePlugin(configuration);
 }

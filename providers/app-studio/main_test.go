@@ -236,36 +236,3 @@ func TestOpenMessageStoreAllowsInMemoryStore(t *testing.T) {
 		t.Fatal("openMessageStore returned nil store")
 	}
 }
-
-func TestPreviewBridgeEnvironmentConfigDefaultsOnWhenConfigured(t *testing.T) {
-	t.Setenv("APP_STUDIO_PREVIEW_BRIDGE_ENABLED", "")
-	t.Setenv("APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY", " private-key ")
-	t.Setenv("APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID", " current ")
-
-	enabled, privateKey, keyID := previewBridgeEnvironmentConfig()
-	if !enabled || privateKey != "private-key" || keyID != "current" {
-		t.Fatalf("config = (%v, %q, %q), want enabled trimmed configuration", enabled, privateKey, keyID)
-	}
-}
-
-func TestPreviewBridgeEnvironmentConfigCanBeExplicitlyDisabled(t *testing.T) {
-	t.Setenv("APP_STUDIO_PREVIEW_BRIDGE_ENABLED", "false")
-	t.Setenv("APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY", "private-key")
-	t.Setenv("APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID", "current")
-
-	enabled, _, _ := previewBridgeEnvironmentConfig()
-	if enabled {
-		t.Fatal("config enabled with explicit false")
-	}
-}
-
-func TestPreviewBridgeEnvironmentConfigSoftDisablesWithoutSigningMaterial(t *testing.T) {
-	t.Setenv("APP_STUDIO_PREVIEW_BRIDGE_ENABLED", "")
-	t.Setenv("APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY", "")
-	t.Setenv("APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID", "")
-
-	enabled, _, _ := previewBridgeEnvironmentConfig()
-	if enabled {
-		t.Fatal("config enabled without signing material")
-	}
-}

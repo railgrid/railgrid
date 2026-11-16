@@ -639,7 +639,7 @@ func TestDevOverlayEmptyCABundleKeepsSystemTrustAndRequiredObject(t *testing.T) 
 
 func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	tokens := devTestTokens()
-	tokens[previewBridgeVerificationJWKSConfigKey] = `{"keys":[{"kid":"current","kty":"EC"}]}`
+	tokens[previewBridgePortalOriginsConfigKey] = "https://console.example.test"
 	rgd, err := buildRGD(devTestTemplate(t), tokens)
 	if err != nil {
 		t.Fatalf("buildRGD: %v", err)
@@ -898,6 +898,13 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	}
 	if !hasTestMount(installer, devAgentBinDir) {
 		t.Error("agent installer does not mount /railgrid/bin")
+	}
+	installerEnv, _ := installer["env"].([]any)
+	if len(installerEnv) != 1 {
+		t.Fatalf("agent installer env = %v, want only the preview bridge portal origins", installerEnv)
+	}
+	if entry, _ := installerEnv[0].(map[string]any); entry["name"] != "RAILGRID_PREVIEW_BRIDGE_PORTAL_ORIGINS" || entry["value"] != "https://console.example.test" {
+		t.Errorf("agent installer env = %v, want the configured portal origin", entry)
 	}
 
 	encoded, _ := json.Marshal(dep)
