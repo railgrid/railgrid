@@ -677,6 +677,13 @@ spec:
                       # map it to an actual PVC request so changing size is
                       # observable in the database resources.
                       storage: '${schema.spec.database.size == "small" ? "1Gi" : (schema.spec.database.size == "medium" ? "5Gi" : "20Gi")}'
+        # The database tier is ready only when every replica of the current
+        # generation is: kro otherwise reports a resource ready as soon as it
+        # exists, and the instance would read Ready before Postgres ran.
+        readyWhen:
+          - >-
+            ${dbStatefulSet.status.observedGeneration == dbStatefulSet.metadata.generation &&
+            dbStatefulSet.status.readyReplicas == dbStatefulSet.spec.replicas}
       - id: dbService
         template:
           apiVersion: v1
@@ -758,6 +765,14 @@ spec:
                           name: ${apiEnvMap.metadata.name}
                     ports:
                       - containerPort: ${schema.spec.apiPort}
+        # Ready only when the current rollout is fully available. Without this the
+        # instance read Ready while the backend sat in ImagePullBackOff.
+        readyWhen:
+          - >-
+            ${apiDeployment.status.observedGeneration == apiDeployment.metadata.generation &&
+            apiDeployment.status.updatedReplicas == apiDeployment.spec.replicas &&
+            apiDeployment.status.readyReplicas == apiDeployment.spec.replicas &&
+            apiDeployment.status.availableReplicas >= apiDeployment.spec.replicas}
       - id: apiService
         template:
           apiVersion: v1
@@ -819,6 +834,14 @@ spec:
                           name: ${webEnvMap.metadata.name}
                     ports:
                       - containerPort: ${schema.spec.webPort}
+        # Ready only when the current rollout is fully available. Without this the
+        # instance read Ready while the frontend sat in ImagePullBackOff.
+        readyWhen:
+          - >-
+            ${webDeployment.status.observedGeneration == webDeployment.metadata.generation &&
+            webDeployment.status.updatedReplicas == webDeployment.spec.replicas &&
+            webDeployment.status.readyReplicas == webDeployment.spec.replicas &&
+            webDeployment.status.availableReplicas >= webDeployment.spec.replicas}
       - id: webService
         template:
           apiVersion: v1
@@ -1106,6 +1129,14 @@ spec:
                       readOnlyRootFilesystem: true
                       capabilities:
                         drop: ["ALL"]
+        # The access gate fronts every request, so the app is not reachable until
+        # it is available.
+        readyWhen:
+          - >-
+            ${gateDeployment.status.observedGeneration == gateDeployment.metadata.generation &&
+            gateDeployment.status.updatedReplicas == gateDeployment.spec.replicas &&
+            gateDeployment.status.readyReplicas == gateDeployment.spec.replicas &&
+            gateDeployment.status.availableReplicas >= gateDeployment.spec.replicas}
       - id: gateService
         template:
           apiVersion: v1

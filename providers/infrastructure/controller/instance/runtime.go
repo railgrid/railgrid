@@ -324,9 +324,23 @@ func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Clien
 	prevConds, _ := prevStatus["conditions"].([]any)
 	conds = stampConditionObservedGeneration(conds, "Ready", inst.GetGeneration())
 	conds = upsertCondition(conds, prevConds, valid, inst.GetGeneration())
+	secretsBlocked := false
 	for _, cond := range extra {
 		if cond != nil {
 			conds = upsertCondition(conds, prevConds, cond, inst.GetGeneration())
+		}
+	}
+	for _, cond := range extra {
+		// A referenced Secret that could not be bridged means the workload
+		// cannot pull its private image, whatever the runtime reports at this
+		// moment. Ready must say so: a Ready instance whose pods sit in
+		// ImagePullBackOff on a cluster the tenant cannot see is the failure
+		// this condition exists to surface.
+		if cond != nil && cond.condType == infrav1alpha1.ConditionInstanceSecretsBridged && cond.status == metav1.ConditionFalse {
+			secretsBlocked = true
+			conds = upsertCondition(conds, prevConds, &conditionSpec{
+				condType: "Ready", status: metav1.ConditionFalse, reason: cond.reason, message: cond.message,
+			}, inst.GetGeneration())
 		}
 	}
 	next["conditions"] = conds
@@ -337,7 +351,7 @@ func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Clien
 	if valid != nil && valid.status == metav1.ConditionFalse {
 		phase = "Failed"
 		next["message"] = valid.message
-	} else if phase == "" {
+	} else if phase == "" || secretsBlocked {
 		phase = derivePhase(conds)
 	}
 	next["phase"] = phase

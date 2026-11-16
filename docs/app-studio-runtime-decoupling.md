@@ -292,37 +292,72 @@ project view — and is never a URL segment.
 ### The pull secret is a typed reference, not a name
 
 At promote, App Studio asks the Code provider for an image-pull credential
-(`connections/{n}/mint-registry-token/v1`, as the caller), writes it as a
-`dockerconfigjson` Secret, and then **names that Secret** on the production
-binding — which the Project controller copies onto the instance's
-`spec.imagePullSecretRef`. The infrastructure provider bridges the Secret it is
-pointed at, instead of guessing `<instance>-registry`
+(`connections/{n}/mint-registry-token`, as App Studio through its export
+virtual workspace) and records it in its **own** `dockerconfigjson` Secret,
+`<prod-instance>-pull-credential`, labelled `railgrid.ai/owner: app-studio`.
+The production binding's `imagePullSecretRef` names that Secret. The Project
+reconciler then hands its contents to the infrastructure provider's
+`instances/{n}/image-pull-credential` verb. Infrastructure stores its own copy,
+`<instance>-image-pull`, labelled `railgrid.ai/owner: infrastructure` and owned
+by the Instance, and returns the name. The reconciler writes that name onto the
+Instance's `spec.imagePullSecretRef`. The infrastructure provider bridges the
+Secret it is pointed at, instead of guessing `<instance>-registry`
 ([provider-contract-review.md](./provider-contract-review.md) M8,
 [infrastructure-architecture.md](./infrastructure-architecture.md) §12.2).
 
-App Studio no longer reads the Code `Connection`'s Secret at all. When the
-action returns an expiry, it is recorded as an annotation on the pull Secret,
-so an operator debugging an `ImagePullBackOff` finds the answer on the object.
-
-Minting stays best-effort: a public image needs no pull credential, so a
-failure leaves the reference unset and logs why rather than blocking a
-promotion.
-
-**The Secret carries `railgrid.ai/owner: infrastructure`, and the label is the
-hand-over.** Every provider's `secrets` permission claim is now selector-scoped
-to the objects it owns
+**Why two Secrets.** Every provider's `secrets` permission claim is
+selector-scoped to the objects it owns
 ([provider-connectivity-contract.md](./provider-connectivity-contract.md)
-§"Label-scoped claims"), which means kcp hides an object from a provider whose
-selector does not match it — a GET 404s, a LIST omits it. App Studio writes the
-pull Secret as the caller and never reads it back; the *infrastructure*
-provider is what reads it, to mount it on the production Instance. So it is
-stamped with that provider's name, not App Studio's, and falls outside App
-Studio's own claim by design (`api/project_promote.go`).
+§"Label-scoped claims"). kcp hides a Secret from a provider whose selector does
+not match it, and its virtual-workspace admission refuses a provider's write of
+a Secret whose owner label is someone else's. A cut of this design had App
+Studio write one Secret labelled for infrastructure. That worked only while the
+write ran as the signed-in caller. Once the write moved to App Studio's
+provider identity, kcp refused every one. Promotion logged the refusal and
+carried on, so production pulled private images anonymously and sat in
+`ImagePullBackOff` while the Instance reported Ready. No provider can write
+under another's label, so the credential now crosses through each provider's
+published API, and each provider writes only under its own label
+(`providers/app-studio/internal/pullcredential`).
 
-The same rule applies to any Secret a **tenant** brings themselves and then
-points an infrastructure Instance at — today that is
-`spec.oidcBridgeSecretRef`, and tomorrow anything else an Instance references
-by name. A BYO Secret must carry:
+The digest of the credential last handed over is recorded on the Instance
+(`ai.railgrid.ai/image-pull-credential-digest`), so an unchanged credential is
+not handed over on every reconcile. A `SecretsBridged=False/SecretRefNotFound`
+report from infrastructure triggers a fresh hand-over.
+
+**Rotation.** A GitHub App connection mints an installation token that lives
+about an hour. Its expiry is recorded on App Studio's Secret, and the
+reconciler re-mints it 15 minutes before then, paced by `RequeueAfter`. That
+token's expiry is a clock outside kcp, which is the one use of `RequeueAfter`
+for pacing (AGENTS.md §5.8). A PAT or OAuth connection returns its long-lived
+token with no expiry, and nothing is re-minted.
+
+Renewal mints only from the Connection promote authorized. Promote reads the
+Connection as the caller and records its name and UID on App Studio's Secret
+(`ai.railgrid.ai/pull-credential-connection[-uid]`). The reconciler mints as
+the provider, with no caller to check, so it never follows the Project's
+`connectionRef`: an edit there would otherwise let anyone who can update the
+Project mint from a Connection they cannot read. A recorded Connection that is
+gone, or was recreated under the same name with a new UID, stops renewal and
+asks for a promotion, which authorizes again.
+
+App Studio's Secret carries an ownerReference to the Project, so kcp deletes
+it with the Project, as it does infrastructure's copy with the Instance. A
+long-lived PAT or OAuth token does not outlive the project it was minted for.
+
+**Failure is visible.** A project with a Connection builds into that
+Connection's registry, so a credential that cannot be minted or stored fails
+the promotion with the reason. A hand-over that fails afterwards is reported
+on the production binding's status (`outputs.imagePullCredential`), which the
+portal shows in place of the generic "being prepared" copy. A project without
+a Connection pulls anonymously, as before.
+
+App Studio never reads the Code `Connection`'s Secret.
+
+The same label rule applies to any Secret a **tenant** brings themselves and
+then points an infrastructure Instance at. Today that is
+`spec.oidcBridgeSecretRef`, and anything else an Instance references by name
+later will follow it. A BYO Secret must carry:
 
 ```yaml
 metadata:

@@ -27,13 +27,10 @@ limitations under the License.
 package api
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"net/http"
@@ -49,62 +46,25 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/bindings"
 	asclient "github.com/railgrid/provider-app-studio/client"
-	"github.com/railgrid/provider-sdk/claimscope"
-	"github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-app-studio/internal/pullcredential"
 )
 
-// projectRegistryPullSecretName is the Secret this provider writes the
-// production instance's image-pull credential into. App Studio owns both the
-// Secret and the reference it puts on the instance
-// (spec.imagePullSecretRef), so the name is an internal choice, not a
-// convention another provider has to know.
-func projectRegistryPullSecretName(instanceName string) string {
-	return instanceName + "-registry"
-}
-
-// registryPullSecretOwner is the provider named in the pull Secret's
-// railgrid.ai/owner label. It is "infrastructure", not "app-studio", because
-// the label decides which provider's selector-scoped `secrets` claim can see
-// the object, and the reader is the infrastructure provider mounting it on
-// the production Instance.
-const registryPullSecretOwner = "infrastructure"
-
-// codeRegistryTokenAction is the Code provider action that issues an
-// image-pull credential for a Connection's registry.
-// It is a kcp custom subresource on the Code export, connections/mint-registry-token,
-// which App Studio requires (manifest.yaml spec.requires) and calls through its own
-// export virtual workspace as itself; the action's contract version is not in
-// the path (the Code provider restores it from its declaration).
-const codeRegistryTokenAction = "mint-registry-token"
-
-// registryTokenResult is the action's output: a pull credential and what is
-// known about it. The Connection's own credential is not in here and never
-// reaches this provider.
-type registryTokenResult struct {
-	Registry  string `json:"registry"`
-	Username  string `json:"username"`
-	Token     string `json:"token"`
-	ExpiresAt string `json:"expiresAt,omitempty"`
-	Scoped    bool   `json:"scoped"`
-}
-
-// ensureProjectRegistryPullSecret asks the Code provider to mint an image-pull
-// credential for the project's Connection and writes it as a dockerconfigjson
-// Secret in this workspace. The production binding names that Secret in
-// spec.imagePullSecretRef, and the infrastructure provider bridges it into the
-// runtime namespace.
+// ensureProjectRegistryPullSecret asks the Code provider for an image-pull
+// credential for the project's Connection and records it in App Studio's own
+// Secret. The production binding names that Secret in
+// spec.imagePullSecretRef. The Project reconciler then hands the credential
+// to the infrastructure provider, which stores it under its own label and
+// mounts it (internal/pullcredential explains why it takes both hops). The
+// reconciler also re-mints it before it expires.
 //
-// App Studio no longer reads the Connection's Secret. That read required this
-// provider to hold a credential that can push code in order to produce one
-// that only needs to pull, and it hardcoded where the Code provider keeps its
-// credentials — both findings in cross-provider-simplification §2.1. The
-// action is invoked AS THE CALLER, so a user who may not use that Connection
-// cannot promote with it either.
+// App Studio never reads the Connection's Secret. The mint action is called
+// as this provider through its export virtual workspace, under the claim the
+// tenant accepted on connections/mint-registry-token.
 //
-// Returns the Secret name so the caller can reference it, or "" when the
-// project has no connection to mint from (a public image needs no pull
-// credential).
+// Returns the Secret name, or "" when the project has no connection to mint
+// from (a public image needs no pull credential).
 func (s *Server) ensureProjectRegistryPullSecret(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project) (string, error) {
 	if c == nil || p == nil || p.Spec.Repository == nil {
 		return "", nil
@@ -115,142 +75,45 @@ func (s *Server) ensureProjectRegistryPullSecret(ctx context.Context, c *asclien
 	}
 	conn, err := c.Resource(codeConnectionResource, "").Get(ctx, connectionRef, metav1.GetOptions{})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("reading connection %q: %w", connectionRef, err)
 	}
-
-	credential, err := s.mintProjectRegistryToken(ctx, id, connectionRef, string(conn.GetUID()))
-	if err != nil {
-		return "", err
+	if s.callers == nil {
+		return "", fmt.Errorf("no provider credential is configured, so the Code provider cannot be asked for one")
 	}
-	dockerConfig, err := json.Marshal(map[string]any{
-		"auths": map[string]any{
-			credential.Registry: map[string]any{
-				"username": credential.Username,
-				"password": credential.Token,
-				"auth":     base64.StdEncoding.EncodeToString([]byte(credential.Username + ":" + credential.Token)),
-			},
-		},
-	})
+	credential, err := pullcredential.Mint(ctx, s.callers, id.clusterID, connectionRef, string(conn.GetUID()))
 	if err != nil {
 		return "", err
 	}
 
-	name := projectRegistryPullSecretName(projectTemplateProdInstanceName(p))
-	annotations := map[string]any{}
-	if credential.ExpiresAt != "" {
-		// The credential rotates; record when it stops working so an
-		// operator debugging an ImagePullBackOff has the answer on the object
-		// rather than in a registry's logs.
-		annotations["ai.railgrid.ai/registry-token-expires-at"] = credential.ExpiresAt
+	name := pullcredential.SourceSecretName(projectTemplateProdInstanceName(p))
+	// The Connection was just read as the caller, so it is the one renewal
+	// may mint from; and the Project owns the credential, so it goes with it.
+	desired, err := pullcredential.SourceSecret(pullcredential.Source{
+		Name:          name,
+		Connection:    connectionRef,
+		ConnectionUID: string(conn.GetUID()),
+		Owner:         bindings.OwnerRef(p),
+	}, credential)
+	if err != nil {
+		return "", err
 	}
-	// The owner label is the hand-over, not decoration. This Secret is
-	// written here as the provider and then READ by the infrastructure provider,
-	// whose `secrets` claim is selector-scoped to its own name, so it is
-	// stamped railgrid.ai/owner: infrastructure rather than app-studio: an
-	// unlabelled — or app-studio-labelled — pull Secret is invisible to the
-	// provider that has to mount it, and the production Instance would fail to
-	// pull its image (docs/provider-connectivity-contract.md §"Label-scoped
-	// claims"). It is also why this Secret is deliberately outside App Studio's
-	// own claim: nothing here reads it back.
-	metadata := map[string]any{
-		"name":      name,
-		"namespace": projectLLMSecretNamespace,
-		"labels":    map[string]any{claimscope.OwnerLabel: registryPullSecretOwner},
-	}
-	if len(annotations) > 0 {
-		metadata["annotations"] = annotations
-	}
-	desired := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "v1",
-		"kind":       "Secret",
-		"metadata":   metadata,
-		"type":       "kubernetes.io/dockerconfigjson",
-		"stringData": map[string]any{
-			".dockerconfigjson": string(dockerConfig),
-		},
-	}}
-	res := c.Resource(secretResource, projectLLMSecretNamespace)
+	res := c.Resource(secretResource, pullcredential.Namespace)
 	existing, err := res.Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		if _, err = res.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
-			return "", err
+			return "", fmt.Errorf("storing the pull credential: %w", err)
 		}
 		return name, nil
 	}
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("reading the pull credential Secret: %w", err)
 	}
 	desired.SetResourceVersion(existing.GetResourceVersion())
 	if _, err = res.Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
-		return "", err
+		return "", fmt.Errorf("storing the pull credential: %w", err)
 	}
 	return name, nil
 }
-
-// mintProjectRegistryToken invokes code's mint-registry-token action on the
-// Connection, as this provider, at the coordinate kcp serves the claimed verb
-// on App Studio's export virtual workspace.
-func (s *Server) mintProjectRegistryToken(ctx context.Context, id identity, connection, connectionUID string) (registryTokenResult, error) {
-	if strings.TrimSpace(connectionUID) == "" {
-		return registryTokenResult{}, fmt.Errorf("connection %q has no UID to pin the action to", connection)
-	}
-	if s.callers == nil {
-		return registryTokenResult{}, fmt.Errorf("no provider credential configured; cannot reach the Code provider")
-	}
-	endpoint, err := s.callers.ExportVerbURL(ctx, codeConnectionsGVR, dataplane.Request{
-		ClusterID: id.clusterID,
-		Resource:  codeConnectionsGVR.Resource,
-		Name:      connection,
-		Verb:      codeRegistryTokenAction,
-	})
-	if err != nil {
-		return registryTokenResult{}, fmt.Errorf("addressing %s on the Code provider: %w", codeRegistryTokenAction, err)
-	}
-	payload, err := json.Marshal(map[string]any{"input": map[string]any{"connectionUID": connectionUID}})
-	if err != nil {
-		return registryTokenResult{}, err
-	}
-	callCtx, cancel := context.WithTimeout(ctx, dataPlaneCallTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return registryTokenResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	resp, err := s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
-	if err != nil {
-		return registryTokenResult{}, fmt.Errorf("minting a registry pull token: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, projectRegistryTokenMaxResponseBytes))
-	if err != nil {
-		return registryTokenResult{}, err
-	}
-	if resp.StatusCode/100 != 2 {
-		return registryTokenResult{}, fmt.Errorf("minting a registry pull token: HTTP %d", resp.StatusCode)
-	}
-	var envelope struct {
-		Result registryTokenResult `json:"result"`
-		Error  *struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return registryTokenResult{}, fmt.Errorf("minting a registry pull token: malformed response")
-	}
-	if envelope.Error != nil && envelope.Error.Code != "" {
-		return registryTokenResult{}, fmt.Errorf("minting a registry pull token: %s", envelope.Error.Code)
-	}
-	if strings.TrimSpace(envelope.Result.Token) == "" || strings.TrimSpace(envelope.Result.Registry) == "" {
-		return registryTokenResult{}, fmt.Errorf("minting a registry pull token: the action returned no credential")
-	}
-	return envelope.Result, nil
-}
-
-// projectRegistryTokenMaxResponseBytes bounds the action response. A pull
-// credential is a few hundred bytes; anything near this is a bug upstream.
-const projectRegistryTokenMaxResponseBytes = 64 << 10
 
 const (
 	projectProductionEnvironmentName = "production"
@@ -808,16 +671,21 @@ func (s *Server) promoteProjectWithSelection(ctx context.Context, c *asclient.Cl
 	next := p.DeepCopy()
 	upsertProjectProductionBinding(next, binding)
 
-	// Ask the Code provider for an image-pull credential and write it as a
-	// tenant Secret, then NAME that Secret on the production binding so the
-	// infrastructure provider bridges it into the runtime namespace.
-	// Best-effort: a public image needs no pull credential, so a failure here
-	// leaves the ref unset (and the instance pulling anonymously) rather than
-	// blocking promotion — but it is logged, because an unset ref on a private
-	// image is an ImagePullBackOff minutes later.
+	// Ask the Code provider for an image-pull credential, record it, and NAME
+	// it on the production binding. The Project reconciler hands it to the
+	// infrastructure provider, which mounts it in the runtime namespace.
+	//
+	// A project with a Connection builds its images into that Connection's
+	// registry, and those packages are private by default. A failure here
+	// therefore fails the promotion. It used to be logged and skipped, which
+	// promoted a release whose pods could never pull their images, onto a
+	// production environment that still reported Ready. A project with no
+	// Connection gets no credential and pulls anonymously, as before.
 	pullSecret, pullErr := s.ensureProjectRegistryPullSecret(ctx, c, id, p)
 	if pullErr != nil {
-		log.Printf("app-studio: promoting %s: no registry pull credential: %v", p.Name, pullErr)
+		log.Printf("app-studio: promoting %s: registry pull credential: %v", p.Name, pullErr)
+		return nil, projectPromoteResponse{}, fmt.Errorf("could not set up the registry pull credential for this project's images from connection %q, so production could not pull them; check that the connection is healthy, then promote again: %w",
+			strings.TrimSpace(p.Spec.Repository.ConnectionRef), pullErr)
 	}
 	if pullSecret != "" {
 		binding.ImagePullSecretRef = &aiv1alpha1.LocalSecretReference{Name: pullSecret}
