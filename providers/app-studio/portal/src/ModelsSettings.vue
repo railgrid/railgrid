@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from 'vue'
-import { ArrowLeft, Check, Cpu, Loader2, Play, Plus, RefreshCw, Star } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight, Check, Cpu, Loader2, Play, Plus, RefreshCw, Star } from 'lucide-vue-next'
 import ResourceTableEditButton from './portalkit/ResourceTableEditButton.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableActionButton from './portalkit/ResourceTableActionButton.vue'
@@ -824,7 +824,7 @@ watch(
           <p class="k-resource-page__subtitle">Use models in projects. Each model shows its provider connection or direct credential.</p>
         </div>
         <div v-if="!showFirstRun" class="k-resource-page__actions">
-          <ActionMenu label="Create" :primary-menu="!showFirstModel" :show-label="showFirstModel" :items="createActions" :disabled="saving || connectionsLoading" @select="selectCreateAction" />
+          <ActionMenu label="Create" primary-menu :items="createActions" :disabled="saving || connectionsLoading" @select="selectCreateAction" />
         </div>
       </header>
 
@@ -833,7 +833,14 @@ watch(
         { label: 'Add a model', description: 'Choose a model on the saved connection.' },
         { label: 'Use it in projects', description: 'Select a model when creating or chatting.' },
       ]" @primary="openConnectionEditor()"><template #icon><Cpu :stroke-width="1.75" /></template></FirstRunGuide>
-      <FirstRunGuide v-else-if="showFirstModel" title="Add a model" description="Choose a model from a connected provider to create projects and chat in App Studio." primary-label="Add model" :primary-disabled="saving || modelLimitReached" :steps="[]" @primary="emit('openEditor')"><template #icon><Cpu :stroke-width="1.75" /></template></FirstRunGuide>
+      <FirstRunGuide v-else-if="showFirstModel" title="Add a model" description="Choose a model from a connected provider to create projects and chat in App Studio." :steps="[]">
+        <template #icon><Cpu :stroke-width="1.75" /></template>
+        <template #actions>
+          <button type="button" class="k-btn k-btn--ghost" :disabled="saving || modelLimitReached" @click="emit('openEditor')">
+            Add model <ArrowRight :stroke-width="1.75" aria-hidden="true" />
+          </button>
+        </template>
+      </FirstRunGuide>
       <div v-else-if="loading && !settings && !loadError" class="grid min-h-48 content-start gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-live="polite" aria-busy="true">
         <div class="shimmer h-4 w-36 rounded bg-surface-overlay" /><div class="shimmer h-24 w-full rounded bg-surface-overlay" /><div class="text-[12px] text-text-muted">Loading models…</div>
       </div>
