@@ -28,7 +28,7 @@ const server = http.createServer(async (req, res) => {
     res.end(`<html><head><script>${source}</script></head><body><main id="main"><h1 id="title">Example heading</h1><button id="button" onclick="window.activations=(window.activations||0)+1">Example button</button><div id="transparent" style="opacity:0">Invisible</div><div style="overflow:hidden;width:20px;height:20px"><div id="clipped" style="position:relative;left:100px;width:20px;height:20px">Clipped</div></div><div id="scroller" style="overflow:auto;width:100px;height:30px"><div style="height:100px"></div><button id="offscreen">Offscreen</button></div></main></body></html>`)
   } else {
     res.setHeader('Content-Type','text/html')
-    res.end(`<button id="start">Annotate</button><iframe id="preview" src="/child"></iframe><script>
+    res.end(`<button id="start">Annotate</button><iframe id="preview" src="/child" style="display:block;width:100%;box-sizing:border-box"></iframe><script>
       let port, generation; window.messages=[];
       window.addEventListener('message', async e => {
         if (e.data.type !== 'railgrid.preview-bridge.ready' || !e.ports[0] || !window.probed) return;
@@ -48,7 +48,7 @@ source=previewBridgeClientSource({ portalOrigins: [origin] })
 let browser
 try {
   browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE})
-  const page=await browser.newPage()
+  const page=await browser.newPage({viewport:{width:1280,height:800}})
   await page.goto(origin)
   await page.waitForFunction(()=>window.messages.some(m=>m.type==='railgrid.preview-bridge.connected'))
   const frame=page.frameLocator('#preview')
@@ -69,6 +69,14 @@ try {
     return page.evaluate(() => window.messages.filter(m => m.type === 'railgrid.preview-bridge.annotation.selected').at(-1))
   }
   await startPicker()
+  for (const width of [1280, 360]) {
+    await page.setViewportSize({width,height:800})
+    assert.deepEqual(await help.evaluate(el => {
+      const style = getComputedStyle(el)
+      const {width,height} = el.getBoundingClientRect()
+      return {width,height,clipPath:style.clipPath,pointerEvents:style.pointerEvents}
+    }), {width:1,height:1,clipPath:'inset(50%)',pointerEvents:'none'})
+  }
   assert.match(await status.textContent(), /main/i)
   await page.keyboard.press('ArrowRight')
   assert.match(await status.textContent(), /Example heading/)
@@ -109,6 +117,13 @@ try {
   await page.keyboard.press('Escape')
   await waitMessage('railgrid.preview-bridge.annotation.cancelled', cancelled)
   assert.equal(await page.locator('#start').evaluate(el => el === document.activeElement), true)
+
+  await startPicker()
+  const pointerSelections = await messageCount('railgrid.preview-bridge.annotation.selected')
+  await frame.locator('#title').click()
+  await waitMessage('railgrid.preview-bridge.annotation.selected', pointerSelections)
+  const pointerSelection = await page.evaluate(() => window.messages.filter(m => m.type === 'railgrid.preview-bridge.annotation.selected').at(-1))
+  assert.equal(pointerSelection.target.locator, '#title')
 
   // With the only page content hidden, the picker reports an empty list and
   // Enter must not emit a selection. Escape still returns focus to the parent.
