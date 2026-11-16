@@ -227,10 +227,11 @@ jobs:
       # Second companion image: the access gate (railgrid-access-proxy) that
       # publishable templates render in front of every app
       # (providers/infrastructure/accessproxy — see docs/app-studio-publishing.md).
-      # It versions with the provider — the ${railgrid.accessProxyImage} token the
-      # kro backend substitutes should pin the same vX.Y.Z via
-      # publishing.accessProxyImage; :latest backs the in-binary default for
-      # stock deployments.
+      # It versions with the provider: the released chart (appVersion vX.Y.Z →
+      # publishing.accessProxyImage default) points the
+      # ${railgrid.accessProxyImage} token at railgrid-access-proxy:vX.Y.Z, so
+      # this push MUST keep the version tag. :latest only backs the in-binary
+      # default of unreleased/local builds.
       - name: Build and push access-proxy image
         if: needs.meta.outputs.provider == 'infrastructure'
         uses: docker/build-push-action@v6

@@ -313,7 +313,7 @@ data:
                 in to a private app. Must be the public URL, not an in-cluster one —
                 it ends up in a redirect the user's browser follows.
             - name: operator.publishing.accessProxyImage
-              value: {{ .Values.publishing.accessProxyImage | quote }}
+              value: {{ include "infrastructure.accessProxyImage" (dict "ctx" . "publishing" .Values.publishing) | default (printf "%s:latest" (default "ghcr.io/railgrid/railgrid-access-proxy" (default (dict) .Values.publishing).accessProxyImageRepository)) | quote }}
               description: >-
                 Access gate every published app's traffic enters through. It speaks
                 the hub's app-access protocol, so pin it to the build your platform

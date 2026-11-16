@@ -131,10 +131,13 @@ spec:
       {{- end }}
     {{- end }}
   {{- end }}
-  {{- if or .Values.operator.publishing.baseDomain .Values.operator.publishing.accessProxyImage }}
   publishing:
     baseDomain: {{ .Values.operator.publishing.baseDomain | quote }}
-    accessProxyImage: {{ .Values.operator.publishing.accessProxyImage | quote }}
+    {{- with include "infrastructure.accessProxyImage" (dict "ctx" . "publishing" .Values.operator.publishing) }}
+    # operator.publishing.accessProxyImage, else this release's
+    # railgrid-access-proxy.
+    accessProxyImage: {{ . | quote }}
+    {{- end }}
     hubURL: {{ default .Values.hub.url .Values.operator.publishing.hubURL | quote }}
     {{- with .Values.operator.publishing.hubPublicURL }}
     hubPublicURL: {{ . | quote }}
@@ -156,5 +159,4 @@ spec:
       backendHealthCheck: {{ . | quote }}
       {{- end }}
     {{- end }}
-  {{- end }}
 {{- end }}

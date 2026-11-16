@@ -77,7 +77,8 @@ helm upgrade --install infrastructure oci://ghcr.io/railgrid/charts/railgrid-inf
 | `application.gateway.backendHealthCheck` | `""` | How the Gateway's load balancer health-checks route backends (RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK). `"gke-tcp"` adds a GKE HealthCheckPolicy (TCP) per HTTPRoute backend Service; required on a GKE Gateway. Empty adds nothing. |
 | `publishing` |  | Platform-owned access-gate configuration shared by simple-webapp, application, and future publishable templates. Templates render the gate (railgrid-access-proxy) as a component of their own graph via the ${railgrid.accessProxyImage}/${railgrid.hubUrl}/${railgrid.hubPublicUrl} tokens; all app traffic enters… |
 | `publishing.baseDomain` | `""` | App host zone (wins over `application.baseDomain`). TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
-| `publishing.accessProxyImage` | `ghcr.io/railgrid/railgrid-access-proxy:latest` |  |
+| `publishing.accessProxyImage` | `""` | Access gate image. Empty: a released chart defaults to `<accessProxyImageRepository>:vX.Y.Z`, the gate published by the same provider release, so it moves with the chart; an unreleased chart leaves it to the binary (`:latest`). Set a full reference (a digest in production) to pin it. |
+| `publishing.accessProxyImageRepository` | `ghcr.io/railgrid/railgrid-access-proxy` | Repository for the release default above (override for mirrors). |
 | `publishing.hubURL` | `""` | Internal hub address used for the app-access protocol. Empty falls back to hub.url. In production, use a trusted cluster CA and keep insecure=false. |
 | `publishing.hubPublicURL` | `""` | Browser-reachable hub origin used for authorization redirects. Empty defaults to hubURL; set it when the provider uses an in-cluster hub URL. |
 | `publishing.insecure` | `false` |  |
@@ -156,7 +157,8 @@ helm upgrade --install infrastructure oci://ghcr.io/railgrid/charts/railgrid-inf
 | `operator.application.gateway` |  | Gateway API parent the generated HTTPRoutes attach to. Empty fields → "cloudflare-tunnel" / "cfgate-system" (the in-binary defaults). |
 | `operator.application.gateway.backendHealthCheck` | `""` | CR `spec.application.gateway.backendHealthCheck` (and `operator.publishing.gateway.backendHealthCheck`, which wins): per-backend load-balancer health check for generated HTTPRoutes. `"gke-tcp"` on a GKE Gateway; empty adds nothing. |
 | `operator.publishing.baseDomain` | `""` | App host zone (wins over `operator.application.baseDomain`). TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
-| `operator.publishing.accessProxyImage` | `ghcr.io/railgrid/railgrid-access-proxy:latest` |  |
+| `operator.publishing.accessProxyImage` | `""` | See `publishing.accessProxyImage`. |
+| `operator.publishing.accessProxyImageRepository` | `ghcr.io/railgrid/railgrid-access-proxy` | See `publishing.accessProxyImageRepository`. |
 | `operator.publishing.hubURL` | `""` |  |
 | `operator.publishing.hubPublicURL` | `""` |  |
 | `operator.publishing.insecure` | `false` |  |
