@@ -210,11 +210,33 @@ type WorkspaceRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
+// ImagePullCredentialRequest is the payload of the "image-pull-credential"
+// custom subresource on instances. It is how a provider that cannot write
+// this provider's Secrets hands it a registry pull credential.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=image-pull-credential,scope=Cluster
+type ImagePullCredentialRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
 func init() {
 	SchemeBuilder.Register(func(scheme *runtime.Scheme) error {
 		scheme.AddKnownTypes(SchemeGroupVersion,
 			&EnvRequest{},
 			&ExecRequest{},
+			&ImagePullCredentialRequest{},
 			&LogRequest{},
 			&ProcessRequest{},
 			&ProxyRequest{},

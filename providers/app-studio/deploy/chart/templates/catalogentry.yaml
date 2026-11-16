@@ -281,6 +281,11 @@ spec:
         - name: instances/process
         - name: instances/exec
         - name: instances/workspace
+        # Hands a production instance its registry pull credential:
+        # infrastructure stores it under its own label, which App
+        # Studio's Secret claim cannot write (controller/project/
+        # pull_credential.go).
+        - name: instances/image-pull-credential
     - provider: code
       group: code.railgrid.ai
       resources:
@@ -353,18 +358,21 @@ spec:
     #                                    stamps the owner label. An unlabelled
     #                                    one is invisible here and never
     #                                    becomes `configured`.
-    #   <prod-instance>-registry         the dockerconfigjson image-pull
+    #   <prod-instance>-pull-credential  the dockerconfigjson image-pull
     #                                    credential a promotion mints from the
-    #                                    Code provider and the production
-    #                                    Instance references in
-    #                                    spec.imagePullSecretRef
-    #                                    (api/project_promote.go). It is
-    #                                    written as the caller and READ BY THE
-    #                                    INFRASTRUCTURE PROVIDER, so it is
-    #                                    stamped railgrid.ai/owner:
-    #                                    infrastructure — the label IS the
-    #                                    hand-over — and consequently falls
-    #                                    outside this claim by design.
+    #                                    Code provider, named by the production
+    #                                    binding's imagePullSecretRef
+    #                                    (api/project_promote.go). Written and
+    #                                    read back as THIS provider, under its
+    #                                    own label. Infrastructure cannot read
+    #                                    it and App Studio cannot write a Secret
+    #                                    labelled for infrastructure (kcp
+    #                                    refuses a foreign owner label), so the
+    #                                    Project reconciler hands its contents
+    #                                    to the instances/image-pull-credential
+    #                                    verb below, which stores
+    #                                    infrastructure's own copy
+    #                                    (internal/pullcredential).
     #
     # kcp claims are per resource, not per name, so the label is what stands in
     # for those names: without the selector this claim is read-write on EVERY

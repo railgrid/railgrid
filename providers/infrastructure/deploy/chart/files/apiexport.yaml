@@ -40,6 +40,8 @@ spec:
     - get
     - list
     - watch
+    - create
+    - update
   resources:
   - group: infrastructure.railgrid.ai
     name: instances
@@ -63,6 +65,15 @@ spec:
   - group: infrastructure.railgrid.ai
     name: instances/exec
     schema: v260925-87f1980f.exec.infrastructure.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: infrastructure.providers.railgrid.ai
+  - group: infrastructure.railgrid.ai
+    name: instances/image-pull-credential
+    schema: v261115-317b8239b.image-pull-credential.infrastructure.railgrid.ai
     storage:
       virtual:
         reference:

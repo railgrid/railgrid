@@ -539,13 +539,12 @@ func Desired(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpe
 		"template": templateName,
 		"values":   vals,
 	}
-	// The pull-secret reference is a typed spec field, not a value: the
-	// instance's provider reads it directly, and the producer that wrote the
-	// Secret is the one that names it. Nothing derives a name from the
-	// instance's any more (docs/provider-contract-review.md M8).
-	if ref := binding.ImagePullSecretRef; ref != nil && strings.TrimSpace(ref.Name) != "" {
-		spec["imagePullSecretRef"] = map[string]any{"name": strings.TrimSpace(ref.Name)}
-	}
+	// spec.imagePullSecretRef is deliberately absent. The binding's
+	// ImagePullSecretRef names App Studio's OWN Secret, which the
+	// infrastructure provider's label-scoped claim cannot read. The Project
+	// reconciler hands its contents to infrastructure's image-pull-credential
+	// verb and writes the Secret name that verb returns onto the Instance
+	// (controller/project/pull_credential.go).
 	want := &unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": binding.ResourceRef.APIVersion,

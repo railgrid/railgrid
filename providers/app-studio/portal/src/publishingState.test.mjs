@@ -145,3 +145,16 @@ test('keeps production copy deployment-focused while directing unpublished apps 
     'The production deployment is running and externally accessible.',
   )
 })
+
+test('reports a pull credential problem instead of a generic preparing state', () => {
+  const problem = 'handing the pull credential to the infrastructure provider: image-pull-credential: secret_write_failed'
+  const blocked = { phase: 'Pending', outputs: { imagePullCredential: problem } }
+  assert.deepEqual(productionDeploymentState(blocked), { deployed: true, ready: false, label: 'Pending', tone: 'danger' })
+  assert.equal(
+    productionDeploymentDescription(blocked, null),
+    `Production can't pull its container images, so it isn't serving traffic. ${problem}`,
+  )
+  // A ready deployment is not second-guessed by a stale output.
+  assert.equal(productionDeploymentState({ phase: 'Ready', outputs: { imagePullCredential: problem } }).tone, 'success')
+  assert.equal(productionDeploymentState({ phase: 'Pending', outputs: {} }).tone, 'warning')
+})

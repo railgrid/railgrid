@@ -65,6 +65,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	"github.com/kcp-dev/sdk/apis/core"
@@ -385,6 +386,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// APIExport virtual workspace in every workspace that accepted the claim,
 	// so they ride c — the same client the Project itself does.
 	instancesNeedRetry := false
+	// pullRefreshIn is when the soonest-expiring pull credential must be
+	// re-minted. A registry token's expiry is a clock outside kcp, so it is
+	// the one thing here paced by RequeueAfter (AGENTS.md §5.8).
+	var pullRefreshIn time.Duration
 	liveStatuses := make([]aiv1alpha1.ProjectEnvironmentStatus, 0, len(bound))
 	for _, env := range bound {
 		bindingStatuses := make([]aiv1alpha1.ProjectProviderBindingStatus, 0, len(env.bindings))
@@ -446,7 +451,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 				bindingStatuses = append(bindingStatuses, bindings.StatusFromObject(binding, nil))
 				continue
 			}
-			bindingStatuses = append(bindingStatuses, bindings.StatusFromObject(binding, obj))
+			st := bindings.StatusFromObject(binding, obj)
+			pull := r.ensurePullCredential(ctx, cl.GetAPIReader(), c, clusterName, &p, binding, obj)
+			if pull.problem != "" {
+				log.Printf("app-studio project %s: binding %q pull credential: %s", p.Name, binding.Name, pull.problem)
+				if st.Outputs == nil {
+					st.Outputs = map[string]string{}
+				}
+				st.Outputs[pullCredentialOutput] = pull.problem
+			}
+			instancesNeedRetry = instancesNeedRetry || pull.retry
+			if pull.refreshIn > 0 && (pullRefreshIn == 0 || pull.refreshIn < pullRefreshIn) {
+				pullRefreshIn = pull.refreshIn
+			}
+			bindingStatuses = append(bindingStatuses, st)
 		}
 		liveStatuses = append(liveStatuses, bindings.FoldEnvironment(env.spec, bindingStatuses))
 	}
@@ -508,8 +526,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if instancesNeedRetry || commit.retry {
 		return ctrl.Result{Requeue: true}, nil
 	}
-	if commit.retryAfter > 0 {
-		return ctrl.Result{RequeueAfter: commit.retryAfter}, nil
+	requeueAfter := commit.retryAfter
+	if pullRefreshIn > 0 && (requeueAfter == 0 || pullRefreshIn < requeueAfter) {
+		requeueAfter = pullRefreshIn
+	}
+	if requeueAfter > 0 {
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -748,12 +770,16 @@ func (r *Reconciler) ensureInstance(ctx context.Context, c client.Client, p *aiv
 			"template": observedTemplate,
 			"values":   bindings.MergeProviderSpec(observedValues, desiredValues),
 		}
-		// The pull-secret reference is ours to write and ours to clear: a
-		// binding that no longer names a Secret must not leave the instance
-		// pointing at one, because the instance controller reports a dangling
-		// ref rather than ignoring it.
-		if ref, found, _ := unstructured.NestedMap(want.Object, "spec", "imagePullSecretRef"); found {
-			nextSpec["imagePullSecretRef"] = ref
+		// The pull-secret reference is ours to write and ours to clear. Its
+		// value names infrastructure's Secret, which only the hand-over
+		// learns (ensurePullCredential), so it is kept while the binding asks
+		// for a credential. A binding that no longer does must not leave the
+		// instance pointing at one: the instance controller reports a
+		// dangling ref rather than ignoring it.
+		if ref := binding.ImagePullSecretRef; ref != nil && strings.TrimSpace(ref.Name) != "" {
+			if observed, found, _ := unstructured.NestedMap(got.Object, "spec", "imagePullSecretRef"); found {
+				nextSpec["imagePullSecretRef"] = observed
+			}
 		}
 		next.Object["spec"] = nextSpec
 		labels := next.GetLabels()
