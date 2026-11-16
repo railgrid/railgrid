@@ -10927,13 +10927,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <template #name="{ row }">
             <component
               :is="row.deleting ? 'span' : 'a'"
-              class="k-btn k-btn--ghost k-table-resource-link min-w-[220px] text-left"
+              class="focus-visible:underline"
+              :class="{ 'k-table-resource-link': !row.deleting }"
               :href="row.deleting ? undefined : projectHref(String(row.name))"
               @click.stop="followProjectLink($event, projectFromTableRow(row))"
             >
-              <span class="block truncate font-semibold">{{ String(row.displayName || row.name) }}</span>
-              <span class="mt-1 block line-clamp-2 text-[12px] leading-[17px] text-text-muted">{{ String(row.description || row.name) }}</span>
+              <span class="font-semibold">{{ String(row.displayName || row.name) }}</span>
             </component>
+            <span class="mt-1 line-clamp-2 whitespace-normal wrap-anywhere text-xs text-text-muted">{{ String(row.description || row.name) }}</span>
           </template>
           <template #phase="{ value }"><StatusBadge :status="String(value)" :tone="String(value) === 'Deleting…' ? 'warning' : null" /></template>
           <template #updated="{ value }"><span class="whitespace-nowrap text-text-muted">{{ String(value) }}</span></template>
