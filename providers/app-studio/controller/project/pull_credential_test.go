@@ -134,9 +134,16 @@ func pullFixture(expiresAt string) (*aiv1alpha1.Project, aiv1alpha1.ProjectProvi
 		"type": "kubernetes.io/dockerconfigjson",
 		"data": map[string]any{pullcredential.DockerConfigKey: base64.StdEncoding.EncodeToString([]byte(testDockerConfig))},
 	}}
-	if expiresAt != "" {
-		source.SetAnnotations(map[string]string{pullcredential.ExpiresAtAnnotation: expiresAt})
+	// Promote recorded the Connection it authorized, and the Project owns it.
+	annotations := map[string]string{
+		pullcredential.ConnectionAnnotation:    "github",
+		pullcredential.ConnectionUIDAnnotation: "conn-uid",
 	}
+	if expiresAt != "" {
+		annotations[pullcredential.ExpiresAtAnnotation] = expiresAt
+	}
+	source.SetAnnotations(annotations)
+	source.SetOwnerReferences([]metav1.OwnerReference{testProjectOwner})
 	conn := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "code.railgrid.ai/v1alpha1", "kind": "Connection",
 		"metadata": map[string]any{"name": "github", "uid": "conn-uid"},
@@ -151,6 +158,27 @@ func pullFixture(expiresAt string) (*aiv1alpha1.Project, aiv1alpha1.ProjectProvi
 }
 
 const projectProductionBindingNameForTest = "prod"
+
+var testProjectOwner = metav1.OwnerReference{APIVersion: aiv1alpha1.SchemeGroupVersion.String(), Kind: "Project", Name: "demo", UID: "project-uid"}
+
+func getSource(t *testing.T, c client.Client) *unstructured.Unstructured {
+	t.Helper()
+	source := &unstructured.Unstructured{}
+	source.SetAPIVersion("v1")
+	source.SetKind("Secret")
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: pullcredential.Namespace, Name: testSourceSecret}, source); err != nil {
+		t.Fatal(err)
+	}
+	return source
+}
+
+// missingSecret is SecretsBridged=False as infrastructure's bridge reports
+// a missing Secret, for the reference named in message.
+func missingSecret(inst *unstructured.Unstructured, message string) {
+	_ = unstructured.SetNestedSlice(inst.Object, []any{map[string]any{
+		"type": "SecretsBridged", "status": "False", "reason": "SecretRefNotFound", "message": message,
+	}}, "status", "conditions")
+}
 
 func getInstance(t *testing.T, c client.Client, b aiv1alpha1.ProjectProviderBindingSpec) *unstructured.Unstructured {
 	t.Helper()
@@ -200,15 +228,74 @@ func TestEnsurePullCredentialHandsOverOnce(t *testing.T) {
 		t.Fatalf("hand-overs = %d, want 1", n)
 	}
 
-	// Infrastructure reports the Secret gone: hand it over again.
-	_ = unstructured.SetNestedSlice(inst.Object, []any{map[string]any{
-		"type": "SecretsBridged", "status": "False", "reason": "SecretRefNotFound",
-	}}, "status", "conditions")
+	// A missing BYO OIDC Secret carries the same reason, but no hand-over
+	// fixes it, so nothing is handed over.
+	missingSecret(inst, "spec.oidcBridgeSecretRef names Secret default/demo-oidc, which does not exist")
+	if got := r.ensurePullCredential(context.Background(), c, c, testCluster, p, b, inst); got.problem != "" {
+		t.Fatalf("OIDC-missing pass = %+v", got)
+	}
+	if _, n := providers.counts(); n != 1 {
+		t.Fatalf("hand-overs = %d, want 1: a missing OIDC Secret is not the pull Secret", n)
+	}
+
+	// Infrastructure reports the pull Secret gone: hand it over again.
+	missingSecret(inst, "spec.imagePullSecretRef names Secret default/"+testInstance+"-image-pull, which does not exist")
 	if got := r.ensurePullCredential(context.Background(), c, c, testCluster, p, b, inst); got.problem != "" {
 		t.Fatalf("re-hand-over pass = %+v", got)
 	}
 	if _, n := providers.counts(); n != 2 {
 		t.Fatalf("hand-overs = %d, want 2 after the Secret went missing", n)
+	}
+}
+
+// Renewal mints from the Connection promote authorized, never from the
+// Project's current connectionRef: the reconciler mints as the provider, so
+// following an edited connectionRef would mint from a Connection the editor
+// may not be allowed to read.
+func TestEnsurePullCredentialRenewsFromThePromotedConnection(t *testing.T) {
+	providers := newFakeProviders(t)
+	p, b, c := pullFixture(time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339))
+	p.Spec.Repository.ConnectionRef = "someone-elses" // edited after promote
+	r := &Reconciler{Callers: providers}
+
+	if got := r.ensurePullCredential(context.Background(), c, c, testCluster, p, b, getInstance(t, c, b)); got.problem != "" || got.retry {
+		t.Fatalf("renewal pass = %+v", got)
+	}
+	// The fake serves only connections/github; any other mint fails the test.
+	if mints, _ := providers.counts(); mints != 1 {
+		t.Fatalf("mints = %d, want 1 from the promoted connection", mints)
+	}
+	source := getSource(t, c)
+	if name, uid := pullcredential.SourceConnection(source); name != "github" || uid != "conn-uid" {
+		t.Fatalf("renewed Secret records connection %q/%q, want the promoted one", name, uid)
+	}
+	if owners := source.GetOwnerReferences(); len(owners) != 1 || owners[0].UID != testProjectOwner.UID {
+		t.Fatalf("renewal dropped the Project owner: %+v", owners)
+	}
+}
+
+// A Connection deleted and recreated under the promoted name is a different
+// Connection: renewal stops and asks for a promotion, which re-authorizes.
+func TestEnsurePullCredentialRefusesAReplacedConnection(t *testing.T) {
+	providers := newFakeProviders(t)
+	p, b, c := pullFixture(time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339))
+	conn := &unstructured.Unstructured{}
+	conn.SetAPIVersion("code.railgrid.ai/v1alpha1")
+	conn.SetKind("Connection")
+	if err := c.Get(context.Background(), client.ObjectKey{Name: "github"}, conn); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetUID("recreated-uid")
+	if err := c.Update(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+
+	got := (&Reconciler{Callers: providers}).ensurePullCredential(context.Background(), c, c, testCluster, p, b, getInstance(t, c, b))
+	if !strings.Contains(got.problem, "was replaced") || !strings.Contains(got.problem, "promote again") {
+		t.Fatalf("result = %+v, want a replaced-connection problem", got)
+	}
+	if mints, _ := providers.counts(); mints != 0 {
+		t.Fatalf("mints = %d, want none from a replaced connection", mints)
 	}
 }
 
@@ -229,12 +316,7 @@ func TestEnsurePullCredentialRenewsBeforeExpiry(t *testing.T) {
 	if got.refreshIn < 40*time.Minute || got.refreshIn > 46*time.Minute {
 		t.Fatalf("refreshIn = %s, want about an hour less the refresh margin", got.refreshIn)
 	}
-	source := &unstructured.Unstructured{}
-	source.SetAPIVersion("v1")
-	source.SetKind("Secret")
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: pullcredential.Namespace, Name: testSourceSecret}, source); err != nil {
-		t.Fatal(err)
-	}
+	source := getSource(t, c)
 	doc, err := pullcredential.SourceDockerConfig(source)
 	if err != nil || !strings.Contains(doc, `"password":"rotated"`) {
 		t.Fatalf("source Secret was not rewritten with the fresh token: %q (%v)", doc, err)

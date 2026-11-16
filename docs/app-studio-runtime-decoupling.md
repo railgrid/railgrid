@@ -332,6 +332,19 @@ token's expiry is a clock outside kcp, which is the one use of `RequeueAfter`
 for pacing (AGENTS.md §5.8). A PAT or OAuth connection returns its long-lived
 token with no expiry, and nothing is re-minted.
 
+Renewal mints only from the Connection promote authorized. Promote reads the
+Connection as the caller and records its name and UID on App Studio's Secret
+(`ai.railgrid.ai/pull-credential-connection[-uid]`). The reconciler mints as
+the provider, with no caller to check, so it never follows the Project's
+`connectionRef`: an edit there would otherwise let anyone who can update the
+Project mint from a Connection they cannot read. A recorded Connection that is
+gone, or was recreated under the same name with a new UID, stops renewal and
+asks for a promotion, which authorizes again.
+
+App Studio's Secret carries an ownerReference to the Project, so kcp deletes
+it with the Project, as it does infrastructure's copy with the Instance. A
+long-lived PAT or OAuth token does not outlive the project it was minted for.
+
 **Failure is visible.** A project with a Connection builds into that
 Connection's registry, so a credential that cannot be minted or stored fails
 the promotion with the reason. A hand-over that fails afterwards is reported

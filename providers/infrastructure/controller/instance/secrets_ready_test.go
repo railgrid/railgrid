@@ -18,10 +18,12 @@ package instance
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
@@ -71,5 +73,32 @@ func TestMirrorStatusSecretsNotBridgedIsNotReady(t *testing.T) {
 	}
 	if !ready {
 		t.Fatal("mirrorStatus stayed not-Ready after the Secret was bridged")
+	}
+}
+
+// App Studio re-hands a pull credential over only when the missing Secret is
+// the pull one, and tells it from a missing OIDC bridge Secret (same reason)
+// by this message prefix. Changing either message breaks that.
+func TestMissingSecretMessagesNameTheirReference(t *testing.T) {
+	c := &Controller{cfg: Config{CredentialsNamespace: "default"}}
+	empty := clientfake.NewClientBuilder().Build()
+	for name, bridge := range map[string]struct {
+		call   func() (*conditionSpec, error)
+		prefix string
+	}{
+		"pull": {func() (*conditionSpec, error) {
+			return c.bridgeRegistryPullSecret(context.Background(), empty, "tenant", "default", "app", "app-image-pull")
+		}, "spec.imagePullSecretRef "},
+		"oidc": {func() (*conditionSpec, error) {
+			return c.bridgeBYOSecret(context.Background(), empty, "tenant", "default", "app", "app-oidc")
+		}, "spec.oidcBridgeSecretRef "},
+	} {
+		cond, err := bridge.call()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if cond == nil || cond.reason != infrav1alpha1.ReasonSecretRefNotFound || !strings.HasPrefix(cond.message, bridge.prefix) {
+			t.Fatalf("%s: condition = %+v, want %s with a message starting %q", name, cond, infrav1alpha1.ReasonSecretRefNotFound, bridge.prefix)
+		}
 	}
 }

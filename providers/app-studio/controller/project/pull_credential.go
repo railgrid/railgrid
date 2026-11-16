@@ -90,7 +90,7 @@ func (r *Reconciler) ensurePullCredential(ctx context.Context, reader client.Rea
 
 	expiresAt, expires := pullcredential.ExpiresAt(source)
 	if expires && time.Until(expiresAt) < pullcredential.RefreshBefore {
-		renewed, err := r.renewPullCredential(ctx, reader, c, clusterName, p, source)
+		renewed, err := r.renewPullCredential(ctx, reader, c, clusterName, source)
 		if err != nil {
 			return pullCredentialResult{problem: "renewing the pull credential: " + err.Error(), retry: true}
 		}
@@ -123,26 +123,42 @@ func (r *Reconciler) ensurePullCredential(ctx context.Context, reader client.Rea
 	return result
 }
 
-// renewPullCredential mints a fresh credential from the project's Connection
-// and rewrites the source Secret with it.
-func (r *Reconciler) renewPullCredential(ctx context.Context, reader client.Reader, c client.Client, clusterName string, p *aiv1alpha1.Project, source *unstructured.Unstructured) (*unstructured.Unstructured, error) {
-	if p.Spec.Repository == nil || strings.TrimSpace(p.Spec.Repository.ConnectionRef) == "" {
-		return nil, fmt.Errorf("the project names no connection to mint from")
+// renewPullCredential mints a fresh credential from the Connection the
+// current one was minted from, and rewrites the source Secret with it.
+//
+// It never reads the Project's connectionRef. Promote authorized that
+// Connection by reading it as the caller; this runs as the provider with no
+// caller to check, so following a connectionRef edited since would let anyone
+// who can update the Project mint from a Connection they cannot read. A
+// Connection deleted and recreated under the same name is a different one, so
+// a UID mismatch stops renewal too. Either way, promoting again re-authorizes.
+func (r *Reconciler) renewPullCredential(ctx context.Context, reader client.Reader, c client.Client, clusterName string, source *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	connectionRef, connectionUID := pullcredential.SourceConnection(source)
+	if connectionRef == "" || connectionUID == "" {
+		return nil, fmt.Errorf("the pull credential records no connection to renew from; promote again")
 	}
-	connectionRef := strings.TrimSpace(p.Spec.Repository.ConnectionRef)
 	conn := &unstructured.Unstructured{}
 	conn.SetGroupVersionKind(connectionGVK)
 	if err := reader.Get(ctx, types.NamespacedName{Name: connectionRef}, conn); err != nil {
 		return nil, fmt.Errorf("reading connection %q: %w", connectionRef, err)
 	}
-	token, err := pullcredential.Mint(ctx, r.Callers, clusterName, connectionRef, string(conn.GetUID()))
+	if string(conn.GetUID()) != connectionUID {
+		return nil, fmt.Errorf("connection %q was replaced after the project was promoted; promote again", connectionRef)
+	}
+	token, err := pullcredential.Mint(ctx, r.Callers, clusterName, connectionRef, connectionUID)
 	if err != nil {
 		return nil, err
 	}
-	desired, err := pullcredential.SourceSecret(source.GetName(), token)
+	desired, err := pullcredential.SourceSecret(pullcredential.Source{
+		Name:          source.GetName(),
+		Connection:    connectionRef,
+		ConnectionUID: connectionUID,
+	}, token)
 	if err != nil {
 		return nil, err
 	}
+	// Keep the Project ownership promote set, so renewal never orphans it.
+	desired.SetOwnerReferences(source.GetOwnerReferences())
 	desired.SetResourceVersion(source.GetResourceVersion())
 	if err := c.Update(ctx, desired); err != nil {
 		return nil, err
@@ -150,8 +166,12 @@ func (r *Reconciler) renewPullCredential(ctx context.Context, reader client.Read
 	return desired, nil
 }
 
-// pullSecretMissing reports whether infrastructure says the Secret the
+// pullSecretMissing reports whether infrastructure says the pull Secret the
 // Instance names is gone, in which case it is handed over again.
+//
+// Infrastructure uses the same reason for a missing BYO OIDC Secret
+// (spec.oidcBridgeSecretRef), which no hand-over fixes, so the condition's
+// message must name the pull reference too (bridge.go writes both).
 func pullSecretMissing(inst *unstructured.Unstructured) bool {
 	conditions, _, _ := unstructured.NestedSlice(inst.Object, "status", "conditions")
 	for _, raw := range conditions {
@@ -159,10 +179,16 @@ func pullSecretMissing(inst *unstructured.Unstructured) bool {
 		if !ok || cond["type"] != "SecretsBridged" {
 			continue
 		}
-		return cond["status"] == "False" && cond["reason"] == "SecretRefNotFound"
+		message, _ := cond["message"].(string)
+		return cond["status"] == "False" && cond["reason"] == "SecretRefNotFound" &&
+			strings.HasPrefix(message, pullSecretRefMessagePrefix)
 	}
 	return false
 }
+
+// pullSecretRefMessagePrefix starts infrastructure's SecretRefNotFound
+// message when the missing Secret is the one spec.imagePullSecretRef names.
+const pullSecretRefMessagePrefix = "spec.imagePullSecretRef "
 
 // setInstancePullSecretRef names the infrastructure-owned Secret on the
 // Instance and records which credential it holds.
