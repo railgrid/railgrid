@@ -469,9 +469,7 @@ Full-object sync of every edge through the tunnels is the cost center.
   allows — and runs every query through the verb. Cytoscape is bundled by Vite rather
   than injected as a runtime `<script>`, so it is covered by the build's integrity
   pinning. e2e with a real connected agent is the remaining Phase 3 work item.
-- **Phase 4 — polish.** Postgres chart option,
-  `split-kuery.yaml` workflow + `railgrid/provider-kuery` mirror with deploy key (see
-  `docs/provider-publishing.md`).
+- **Phase 4 — polish.** Postgres chart option.
 
 ## Open questions
 

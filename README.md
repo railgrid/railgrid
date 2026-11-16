@@ -45,7 +45,6 @@ Railgrid is pre-1.0, and `v1alpha1` APIs may change between releases. See [GitHu
 | [kuery](providers/kuery) | Fleet-wide object search and relationship traversal across a workspace's connected clusters |
 | [quickstart](providers/quickstart) | A minimal reference provider that exercises the whole plugin surface |
 
-The provider directories listed above are mirrored read-only to `railgrid/provider-*` repositories. Open changes here.
 
 ## How it fits together
 

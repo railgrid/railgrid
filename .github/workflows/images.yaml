@@ -97,8 +97,8 @@ jobs:
             BUILD_DATE=${{ github.event.release.created_at }}
             GO_BUILD_GODEBUG=http2client=0
 
-  # PR and manual validation of provider Dockerfiles and build contexts, before
-  # the split sync reaches a mirror. hack/ci/selection.py picks the images whose
+  # PR and manual validation of provider Dockerfiles and build contexts.
+  # hack/ci/selection.py picks the images whose
   # inputs (hack/ci/matrices.json) the PR touched; a manual run builds them all.
   # These builds are NEVER pushed here — provider images are published
   # per-provider, stamped with the provider's own version, by

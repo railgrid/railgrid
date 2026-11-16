@@ -132,7 +132,6 @@ docs/superpowers/
 .impeccable/
 /PRODUCT.md
 agent_docs/
-hack/provider-sdk-cutover.sh
 .claude
 # Local browser evidence and runner cleanup diagnostics
 /artifacts/screenshots/

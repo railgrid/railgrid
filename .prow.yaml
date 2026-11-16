@@ -7,7 +7,7 @@
 # commands and mirrors the GitHub Actions jobs named in each comment.
 #
 # These jobs are the pull request gate. GitHub Actions keeps only releases,
-# image and chart publishing, the mirror splits, the CI image and macOS; the
+# image and chart publishing, the CI image and macOS; the
 # CI and E2E workflows are a manual fallback (workflow_dispatch). No job here
 # is `optional`, so Tide does not merge past a red one, and Tide tests a PR
 # against the current main before merging it. An approver can waive a job on
@@ -417,27 +417,3 @@ presubmits:
             limits:
               cpu: "4"
               memory: 10Gi
-
-  # splitsh-lite dry run of every provider mirror whose subtree the PR touched;
-  # nothing is pushed (was split-*.yaml on pull_request).
-  - name: pull-railgrid-split
-    skip_if_only_changed: '^docs/|\.md$'
-    branches:
-      - ^main$
-    decoration_config:
-      timeout: 30m
-    spec:
-      containers:
-        - image: ghcr.io/railgrid/railgrid-ci:v3
-          command:
-            - runner.sh
-          args:
-            - hack/ci/prow/job.sh
-            - split
-          resources:
-            requests:
-              cpu: "1"
-              memory: 2Gi
-            limits:
-              cpu: "1"
-              memory: 4Gi

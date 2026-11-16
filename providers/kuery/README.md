@@ -1,14 +1,5 @@
 # Kuery provider
 
-> [!IMPORTANT]
-> **Read-only mirror — do not push or open PRs here.**
-> The standalone [`railgrid/provider-kuery`](https://github.com/railgrid/provider-kuery)
-> repository is **automatically synced** from the railgrid monorepo
-> [`railgrid/railgrid`](https://github.com/railgrid/railgrid) (path `providers/kuery/`)
-> via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
-> the mirror, so any direct change here is overwritten. File issues and PRs
-> against [`railgrid/railgrid`](https://github.com/railgrid/railgrid) instead.
-
 Fleet-wide object search, relationship traversal, and impact analysis across
 the edge clusters connected to a railgrid workspace — built on
 [kuery](https://github.com/railgrid/kuery), a multi-cluster query engine that

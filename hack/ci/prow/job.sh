@@ -313,39 +313,6 @@ case "${job}" in
     make e2e-infrastructure
     ;;
 
-  # The split-*.yaml workflows publish each provider subtree to its mirror on
-  # main. Here: install the same splitsh-lite and compute the split of every
-  # subtree this PR touched, pushing nothing. PREFIX and SPLITSH_VERSION are
-  # read from the workflows, so there is no second list to keep in step.
-  split)
-    failed=()
-    for workflow in .github/workflows/split-*.yaml; do
-      prefix="$(sed -n 's/^  PREFIX: *//p' "${workflow}")"
-      version="$(sed -n 's/^  SPLITSH_VERSION: *//p' "${workflow}")"
-      [[ -n "${prefix}" && -n "${version}" ]] || { echo "== ${workflow}: no PREFIX or SPLITSH_VERSION" >&2; exit 1; }
-      if ! touched "${prefix}" "${workflow}" hack/ci/prow; then
-        echo "== ${prefix}: not touched, skipped"
-        continue
-      fi
-      if [[ ! -x "/tmp/splitsh-${version}/splitsh-lite" ]]; then
-        mkdir -p "/tmp/splitsh-${version}"
-        curl -fsSL "https://github.com/splitsh/lite/releases/download/${version}/lite_linux_amd64.tar.gz" \
-          | tar -xz -C "/tmp/splitsh-${version}" ./splitsh-lite
-      fi
-      echo "== ${prefix}: splitsh-lite ${version}"
-      sha="$("/tmp/splitsh-${version}/splitsh-lite" --prefix="${prefix}" --origin=HEAD | tail -n1)" || sha=""
-      if [[ "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
-        echo "== ${prefix}: split sha ${sha}"
-      else
-        failed+=("${prefix}")
-      fi
-    done
-    if (( ${#failed[@]} )); then
-      printf '== FAILED split: %s\n' "${failed[@]}"
-      exit 1
-    fi
-    ;;
-
   *)
     echo "unknown job: ${job}" >&2
     exit 2

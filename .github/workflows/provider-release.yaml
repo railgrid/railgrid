@@ -12,8 +12,7 @@ name: Provider release (image + chart)
 #
 # This is the sole publisher of provider images/charts. The hub `v*` release
 # (images.yaml / helm-images.yaml) builds providers in build-only PR validation
-# mode and no longer publishes them, and the split-*.yaml mirrors publish source
-# only (no version tag → no mirror image build), so there is no double-build.
+# mode and no longer publishes them, so there is no double-build.
 #
 # Multi-arch strategy: each arch is built on its OWN native runner (amd64 on
 # ubuntu-latest, arm64 on ubuntu-24.04-arm) and pushed by digest, then the

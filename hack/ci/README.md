@@ -2,7 +2,7 @@
 
 Pull requests are validated by Prow (`/.prow.yaml`, `hack/ci/prow/README.md`),
 not by GitHub Actions. What is left on Actions is publishing (releases, images,
-charts, the mirror splits, the CI image), the macOS job, which needs a macOS
+charts, the CI image), the macOS job, which needs a macOS
 runner, and the goreleaser dry-run on changes to the release configuration.
 The CI and E2E workflows start only by manual dispatch, as the fallback for
 when the Prow cluster is unavailable; the container-image workflow starts where
@@ -113,5 +113,5 @@ independent of unpinned tools.
 The workflow-change PR runs full CI. After merging, confirm actual GitHub job
 selection on a provider-portal-only PR and on a docs-only PR; local policy
 checks do not prove hosted runner behavior. An App Studio-only change should
-retain its portal/image jobs and existing split validation while skipping KCP,
+retain its portal/image jobs while skipping KCP,
 SSH, OIDC, backend test matrices, unrelated portal/images, and codegen.

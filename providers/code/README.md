@@ -1,16 +1,5 @@
 # code provider
 
-> [!IMPORTANT]
-> **Read-only mirror — do not push or open PRs here.**
-> The standalone [`railgrid/provider-code`](https://github.com/railgrid/provider-code)
-> repository is **automatically synced** from the railgrid monorepo
-> [`railgrid/railgrid`](https://github.com/railgrid/railgrid) (path `providers/code/`)
-> via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
-> the mirror, so any direct change here is overwritten. File issues and PRs
-> against [`railgrid/railgrid`](https://github.com/railgrid/railgrid) instead.
-> See [docs/provider-publishing.md](../../docs/provider-publishing.md) for how
-> the mirror is published.
-
 A railgrid provider that manages source-code repositories and their access —
 deploy keys, collaborators, and (read-only) published packages — across git
 hosting providers (**GitHub** today) on behalf of railgrid tenants. A tenant adds a

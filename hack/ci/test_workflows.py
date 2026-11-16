@@ -297,14 +297,10 @@ class WorkflowTests(unittest.TestCase):
                 self.assertNotIn("run_if_changed", job, "narrow the work inside job.sh; the job itself always starts")
                 self.assertTrue(job.get("always_run") or job.get("skip_if_only_changed") == r"^docs/|\.md$")
         # One Prow job for each pull_request trigger that left GitHub Actions.
-        self.assertLessEqual({"pull-railgrid-images", "pull-railgrid-e2e-infrastructure-templates",
-                              "pull-railgrid-split"}, set(jobs))
+        self.assertLessEqual({"pull-railgrid-images", "pull-railgrid-e2e-infrastructure-templates"}, set(jobs))
         script = (ROOT / "hack/ci/prow/job.sh").read_text()
         for job in jobs.values():
             self.assertIn(f"\n  {job['spec']['containers'][0]['args'][1]})\n", script)
-        for path in sorted((ROOT / ".github/workflows").glob("split-*.yaml")):
-            env = yaml.safe_load(path.read_text())["env"]
-            self.assertTrue(env["PREFIX"] and env["SPLITSH_VERSION"], path.name)
 
     def test_macos_runs_only_the_darwin_specific_half_on_relevant_paths(self):
         events = self.macos.get("on", self.macos.get(True))
