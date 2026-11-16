@@ -142,6 +142,15 @@ func TestPromoteRecordsPullCredentialUnderOwnLabel(t *testing.T) {
 	if secret.GetAnnotations()[pullcredential.ExpiresAtAnnotation] != "2026-11-15T23:00:00Z" {
 		t.Fatalf("expiry annotation = %v", secret.GetAnnotations())
 	}
+	// Renewal mints only from the Connection promote authorized as the caller.
+	if name, uid := pullcredential.SourceConnection(secret); name != "github" || uid != "conn-uid" {
+		t.Fatalf("recorded connection = %q/%q, want github/conn-uid", name, uid)
+	}
+	// The Project owns the credential, so kcp collects it with the Project.
+	owners := secret.GetOwnerReferences()
+	if len(owners) != 1 || owners[0].Kind != "Project" || owners[0].Name != project.Name || owners[0].UID == "" || owners[0].UID != project.UID {
+		t.Fatalf("ownerReferences = %+v, want the Project %s/%s", owners, project.Name, project.UID)
+	}
 
 	// Promoting again replaces the credential in place.
 	if _, _, err := promoteServer(callers).promoteProject(context.Background(), client, identity{clusterID: "cluster-a"}, updated, nil, nil); err != nil {

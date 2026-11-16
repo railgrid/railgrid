@@ -54,6 +54,7 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -90,6 +91,10 @@ const (
 	// ExpiresAtAnnotation records on the source Secret when the minted
 	// credential stops working.
 	ExpiresAtAnnotation = "ai.railgrid.ai/registry-token-expires-at"
+	// ConnectionAnnotation and ConnectionUIDAnnotation record on the source
+	// Secret which Connection the credential was minted from (Source).
+	ConnectionAnnotation    = "ai.railgrid.ai/pull-credential-connection"
+	ConnectionUIDAnnotation = "ai.railgrid.ai/pull-credential-connection-uid"
 	// DigestAnnotation records on the Instance which credential was last
 	// handed over, so an unchanged credential is not handed over again on
 	// every reconcile. It is a hash, never the credential.
@@ -148,28 +153,61 @@ func DockerConfigJSON(t Token) (string, error) {
 	return string(doc), err
 }
 
+// Source is what App Studio's own Secret records besides the credential.
+type Source struct {
+	// Name is the Secret's name (SourceSecretName).
+	Name string
+	// Connection and ConnectionUID name the Code Connection the credential
+	// was minted from at promote, where the caller's right to use it was
+	// checked by reading it as them. Renewal mints from this Connection only:
+	// the Project's connectionRef can change after promote, and the
+	// reconciler mints as the provider, with no caller to check.
+	Connection    string
+	ConnectionUID string
+	// Owner is the Project, so kcp garbage-collects the credential with it.
+	Owner *metav1.OwnerReference
+}
+
 // SourceSecret builds App Studio's own Secret for t, under its own owner
 // label so its claim can write it and read it back.
-func SourceSecret(name string, t Token) (*unstructured.Unstructured, error) {
+func SourceSecret(s Source, t Token) (*unstructured.Unstructured, error) {
+	if strings.TrimSpace(s.Connection) == "" || strings.TrimSpace(s.ConnectionUID) == "" {
+		return nil, fmt.Errorf("pull credential %s records no connection to renew from", s.Name)
+	}
 	doc, err := DockerConfigJSON(t)
 	if err != nil {
 		return nil, err
 	}
-	metadata := map[string]any{
-		"name":      name,
-		"namespace": Namespace,
-		"labels":    map[string]any{claimscope.OwnerLabel: owner},
+	annotations := map[string]string{
+		ConnectionAnnotation:    s.Connection,
+		ConnectionUIDAnnotation: s.ConnectionUID,
 	}
 	if t.ExpiresAt != "" {
-		metadata["annotations"] = map[string]any{ExpiresAtAnnotation: t.ExpiresAt}
+		annotations[ExpiresAtAnnotation] = t.ExpiresAt
 	}
-	return &unstructured.Unstructured{Object: map[string]any{
+	secret := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Secret",
-		"metadata":   metadata,
+		"metadata": map[string]any{
+			"name":      s.Name,
+			"namespace": Namespace,
+			"labels":    map[string]any{claimscope.OwnerLabel: owner},
+		},
 		"type":       "kubernetes.io/dockerconfigjson",
 		"stringData": map[string]any{DockerConfigKey: doc},
-	}}, nil
+	}}
+	secret.SetAnnotations(annotations)
+	if s.Owner != nil {
+		secret.SetOwnerReferences([]metav1.OwnerReference{*s.Owner})
+	}
+	return secret, nil
+}
+
+// SourceConnection reads the Connection a source Secret's credential was
+// minted from. Both are empty on a Secret that records none.
+func SourceConnection(secret *unstructured.Unstructured) (name, uid string) {
+	annotations := secret.GetAnnotations()
+	return strings.TrimSpace(annotations[ConnectionAnnotation]), strings.TrimSpace(annotations[ConnectionUIDAnnotation])
 }
 
 // SourceDockerConfig reads the dockerconfigjson out of a source Secret as the

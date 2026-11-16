@@ -46,6 +46,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/bindings"
 	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/internal/pullcredential"
 )
@@ -85,7 +86,14 @@ func (s *Server) ensureProjectRegistryPullSecret(ctx context.Context, c *asclien
 	}
 
 	name := pullcredential.SourceSecretName(projectTemplateProdInstanceName(p))
-	desired, err := pullcredential.SourceSecret(name, credential)
+	// The Connection was just read as the caller, so it is the one renewal
+	// may mint from; and the Project owns the credential, so it goes with it.
+	desired, err := pullcredential.SourceSecret(pullcredential.Source{
+		Name:          name,
+		Connection:    connectionRef,
+		ConnectionUID: string(conn.GetUID()),
+		Owner:         bindings.OwnerRef(p),
+	}, credential)
 	if err != nil {
 		return "", err
 	}

@@ -216,6 +216,10 @@ func (c *Controller) bridgeRegistryPullSecret(ctx context.Context, tenantClient 
 	key := types.NamespacedName{Namespace: c.cfg.CredentialsNamespace, Name: ref}
 	if err := tenantClient.Get(ctx, key, src); err != nil {
 		if apierrors.IsNotFound(err) {
+			// The reason is shared with the OIDC bridge Secret. The message's
+			// "spec.imagePullSecretRef " prefix is what tells them apart: App
+			// Studio hands the pull credential over again on this one only
+			// (its controller/project/pull_credential.go), so keep it.
 			return secretsBridgedCondition(metav1.ConditionFalse, infrav1alpha1.ReasonSecretRefNotFound,
 				fmt.Sprintf("spec.imagePullSecretRef names Secret %s/%s, which does not exist", c.cfg.CredentialsNamespace, ref)), nil
 		}
