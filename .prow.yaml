@@ -30,6 +30,12 @@
 # CoreDNS, and on the first run unlimited jobs took 99% of two nodes' CPU and
 # DNS timed out for every pod, the jobs' own included.
 #
+# Memory requests decide how many jobs the three nodes run at once, so each is
+# the job's highest observed working set (Prometheus, pod level, about 25 runs
+# per job) rounded up, not a round number. The limit stays well above it. The
+# suites are CPU-bound at 4 CPUs, so only jobs that never used theirs ask for
+# fewer. lint is the exception: it peaks at its 8Gi limit, do not lower it.
+#
 # Periodics cannot be defined here; they live in railgrid/ops
 # (cicd/apps/railgrid-dev/prow/config.yaml).
 presubmits:
@@ -50,11 +56,11 @@ presubmits:
             - contracts
           resources:
             requests:
-              cpu: "2"
-              memory: 3Gi
+              cpu: "1"
+              memory: 512Mi
             limits:
-              cpu: "2"
-              memory: 4Gi
+              cpu: "1"
+              memory: 2Gi
 
   # make build + verify-codegen (ci.yaml `build`, `verify-codegen`).
   - name: pull-railgrid-build
@@ -120,7 +126,7 @@ presubmits:
           resources:
             requests:
               cpu: "4"
-              memory: 6Gi
+              memory: 5Gi
             limits:
               cpu: "4"
               memory: 8Gi
@@ -143,7 +149,7 @@ presubmits:
           resources:
             requests:
               cpu: "4"
-              memory: 6Gi
+              memory: 4Gi
             limits:
               cpu: "4"
               memory: 8Gi
@@ -166,10 +172,10 @@ presubmits:
           resources:
             requests:
               cpu: "2"
-              memory: 4Gi
+              memory: 2Gi
             limits:
               cpu: "2"
-              memory: 6Gi
+              memory: 4Gi
 
   # Provider suites on embedded kcp, no Docker (e2e.yaml `e2e-providers`).
   - name: pull-railgrid-e2e-providers
@@ -189,7 +195,7 @@ presubmits:
           resources:
             requests:
               cpu: "4"
-              memory: 6Gi
+              memory: 4Gi
             limits:
               cpu: "4"
               memory: 8Gi
@@ -216,7 +222,7 @@ presubmits:
           resources:
             requests:
               cpu: "4"
-              memory: 6Gi
+              memory: 5Gi
             limits:
               cpu: "4"
               memory: 10Gi
@@ -243,7 +249,7 @@ presubmits:
           resources:
             requests:
               cpu: "4"
-              memory: 6Gi
+              memory: 4Gi
             limits:
               cpu: "4"
               memory: 10Gi
@@ -270,7 +276,7 @@ presubmits:
           resources:
             requests:
               cpu: "4"
-              memory: 6Gi
+              memory: 5Gi
             limits:
               cpu: "4"
               memory: 10Gi
@@ -297,7 +303,7 @@ presubmits:
           resources:
             requests:
               cpu: "4"
-              memory: 6Gi
+              memory: 5Gi
             limits:
               cpu: "4"
               memory: 10Gi
@@ -324,7 +330,7 @@ presubmits:
           resources:
             requests:
               cpu: "4"
-              memory: 6Gi
+              memory: 5Gi
             limits:
               cpu: "4"
               memory: 10Gi
@@ -351,7 +357,7 @@ presubmits:
           resources:
             requests:
               cpu: "4"
-              memory: 6Gi
+              memory: 5Gi
             limits:
               cpu: "4"
               memory: 10Gi
@@ -385,7 +391,7 @@ presubmits:
           resources:
             requests:
               cpu: "4"
-              memory: 6Gi
+              memory: 4Gi
             limits:
               cpu: "4"
               memory: 10Gi
@@ -412,8 +418,8 @@ presubmits:
             privileged: true
           resources:
             requests:
-              cpu: "4"
-              memory: 6Gi
+              cpu: "3"
+              memory: 3Gi
             limits:
-              cpu: "4"
-              memory: 10Gi
+              cpu: "3"
+              memory: 6Gi
