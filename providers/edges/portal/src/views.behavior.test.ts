@@ -158,13 +158,16 @@ async function renderServiceCollectionMarkup(): Promise<string> {
   return renderToString(createSSRApp(Wrapper))
 }
 
-async function renderServiceMarkup(props: Record<string, unknown>): Promise<string> {
+async function renderServiceMarkup(
+  props: Record<string, unknown>,
+  errors: Partial<Record<'configurationError' | 'credentialsError' | 'deleteError', string>> = {},
+): Promise<string> {
   const source = ServiceEdit as unknown as {
     setup: (props: Record<string, unknown>, context: Record<string, unknown>) => Record<string, any>
     ssrRender: (...args: any[]) => unknown
   }
   const Wrapper = {
-    props: ['service', 'serviceName', 'catalog', 'edges'],
+    props: ['service', 'serviceName', 'catalog', 'edges', 'errors'],
     async setup(wrapperProps: Record<string, unknown>, context: Record<string, unknown>) {
       const state = source.setup(wrapperProps, context)
       const request = api.getService.mock.results.at(-1)?.value as Promise<unknown> | undefined
@@ -172,11 +175,14 @@ async function renderServiceMarkup(props: Record<string, unknown>): Promise<stri
       await Promise.resolve()
       state.readLoaded.value = true
       state.readLoading.value = false
+      for (const [key, value] of Object.entries(wrapperProps.errors as typeof errors ?? {})) {
+        state[key].value = value
+      }
       return state
     },
     ssrRender: source.ssrRender,
   }
-  return renderToString(createSSRApp(Wrapper, props))
+  return renderToString(createSSRApp(Wrapper, { ...props, errors }))
 }
 
 async function renderDetailMarkup(props: Record<string, unknown>): Promise<string> {
@@ -205,21 +211,29 @@ async function renderDetailMarkup(props: Record<string, unknown>): Promise<strin
   return renderToString(createSSRApp(Wrapper, props))
 }
 
-async function renderHarnessMarkup(props: Record<string, unknown>, expanded = false): Promise<string> {
+async function renderHarnessMarkup(
+  props: Record<string, unknown>,
+  expanded = false,
+  errors: Partial<Record<'switchError' | 'selectionError' | 'limitsError', string>> = {},
+): Promise<string> {
   const source = HarnessCard as unknown as {
     setup: (props: Record<string, unknown>, context: Record<string, unknown>) => Record<string, any>
     ssrRender: (...args: any[]) => unknown
   }
   const Wrapper = {
-    props: ['edgeName', 'edgeType', 'harness', 'harnesses', 'disabled'],
+    props: ['edgeName', 'edgeType', 'harness', 'harnesses', 'disabled', 'errors'],
     setup(wrapperProps: Record<string, unknown>, context: Record<string, unknown>) {
       const state = source.setup(wrapperProps, context)
       state.selectionExpanded.value = expanded
+      state.limitsExpanded.value = expanded
+      for (const [key, value] of Object.entries(wrapperProps.errors as typeof errors ?? {})) {
+        state[key].value = value
+      }
       return state
     },
     ssrRender: source.ssrRender,
   }
-  return renderToString(createSSRApp(Wrapper, props))
+  return renderToString(createSSRApp(Wrapper, { ...props, errors }))
 }
 
 async function flush() {
@@ -1605,6 +1619,172 @@ describe('edge list views', () => {
     }
   })
 
+  it('keeps service mutation errors with their own action through reads and unrelated success', async () => {
+    const detail = {
+      ...service,
+      serviceType: 'grafana',
+      host: 'localhost',
+      port: 3000,
+      instructions: 'Stored guidance',
+      hasCredentials: false,
+      conditions: [],
+    }
+    const catalog = [{
+      type: 'grafana', displayName: 'Grafana', category: 'Monitoring', auth: 'bearer',
+      credential: { packing: 'single', fields: [{ key: 'token', label: 'API token', secret: true }] },
+    }]
+    api.getService.mockResolvedValue(detail)
+    const mounted = await mount(ServiceEdit, { service: detail, serviceName: detail.name, catalog, edges: [edge] })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.form.port = 3100
+      state.instructions = 'Draft guidance'
+      api.updateEdgeService.mockRejectedValueOnce({ message: 'configuration unavailable' })
+      await state.onSaveConfig()
+
+      expect(state.configurationError).toBe('configuration unavailable')
+      expect(state.form.port).toBe(3100)
+      expect(state.instructions).toBe('Draft guidance')
+
+      api.getService.mockResolvedValueOnce({ ...detail, phase: 'Ready' })
+      await state.refreshDetail()
+      expect(state.configurationError).toBe('configuration unavailable')
+      expect(state.form.port).toBe(3100)
+      expect(state.instructions).toBe('Draft guidance')
+
+      state.credInputs.token = 'dummy-secret-placeholder'
+      api.connectEdgeService.mockRejectedValueOnce({ message: 'credential unavailable' })
+      await state.onSaveCreds()
+      expect(state.credentialsError).toBe('credential unavailable')
+      expect(state.credInputs.token).toBe('dummy-secret-placeholder')
+      expect(state.configurationError).toBe('configuration unavailable')
+
+      const markup = await renderServiceMarkup({ service: detail, serviceName: detail.name, catalog, edges: [edge] }, {
+        configurationError: 'configuration unavailable',
+        credentialsError: 'credential unavailable',
+        deleteError: 'delete unavailable',
+      })
+      const sectionsAt = markup.indexOf('class="service-detail__sections"')
+      const providerAt = markup.indexOf('id="service-provider"')
+      const configurationAt = markup.indexOf('id="service-configuration"')
+      const credentialsAt = markup.indexOf('id="service-credentials"')
+      expect(markup.indexOf('Could not delete service')).toBeLessThan(sectionsAt)
+      expect(markup.indexOf('Could not save configuration')).toBeGreaterThan(configurationAt)
+      expect(markup.indexOf('Could not save configuration')).toBeLessThan(credentialsAt)
+      expect(markup.indexOf('Could not save credentials')).toBeGreaterThan(credentialsAt)
+      expect(markup.indexOf('Could not delete service')).toBeLessThan(providerAt)
+      expect(markup).not.toContain('dummy-secret-placeholder')
+
+      api.connectEdgeService.mockResolvedValueOnce(undefined)
+      api.getService.mockResolvedValueOnce({ ...detail, hasCredentials: true })
+      await state.onSaveCreds()
+      expect(state.credentialsError).toBeNull()
+      expect(state.configurationError).toBe('configuration unavailable')
+      expect(state.credInputs.token).toBeUndefined()
+
+      api.updateEdgeService.mockResolvedValueOnce(undefined)
+      api.getService.mockResolvedValueOnce(detail)
+      await state.onSaveConfig()
+      expect(state.configurationError).toBeNull()
+      expect(state.credentialsError).toBeNull()
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('guards duplicate credential submission at the handler boundary and keeps busy ownership', async () => {
+    const detail = { ...service, serviceType: 'grafana', hasCredentials: false, conditions: [] }
+    const catalog = [{
+      type: 'grafana', displayName: 'Grafana', category: 'Monitoring', auth: 'bearer',
+      credential: { packing: 'single', fields: [{ key: 'token', label: 'API token', secret: true }] },
+    }]
+    api.getService.mockResolvedValue(detail)
+    const mounted = await mount(ServiceEdit, { service: detail, serviceName: detail.name, catalog, edges: [edge] })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.credInputs.token = 'dummy-credential'
+      state.readLoading = true
+      await state.onSaveCreds()
+      expect(api.connectEdgeService).not.toHaveBeenCalled()
+
+      state.readLoading = false
+      const pending = deferred<void>()
+      api.connectEdgeService.mockReturnValueOnce(pending.promise)
+      const firstSave = state.onSaveCreds()
+      expect(state.busy).toBe(true)
+      expect(state.credentialsSaving).toBe(true)
+      await state.onSaveCreds()
+      expect(api.connectEdgeService).toHaveBeenCalledTimes(1)
+      expect(state.credentialsSaving).toBe(true)
+
+      pending.resolve()
+      await firstSave
+      expect(state.busy).toBe(false)
+      expect(state.credentialsSaving).toBe(false)
+      expect(state.credInputs.token).toBeUndefined()
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('ignores a late configuration failure after the service route identity changes', async () => {
+    const detail = { ...service, host: 'localhost', port: 80, conditions: [] }
+    api.getService.mockImplementation(async (name: string) => ({ ...detail, name }))
+    const mounted = await mount(ServiceEdit, { service: detail, serviceName: detail.name, catalog: [], edges: [edge] })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      const pending = deferred<void>()
+      api.updateEdgeService.mockReturnValueOnce(pending.promise)
+      const saving = state.onSaveConfig()
+      expect(state.busy).toBe(true)
+
+      mounted.instance.props.serviceName = 'svc-b'
+      mounted.instance.props.service = { ...detail, name: 'svc-b' }
+      await flush()
+      expect(api.getService).toHaveBeenLastCalledWith('svc-b')
+      expect(state.currentName).toBe('svc-b')
+      expect(state.busy).toBe(false)
+
+      pending.reject({ message: 'old service failed' })
+      await saving
+      expect(state.configurationError).toBeNull()
+      expect(state.deleteError).toBeNull()
+      expect(state.busy).toBe(false)
+      expect(toastMock).not.toHaveBeenCalled()
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('keeps deletion failure through reads and configuration success, then clears on its own retry', async () => {
+    const detail = { ...service, host: 'localhost', port: 80, conditions: [] }
+    api.getService.mockResolvedValue(detail)
+    confirm.confirmDialog.mockResolvedValue(true)
+    const mounted = await mount(ServiceEdit, { service: detail, serviceName: detail.name, catalog: [], edges: [edge] })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      api.deleteEdgeService.mockRejectedValueOnce({ message: 'delete unavailable' })
+      await state.onDelete()
+      expect(state.deleteError).toBe('delete unavailable')
+
+      await state.refreshDetail()
+      expect(state.deleteError).toBe('delete unavailable')
+      api.updateEdgeService.mockResolvedValueOnce(undefined)
+      await state.onSaveConfig()
+      expect(state.deleteError).toBe('delete unavailable')
+
+      api.deleteEdgeService.mockResolvedValueOnce(undefined)
+      await state.onDelete()
+      expect(state.deleteError).toBeNull()
+    } finally {
+      mounted.unmount()
+    }
+  })
+
   it('shows a distinct deleting phase while the service delete is pending and recovers on failure', async () => {
     const detail = { ...service, hasCredentials: false, conditions: [] }
     const pendingDelete = deferred<void>()
@@ -1633,7 +1813,7 @@ describe('edge list views', () => {
       await deletePromise
       expect(state.deleting).toBe(false)
       expect(state.busy).toBe(false)
-      expect(state.mutationError).toBe('delete failed')
+      expect(state.deleteError).toBe('delete failed')
       expect(toastMock).not.toHaveBeenCalled()
     } finally {
       mounted.unmount()
@@ -2066,7 +2246,7 @@ describe('edge harness card', () => {
       // card says the machine has not confirmed rather than faking it.
       expect(state.awaitingAgent).toBe(true)
       expect(state.rows[0].state).toBe('Running')
-      expect(state.writeError).toBeNull()
+      expect(state.switchError).toBeNull()
     } finally {
       mounted.unmount()
     }
@@ -2098,8 +2278,130 @@ describe('edge harness card', () => {
       await flush()
       // A refused write reverts to the object's own value rather than leaving
       // the control showing something the hub never accepted.
-      expect(state.writeError).toBe('harness update forbidden')
+      expect(state.switchError).toBe('harness update forbidden')
       expect(state.mode).toBe('none')
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('keeps the native switch on the authoritative value while an enable request is pending or fails', async () => {
+    const mounted = await mount(HarnessCard, harnessCardProps({
+      harness: { mode: 'none' },
+      harnesses: [{ ...claudeRunning, enabled: false, ready: false }],
+    }))
+    try {
+      const state = mounted.instance.setupState
+      const input = { checked: true }
+      const pending = deferred<void>()
+      api.updateEdgeHarness.mockReturnValueOnce(pending.promise)
+      const saving = state.onToggle({ target: input } as unknown as Event)
+
+      expect(input.checked).toBe(false)
+      expect(state.harnessOn).toBe(false)
+      expect(state.savingOperation).toBe('switch')
+      expect(state.announcement).toBe('Saving harness availability.')
+
+      pending.reject({ message: 'harness update forbidden' })
+      await saving
+      expect(input.checked).toBe(false)
+      expect(state.harnessOn).toBe(false)
+      expect(state.switchError).toBe('harness update forbidden')
+      expect(state.saving).toBe(false)
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('keeps harness errors with their own controls through unrelated success and clears each on its retry', async () => {
+    const props = harnessCardProps({
+      harness: { mode: 'none' },
+      harnesses: [claudeRunning, codexAbsent],
+    })
+    const mounted = await mount(HarnessCard, props)
+    try {
+      const state = mounted.instance.setupState
+      api.updateEdgeHarness.mockRejectedValueOnce({ message: 'switch rejected' })
+      await state.onToggle({ target: { checked: true } } as unknown as Event)
+      expect(state.switchError).toBe('switch rejected')
+
+      state.selectionExpanded = true
+      state.selection = ['claude']
+      await flush()
+      api.updateEdgeHarness.mockRejectedValueOnce({ message: 'choice rejected' })
+      await state.onSaveSelection()
+      expect(state.selectionError).toBe('choice rejected')
+      expect(state.switchError).toBe('switch rejected')
+
+      state.limitsExpanded = true
+      state.permissionMode = 'bypassPermissions'
+      await flush()
+      api.updateEdgeHarness.mockRejectedValueOnce({ message: 'permissions rejected' })
+      await state.onSaveLimits()
+      expect(state.limitsError).toBe('permissions rejected')
+      expect(state.selectionError).toBe('choice rejected')
+      expect(state.switchError).toBe('switch rejected')
+
+      // A successful switch retry clears only its own failure.
+      api.updateEdgeHarness.mockResolvedValueOnce(undefined)
+      await state.onToggle({ target: { checked: true } } as unknown as Event)
+      expect(state.switchError).toBeNull()
+      expect(state.selectionError).toBe('choice rejected')
+      expect(state.limitsError).toBe('permissions rejected')
+
+      state.selection = ['claude']
+      await flush()
+      api.updateEdgeHarness.mockResolvedValueOnce(undefined)
+      await state.onSaveSelection()
+      expect(state.selectionError).toBeNull()
+      expect(state.limitsError).toBe('permissions rejected')
+
+      api.updateEdgeHarness.mockResolvedValueOnce(undefined)
+      await state.onSaveLimits()
+      expect(state.limitsError).toBeNull()
+      expect(api.updateEdgeHarness).toHaveBeenCalledTimes(6)
+    } finally {
+      mounted.unmount()
+    }
+
+    const markup = await renderHarnessMarkup(props, true, {
+      switchError: 'switch rejected',
+      selectionError: 'choice rejected',
+      limitsError: 'permissions rejected',
+    })
+    const switchAt = markup.indexOf('Run coding harnesses on this machine')
+    const switchErrorAt = markup.indexOf('Could not change harness availability')
+    const permissionsActionAt = markup.indexOf('Save permissions')
+    const permissionsErrorAt = markup.indexOf('Could not save permissions')
+    const choiceActionAt = markup.indexOf('Save harness choice')
+    const choiceErrorAt = markup.indexOf('Could not save harness choice')
+    const choiceFieldsetAt = markup.indexOf('Harnesses offered')
+    expect(switchErrorAt).toBeGreaterThan(switchAt)
+    expect(switchErrorAt).toBeLessThan(choiceFieldsetAt)
+    expect(permissionsErrorAt).toBeGreaterThan(permissionsActionAt)
+    expect(permissionsErrorAt).toBeLessThan(choiceFieldsetAt)
+    expect(choiceErrorAt).toBeGreaterThan(choiceActionAt)
+  })
+
+  it('ignores a late harness write failure after the edge identity changes', async () => {
+    const mounted = await mount(HarnessCard, harnessCardProps({ harnesses: [claudeRunning] }))
+    try {
+      const state = mounted.instance.setupState
+      const pending = deferred<void>()
+      api.updateEdgeHarness.mockReturnValueOnce(pending.promise)
+      const saving = state.onToggle({ target: { checked: false } } as unknown as Event)
+      expect(state.saving).toBe(true)
+
+      mounted.instance.props.edgeName = 'build-02'
+      await flush()
+      expect(state.saving).toBe(false)
+      expect(state.switchError).toBeNull()
+
+      pending.reject({ message: 'previous edge unavailable' })
+      await saving
+      expect(state.switchError).toBeNull()
+      expect(state.saving).toBe(false)
+      expect(state.savingOperation).toBeNull()
     } finally {
       mounted.unmount()
     }

@@ -37,8 +37,10 @@ const catalog = ref<AgentSkill[]>([])
 const catalogWarnings = ref<string[]>([])
 const catalogLoading = ref(false)
 const catalogHasSnapshot = ref(false)
+const catalogIncomplete = computed(() => catalogHasSnapshot.value && catalogWarnings.value.length > 0)
 const catalogError = ref('')
 const catalogNotice = ref<HTMLElement | null>(null)
+const catalogWarningNotice = ref<HTMLElement | null>(null)
 const catalogSection = ref<HTMLElement | null>(null)
 const selectedSkill = ref<AgentKitSkill | null>(null)
 const detail = ref<AgentSkillDetail | null>(null)
@@ -66,6 +68,9 @@ const parsedDocument = computed(() => {
 })
 const sortedCatalog = computed(() => [...catalog.value].sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id)))
 const readOnlySkill = computed(() => selectedSkill.value && selectedSkill.value.editable !== true)
+const selectedSkillUnverified = computed(() => Boolean(
+  selectedSkill.value && catalogIncomplete.value && !catalog.value.some((skill) => skill.id === selectedSkill.value?.id),
+))
 const workbenchLocked = computed(() => saving.value || deleting.value || importing.value)
 
 function isCurrent(serial: number, api: ApiClient): boolean {
@@ -76,11 +81,14 @@ async function loadCatalog(selectID?: string): Promise<void> {
   const serial = ++catalogSerial
   const api = props.api
   const authority = captureAuthority()
+  const restoreRetryFocus = Boolean(
+    catalogNotice.value?.contains(document.activeElement) ||
+    catalogWarningNotice.value?.contains(document.activeElement),
+  )
   catalogLoading.value = true
   try {
     const result = await api.getSkillLibrary()
     if (serial !== catalogSerial || !authorityIsCurrent(authority) || props.api !== api) return
-    const restoreFocus = Boolean(catalogError.value && catalogNotice.value?.contains(document.activeElement))
     catalog.value = result.skills || []
     catalogWarnings.value = result.warnings || []
     catalogHasSnapshot.value = true
@@ -88,22 +96,32 @@ async function loadCatalog(selectID?: string): Promise<void> {
     if (selectID) {
       const next = catalog.value.find((skill) => skill.id === selectID)
       if (next) await selectSkill(next, true)
-      else { selectedSkill.value = null; detail.value = null }
+      else if (!catalogWarnings.value.length || selectedSkill.value?.id !== selectID) { selectedSkill.value = null; detail.value = null }
     } else if (selectedSkill.value) {
       const current = catalog.value.find((skill) => skill.id === selectedSkill.value?.id)
       if (current) selectedSkill.value = current
-      else { selectedSkill.value = null; detail.value = null }
+      else if (!catalogWarnings.value.length) { selectedSkill.value = null; detail.value = null }
     }
     await nextTick()
     if (
-      restoreFocus &&
+      restoreRetryFocus &&
       serial === catalogSerial &&
       authorityIsCurrent(authority) &&
       props.api === api &&
       focusWasLost()
     ) catalogSection.value?.focus({ preventScroll: true })
   } catch (error) {
-    if (serial === catalogSerial && authorityIsCurrent(authority) && props.api === api) catalogError.value = (error as Error).message
+    if (serial === catalogSerial && authorityIsCurrent(authority) && props.api === api) {
+      catalogError.value = (error as Error).message
+      await nextTick()
+      if (
+        restoreRetryFocus &&
+        serial === catalogSerial &&
+        authorityIsCurrent(authority) &&
+        props.api === api &&
+        focusWasLost()
+      ) catalogNotice.value?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true })
+    }
   } finally {
     if (serial === catalogSerial) catalogLoading.value = false
   }
@@ -111,6 +129,10 @@ async function loadCatalog(selectID?: string): Promise<void> {
 
 function focusWasLost(): boolean {
   return !document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected
+}
+
+function retryCatalog(): void {
+  if (!catalogLoading.value) void loadCatalog()
 }
 
 async function loadSkillDetail(skill: AgentKitSkill): Promise<void> {
@@ -170,7 +192,7 @@ function startCreate(): void {
 }
 
 function startEdit(): void {
-  if (workbenchLocked.value) return
+  if (workbenchLocked.value || selectedSkillUnverified.value) return
   const selected = selectedSkill.value
   const current = detail.value
   if (!selected || !current || !selected.editable || selected.scope !== 'workspace') return
@@ -211,7 +233,7 @@ function kubeClient(api: ApiClient) {
 }
 
 async function save(): Promise<void> {
-  if (workbenchLocked.value) return
+  if (workbenchLocked.value || (mode.value === 'edit' && selectedSkillUnverified.value)) return
   const value = validateEditor()
   if (!value) return
   const operation = mode.value
@@ -255,7 +277,7 @@ async function save(): Promise<void> {
 async function removeSkill(): Promise<void> {
   const selected = selectedSkill.value
   const packageID = selected?.packageName
-  if (!selected || !packageID || !selected.editable || selected.scope !== 'workspace' || workbenchLocked.value) return
+  if (!selected || !packageID || !selected.editable || selected.scope !== 'workspace' || workbenchLocked.value || selectedSkillUnverified.value) return
   const ok = await confirmDialog({ title: `Delete “${selected.name}”?`, message: 'This removes the workspace skill package for every agent in this workspace. Agents that enabled it will no longer be able to use it.', danger: true, confirmLabel: 'Delete skill' })
   if (!ok || workbenchLocked.value || selectedSkill.value?.id !== selected.id) return
   const authority = captureAuthority()
@@ -291,7 +313,7 @@ function downloadJSON(filename: string, data: unknown): void {
 function exportSkill(): void {
   const selected = selectedSkill.value
   const current = detail.value
-  if (!selected || !current || !selected.editable || !selected.packageName) return
+  if (!selected || !current || !selected.editable || !selected.packageName || selectedSkillUnverified.value) return
   downloadJSON(`${selected.packageName}.skill.json`, {
     apiVersion: 'agents.railgrid.ai/v1alpha1',
     kind: 'Skill',
@@ -376,7 +398,17 @@ watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], ()
         action-label="Retry"
         action-busy-label="Retrying catalog…"
         :action-busy="catalogLoading"
-        @action="loadCatalog()"
+        @action="retryCatalog"
+      />
+    </div>
+    <div v-if="catalogIncomplete" ref="catalogWarningNotice" class="mb-3">
+      <InlineNotification
+        tone="warning"
+        message="Catalog needs attention. Returned skills remain usable, but the list may be incomplete. Review the warning details below."
+        action-busy-label="Retrying catalog…"
+        :action-busy="catalogLoading"
+        :action-label="catalogError ? '' : 'Retry'"
+        @action="retryCatalog"
       />
     </div>
     <p v-for="warning in catalogWarnings" :key="warning" class="agents-hint" role="status">{{ warning }}</p>
@@ -390,6 +422,7 @@ watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], ()
           :show-status="false"
           :selected-id="selectedSkill?.id || ''"
           :loading="catalogLoading"
+          :incomplete="catalogIncomplete"
           :busy="detailLoading || workbenchLocked"
           title="Workspace and provider skills"
           empty-text="No skills have been published in this workspace."
@@ -398,6 +431,13 @@ watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], ()
       </section>
 
       <section ref="detailSection" tabindex="-1" class="min-w-0 rounded-xl border border-border-subtle bg-surface p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="Skill details">
+        <InlineNotification
+          v-if="selectedSkillUnverified"
+          class="mb-4"
+          tone="warning"
+          title="Skill not listed in the latest catalog response."
+          message="Its existing details are retained, but edit, export, and delete are paused. Retry to verify it before making changes."
+        />
         <template v-if="mode === 'create' || mode === 'edit'">
           <div class="mb-4 flex items-start justify-between gap-3">
             <div><h3 class="text-[16px] font-semibold text-text-primary">{{ mode === 'create' ? 'Create a workspace skill' : 'Edit workspace skill' }}</h3><p class="mt-1 text-[12px] text-text-secondary">The SKILL.md frontmatter supplies the skill name and description.</p></div>
@@ -418,7 +458,7 @@ watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], ()
           <p v-if="validationError" class="agents-fielderr" role="alert">{{ validationError }}</p>
           <p v-if="saveError" class="agents-fielderr" role="alert">Could not save skill: {{ saveError }}</p>
           <div class="mt-4 flex flex-wrap justify-end gap-2">
-            <button type="button" class="k-btn k-btn--primary" :disabled="workbenchLocked" :aria-busy="saving ? 'true' : undefined" @click="save"><Loader2 v-if="saving" class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" /><Save v-else class="agents-skill-workbench__button-icon" aria-hidden="true" /> {{ saving ? 'Saving…' : mode === 'create' ? 'Create skill' : 'Save skill' }}</button>
+            <button type="button" class="k-btn k-btn--primary" :disabled="workbenchLocked || (mode === 'edit' && selectedSkillUnverified)" :aria-busy="saving ? 'true' : undefined" @click="save"><Loader2 v-if="saving" class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" /><Save v-else class="agents-skill-workbench__button-icon" aria-hidden="true" /> {{ saving ? 'Saving…' : mode === 'create' ? 'Create skill' : 'Save skill' }}</button>
           </div>
         </template>
         <div v-else-if="!selectedSkill" class="flex min-h-72 flex-col items-center justify-center gap-3 text-center" role="status">
@@ -430,9 +470,9 @@ watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], ()
           <div class="agents-skill-workbench__detail-header mb-4 flex items-start justify-between gap-3">
             <div class="agents-skill-workbench__detail-heading min-w-0"><p class="text-[10px] uppercase tracking-wide text-text-muted">{{ selectedSkill.scope }}{{ selectedSkill.editable ? ' · editable' : ' · read-only' }}</p><h3 class="mt-1 break-words text-[18px] font-semibold text-text-primary">{{ selectedSkill.name }}</h3><p class="mt-1 text-[12px] text-text-secondary">{{ selectedSkill.description }}</p><code class="mt-1 block break-all text-[10px] text-text-muted" :title="selectedSkill.id">{{ selectedSkill.packageName || selectedSkill.packagePath }}</code></div>
             <div v-if="selectedSkill.editable" class="agents-skill-workbench__detail-actions flex shrink-0 gap-1">
-              <button type="button" class="k-btn k-btn--ghost secondary" :disabled="detailLoading || workbenchLocked" @click="exportSkill"><Download class="agents-skill-workbench__button-icon" aria-hidden="true" /> Export</button>
-              <button type="button" class="k-btn k-btn--ghost secondary" :disabled="detailLoading || workbenchLocked" @click="startEdit"><Save class="agents-skill-workbench__button-icon" aria-hidden="true" /> Edit</button>
-              <button type="button" class="k-icon-action agents-iconbtn-danger" :disabled="workbenchLocked" aria-label="Delete workspace skill" title="Delete workspace skill" @click="removeSkill"><Trash2 class="agents-skill-workbench__button-icon" aria-hidden="true" /></button>
+              <button type="button" class="k-btn k-btn--ghost secondary" :disabled="detailLoading || workbenchLocked || selectedSkillUnverified" @click="exportSkill"><Download class="agents-skill-workbench__button-icon" aria-hidden="true" /> Export</button>
+              <button type="button" class="k-btn k-btn--ghost secondary" :disabled="detailLoading || workbenchLocked || selectedSkillUnverified" @click="startEdit"><Save class="agents-skill-workbench__button-icon" aria-hidden="true" /> Edit</button>
+              <button type="button" class="k-icon-action agents-iconbtn-danger" :disabled="workbenchLocked || selectedSkillUnverified" aria-label="Delete workspace skill" title="Delete workspace skill" @click="removeSkill"><Trash2 class="agents-skill-workbench__button-icon" aria-hidden="true" /></button>
             </div>
           </div>
           <div v-if="detailError" ref="detailNotice" class="agents-skill-workbench__detail-error mb-3">

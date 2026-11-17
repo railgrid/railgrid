@@ -10,6 +10,107 @@ function deferred<T>() {
 }
 
 describe('Workspace skills library', () => {
+  it('keeps returned rows usable and replaces a warning-bearing result after retry', async () => {
+    const skill = { id: 'workspace:review', name: 'Review', description: 'Review changes.', scope: 'workspace', enabled: false, editable: true, resources: [] }
+    const retryResult = deferred<{ skills: typeof skill[]; warnings: string[] }>()
+    const getSkillLibrary = vi.fn()
+      .mockResolvedValueOnce({ skills: [skill], warnings: ['Provider skills could not be loaded. Retry to refresh the library.'] })
+      .mockImplementationOnce(() => retryResult.promise)
+    const api = stubApi({ getSkillLibrary })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(SkillsLibrary, { store, api })
+
+    try {
+      expect(text(view.element)).toContain('Catalog needs attention.')
+      expect(text(view.element)).toContain('Returned skills remain usable')
+      expect(text(view.element)).toContain('1 listed')
+      expect(view.element.querySelector('button[aria-label*="Review"]')).not.toBeNull()
+
+      const retry = view.element.querySelector<HTMLButtonElement>('[aria-label="Retry"]')!
+      retry.focus()
+      retry.click()
+      await settleVue(3)
+      expect(retry.getAttribute('aria-busy')).toBe('true')
+      expect(document.activeElement).toBe(retry)
+      retry.click()
+      await settleVue(2)
+      expect(getSkillLibrary).toHaveBeenCalledTimes(2)
+
+      retryResult.resolve({ skills: [skill], warnings: [] })
+      await settleVue(8)
+      expect(text(view.element)).not.toContain('Catalog needs attention.')
+      expect(text(view.element)).toContain('1 skill')
+      expect(document.activeElement).toBe(view.element.querySelector('[aria-label="Skill catalog"]'))
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('retains selected details but pauses actions if a warning-bearing refresh omits the skill', async () => {
+    const skill = {
+      id: 'workspace:review', name: 'Review', description: 'Review changes.', scope: 'workspace',
+      packageName: 'review', enabled: false, editable: true, resources: [], instructions: 'Review the rollout.',
+    }
+    const retryResult = deferred<{ skills: never[]; warnings: string[] }>()
+    const getSkillLibrary = vi.fn()
+      .mockResolvedValueOnce({ skills: [skill], warnings: ['Published skill could not be read.'] })
+      .mockImplementationOnce(() => retryResult.promise)
+    const api = stubApi({
+      getSkillLibrary,
+      getSkillLibraryDetail: async () => skill,
+    })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(SkillsLibrary, { store, api })
+
+    try {
+      view.element.querySelector<HTMLButtonElement>('button[aria-label*="Review"]')!.click()
+      await settleVue(8)
+      expect(text(view.element)).toContain('Review the rollout.')
+
+      const retry = view.element.querySelector<HTMLButtonElement>('[aria-label="Retry"]')!
+      retry.click()
+      await settleVue(3)
+      retryResult.resolve({ skills: [], warnings: ['Provider skills could not be loaded.'] })
+      await settleVue(8)
+
+      expect(view.element.querySelector('[aria-label="Skill details"]')?.textContent).toContain('Skill not listed in the latest catalog response.')
+      expect(view.element.querySelector('[aria-label="Skill details"]')?.textContent).toContain('Review the rollout.')
+      expect(view.element.querySelector('button[aria-label="Delete workspace skill"]')?.hasAttribute('disabled')).toBe(true)
+      expect(view.element.querySelector('button')?.textContent).not.toContain('Review')
+      expect(view.element.querySelector('[aria-label="Skill catalog"] .skill-catalog-empty-text')?.textContent).toContain('No skills were listed in this response.')
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('keeps warning details and one focused retry when a catalog retry fails', async () => {
+    const getSkillLibrary = vi.fn()
+      .mockResolvedValueOnce({ skills: [], warnings: ['Workspace skills could not be loaded. Retry to refresh the library.'] })
+      .mockRejectedValueOnce(new Error('Retry failed'))
+    const api = stubApi({ getSkillLibrary })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(SkillsLibrary, { store, api })
+
+    try {
+      const warningRetry = [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.getAttribute('aria-label') === 'Retry')!
+      warningRetry.focus()
+      warningRetry.click()
+      await settleVue(8)
+
+      expect(text(view.element)).toContain('Retry failed')
+      expect(text(view.element)).toContain('Workspace skills could not be loaded.')
+      const retries = [...view.element.querySelectorAll<HTMLButtonElement>('button')].filter(button => button.getAttribute('aria-label') === 'Retry')
+      expect(retries).toHaveLength(1)
+      expect(document.activeElement).toBe(retries[0])
+      expect(getSkillLibrary).toHaveBeenCalledTimes(2)
+    } finally {
+      view.unmount()
+    }
+  })
+
   it('uses the shared multi-term search across skill names and scopes', async () => {
     const skill = { id: 'workspace:review', name: 'Review', description: 'Check a change', scope: 'workspace', enabled: true, editable: true, resources: [] }
     const api = stubApi({ getSkillLibrary: async () => ({ skills: [skill], catalogDigest: '', warnings: [] }) })

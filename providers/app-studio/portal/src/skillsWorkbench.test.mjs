@@ -50,11 +50,10 @@ test('uses the generic detail and activation routes for focused skills', () => {
 
 test('preserves loading, empty, error, and refresh states', () => {
   assert.match(skillCatalog, /Loading skills…/)
-  assert.match(workbench, /return 'No skills are installed for this project yet\.'/)
   assert.match(workbench, /No skills are installed for this project yet\./)
   assert.match(workbench, /role="alert"/)
   assert.match(workbench, /<InlineNotification[\s\S]*action-label="Retry"[\s\S]*action-busy-label="Retrying skills…"[\s\S]*:action-busy="catalogLoading \|\| actionBusy \|\| props\.loading"/)
-  assert.match(workbench, /props\.hasSnapshot \? 'No skills were listed in the last successful catalog\.'/)
+  assert.match(workbench, /computed\(\(\) => catalogFailure\.value\s+\? 'No skills were listed in the last successful catalog\.'/)
   assert.match(workbench, /<AISkillCatalogList\s+v-if="props\.hasSnapshot"/)
   assert.match(workbench, /'Skill count is unavailable until the catalog loads\.'/)
   assert.match(workbench, /aria-label="Refresh skills"/)
@@ -68,6 +67,28 @@ test('preserves loading, empty, error, and refresh states', () => {
   assert.match(refreshBody, /catalogError\.value = null/)
   assert.match(refreshBody, /catalogError\.value = friendlyError\(error, 'Could not refresh the skill catalog\.'\)/)
   assert.doesNotMatch(refreshBody, /clearManagementError\(\)/)
+})
+
+test('keeps warning-bearing catalogs labeled as listed results and preserves unverified selection', () => {
+  assert.match(workbench, /const catalogWarnings = ref\(\[\.\.\.props\.warnings\]\)/)
+  assert.match(workbench, /const catalogIncomplete = computed\(\(\) => props\.hasSnapshot && catalogWarnings\.value\.length > 0\)/)
+  assert.match(workbench, /:incomplete="catalogIncomplete"/)
+  assert.match(workbench, /title="Catalog needs attention"/)
+  assert.match(workbench, /Returned skills remain usable, but the list may be incomplete\./)
+  assert.match(workbench, /else if \(!catalogWarnings\.value\.length\) clearSelectedSkill\(\)/)
+  assert.match(workbench, /selectedSkillUnverified/)
+  assert.match(workbench, /Skill not listed in the latest catalog response\./)
+  assert.match(workbench, /Retry to verify this skill before changing activation\./) // The stale selection is visible, but never actionable.
+  assert.match(workbench, /:aria-disabled="catalogLoading \|\| actionBusy \|\| props\.loading \|\| !projectName \? 'true' : undefined"/)
+  const skillSwitchStart = workbench.indexOf('role="switch"')
+  const skillSwitchEnd = workbench.indexOf('</button>', skillSwitchStart)
+  const skillSwitch = workbench.slice(skillSwitchStart, skillSwitchEnd)
+  assert.match(skillSwitch, /:aria-disabled="actionBusy \|\| selectedSkillUnverified \? 'true' : undefined"/)
+  assert.doesNotMatch(skillSwitch, /:disabled=/)
+  assert.match(skillCatalog, /incomplete\?: boolean/)
+  assert.match(skillCatalog, /\$\{filteredSkills\.value\.length\} \$\{props\.query\.trim\(\) \? 'shown' : 'listed'\}/)
+  assert.match(skillCatalog, /No listed skills match/)
+  assert.match(skillCatalog, /No skills were listed in this response\. Review the warnings or retry\./)
 })
 
 test('clears the parent catalog failure only after applying a current catalog response', () => {
@@ -162,4 +183,88 @@ test('keeps the skill switch compact inside a full touch target', () => {
   assert.match(workbench, /'Skill disabled' : 'Skill enabled'/)
   assert.match(workbench, /@container \(max-width: 540px\)[\s\S]*grid-template-columns: 56px minmax\(0, 1fr\)[\s\S]*grid-column: 1 \/ -1/)
   assert.doesNotMatch(workbench, /skill-detail-title[^\n]*truncate/)
+})
+
+// Exercise the actual retry handler, including the order that re-enables the
+// modal controls. Browser checks separately cover Vue's rendered focus trap.
+async function retryHarness() {
+  const { default: ts } = await import('typescript')
+  const { createContext, runInContext } = await import('node:vm')
+  const start = workbench.indexOf('async function retryDetailCatalog()')
+  const end = workbench.indexOf('\nasync function toggleSelectedSkill()', start)
+  const handler = ts.transpileModule(workbench.slice(start, end), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  let resolve, requests = 0
+  const pending = new Promise(done => { resolve = done })
+  const body = {}, retry = { isConnected: true }, outside = { isConnected: true }
+  const context = createContext({
+    props: { projectName: 'review', ctx: {}, loading: false },
+    actionBusy: { value: false }, catalogLoading: { value: false },
+    catalogRequestSerial: 0, selectedSkillID: { value: 'skill' },
+    catalogFailure: { value: null },
+    detailCatalogWarningNotice: { value: { contains: node => node === retry } },
+    detailCatalogErrorNotice: { value: { contains: node => node === retry, querySelector: () => errorRetry } },
+    detailCloseRef: { value: { focus: () => {
+      assert.equal(context.actionBusy.value, false, 'Close must be enabled before restoring focus')
+      context.document.activeElement = close
+    } } },
+    document: { activeElement: retry, body },
+    nextTick: async () => { if (context.document.activeElement === retry) context.document.activeElement = body },
+    focusWasLost: () => context.document.activeElement === body,
+    assistantSkillsRequestIsCurrent,
+    refreshCatalog: () => { requests++; context.catalogRequestSerial++; return pending },
+  })
+  const close = {}, errorRetry = { focus: () => { context.document.activeElement = errorRetry } }
+  runInContext(handler, context)
+  return { context, resolve, retry, outside, close, errorRetry, requests: () => requests }
+}
+
+test('detail catalog retry serializes activation and restores focus after enabling Close', async () => {
+  const h = await retryHarness()
+  const first = h.context.retryDetailCatalog()
+  await h.context.retryDetailCatalog()
+  assert.equal(h.requests(), 1)
+  assert.equal(h.context.actionBusy.value, true)
+  assert.equal(h.context.document.activeElement, h.retry)
+  h.resolve(true)
+  await first
+  assert.equal(h.context.document.activeElement, h.close)
+})
+
+test('a failed warning retry moves lost focus to the single error retry', async () => {
+  const h = await retryHarness()
+  const request = h.context.retryDetailCatalog()
+  h.context.catalogFailure.value = 'Source unavailable'
+  h.resolve(false)
+  await request
+  assert.equal(h.context.document.activeElement, h.errorRetry)
+  assert.equal(h.context.actionBusy.value, false)
+})
+
+test('retry does not steal focus when a warning remains or the user moves focus', async () => {
+  for (const target of ['retry', 'outside']) {
+    const h = await retryHarness()
+    h.context.nextTick = async () => {}
+    const request = h.context.retryDetailCatalog()
+    h.context.document.activeElement = h[target]
+    h.resolve(true)
+    await request
+    assert.equal(h.context.document.activeElement, h[target])
+  }
+})
+
+test('obsolete modal retry cannot clear newer busy state or move focus', async () => {
+  for (const change of ['project', 'context', 'serial', 'selection']) {
+    const h = await retryHarness()
+    const request = h.context.retryDetailCatalog()
+    if (change === 'project') h.context.props.projectName = 'another-project'
+    if (change === 'context') h.context.props.ctx = {}
+    if (change === 'serial') h.context.catalogRequestSerial++
+    if (change === 'selection') h.context.selectedSkillID.value = 'another-skill'
+    h.resolve(true)
+    await request
+    assert.notEqual(h.context.document.activeElement, h.close)
+    if (change !== 'selection') assert.equal(h.context.actionBusy.value, true)
+  }
 })

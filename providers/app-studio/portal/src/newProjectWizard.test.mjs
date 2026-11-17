@@ -292,7 +292,7 @@ test('landing intake uses a compact Railgrid composer with concrete prompts and 
   assert.match(appSource, /aria-haspopup="dialog"[\s\S]*aria-controls="landing-import-popover"[\s\S]*:aria-expanded="landingImportOpen"/)
   assert.match(appSource, /id="landing-import-popover"[\s\S]*role="dialog"[\s\S]*aria-label="Import an existing repository"/)
   assert.match(appSource, /Loading repositories…/)
-  assert.match(appSource, /No unclaimed repositories available\./)
+  assert.match(appSource, /No repositories are available to import\./)
   assert.match(appSource, /importRepositoriesError[\s\S]*Retry/)
   assert.match(appSource, /importRepositoryProject/)
   assert.match(appSource, /@add-attachment="stagePreProjectAttachment"/)
