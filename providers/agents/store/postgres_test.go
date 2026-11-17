@@ -342,6 +342,50 @@ func TestPostgres_RunResultSchemaIsWrittenOnceAndKept(t *testing.T) {
 	}
 }
 
+// Model-use delegation is decided at admission (start-run/v1): it round-trips,
+// a rewrite that does not carry it leaves it set, and a run admitted without it
+// reads back attended. Losing it on a rewrite would make an approval resume
+// ask the approver for `use` instead.
+func TestPostgres_RunModelUseDelegationIsWrittenOnceAndKept(t *testing.T) {
+	stores := map[string]Store{"memory": NewMemoryStore()}
+	if os.Getenv("AGENTS_TEST_POSTGRES_DSN") != "" {
+		stores["postgres"] = openTestPostgres(t)
+	}
+	for name, s := range stores {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			sc := Scope{OrgUUID: "org-" + name, WorkspaceUUID: "ws-" + uuid.NewString(), AgentName: "scout"}
+			now := time.Now().UTC().Truncate(time.Millisecond)
+			runID := uuid.NewString()
+			if err := s.SaveRun(ctx, sc, Run{
+				ID: runID, AgentName: sc.AgentName, Trigger: "api", Phase: RunPhasePending,
+				ModelUseDelegated: true, Input: "task", CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatalf("save: %v", err)
+			}
+			if got, err := s.GetRun(ctx, sc, runID); err != nil || !got.ModelUseDelegated {
+				t.Fatalf("read back delegated = %v, %v", got.ModelUseDelegated, err)
+			}
+			if err := s.SaveRun(ctx, sc, Run{
+				ID: runID, AgentName: sc.AgentName, Trigger: "api", Phase: RunPhaseRunning,
+				Input: "task", CreatedAt: now, UpdatedAt: now.Add(time.Second),
+			}); err != nil {
+				t.Fatalf("rewrite: %v", err)
+			}
+			if got, err := s.GetRun(ctx, sc, runID); err != nil || !got.ModelUseDelegated || got.Phase != RunPhaseRunning {
+				t.Fatalf("after a rewrite without it: delegated = %v phase = %s, %v", got.ModelUseDelegated, got.Phase, err)
+			}
+			bare := uuid.NewString()
+			if err := s.SaveRun(ctx, sc, Run{ID: bare, AgentName: sc.AgentName, Trigger: "api", Phase: RunPhasePending, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := s.GetRun(ctx, sc, bare); err != nil || got.ModelUseDelegated {
+				t.Fatalf("a run admitted attended reads back delegated = %v, %v", got.ModelUseDelegated, err)
+			}
+		})
+	}
+}
+
 // sameJSON compares two documents by value: JSONB re-spaces what it stores,
 // and the schema's meaning, not its bytes, is what a run is checked against.
 func sameJSON(a, b json.RawMessage) bool {

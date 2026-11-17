@@ -275,6 +275,17 @@ func WithProxiedIdentity(ctx context.Context, identity ProxiedIdentity) context.
 	return context.WithValue(ctx, proxiedIdentityKey{}, identity)
 }
 
+// WithoutProxiedIdentity returns ctx with no proxied caller, keeping every other
+// value. Work that outlives the request and acts as the provider (an unattended
+// run, a background job) uses it so a check further down cannot mistake the
+// caller who started the work for one attending it.
+func WithoutProxiedIdentity(ctx context.Context) context.Context {
+	if _, ok := ProxiedIdentityFrom(ctx); !ok {
+		return ctx
+	}
+	return context.WithValue(ctx, proxiedIdentityKey{}, nil)
+}
+
 // ProxiedIdentityFrom reports the proxied caller, if this request came through
 // the subresource adapter.
 func ProxiedIdentityFrom(ctx context.Context) (ProxiedIdentity, bool) {

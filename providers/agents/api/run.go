@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/railgrid/provider-sdk/dataplane"
 	sdk "github.com/railgrid/provider-sdk/skills"
 
 	einomodel "github.com/cloudwego/eino/components/model"
@@ -604,9 +605,15 @@ type taskRun struct {
 	// ResultSchema asks a non-repository run's final answer to be one JSON
 	// document matching this schema (a repository run carries its schema on
 	// Repository). Validated at admission; checked when the turn completes.
-	ResultSchema    json.RawMessage
-	ModelSettings   *store.ModelSettings
-	HarnessSettings *store.HarnessSettings
+	ResultSchema json.RawMessage
+	// ModelUseDelegated is set at admission for a run started through an
+	// automation grant (start-run/v1) and persisted on the run. runTurn then
+	// executes its turns with no attending caller, so the agent's configured
+	// models are used under the same delegation as a Schedule or Trigger run,
+	// whichever request (an inbox approval, a recovery) resumes it.
+	ModelUseDelegated bool
+	ModelSettings     *store.ModelSettings
+	HarnessSettings   *store.HarnessSettings
 	// generateSessionTitle is set only by the live chat transport, so internal
 	// runTurn callers do not start metadata requests just because they share the
 	// chat trigger.
@@ -770,6 +777,13 @@ const backendCancelTimeout = 30 * time.Second
 // provider-agents/backend), which is why there is one of these and not one per
 // way of starting work: a bug fixed here is fixed for all of them.
 func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (runResult, error) {
+	if run.ModelUseDelegated {
+		// A delegated run has no attending caller. Whoever's request carried
+		// this turn here (the app that started it, a user approving its inbox
+		// item) is not the identity its model use is checked against: the
+		// agent's configured connections are used as a Schedule run uses them.
+		ctx = dataplane.WithoutProxiedIdentity(ctx)
+	}
 	scope, agent := run.Scope, run.Agent
 	if err := s.resolveChatModelSettings(ctx, &run); err != nil {
 		return runResult{}, err
@@ -1559,11 +1573,12 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 		// What a repository run is asked to run against is part of the REQUEST,
 		// so it is on the first record: the Run object is projected from this
 		// write, and its spec is never rewritten afterwards.
-		Repository:      tr.Repository.persisted(),
-		ResultSchema:    tr.ResultSchema,
-		HarnessSettings: tr.HarnessSettings,
-		ModelSettings:   tr.ModelSettings,
-		Phase:           store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
+		Repository:        tr.Repository.persisted(),
+		ResultSchema:      tr.ResultSchema,
+		ModelUseDelegated: tr.ModelUseDelegated,
+		HarnessSettings:   tr.HarnessSettings,
+		ModelSettings:     tr.ModelSettings,
+		Phase:             store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		// The unique store key is the admission boundary. Concurrent requests
 		// may both miss the earlier lookup; only the one that records a run may

@@ -30,6 +30,7 @@ import (
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-sdk/dataplane"
 
 	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
 )
@@ -104,6 +105,11 @@ type invokeRunRequest struct {
 	// Limits requests hard per-run allowances. Only maxOutputTokens is
 	// enforceable by the in-process model backend; maxUSD is rejected explicitly.
 	Limits *invokeRunLimits `json:"runLimits,omitempty"`
+	// modelUseDelegated is set only by the start-run/v1 action, never by a
+	// request body: the run spends the agent's configured models without
+	// asking the caller for `use` on their provider connection. The `run`
+	// verb leaves it false, so its caller is still asked.
+	modelUseDelegated bool
 }
 
 type invokeRunLimits struct {
@@ -328,7 +334,14 @@ func (s *Server) invokeRun(r *http.Request, c *agentsclient.Client, id identity,
 		if err != nil {
 			return 0, invokeRunResponse{}, err
 		}
-		cred, err = llm.ResolveModelCredentialForRuntime(r.Context(), c, cred)
+		// A delegated run is not the caller's use of the connection, at
+		// admission any more than in its turns: resolve it as an unattended
+		// run does, through the provider's view with no caller attached.
+		resolveCtx, resolver := r.Context(), llm.SecretGetter(c)
+		if gate, ok := gateFrom(r.Context()); ok && req.modelUseDelegated {
+			resolveCtx, resolver = dataplane.WithoutProxiedIdentity(r.Context()), vwSecrets{dyn: gate.provider}
+		}
+		cred, err = llm.ResolveModelCredentialForRuntime(resolveCtx, resolver, cred)
 		if err != nil {
 			return 0, invokeRunResponse{}, err
 		}
@@ -347,6 +360,7 @@ func (s *Server) invokeRun(r *http.Request, c *agentsclient.Client, id identity,
 		Callback:              req.Callback,
 		Repository:            repository,
 		ResultSchema:          canonicalResultSchema(req.ResultSchema),
+		ModelUseDelegated:     req.modelUseDelegated,
 		// SourceName attributes the run to its caller in the activity view. The
 		// caller's name comes from the hub's verified header when there is one
 		// and is omitted otherwise — it is a label, never a trust root; the
