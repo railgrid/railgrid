@@ -54,7 +54,19 @@ func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 			continue
 		}
 		if route.Action {
-			t.Errorf("%s came out as an action; this provider declares no actions under spec.export.resources[].actions[]", coordinate)
+			t.Errorf("%s came out as an action; it is declared under spec.export.resources[].verbs[]", coordinate)
+		}
+	}
+	// The catalogued actions are dispatched to the Actions handler, with the
+	// contract version the declaration states.
+	for _, coordinate := range []string{"agents/start-run", "agents/get-run"} {
+		route, ok := routes[coordinate]
+		if !ok {
+			t.Errorf("manifest.yaml declares the action %s but it is not in the table", coordinate)
+			continue
+		}
+		if !route.Action {
+			t.Errorf("%s came out as a verb; it is declared under spec.export.resources[].actions[]", coordinate)
 		}
 	}
 	// status and scale belong to the object's own shape; the helper refuses

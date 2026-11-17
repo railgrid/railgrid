@@ -115,3 +115,25 @@ func structuredJSON(text string) ([]byte, error) {
 	}
 	return raw, nil
 }
+
+// unfenceJSON removes one Markdown code fence wrapped around the whole answer
+// (```json … ``` or ``` … ```). Chat models routinely fence a JSON answer even
+// when told not to; a fence is presentation, not content, so it is not a
+// reason to fail an otherwise valid result. Anything else is returned as is,
+// and structuredJSON decides.
+func unfenceJSON(text string) string {
+	t := strings.TrimSpace(text)
+	if !strings.HasPrefix(t, "```") || !strings.HasSuffix(t, "```") || len(t) < 6 {
+		return text
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(t, "```"), "```")
+	newline := strings.IndexByte(body, '\n')
+	if newline < 0 {
+		return text
+	}
+	// The info string ("json", "JSON", nothing) runs to the first newline.
+	if info := strings.TrimSpace(body[:newline]); info != "" && !strings.EqualFold(info, "json") {
+		return text
+	}
+	return body[newline+1:]
+}

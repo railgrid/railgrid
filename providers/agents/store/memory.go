@@ -1083,6 +1083,15 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	if old, ok := m.runs[key]; ok && old.Limits != nil {
 		run.Limits = old.Limits
 	}
+	// ResultSchema is part of the request, so a rewrite never replaces it
+	// (the Postgres upsert COALESCEs it the same way).
+	if old, ok := m.runs[key]; ok && len(old.ResultSchema) > 0 {
+		run.ResultSchema = old.ResultSchema
+	}
+	run.ResultSchema = append(json.RawMessage(nil), run.ResultSchema...)
+	if len(run.ResultSchema) == 0 {
+		run.ResultSchema = nil
+	}
 	if old, ok := m.runs[key]; ok {
 		if run.InvocationFingerprint == "" {
 			run.InvocationFingerprint = old.InvocationFingerprint

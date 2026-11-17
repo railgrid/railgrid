@@ -237,9 +237,13 @@ func buildHandler(srv *api.Server, readiness http.Handler, dist fs.FS, subresour
 		Portal:    dist,
 		MCP:       srv.MCPHandler(),
 		DataPlane: srv.DataPlane(),
-		// The declared coordinates serve's adapter dispatches to DataPlane:
-		// a verb exists only as a kcp custom subresource on the agents
-		// APIExport, and only for a coordinate in this table.
+		// The catalogued actions (agents/start-run, agents/get-run): the
+		// same subresource transport, dispatched here with the contract
+		// version restored onto the route.
+		Actions: srv.Actions(),
+		// The declared coordinates serve's adapter dispatches to DataPlane
+		// or Actions: a call exists only as a kcp custom subresource on the
+		// agents APIExport, and only for a coordinate in this table.
 		Subresources: subresources,
 		OAuth:        oauthRoutes,
 		Extra: []serve.Route{

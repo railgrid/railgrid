@@ -17,8 +17,7 @@ limitations under the License.
 package v1alpha1
 
 // Custom subresource kinds: one per coordinate this provider declares in
-// manifest.yaml (spec.export.resources[].verbs[]; this provider declares no
-// actions).
+// manifest.yaml (spec.export.resources[].verbs[] and .actions[]).
 //
 // A verb is served by the provider's own HTTP server; kcp routes it as the
 // APIExport entry "<resource>/<verb>" (storage.virtual → the provider's
@@ -474,6 +473,8 @@ func init() {
 			&InboxAnswerRequest{},
 			&MessagesRequest{},
 			&RunRequest{},
+			&StartRunRequest{},
+			&GetRunRequest{},
 			&SessionRequest{},
 			&SessionsRequest{},
 			&SkillCatalogRequest{},
@@ -525,6 +526,40 @@ type SkillDetailRequest struct {
 // +kubebuilder:resource:path=attachments,scope=Cluster
 // +kubebuilder:resource:singular=attachments
 type AttachmentsRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
+// StartRunRequest is the payload of the catalogued "start-run" action on
+// agents: start an unattended run and return its id at once.
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=start-run,scope=Cluster
+// +kubebuilder:resource:singular=start-run
+type StartRunRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
+// GetRunRequest is the payload of the catalogued "get-run" action on agents:
+// read one of the agent's runs, its final answer and structured result.
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=get-run,scope=Cluster
+// +kubebuilder:resource:singular=get-run
+type GetRunRequest struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	// +optional

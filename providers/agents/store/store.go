@@ -230,8 +230,13 @@ type Run struct {
 	// Result is what a repository run produced, once the exported Git result
 	// was fetched and verified. Nil until the run succeeds, and always nil for
 	// a run with no Repository.
-	Result               *RunResult            `json:"result,omitempty"`
-	StructuredResult     *StructuredResult     `json:"structuredResult,omitempty"`
+	Result           *RunResult        `json:"result,omitempty"`
+	StructuredResult *StructuredResult `json:"structuredResult,omitempty"`
+	// ResultSchema is the JSON Schema the caller asked this run's final answer
+	// to match. It is part of the request: written at admission and never
+	// rewritten, so a resumed or recovered run checks against the same schema.
+	// A repository run carries its schema on Repository instead.
+	ResultSchema         json.RawMessage       `json:"resultSchema,omitempty"`
 	Message              string                `json:"message,omitempty"`
 	Checkpoint           json.RawMessage       `json:"checkpoint,omitempty"`
 	RunnerCleanupBinding *RunnerCleanupBinding `json:"-"`

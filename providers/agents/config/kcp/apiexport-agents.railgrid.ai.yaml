@@ -163,6 +163,15 @@ spec:
           kind: DataPlaneEndpointSlice
           name: agents.railgrid.ai
   - group: agents.railgrid.ai
+    name: agents/get-run
+    schema: v261117-cfba73815.get-run.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
     name: agents/inbox
     schema: v260924-87f1980f.inbox.agents.railgrid.ai
     storage:
@@ -237,6 +246,15 @@ spec:
   - group: agents.railgrid.ai
     name: agents/skill-detail
     schema: v261105-980e97ca4.skill-detail.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/start-run
+    schema: v261117-cfba73815.start-run.agents.railgrid.ai
     storage:
       virtual:
         reference:
