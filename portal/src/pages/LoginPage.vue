@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { consumePortalNext, rememberPortalNext } from '@/auth/portalNext'
 import { consumeAppAccessNext, peekAppAccessNext, rememberAppAccessNext } from '@/auth/appAccessNext'
 import { API_PATHS } from '@/lib/constants'
-import { Hexagon, KeyRound, ShieldCheck, Loader2, AlertCircle, Sun, Moon, Monitor, Plus } from 'lucide-vue-next'
+import { AlertCircle, Hexagon, Loader2, Monitor, Moon, Sun } from 'lucide-vue-next'
 
 const auth = useAuthStore()
 const theme = useThemeStore()
@@ -18,7 +18,7 @@ const themeIcon = computed(() => {
 const router = useRouter()
 const tokenInput = ref('')
 const loginError = ref<string | null>(null)
-const inputFocused = ref(false)
+const tokenField = ref<HTMLInputElement | null>(null)
 const showTokenForm = ref(false)
 
 const oidcAvailable = computed(
@@ -110,138 +110,106 @@ function handleOIDCLogin(force = false) {
 function startOIDCLogin() {
   handleOIDCLogin(false)
 }
+
+async function revealTokenForm() {
+  showTokenForm.value = true
+  await nextTick()
+  tokenField.value?.focus()
+}
 </script>
 
 <template>
-  <div class="contour-grid relative flex min-h-screen bg-surface">
-    <!-- Theme toggle -->
-    <button
-      type="button"
-      class="k-btn k-btn--ghost fixed right-4 top-4 z-50 h-8 w-8 p-0 text-text-muted transition-all hover:text-text-secondary"
-      title="Toggle theme"
-      @click="theme.toggle()"
-    >
-      <component :is="themeIcon" class="h-3.5 w-3.5" :stroke-width="1.75" />
-    </button>
-
-    <!-- Left decorative panel (hidden on small) -->
-    <div class="hidden flex-1 items-center justify-center lg:flex">
-      <div class="relative">
-        <div class="relative flex h-72 w-72 flex-col items-center justify-center rounded-xl border border-border-default bg-surface-raised shadow-sm">
-          <div class="relative flex h-20 w-20 items-center justify-center rounded-xl border border-border-default bg-surface-overlay">
-            <Hexagon class="h-10 w-10 text-accent" :stroke-width="1.5" />
-          </div>
-          <span class="type-display mt-6 text-2xl font-bold tracking-tight text-text-primary">RAILGRID</span>
-          <div class="energy-line mt-6 h-px w-24" />
-        </div>
-      </div>
+  <main class="relative grid min-h-dvh place-items-center bg-surface px-6 py-20">
+    <div class="absolute right-4 top-4">
+      <button
+        type="button"
+        class="k-icon-action"
+        :aria-label="`Toggle theme (current: ${theme.mode})`"
+        :title="`Toggle theme (current: ${theme.mode})`"
+        @click="theme.toggle()"
+      >
+        <component :is="themeIcon" :stroke-width="1.75" aria-hidden="true" />
+      </button>
     </div>
 
-    <!-- Right: login form -->
-    <div class="relative flex flex-1 items-center justify-center px-6">
-      <div class="w-full max-w-sm">
-        <!-- Mobile logo -->
-        <div class="mb-8 text-center lg:hidden">
-          <div class="relative mx-auto flex h-14 w-14 items-center justify-center">
-            <div class="relative flex h-14 w-14 items-center justify-center rounded-xl border border-border-default bg-surface-overlay">
-              <Hexagon class="h-7 w-7 text-accent" :stroke-width="1.5" />
-            </div>
-          </div>
-          <h1 class="type-display mt-4 text-xl font-bold text-text-primary">RAILGRID</h1>
+    <div class="w-full max-w-sm">
+      <div class="mb-9 text-center">
+        <div class="inline-flex items-center gap-2.5 text-text-primary">
+          <Hexagon class="size-7 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
+          <span class="type-display text-2xl/none font-bold">RAILGRID</span>
+        </div>
+        <div class="mx-auto mt-4 h-2 w-16 border-y border-border-default" aria-hidden="true" />
+      </div>
+
+      <div class="text-center">
+        <h1 class="text-2xl font-semibold tracking-tight text-text-primary">Sign in to Railgrid</h1>
+        <p class="mt-2 text-sm/5 text-balance text-text-secondary">
+          Build apps, run AI agents, and work with connected data and infrastructure.
+        </p>
+      </div>
+
+      <div class="mt-6 space-y-3">
+        <div
+          v-if="loginError"
+          id="login-error"
+          class="flex items-start gap-2 rounded-md bg-danger-subtle p-3 text-sm text-danger"
+          role="alert"
+        >
+          <AlertCircle class="mt-0.5 size-4 shrink-0" :stroke-width="1.75" aria-hidden="true" />
+          {{ loginError }}
         </div>
 
-        <div class="rounded-xl border border-border-default shadow-sm">
-          <div class="space-y-5 rounded-xl bg-surface-raised p-7">
-            <div>
-              <h2 class="text-[15px] font-semibold text-text-primary">Sign in to Railgrid</h2>
-              <p class="mt-0.5 text-[12px] text-text-muted">Access your workspaces, apps, and infrastructure.</p>
-            </div>
+        <button
+          v-if="oidcAvailable"
+          type="button"
+          class="k-btn k-btn--primary min-h-11 w-full"
+          @click="startOIDCLogin"
+        >
+          Sign in with SSO
+        </button>
 
-            <!-- Error -->
-            <div
-              v-if="loginError"
-              id="login-error"
-              class="flex items-center gap-2 rounded-xl border border-danger/20 bg-danger-subtle p-3 text-[12px] text-danger"
-              role="alert"
-              aria-live="assertive"
-            >
-              <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-              {{ loginError }}
-            </div>
+        <button
+          v-if="oidcAvailable && tokenAvailable && !showTokenForm"
+          type="button"
+          class="k-btn k-btn--text w-full"
+          @click="revealTokenForm"
+        >
+          Use bearer token instead
+        </button>
 
-            <!-- OIDC -->
-            <button
-              v-if="auth.authMode === 'both' || auth.authMode === 'oidc'"
-              type="button"
-              class="k-btn k-btn--primary group w-full px-4 py-2.5 text-[13px] active:scale-[0.98]"
-              @click="startOIDCLogin"
-            >
-              <ShieldCheck class="h-4 w-4 transition-transform duration-200 group-hover:scale-110" :stroke-width="1.75" />
-              Sign in with SSO
-            </button>
-
-            <!-- Divider (only when token form is visible alongside OIDC) -->
-            <div v-if="oidcAvailable && tokenFormVisible" class="relative flex items-center">
-              <div class="energy-line h-px flex-grow" />
-              <span class="mx-3 text-[9px] font-semibold uppercase tracking-[0.2em] text-text-muted">or</span>
-              <div class="energy-line h-px flex-grow" />
-            </div>
-
-            <!-- Toggle to reveal bearer token form when OIDC is available -->
-            <button
-              v-if="oidcAvailable && tokenAvailable && !showTokenForm"
-              type="button"
-              class="k-btn k-btn--ghost group w-full px-2 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
-              @click="showTokenForm = true"
-            >
-              <Plus class="h-3 w-3 transition-transform group-hover:rotate-90" :stroke-width="2" />
-              Use bearer token instead
-            </button>
-
-            <!-- Token -->
-            <form v-if="tokenFormVisible" @submit.prevent="handleTokenLogin" class="space-y-3">
-              <div>
-                <label for="token" class="mb-1 block text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Bearer token</label>
-                <div
-                  class="k-input flex items-center gap-2 px-3 py-2.5 transition-all duration-200"
-                  :class="inputFocused ? 'border-accent ring-[3px] ring-accent/15' : 'border-border-default'"
-                >
-                  <KeyRound class="h-3.5 w-3.5 shrink-0 text-text-muted transition-colors" :class="{ 'text-accent': inputFocused }" :stroke-width="1.75" />
-                  <input
-                    id="token"
-                    v-model="tokenInput"
-                    type="password"
-                    placeholder="Paste token here"
-                    class="w-full bg-transparent font-mono text-[12px] text-text-primary placeholder-text-muted outline-none"
-                    :aria-describedby="loginError ? 'login-error' : undefined"
-                    :aria-invalid="loginError ? 'true' : undefined"
-                    @focus="inputFocused = true"
-                    @blur="inputFocused = false"
-                  />
-                </div>
-              </div>
-              <button
-                type="submit"
-                :disabled="!tokenInput || auth.loading"
-                class="k-btn group w-full px-4 py-2.5 text-[12px] active:scale-[0.98] disabled:pointer-events-none disabled:opacity-30"
-                :class="oidcAvailable ? 'k-btn--ghost' : 'k-btn--primary'"
-              >
-                <Loader2
-                  v-if="auth.loading"
-                  class="h-3.5 w-3.5 animate-spin text-accent"
-                  :stroke-width="2"
-                />
-                <KeyRound
-                  v-else
-                  class="h-3.5 w-3.5 text-text-muted group-hover:text-accent"
-                  :stroke-width="1.75"
-                />
-                {{ auth.loading ? 'Signing in…' : 'Sign in with token' }}
-              </button>
-            </form>
-          </div>
+        <div v-if="oidcAvailable && tokenFormVisible" class="flex items-center gap-3 text-xs text-text-secondary">
+          <span class="h-px flex-1 bg-border-default" aria-hidden="true" />
+          or
+          <span class="h-px flex-1 bg-border-default" aria-hidden="true" />
         </div>
+
+        <form v-if="tokenFormVisible" class="space-y-3" @submit.prevent="handleTokenLogin">
+          <div>
+            <label for="token" class="mb-1 block text-sm font-medium text-text-primary">Bearer token</label>
+            <input
+              id="token"
+              ref="tokenField"
+              v-model="tokenInput"
+              type="password"
+              placeholder="Paste token here"
+              class="k-input w-full font-mono"
+              :aria-describedby="loginError ? 'login-error' : undefined"
+              :aria-invalid="loginError ? 'true' : undefined"
+            />
+          </div>
+          <button
+            type="submit"
+            class="k-btn min-h-11 w-full"
+            :class="oidcAvailable ? 'k-btn--ghost' : 'k-btn--primary'"
+            :disabled="!tokenInput"
+            :aria-disabled="auth.loading || undefined"
+            :aria-busy="auth.loading || undefined"
+          >
+            <Loader2 v-if="auth.loading" class="k-spin size-4" :stroke-width="1.75" aria-hidden="true" />
+            {{ auth.loading ? 'Signing in…' : 'Sign in with token' }}
+          </button>
+        </form>
       </div>
     </div>
-  </div>
+  </main>
 </template>
