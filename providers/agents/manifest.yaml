@@ -170,7 +170,7 @@ spec:
             idempotency: keyed
             limits:
               timeoutSeconds: 60
-              maxInputBytes: 131072
+              maxInputBytes: 1048576
               maxOutputBytes: 4096
               maxResultItems: 1
             consent:

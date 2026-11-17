@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 
@@ -156,6 +157,14 @@ func canonicalJSON(raw json.RawMessage) json.RawMessage {
 	return data
 }
 
+// agentMissingError marks the one NotFound from invokeRun that means the
+// addressed agent does not exist. It reads and classifies exactly like the
+// error it wraps, so the run verb's response is unchanged; an action uses it
+// to tell a missing agent from a missing dependency of one.
+type agentMissingError struct{ error }
+
+func (e agentMissingError) Unwrap() error { return e.error }
+
 type invokeRunResponse struct {
 	RunID string `json:"runId"`
 	Phase string `json:"phase"`
@@ -254,6 +263,11 @@ func (s *Server) invokeRun(r *http.Request, c *agentsclient.Client, id identity,
 
 	agent, err := c.Agents().Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// Marked, because other reads below 404 too (the agent's model
+			// credential), and only this one means the agent itself is gone.
+			err = agentMissingError{err}
+		}
 		return 0, invokeRunResponse{}, err
 	}
 	if limits != nil && (repository != nil || agent.Spec.Harness() != nil) {

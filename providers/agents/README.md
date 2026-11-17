@@ -305,7 +305,10 @@ agent-identity fence), with a narrower input: `task`, a required
 final answer must be one JSON document matching it. It is checked when the
 turn completes, stored as the `structured-result.json` artifact and returned
 by `get-run` as `structuredResult.value`; a non-conforming answer fails the
-run. The contract, limits and error codes are in
+run, which still reports what the agent said. `get-run` reads only the API
+runs of the agent it addresses, never its chat, scheduled or triggered runs,
+nor those of an earlier agent with the same name. The contract, limits and
+error codes are in
 [docs/provider-actions.md](../../docs/provider-actions.md#agents-starting-and-reading-a-run).
 
 ## Dependencies

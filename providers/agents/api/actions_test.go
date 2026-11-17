@@ -18,11 +18,15 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/railgrid/provider-sdk/actionwire"
 	"github.com/railgrid/provider-sdk/dataplane/conformance"
 
+	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
 
 	"github.com/railgrid/railgrid/pkg/runner"
@@ -153,7 +157,7 @@ func TestGetRunActionReturnsTheValidatedResult(t *testing.T) {
 	now := time.Now().UTC()
 	doc := `{"company":"Acme"}`
 	if err := s.store.SaveRun(t.Context(), scope, store.Run{
-		ID: "r1", AgentName: conformanceAgent, Phase: store.RunPhaseSucceeded, Output: "```json\n" + doc + "\n```",
+		ID: "r1", AgentName: conformanceAgent, Trigger: "api", Phase: store.RunPhaseSucceeded, Output: "```json\n" + doc + "\n```",
 		ResultSchema:     json.RawMessage(briefSchema),
 		StructuredResult: &store.StructuredResult{State: "valid", Size: int64(len(doc))},
 		InputTokens:      10, OutputTokens: 20, USDMicros: 30,
@@ -274,15 +278,273 @@ func TestRunWithResultSchemaValidatesTheFinalAnswer(t *testing.T) {
 			if tc.succeeds && string(a.Data) != `{"verdict":"pass"}` {
 				t.Fatalf("artifact = %s, want the unfenced document", a.Data)
 			}
+			// A failed run still carries what the agent said, so a caller
+			// that can only read the run (get-run) sees the near miss.
+			if stored.Output != tc.answer {
+				t.Fatalf("stored output = %q, want the agent's answer %q", stored.Output, tc.answer)
+			}
 		})
 	}
 }
 
-func TestTruncateUTF8(t *testing.T) {
-	if got, cut := truncateUTF8("héllo", 2); got != "h" || !cut {
-		t.Fatalf("truncateUTF8 split a rune: %q %v", got, cut)
+func TestRunePrefix(t *testing.T) {
+	for _, tc := range []struct {
+		s    string
+		n    int
+		want string
+	}{
+		{"héllo", 2, "h"}, {"héllo", 3, "hé"}, {"hello", 10, "hello"}, {"hello", 0, ""}, {"hello", -1, ""},
+	} {
+		if got := runePrefix(tc.s, tc.n); got != tc.want {
+			t.Errorf("runePrefix(%q, %d) = %q, want %q", tc.s, tc.n, got, tc.want)
+		}
 	}
-	if got, cut := truncateUTF8("hello", 10); got != "hello" || cut {
-		t.Fatalf("truncateUTF8 cut a short string: %q %v", got, cut)
+}
+
+// agentObjectWithUID is the gated Agent with an incarnation, which get-run
+// checks a run's AgentUID against.
+func agentObjectWithUID(name, uid string) *unstructured.Unstructured {
+	o := agentObject(name)
+	o.SetUID(types.UID(uid))
+	return o
+}
+
+// A grant on agents/{name} reads the API runs of THIS incarnation of the
+// agent and nothing else in the workspace's run store.
+func TestGetRunReadsOnlyThisAgentsAPIRuns(t *testing.T) {
+	callers := &conformance.FakeCallers{
+		Cluster: conformanceCluster, User: conformanceUser,
+		Objects: []*unstructured.Unstructured{agentObjectWithUID(conformanceAgent, "uid-now")},
+		Allow:   func(a conformance.Attributes) bool { return a.Verb == "get" && a.Resource == "agents" },
 	}
+	s := newGatedTestServer(t, callers)
+	scope := actionScope(conformanceAgent)
+	now := time.Now().UTC()
+	for _, run := range []store.Run{
+		{ID: "mine", Trigger: "api", AgentUID: "uid-now"},
+		{ID: "chat", Trigger: "chat", AgentUID: "uid-now"},
+		{ID: "scheduled", Trigger: "schedule", AgentUID: "uid-now"},
+		{ID: "predecessor", Trigger: "api", AgentUID: "uid-before"},
+	} {
+		run.AgentName, run.Phase, run.CreatedAt, run.UpdatedAt = conformanceAgent, store.RunPhaseSucceeded, now, now
+		run.Output = "answer of " + run.ID
+		if err := s.store.SaveRun(t.Context(), scope, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status, env := callAction(t, s, conformanceAgent, ActionGetRun, map[string]any{"runId": "mine"}); status != http.StatusOK || env.Error != nil {
+		t.Fatalf("this agent's API run → %d %+v", status, env.Error)
+	}
+	for _, id := range []string{"chat", "scheduled", "predecessor"} {
+		status, env := callAction(t, s, conformanceAgent, ActionGetRun, map[string]any{"runId": id})
+		if status != http.StatusNotFound || env.Error == nil || env.Error.Code != "run_not_found" {
+			t.Errorf("%s → %d %+v, want 404 run_not_found", id, status, env.Error)
+		}
+		if strings.Contains(string(env.Result), "answer of") {
+			t.Errorf("%s leaked its answer: %s", id, env.Result)
+		}
+	}
+}
+
+// A run recorded as valid whose document cannot be read is not a result: the
+// caller is told to retry, never handed a "valid" verdict with no value.
+func TestGetRunValidResultWithoutItsDocumentIsUnavailable(t *testing.T) {
+	s := actionTestServer(t, conformanceAgent)
+	now := time.Now().UTC()
+	if err := s.store.SaveRun(t.Context(), actionScope(conformanceAgent), store.Run{
+		ID: "r1", AgentName: conformanceAgent, Trigger: "api", Phase: store.RunPhaseSucceeded,
+		StructuredResult: &store.StructuredResult{State: "valid", Size: 2}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status, env := callAction(t, s, conformanceAgent, ActionGetRun, map[string]any{"runId": "r1"})
+	if status != http.StatusServiceUnavailable || env.Error == nil || env.Error.Code != "action_unavailable" || !env.Error.Retryable {
+		t.Fatalf("→ %d %+v, want 503 retryable action_unavailable", status, env.Error)
+	}
+}
+
+// The output limit is on the ENCODED envelope. A finished run whose answer is
+// escape-heavy — HTML, quoted code — must still be readable, cut to fit, and
+// never fail with a result-limit error every time it is read.
+func TestGetRunFitsAnEscapeHeavyAnswerUnderTheEncodedLimit(t *testing.T) {
+	s := actionTestServer(t, conformanceAgent)
+	scope := actionScope(conformanceAgent)
+	now := time.Now().UTC()
+	answer := strings.Repeat("<div class=\"x\">\n</div>&", 12000) // ~290 KiB raw, far more encoded
+	doc := `{"company":"` + strings.Repeat("a", 60<<10) + `"}`
+	if err := s.store.SaveRun(t.Context(), scope, store.Run{
+		ID: "big", AgentName: conformanceAgent, Trigger: "api", Phase: store.RunPhaseSucceeded, Output: answer,
+		StructuredResult: &store.StructuredResult{State: "valid", Size: int64(len(doc))}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(doc))
+	if err := s.store.SaveRunArtifact(t.Context(), scope, store.RunArtifact{
+		RunID: "big", Name: StructuredResultArtifactName, MediaType: "application/json", Data: []byte(doc), Size: int64(len(doc)),
+		Digest: hex.EncodeToString(sum[:]), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	body := `{"input":{"runId":"big"}}`
+	gatedHandler(t, s).ServeHTTP(rec, stamped(http.MethodPost, verbBase(conformanceCluster, "agents", conformanceAgent)+"/"+ActionGetRun, strings.NewReader(body), conformanceUser))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get-run on an escape-heavy answer → %d: %.300s", rec.Code, rec.Body.String())
+	}
+	if limit := actionLimits[ActionGetRun].MaxOutputBytes; int64(rec.Body.Len()) > limit {
+		t.Fatalf("response is %d bytes, over the declared %d", rec.Body.Len(), limit)
+	}
+	var env actionEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	var out getRunActionOutput
+	if err := json.Unmarshal(env.Result, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Truncated || out.FinalResponse == "" || !strings.HasPrefix(answer, out.FinalResponse) {
+		t.Fatalf("finalResponse: truncated=%v len=%d, want a non-empty prefix of the answer", out.Truncated, len(out.FinalResponse))
+	}
+	if out.StructuredResult == nil || string(out.StructuredResult.Value) != doc {
+		t.Fatal("the structured result was dropped to make room; the answer should have been cut instead")
+	}
+	// A short answer is returned whole and not marked.
+	small := getRunActionOutput{}
+	if !fitFinalResponse(&small, "short", 1<<10) || small.FinalResponse != "short" || small.Truncated {
+		t.Fatalf("fitFinalResponse on a short answer = %+v", small)
+	}
+}
+
+// start-run's task bound is the schema's — characters, not bytes — so a long
+// non-ASCII task the catalog accepts is not refused by the provider.
+func TestStartRunTaskBoundIsInCharacters(t *testing.T) {
+	s := actionTestServer(t, conformanceAgent)
+	status, env := callAction(t, s, conformanceAgent, ActionStartRun, map[string]any{
+		"task": strings.Repeat("中", 40000), "idempotencyKey": "cjk",
+	})
+	if status != http.StatusOK || env.Error != nil {
+		t.Fatalf("a 40,000-character CJK task (~120 KB) → %d %+v, want admitted", status, env.Error)
+	}
+	var out startRunActionOutput
+	if err := json.Unmarshal(env.Result, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, settled := s.waitForRun(t.Context(), actionScope(conformanceAgent), out.RunID, 5*time.Second); !settled {
+		t.Fatal("test run did not settle")
+	}
+	status, env = callAction(t, s, conformanceAgent, ActionStartRun, map[string]any{
+		"task": strings.Repeat("é", maxActionTaskChars+1), "idempotencyKey": "long",
+	})
+	if status != http.StatusBadRequest || env.Error == nil || env.Error.Code != "invalid_action_input" {
+		t.Fatalf("a task over the character bound → %d %+v, want 400", status, env.Error)
+	}
+}
+
+func TestActionFailuresAreTyped(t *testing.T) {
+	notFound := func(resource string) error {
+		return apierrors.NewNotFound(schema.GroupResource{Group: "agents.railgrid.ai", Resource: resource}, "x")
+	}
+	for name, tc := range map[string]struct {
+		err       error
+		code      string
+		retryable bool
+	}{
+		"agent gone":         {agentMissingError{notFound("agents")}, "agent_not_found", false},
+		"credential missing": {notFound("modelcredentials"), "agent_not_ready", false},
+		"conflict":           {errConflict("changed"), "invocation_conflict", false},
+		"unavailable":        {&requestError{http.StatusServiceUnavailable, "ServiceUnavailable", "later"}, "action_unavailable", true},
+	} {
+		got := actionErrorFor(tc.err)
+		if got.Code != tc.code || got.Retryable != tc.retryable {
+			t.Errorf("%s: %+v, want %s retryable=%v", name, got, tc.code, tc.retryable)
+		}
+		if _, ok := actionStatus[got.Code]; !ok {
+			t.Errorf("%s: code %s has no HTTP status", name, got.Code)
+		}
+	}
+	for status, want := range map[int]struct {
+		code      string
+		retryable bool
+	}{
+		http.StatusUnauthorized:        {"action_unauthenticated", false},
+		http.StatusBadRequest:          {"invalid_action_input", false},
+		http.StatusNotFound:            {"agent_not_found", false},
+		http.StatusForbidden:           {"agent_not_found", false},
+		http.StatusInternalServerError: {"action_unavailable", true},
+	} {
+		if code, _, retryable := actionGateFailure(status); code != want.code || retryable != want.retryable {
+			t.Errorf("gate %d → %s retryable=%v, want %s retryable=%v", status, code, retryable, want.code, want.retryable)
+		}
+	}
+}
+
+// TestActionsConformance drives both catalogued actions through the shared
+// data-plane contract suite against the real serve.New handler, as AGENTS.md
+// requires of every data-plane verb: granted call 200 with an envelope, no
+// stamped caller 401, a caller who cannot see the agent denied without
+// disclosing it, a foreign cluster denied, an undeclared action not served,
+// malformed paths 400, oversized input refused at the declared limit, and an
+// unknown input field refused.
+func TestActionsConformance(t *testing.T) {
+	malformed := func(action string) []string {
+		return []string{
+			verbBase(conformanceCluster, "agents", "..") + "/" + conformanceAgent + "/" + action,
+			"/clusters/" + conformanceCluster + "/apis/" + agentsclient.AgentGVR.Group + "/" + agentsclient.AgentGVR.Version + "/agents//" + conformanceAgent + "/" + action,
+			verbBase("root:railgrid:tenants:acme", "agents", conformanceAgent) + "/" + action,
+			verbBase(conformanceCluster, "agents", conformanceAgent) + "/status",
+		}
+	}
+	newCallers := func() *conformance.FakeCallers {
+		return &conformance.FakeCallers{
+			Cluster: conformanceCluster, User: conformanceUser,
+			Objects: []*unstructured.Unstructured{agentObject(conformanceAgent)},
+			Allow: func(a conformance.Attributes) bool {
+				return a.Verb == "get" && a.Resource == "agents" && a.Name == conformanceAgent
+			},
+		}
+	}
+	base := verbBase(conformanceCluster, "agents", conformanceAgent)
+
+	t.Run(ActionGetRun, func(t *testing.T) {
+		callers := newCallers()
+		s := newGatedTestServer(t, callers)
+		now := time.Now().UTC()
+		if err := s.store.SaveRun(t.Context(), actionScope(conformanceAgent), store.Run{
+			ID: "r1", AgentName: conformanceAgent, Trigger: "api", Phase: store.RunPhaseSucceeded, Output: "done", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		conformance.Test(t, gatedHandler(t, s), conformance.Fixtures{
+			Callers:        callers,
+			GrantedPath:    base + "/" + ActionGetRun,
+			DeniedPath:     base + "/delete-run",
+			MalformedPaths: malformed(ActionGetRun),
+			Body:           `{"input":{"runId":"r1"}}`,
+			MaxInputBytes:  actionLimits[ActionGetRun].MaxInputBytes,
+			ExpectEnvelope: true,
+		})
+	})
+
+	t.Run(ActionStartRun, func(t *testing.T) {
+		callers := newCallers()
+		s := newGatedTestServer(t, callers)
+		conformance.Test(t, gatedHandler(t, s), conformance.Fixtures{
+			Callers:        callers,
+			GrantedPath:    base + "/" + ActionStartRun,
+			DeniedPath:     base + "/start-everything",
+			MalformedPaths: malformed(ActionStartRun),
+			// One key throughout: the suite's repeated granted calls are
+			// retries of one start, never a run per call.
+			Body:           `{"input":{"task":"Research acme.example","idempotencyKey":"conformance"}}`,
+			MaxInputBytes:  actionLimits[ActionStartRun].MaxInputBytes,
+			ExpectEnvelope: true,
+		})
+		runs, err := s.store.ListRuns(t.Context(), actionScope(conformanceAgent), 10)
+		if err != nil || len(runs) != 1 {
+			t.Fatalf("conformance admitted %d runs (%v), want exactly the one keyed start", len(runs), err)
+		}
+		if _, settled := s.waitForRun(t.Context(), actionScope(conformanceAgent), runs[0].ID, 5*time.Second); !settled {
+			t.Fatal("test run did not settle")
+		}
+	})
 }

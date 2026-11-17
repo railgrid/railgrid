@@ -173,20 +173,32 @@ terminal (`Succeeded`, `Failed`, `Aborted`) or `PendingApproval`.
   the turn completes. A valid answer is stored as the `structured-result.json`
   run artifact and returned by `get-run` as `structuredResult.value`.
   Otherwise the run fails with `structuredResult.state` `invalid` or
-  `missing`.
+  `missing`, and `finalResponse` still carries what the agent said. A
+  repository run's `repository.resultSchema` is judged by the same rule.
+- **`task` is bounded in characters** (65,536), as the schema's `maxLength`
+  says. The declared input limit is the catalog's 1 MiB ceiling, so any task
+  the schema accepts fits.
 - **Both require consent.** That keeps them out of App Studio's automatic
   integration path, which materializes consent-free actions on every
   assistant turn. `start-run` spends the agent's model budget, and a run's
   answer can carry anything the agent's tools returned, so neither is granted
   without someone accepting it.
-- **`get-run` is bound to the agent.** It returns only runs of the addressed
-  agent; another agent's run in the same workspace is `run_not_found`.
-  `finalResponse` is capped at 256 KiB (`truncated` says when);
-  `runs/{id}/trace` remains the full transcript for a caller with RBAC on it.
+- **`get-run` is bound to the agent.** It returns only API runs (those
+  `start-run` or the `run` verb started) of this incarnation of the addressed
+  agent. Another agent's run, a chat turn, a scheduled or triggered run, and
+  a run of an earlier agent with the same name are all `run_not_found`.
+  `finalResponse` is at most 256 KiB raw, and is cut further when needed to
+  keep the *encoded* envelope within the 512 KiB output limit, since JSON
+  escaping can more than double an answer (`truncated` says when). A
+  `valid` structured result whose document cannot be read is
+  `action_unavailable`, never `valid` with no value. `runs/{id}/trace`
+  remains the full transcript for a caller with RBAC on it.
 - **Typed failures:** `invalid_action_input` (400), `agent_not_found` (404),
-  `run_not_found` (404), `invocation_conflict` (409: the key was used with
-  different input, or the agent was recreated), `action_unavailable` (503,
-  retryable), `backend_failure` (502).
+  `agent_not_ready` (424: the agent exists but something it is configured
+  with, such as its model credential, does not), `run_not_found` (404),
+  `invocation_conflict` (409: the key was used with different input, or the
+  agent was recreated), `action_unavailable` (503, retryable: includes a gate
+  that could not complete its access check), `backend_failure` (502).
 
 ## Project grants and audit
 

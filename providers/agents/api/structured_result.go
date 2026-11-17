@@ -6,12 +6,17 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
+
+	"github.com/railgrid/provider-agents/backend"
+	"github.com/railgrid/provider-agents/store"
 )
 
 var errStructuredResultMissing = errors.New("structured result missing")
@@ -114,6 +119,36 @@ func structuredJSON(text string) ([]byte, error) {
 		return nil, errors.New("structured result is not valid JSON")
 	}
 	return raw, nil
+}
+
+// checkStructuredResult judges a run's final answer against the schema it was
+// asked to meet. It is the one rule both kinds of run are held to — a
+// repository run's repository.resultSchema and a model run's resultSchema —
+// so the same answer cannot pass one and fail the other.
+//
+// A valid answer comes back as the artifact to store and a "valid" verdict
+// carrying its digest and size. Otherwise err says why, and the verdict's
+// State is "missing" (no answer at all) or "invalid" (an answer that is not
+// one JSON document matching the schema); no artifact is produced.
+func checkStructuredResult(schema json.RawMessage, finalContent string) (backend.Artifact, *store.StructuredResult, error) {
+	data, err := structuredJSON(unfenceJSON(finalContent))
+	if err == nil {
+		err = validateStructuredResult(schema, data)
+	}
+	if err != nil {
+		state := "invalid"
+		if errors.Is(err, errStructuredResultMissing) {
+			state = "missing"
+		}
+		return backend.Artifact{}, &store.StructuredResult{State: state}, err
+	}
+	sum := sha256.Sum256(data)
+	digest := hex.EncodeToString(sum[:])
+	artifact := backend.Artifact{
+		Name: StructuredResultArtifactName, MediaType: "application/json",
+		Data: data, Size: int64(len(data)), Digest: digest,
+	}
+	return artifact, &store.StructuredResult{State: "valid", Digest: digest, Size: int64(len(data))}, nil
 }
 
 // unfenceJSON removes one Markdown code fence wrapped around the whole answer

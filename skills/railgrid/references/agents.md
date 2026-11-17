@@ -242,8 +242,9 @@ Removed outright: `/api/*` CRUD (use kubectl), `/api/whoami`,
   Markdown code fence is tolerated, and the answer is validated when the turn
   completes. Valid → `status.structuredResult.state: valid` and the document
   as the `structured-result.json` artifact. Anything else fails the run with
-  `state` `invalid` or `missing` and no artifact. A repository run declares it
-  as `repository.resultSchema` instead.
+  `state` `invalid` or `missing` and no artifact, and the run's output still
+  holds what the agent said. A repository run declares it as
+  `repository.resultSchema` instead and is judged by the same rule.
 - `start-run/v1` and `get-run/v1` are the catalogued-action form of the same
   thing, so an App Studio Project can be **granted** them as an integration
   (`kind: providerReference` on `agents/<a>`) instead of holding RBAC.
@@ -251,11 +252,15 @@ Removed outright: `/api/*` CRUD (use kubectl), `/api/whoami`,
   session, repository, callback or model override, and `idempotencyKey` is
   required. Both need consent (`consentAccepted: true`): each run spends the
   agent's model budget, and its answer can carry anything the agent's tools
-  returned. `get-run` reads only runs of the addressed agent
-  (`run_not_found` otherwise) and returns the validated document inline as
-  `structuredResult.value`. Typed failure codes: `invalid_action_input`,
-  `agent_not_found`, `run_not_found`, `invocation_conflict`,
-  `action_unavailable` (retryable), `backend_failure`.
+  returned. `task` is at most 65,536 characters. `get-run` reads only API
+  runs of this incarnation of the addressed agent (a chat, scheduled or
+  triggered run, or one of an earlier same-named agent, is `run_not_found`)
+  and returns the validated document inline as `structuredResult.value`.
+  `finalResponse` is cut to keep the encoded result under 512 KiB
+  (`truncated: true`). Typed failure codes: `invalid_action_input`,
+  `agent_not_found`, `agent_not_ready` (e.g. its model credential is
+  missing), `run_not_found`, `invocation_conflict`, `action_unavailable`
+  (retryable, including a failed access check), `backend_failure`.
 - Callback: `POST` to `callback.url` on settle, signed `X-Railgrid-Signature`
   (HMAC-SHA256 with `callback.secret`), 3 attempts, payload `{runId, agent,
   phase, output, sources, message, usage, finishedAt}`. Best-effort; polling

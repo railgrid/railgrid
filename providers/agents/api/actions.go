@@ -45,13 +45,14 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/railgrid/provider-sdk/actionwire"
 	"github.com/railgrid/provider-sdk/dataplane"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
-	"github.com/railgrid/provider-agents/tenant"
 )
 
 const (
@@ -62,21 +63,31 @@ const (
 
 	actionContractVersion = "v1"
 
-	// maxActionTaskBytes bounds start-run's task. The catalog caps an action
-	// input at 1 MiB; a task is a prompt, and 64 KiB is far past any a caller
-	// should be composing by hand.
-	maxActionTaskBytes = 64 << 10
+	// maxActionTaskChars bounds start-run's task, in characters, matching the
+	// declared schema's maxLength (which JSON Schema counts in characters).
+	// A task is a prompt, and 64 Ki characters is far past any a caller should
+	// be composing by hand.
+	maxActionTaskChars = 64 << 10
 	// maxActionFinalResponseBytes bounds the final answer get-run returns
-	// inline. A longer answer is truncated and says so; the whole transcript
-	// stays readable through the runs/{id}/trace verb.
+	// inline, before encoding. A longer answer is truncated and says so; the
+	// whole transcript stays readable through the runs/{id}/trace verb.
 	maxActionFinalResponseBytes = 256 << 10
+	// actionEnvelopeHeadroom is what get-run leaves, under its declared output
+	// limit, for the envelope around its result: request ID, action name and
+	// the resource reference. They are a few hundred bytes; this is generous.
+	actionEnvelopeHeadroom = 4 << 10
 )
 
 // actionLimits are the limits each action's CatalogEntry declaration states.
 // An action missing here is not served, so declaring one and serving it are
 // one edit apart; TestAgentActionsMatchManifest holds the two together.
+//
+// start-run's input limit is the catalog's ceiling (1 MiB) because it has to
+// hold the largest task the schema allows: 64 Ki characters, each up to 12
+// bytes once a client \u-escapes a supplementary-plane rune, plus a 16 KiB
+// resultSchema escaped the same way.
 var actionLimits = map[string]dataplane.Limits{
-	ActionStartRun: {Timeout: 60 * time.Second, MaxInputBytes: 128 << 10, MaxOutputBytes: 4 << 10, MaxResultItems: 1},
+	ActionStartRun: {Timeout: 60 * time.Second, MaxInputBytes: 1 << 20, MaxOutputBytes: 4 << 10, MaxResultItems: 1},
 	ActionGetRun:   {Timeout: 15 * time.Second, MaxInputBytes: 1 << 10, MaxOutputBytes: 512 << 10, MaxResultItems: 1},
 }
 
@@ -134,6 +145,7 @@ type actionRunUsage struct {
 var actionStatus = map[string]int{
 	"invalid_action_input": http.StatusBadRequest,
 	"agent_not_found":      http.StatusNotFound,
+	"agent_not_ready":      http.StatusFailedDependency,
 	"run_not_found":        http.StatusNotFound,
 	"invocation_conflict":  http.StatusConflict,
 	"action_unavailable":   http.StatusServiceUnavailable,
@@ -170,23 +182,22 @@ func (s *Server) Actions() http.Handler {
 		if err != nil {
 			log.Printf("agents: action %s on agents/%s refused: %v", req.Verb, req.Name, err)
 			status := dataplane.StatusFor(err)
-			envelope.Failure(w, status, actionGateCode(status), "the agent is not available to this caller", false)
+			code, message, retryable := actionGateFailure(status)
+			envelope.Failure(w, status, code, message, retryable)
 			return
 		}
-		id := s.dataPlaneIdentity(r.Context(), req)
-		if id.workspaceUUID == "" {
-			envelope.Failure(w, http.StatusBadRequest, "invalid_action_input", "the addressed cluster is not a workspace", false)
-			return
-		}
-		r = r.WithContext(withGate(r.Context(), &gateInfo{request: req, object: object, provider: provider, identity: id}))
-		c := agentsclient.NewFromScope(tenant.NewScopeFromDynamic(id.clusterID, provider))
+		// The identity always carries a workspace: resolveClusterScope falls
+		// back to the cluster-keyed scope rather than leaving it empty.
+		gate := &gateInfo{request: req, object: object, provider: provider, identity: s.dataPlaneIdentity(r.Context(), req)}
+		r = r.WithContext(withGate(r.Context(), gate))
+		c, id := gate.providerClient(), gate.identity
 
 		dataplane.Serve(w, r, envelope, limits, func(ctx context.Context, raw json.RawMessage) (any, *actionwire.Error) {
 			switch req.Verb {
 			case ActionStartRun:
 				return s.startRunAction(r.WithContext(ctx), c, id, req.Name, raw)
 			default:
-				return s.getRunAction(ctx, id, req.Name, raw)
+				return s.getRunAction(ctx, id, req.Name, string(object.GetUID()), raw)
 			}
 		}, dataplane.WithErrorStatus(func(e *actionwire.Error) int {
 			if status, ok := actionStatus[e.Code]; ok {
@@ -208,8 +219,11 @@ func (s *Server) startRunAction(r *http.Request, c *agentsclient.Client, id iden
 		// get the run it already started back, not a second run.
 		return nil, invalidInput("idempotencyKey is required")
 	}
-	if len(in.Task) > maxActionTaskBytes {
-		return nil, invalidInput("task exceeds 65536 bytes")
+	// Counted in characters, as the declared schema's maxLength is: a task the
+	// catalog calls valid is not refused here. The declared input limit is
+	// sized so a task of that many characters always fits in it.
+	if utf8.RuneCountInString(in.Task) > maxActionTaskChars {
+		return nil, invalidInput("task exceeds 65536 characters")
 	}
 	_, resp, err := s.invokeRun(r, c, id, agent, invokeRunRequest{
 		Task: in.Task, IdempotencyKey: in.IdempotencyKey, ExpectedAgentUID: in.ExpectedAgentUID,
@@ -221,7 +235,7 @@ func (s *Server) startRunAction(r *http.Request, c *agentsclient.Client, id iden
 	return startRunActionOutput{RunID: resp.RunID, Phase: resp.Phase, Reused: resp.Reused}, nil
 }
 
-func (s *Server) getRunAction(ctx context.Context, id identity, agent string, raw json.RawMessage) (any, *actionwire.Error) {
+func (s *Server) getRunAction(ctx context.Context, id identity, agent, agentUID string, raw json.RawMessage) (any, *actionwire.Error) {
 	var in getRunActionInput
 	if err := decodeActionInput(raw, &in); err != nil {
 		return nil, invalidInput(err.Error())
@@ -232,10 +246,7 @@ func (s *Server) getRunAction(ctx context.Context, id identity, agent string, ra
 	}
 	scope := id.scope(agent)
 	run, err := s.store.GetRun(ctx, scope, in.RunID)
-	// The store is keyed by tenant, not by agent, so the agent is checked
-	// here: the grant is on THIS agent, and another agent's run in the same
-	// workspace is as absent to this caller as one that does not exist.
-	if errors.Is(err, store.ErrRunNotFound) || (err == nil && run.AgentName != agent) {
+	if errors.Is(err, store.ErrRunNotFound) || (err == nil && !getRunMayRead(run, agent, agentUID)) {
 		return nil, &actionwire.Error{Code: "run_not_found", Message: "this agent has no run " + in.RunID}
 	}
 	if err != nil {
@@ -247,22 +258,83 @@ func (s *Server) getRunAction(ctx context.Context, id identity, agent string, ra
 		CreatedAt: run.CreatedAt, StartedAt: run.StartedAt, FinishedAt: run.FinishedAt,
 		Usage: actionRunUsage{InputTokens: run.InputTokens, OutputTokens: run.OutputTokens, USDMicros: run.USDMicros},
 	}
-	out.FinalResponse, out.Truncated = truncateUTF8(run.Output, maxActionFinalResponseBytes)
 	if run.StructuredResult != nil {
 		result := &actionStructuredResult{State: run.StructuredResult.State}
 		if run.StructuredResult.State == "valid" {
 			artifact, found, err := s.store.GetRunArtifact(ctx, scope, run.ID, StructuredResultArtifactName)
-			if err != nil {
-				log.Printf("agents: get-run %s on agents/%s: reading the structured result: %v", run.ID, agent, err)
+			if err != nil || !found {
+				// A "valid" verdict without its document is not a result: an
+				// app would take the absent value for the answer. Say it is
+				// unavailable instead, so the caller retries rather than
+				// acting on nothing.
+				log.Printf("agents: get-run %s on agents/%s: reading the structured result: found=%v err=%v", run.ID, agent, found, err)
 				return nil, &actionwire.Error{Code: "action_unavailable", Message: "the structured result could not be read; retry later", Retryable: true}
 			}
-			if found {
-				result.Value = json.RawMessage(artifact.Data)
-			}
+			result.Value = json.RawMessage(artifact.Data)
 		}
 		out.StructuredResult = result
 	}
+	budget := int(actionLimits[ActionGetRun].MaxOutputBytes) - actionEnvelopeHeadroom
+	if !fitFinalResponse(&out, run.Output, budget) {
+		log.Printf("agents: get-run %s on agents/%s: the result does not fit %d bytes even without the answer", run.ID, agent, budget)
+		return nil, &actionwire.Error{Code: "backend_failure", Message: "the run's result is too large to return"}
+	}
 	return out, nil
+}
+
+// getRunMayRead says whether a grant on agents/{agent} reaches this run. The
+// store is keyed by tenant, not by agent, so get-run checks it here, and any
+// run it refuses is as absent to the caller as one that does not exist:
+//
+//   - it belongs to the addressed agent, by name AND by incarnation: a grant on
+//     a recreated "scout" does not read the runs of the "scout" deleted before
+//     it, whose UID differs;
+//   - it is an API run — one started by start-run or the run verb. A chat
+//     turn, a schedule, a trigger or a channel message is someone else's
+//     conversation with the agent, and a grant to start runs and read what
+//     they returned is not a grant to read those.
+func getRunMayRead(run store.Run, agent, agentUID string) bool {
+	if run.AgentName != agent || run.Trigger != agentsv1alpha1.RunTriggerAPI {
+		return false
+	}
+	return agentUID == "" || run.AgentUID == agentUID
+}
+
+// fitFinalResponse sets out's final answer to the longest prefix of output
+// that keeps the ENCODED result within budget bytes, and reports false only
+// when even an empty answer does not fit.
+//
+// The limit dataplane.Serve enforces is on the JSON-encoded envelope, and
+// encoding is not the identity: a quote or newline doubles, and '<', '>', '&'
+// and control characters become six-byte escapes. A raw-byte cap alone lets
+// an escape-heavy answer of a finished run exceed the limit, and every read of
+// that run would then fail — so the answer is cut against its encoded size.
+func fitFinalResponse(out *getRunActionOutput, output string, budget int) bool {
+	full := runePrefix(output, maxActionFinalResponseBytes)
+	fits := func(answer string) bool {
+		out.FinalResponse = answer
+		out.Truncated = len(answer) < len(output)
+		data, err := json.Marshal(out)
+		return err == nil && len(data) <= budget
+	}
+	if fits(full) {
+		return true
+	}
+	if !fits("") {
+		return false
+	}
+	// The longest prefix that fits: encoded size grows with the prefix, so a
+	// binary search over the cut finds it in a couple of dozen encodes.
+	lo, hi := 0, len(full)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if fits(runePrefix(full, mid)) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return fits(runePrefix(full, lo))
 }
 
 // decodeActionInput decodes an action's input strictly: one JSON object, no
@@ -293,7 +365,13 @@ func actionErrorFor(err error) *actionwire.Error {
 	case http.StatusBadRequest:
 		return invalidInput(err.Error())
 	case http.StatusNotFound:
-		return &actionwire.Error{Code: "agent_not_found", Message: "the agent does not exist"}
+		if _, ok := errors.AsType[agentMissingError](err); ok {
+			return &actionwire.Error{Code: "agent_not_found", Message: "the agent does not exist"}
+		}
+		// The agent exists; something it is configured with does not (its
+		// model credential). Fixing that is the agent owner's job, so this is
+		// not retryable — but it is not the agent missing either.
+		return &actionwire.Error{Code: "agent_not_ready", Message: "the agent cannot run: " + err.Error()}
 	case http.StatusConflict:
 		return &actionwire.Error{Code: "invocation_conflict", Message: err.Error()}
 	case http.StatusServiceUnavailable:
@@ -303,27 +381,20 @@ func actionErrorFor(err error) *actionwire.Error {
 	}
 }
 
-// actionGateCode names a gate refusal by the status it maps to, so the
-// envelope says as little as the status does.
-func actionGateCode(status int) string {
-	switch status {
-	case http.StatusUnauthorized:
-		return "action_unauthenticated"
-	case http.StatusBadRequest:
-		return "invalid_action_input"
+// actionGateFailure names a gate refusal by the status it maps to, so the
+// envelope says as little as the status does. A denial is reported as the
+// agent being absent — the gate does not disclose whether it exists — but a
+// gate that could not ask (a SubjectAccessReview or export read that failed)
+// is retryable: a brief outage must not read as a deleted agent.
+func actionGateFailure(status int) (code, message string, retryable bool) {
+	switch {
+	case status == http.StatusUnauthorized:
+		return "action_unauthenticated", "no caller identity on this request", false
+	case status == http.StatusBadRequest:
+		return "invalid_action_input", "the request does not address an agent", false
+	case status >= http.StatusInternalServerError:
+		return "action_unavailable", "the agent could not be checked; retry later", true
 	default:
-		return "agent_not_found"
+		return "agent_not_found", "the agent is not available to this caller", false
 	}
-}
-
-// truncateUTF8 cuts s to at most n bytes without splitting a rune.
-func truncateUTF8(s string, n int) (string, bool) {
-	if len(s) <= n {
-		return s, false
-	}
-	cut := n
-	for cut > 0 && s[cut]&0xC0 == 0x80 {
-		cut--
-	}
-	return s[:cut], true
 }
