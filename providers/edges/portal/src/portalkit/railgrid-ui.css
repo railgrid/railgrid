@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 67;
+  --railgrid-ui-core-version: 68;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1808,7 +1808,6 @@ dialog.k-modal-overlay::backdrop { background: transparent; }
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.k-toast__link:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
 .k-toast__action:hover {
   background: color-mix(in srgb, var(--color-accent, #8b6bff) 22%, transparent);
   color: var(--color-accent-hover, #a18aff);
@@ -1975,8 +1974,17 @@ dialog.k-modal-overlay::backdrop { background: transparent; }
 .k-inline-notification__dismiss { display: grid; place-items: center; min-width: 24px; color: var(--color-text-muted, #8587a1); padding: 2px; }
 .k-inline-notification__dismiss svg { inline-size: 13px; block-size: 13px; }
 .k-inline-notification__dismiss:hover { background: var(--color-surface-hover, #1e2033); color: var(--color-text-primary, #e9e9f2); }
+
+/* Shared action focus stays identical across feedback and resource tables. */
+.k-toast__link:focus-visible,
 .k-toast-host button:focus-visible,
-.k-inline-notification button:focus-visible {
+.k-inline-notification button:focus-visible,
+.k-table__search-clear:focus-visible,
+.k-table__clear-filters:focus-visible,
+.k-table__clear-selection:focus-visible,
+.k-table__sort-button:focus-visible,
+.k-table__primary-value:has(a.k-table-resource-link:focus-visible):not(:has(a.k-table-resource-link > *)),
+.k-table-action:focus-visible {
   outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: 2px;
 }
@@ -2360,11 +2368,6 @@ railgrid-resource-table-filter { display: contents; }
   padding: 0 8px;
 }
 .k-table__clear-filters:hover { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); }
-.k-table__search-clear:focus-visible,
-.k-table__clear-filters:focus-visible {
-  outline: 2px solid var(--color-accent, #8b6bff);
-  outline-offset: 2px;
-}
 .k-table__selection-bar {
   align-items: center;
   background: var(--color-surface-raised, #111320);
@@ -2401,10 +2404,6 @@ railgrid-resource-table-filter { display: contents; }
   white-space: nowrap;
 }
 .k-table__clear-selection:hover:not(:disabled) { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); }
-.k-table__clear-selection:focus-visible {
-  outline: 2px solid var(--color-accent, #8b6bff);
-  outline-offset: 2px;
-}
 .k-table__clear-selection:disabled { cursor: not-allowed; opacity: 0.45; }
 .k-table__selection-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; grid-column: 2; justify-content: flex-end; min-width: 0; }
 .k-table__selection-heading { padding: 4px 8px 4px 12px; text-align: center; width: 1%; }
@@ -2529,10 +2528,6 @@ railgrid-resource-table-filter { display: contents; }
 .k-table__heading--end .k-table__sort-button { justify-content: flex-end; }
 .k-table__sort-button:hover,
 .k-table__sort-button--active { color: var(--color-text-primary, #e9e9f2); }
-.k-table__sort-button:focus-visible {
-  outline: 2px solid var(--color-accent, #8b6bff);
-  outline-offset: 2px;
-}
 .k-table__sort-button--active .k-table__sort-icon { color: var(--color-accent, #8b6bff); }
 .k-table__sort-icon {
   color: var(--color-text-muted, #8587a1);
@@ -2689,6 +2684,12 @@ railgrid-resource-table-filter { display: contents; }
   min-height: 0;
   padding: 0;
 }
+/* Text-only identities stay in the value cell's inline formatting context so
+ * its ellipsis and overflow disclosure see the resource name. Structured
+ * links, such as multi-line project summaries, keep their own layout. */
+.k-table__primary-value a.k-table-resource-link:not(:has(> *)),
+.k-table__cell-value a.k-table-resource-link:not(:has(> *)) { display: inline; }
+.k-table__primary-value a.k-table-resource-link:focus-visible:not(:has(> *)) { outline: none; }
 .k-table-resource-link:hover {
   background: transparent;
   border-color: transparent;
@@ -2880,7 +2881,6 @@ railgrid-resource-table-filter { display: contents; }
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   color: var(--color-danger, #ff5d5d);
 }
-.k-table-action:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
 .k-table-action:disabled { cursor: not-allowed; }
 .k-table-action--busy { color: var(--color-danger, #ff5d5d); cursor: progress; }
 .k-table-action--busy.k-table-action--neutral { color: var(--color-text-primary, #e9e9f2); }

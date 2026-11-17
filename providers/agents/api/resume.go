@@ -254,13 +254,14 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		Worker: ck.Worker,
 		// A repository run's coordinates come back off the record; the clone
 		// source does not, and a re-join does not need it.
-		Repository:      repositoryAttemptFromStored(run.Repository),
-		ResultSchema:    run.ResultSchema,
-		HarnessSettings: run.HarnessSettings,
-		ModelSettings:   run.ModelSettings,
-		ExecutionOwner:  claimed.ExecutionOwner,
-		ExecutionEpoch:  claimed.ExecutionEpoch,
-		AgentUID:        claimed.AgentUID,
+		Repository:        repositoryAttemptFromStored(run.Repository),
+		ResultSchema:      run.ResultSchema,
+		ModelUseDelegated: run.ModelUseDelegated,
+		HarnessSettings:   run.HarnessSettings,
+		ModelSettings:     run.ModelSettings,
+		ExecutionOwner:    claimed.ExecutionOwner,
+		ExecutionEpoch:    claimed.ExecutionEpoch,
+		AgentUID:          claimed.AgentUID,
 	}
 	access.applyTo(&tr)
 	if intent.Stream != nil {

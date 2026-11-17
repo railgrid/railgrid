@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"slices"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -164,3 +166,11 @@ type RepositoryStatus struct {
 // FinalizerRepository is added by the RepositoryController so the host-side
 // repository is deleted before the CR disappears.
 const FinalizerRepository = "repositories.code.railgrid.ai/finalizer"
+
+// FinalizerRepositoryRetain releases a registration without deleting the remote repository.
+const FinalizerRepositoryRetain = "repositories.code.railgrid.ai/retain-remote"
+
+// RetainsRemote reports whether this Repository only registers an existing remote.
+func (r *Repository) RetainsRemote() bool {
+	return r.Annotations["code.railgrid.ai/existing-only"] == "true" || slices.Contains(r.Finalizers, FinalizerRepositoryRetain)
+}

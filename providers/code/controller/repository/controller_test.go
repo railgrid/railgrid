@@ -18,12 +18,14 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -88,6 +90,49 @@ func TestReconcileRequeuesRateLimitedDelete(t *testing.T) {
 	}
 	if ready := apimeta.FindStatusCondition(got.Status.Conditions, codev1alpha1.ConditionReady); ready == nil || ready.Reason != codev1alpha1.ReasonRateLimited {
 		t.Fatalf("Ready = %+v, want RateLimited", ready)
+	}
+}
+
+func TestImportedRepositoryDeletionRetainsRemoteAfterAnnotationRemoval(t *testing.T) {
+	f := newRepositoryFixture(t, false)
+	var repo codev1alpha1.Repository
+	key := f.req.NamespacedName
+	if err := f.c.Get(f.ctx, key, &repo); err != nil {
+		t.Fatal(err)
+	}
+	repo.Annotations = map[string]string{"code.railgrid.ai/existing-only": "true"}
+	if err := f.c.Update(f.ctx, &repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.r.Reconcile(f.ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.c.Get(f.ctx, key, &repo); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(&repo, codev1alpha1.FinalizerRepositoryRetain) || controllerutil.ContainsFinalizer(&repo, codev1alpha1.FinalizerRepository) {
+		t.Fatalf("imported registration has unsafe finalizers: %v", repo.Finalizers)
+	}
+	if err := f.c.Delete(f.ctx, &repo, client.Preconditions{ResourceVersion: &repo.ResourceVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.c.Get(f.ctx, key, &repo); err != nil {
+		t.Fatal(err)
+	}
+	if repo.DeletionTimestamp.IsZero() {
+		t.Fatal("expected a pending deletion held by the retention finalizer")
+	}
+	repo.Annotations = nil
+	if err := f.c.Update(f.ctx, &repo); err != nil {
+		t.Fatal(err)
+	}
+	// Contacting the host would fail the reconcile and strand the registration.
+	f.backend.deleteErr = errors.New("unexpected host deletion")
+	if _, err := f.r.Reconcile(f.ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.c.Get(f.ctx, key, &repo); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected registration to be removed, got %v", err)
 	}
 }
 

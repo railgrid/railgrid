@@ -64,6 +64,7 @@ const emit = defineEmits<{
 }>()
 
 const localSkills = ref<ProjectAssistantSkill[]>([...props.skills])
+const catalogWarnings = ref([...props.warnings])
 const query = ref('')
 const selectedSkillID = ref('')
 const focusedSkill = ref<ProjectAssistantSkill | null>(null)
@@ -93,14 +94,13 @@ let workspaceWasInert = false
 let previousBodyOverflow = ''
 let detailModalActive = false
 
-watch(() => props.skills, (skills) => {
+watch(() => [props.skills, props.warnings] as const, ([skills, warnings]) => {
+  catalogWarnings.value = [...warnings]
   localSkills.value = [...skills]
   const refreshedSelection = skills.find((skill) => skill.id === selectedSkillID.value)
   if (refreshedSelection) focusedSkill.value = refreshedSelection
-  else if (selectedSkillID.value && skills.length) {
-    selectedSkillID.value = ''
-    focusedSkill.value = null
-    selectedDetail.value = null
+  else if (selectedSkillID.value && !catalogIncomplete.value) {
+    clearSelectedSkill()
   }
 }, { deep: true })
 
@@ -110,10 +110,9 @@ watch(() => [props.projectName, props.ctx] as const, () => {
   catalogRequestSerial++
   activationRequestSerial++
   localSkills.value = [...props.skills]
+  catalogWarnings.value = [...props.warnings]
   query.value = ''
-  selectedSkillID.value = ''
-  focusedSkill.value = null
-  selectedDetail.value = null
+  clearSelectedSkill()
   detailError.value = null
   catalogError.value = null
   managementError.value = null
@@ -123,20 +122,21 @@ watch(() => [props.projectName, props.ctx] as const, () => {
   activationSkillID.value = ''
 })
 
-const normalizedQuery = computed(() => query.value.trim().toLowerCase())
 const selectedSkill = computed(() => localSkills.value.find((skill) => skill.id === selectedSkillID.value) ?? focusedSkill.value)
+const catalogIncomplete = computed(() => props.hasSnapshot && catalogWarnings.value.length > 0)
+const selectedSkillUnverified = computed(() => Boolean(
+  selectedSkill.value && catalogIncomplete.value && !localSkills.value.some((skill) => skill.id === selectedSkill.value?.id),
+))
 const selectedDigest = computed(() => selectedDetail.value?.digest || selectedSkill.value?.digest || selectedDetail.value?.contentDigest || selectedSkill.value?.contentDigest || '')
 const detailInstructions = computed(() => selectedDetail.value?.instructions || selectedDetail.value?.content || selectedDetail.value?.authorInstructions || '')
 const catalogFailure = computed(() => catalogError.value || props.error)
-const emptyStateText = computed(() => {
-  if (catalogFailure.value) {
-    if (normalizedQuery.value && props.hasSnapshot) return 'No skills in the last successful catalog match your search.'
-    return props.hasSnapshot ? 'No skills were listed in the last successful catalog.' : 'The catalog is unavailable. Retry to browse skills.'
-  }
-  if (normalizedQuery.value) return 'No skills match your search.'
-  if (!props.hasSnapshot) return 'Skills are not available until the first catalog read completes.'
-  return 'No skills are installed for this project yet.'
-})
+const catalogFailureMessage = computed(() => props.hasSnapshot
+  ? `Could not refresh the skills catalog. Showing the last successful result. ${catalogFailure.value}`
+  : `Could not load the skills catalog. ${catalogFailure.value}`)
+// Rendered only after a snapshot; the shared list owns search and partial copy.
+const emptyStateText = computed(() => catalogFailure.value
+  ? 'No skills were listed in the last successful catalog.'
+  : 'No skills are installed for this project yet.')
 
 function focusWasLost(): boolean {
   return !document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected
@@ -189,6 +189,17 @@ function clearFeedback() {
   statusMessage.value = null
 }
 
+function clearSelectedSkill() {
+  selectedSkillID.value = ''
+  focusedSkill.value = null
+  selectedDetail.value = null
+}
+
+function requestCatalogRefresh() {
+  if (catalogLoading.value || actionBusy.value || props.loading || !props.projectName) return
+  void refreshCatalog()
+}
+
 function selectSkill(skill: ProjectAssistantSkill, options: { clearFeedback?: boolean } = {}) {
   if (actionBusy.value) return
   if (options.clearFeedback !== false) clearFeedback()
@@ -202,9 +213,7 @@ function selectSkill(skill: ProjectAssistantSkill, options: { clearFeedback?: bo
 
 function closeSkillDetail() {
   if (actionBusy.value) return
-  selectedSkillID.value = ''
-  focusedSkill.value = null
-  selectedDetail.value = null
+  clearSelectedSkill()
   detailError.value = null
 }
 
@@ -273,9 +282,13 @@ watch(() => Boolean(selectedSkill.value), async (open) => {
   detailOpener = null
   await nextTick()
   if (opener?.isConnected) opener.focus({ preventScroll: true })
+  else skillsRegion.value?.focus({ preventScroll: true })
 })
 
-onBeforeUnmount(() => setDetailModalEnvironment(false))
+onBeforeUnmount(() => {
+  catalogRequestSerial++
+  setDetailModalEnvironment(false)
+})
 
 async function loadDetail(skill: ProjectAssistantSkill) {
   if (!props.projectName) return
@@ -333,6 +346,7 @@ async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { 
     const response = await api.listAssistantSkills(requestContext, projectName)
     if (!assistantSkillsRequestIsCurrent(requestScope, catalogRequestSerial, props.projectName, props.ctx)) return false
     localSkills.value = response.skills
+    catalogWarnings.value = response.warnings ?? []
     catalogError.value = null
     emit('catalogUpdated', response)
     if (selectSkillID) {
@@ -340,10 +354,7 @@ async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { 
       if (next && options.preserveDetail && selectedSkillID.value === selectSkillID) {
         focusedSkill.value = next
       } else if (next) selectSkill(next, { clearFeedback: false })
-      else {
-        selectedSkillID.value = ''
-        selectedDetail.value = null
-      }
+      else if (!catalogWarnings.value.length) clearSelectedSkill()
     }
     return true
   } catch (error) {
@@ -356,18 +367,32 @@ async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { 
 }
 
 async function retryDetailCatalog() {
-  if (actionBusy.value) return
+  if (actionBusy.value || catalogLoading.value || props.loading || !props.projectName) return
+  const scope: AssistantSkillsRequestScope = {
+    serial: catalogRequestSerial + 1, projectName: props.projectName, ctx: props.ctx,
+  }
+  const selectedID = selectedSkillID.value
+  const restoreFocus = detailCatalogErrorNotice.value?.contains(document.activeElement)
+  const isCurrent = () => assistantSkillsRequestIsCurrent(scope, catalogRequestSerial, props.projectName, props.ctx)
   actionBusy.value = true
   try {
-    await refreshCatalog(selectedSkillID.value, { preserveDetail: true })
-  } finally { actionBusy.value = false }
+    await refreshCatalog(selectedID, { preserveDetail: true })
+  } finally {
+    if (isCurrent()) actionBusy.value = false
+  }
+  await nextTick()
+  if (!isCurrent() || selectedSkillID.value !== selectedID || !restoreFocus || !focusWasLost()) return
+  const target = catalogFailure.value
+    ? detailCatalogErrorNotice.value?.querySelector<HTMLButtonElement>('button')
+    : detailCloseRef.value
+  target?.focus({ preventScroll: true })
 }
 
 async function toggleSelectedSkill() {
   const skill = selectedSkill.value
   const projectName = props.projectName
   const requestContext = props.ctx
-  if (!skill || !projectName || actionBusy.value) return
+  if (!skill || !projectName || actionBusy.value || selectedSkillUnverified.value) return
   const serial = ++activationRequestSerial
   actionBusy.value = true
   activationSkillID.value = skill.id
@@ -406,10 +431,10 @@ function friendlyError(error: unknown, fallback: string): string {
       <button
         type="button"
         class="k-btn k-btn--ghost"
-        :disabled="catalogLoading || actionBusy || props.loading || !projectName"
+        :aria-disabled="catalogLoading || actionBusy || props.loading || !projectName ? 'true' : undefined"
         :aria-busy="catalogLoading ? 'true' : undefined"
         aria-label="Refresh skills"
-        @click="refreshCatalog()"
+        @click="requestCatalogRefresh"
       >
         <Loader2 v-if="catalogLoading" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
         <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -423,7 +448,7 @@ function friendlyError(error: unknown, fallback: string): string {
     <div v-if="catalogFailure && !selectedSkill" ref="catalogErrorNotice" class="mb-3">
       <InlineNotification
         :tone="props.hasSnapshot ? 'warning' : 'error'"
-        :message="props.hasSnapshot ? `Could not refresh the skills catalog. Showing the last successful result. ${catalogFailure}` : `Could not load the skills catalog. ${catalogFailure}`"
+        :message="catalogFailureMessage"
         action-label="Retry"
         action-busy-label="Retrying skills…"
         :action-busy="catalogLoading || actionBusy || props.loading"
@@ -434,12 +459,12 @@ function friendlyError(error: unknown, fallback: string): string {
       <TriangleAlert class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
       <span>{{ managementError }}</span>
     </div>
-    <div v-if="props.warnings.length" class="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning-subtle p-3 text-[12px] leading-5 text-warning" role="status">
-      <TriangleAlert class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
+    <InlineNotification v-if="catalogWarnings.length" tone="warning" title="Catalog needs attention">
       <div class="grid gap-1">
-        <div v-for="warning in props.warnings" :key="warning">{{ warning }}</div>
+        <p>Returned skills remain usable, but the list may be incomplete.</p>
+        <div v-for="warning in catalogWarnings" :key="warning">{{ warning }}</div>
       </div>
-    </div>
+    </InlineNotification>
     <div v-if="statusMessage && !selectedSkill" class="flex items-center gap-2 rounded-xl border border-success/30 bg-success-subtle p-3 text-[12px] text-success" role="status">
       <Check class="h-4 w-4 shrink-0" :stroke-width="1.75" />
       {{ statusMessage }}
@@ -456,6 +481,7 @@ function friendlyError(error: unknown, fallback: string): string {
         :loading="props.loading || catalogLoading"
         :busy="actionBusy"
         detail-presentation="dialog"
+        :incomplete="catalogIncomplete"
         :empty-text="emptyStateText"
         @update:query="query = $event"
         @select="selectSkill($event)"
@@ -490,9 +516,9 @@ function friendlyError(error: unknown, fallback: string): string {
                 :aria-checked="selectedSkill.enabled !== false"
                 aria-label="Enable skill"
                 class="app-studio-touch-target flex h-11 shrink-0 items-center justify-center gap-2.5 rounded-md bg-transparent px-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                :aria-disabled="actionBusy ? 'true' : undefined"
+                :aria-disabled="actionBusy || selectedSkillUnverified ? 'true' : undefined"
                 :aria-busy="activationSkillID === selectedSkill.id ? 'true' : undefined"
-                :class="{ 'opacity-60': actionBusy }"
+                :class="{ 'opacity-60': actionBusy || selectedSkillUnverified }"
                 @click="toggleSelectedSkill"
               >
                 <span>{{ selectedSkill.enabled === false ? 'Skill disabled' : 'Skill enabled' }}</span>
@@ -509,15 +535,20 @@ function friendlyError(error: unknown, fallback: string): string {
           </header>
 
           <div class="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle px-6 py-5">
-            <div v-if="catalogFailure" ref="detailCatalogErrorNotice" class="mb-4">
+            <div v-if="catalogFailure || selectedSkillUnverified" ref="detailCatalogErrorNotice" class="mb-4">
               <InlineNotification
                 :tone="props.hasSnapshot ? 'warning' : 'error'"
-                :message="props.hasSnapshot ? `Could not refresh the skills catalog. Showing the last successful result. ${catalogFailure}` : `Could not load the skills catalog. ${catalogFailure}`"
+                :title="selectedSkillUnverified ? 'Skill not listed in the latest catalog response.' : ''"
                 action-label="Retry"
                 action-busy-label="Retrying skills…"
                 :action-busy="catalogLoading || actionBusy || props.loading"
                 @action="retryDetailCatalog"
-              />
+              >
+                <p>{{ selectedSkillUnverified && !catalogFailure ? 'Saved details are shown. Retry to verify this skill before changing activation.' : catalogFailureMessage }}</p>
+                <ul v-if="selectedSkillUnverified" class="mt-2 grid gap-1">
+                  <li v-for="warning in catalogWarnings" :key="warning">{{ warning }}</li>
+                </ul>
+              </InlineNotification>
             </div>
             <div v-if="managementError" class="mb-4 rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">{{ managementError }}</div>
             <div v-if="statusMessage" class="mb-4 rounded-xl border border-success/30 bg-success-subtle p-3 text-[12px] text-success" role="status">{{ statusMessage }}</div>

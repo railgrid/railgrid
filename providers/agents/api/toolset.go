@@ -100,6 +100,10 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 				Trigger:     agentsv1alpha1.RunTriggerDelegation,
 				SourceName:  parentDeps.Agent.Name,
 				ParentRunID: parentDeps.RunID,
+				// A delegate the agent is configured with runs under the
+				// parent's delegation: configuring spec.delegates is the
+				// same trusted delegation as configuring the parent's models.
+				ModelUseDelegated: run.ModelUseDelegated,
 			}
 			// The child runs in the same workspace, so it inherits the data plane
 			// (reached as this provider, like the parent's). It gets no hub token

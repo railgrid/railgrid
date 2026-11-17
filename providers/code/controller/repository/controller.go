@@ -67,15 +67,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	b, conn, cred, notReady := r.resolve(ctx, c, &repo)
-	ready := notReady == ""
-
 	// Deletion path.
 	if !repo.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&repo, codev1alpha1.FinalizerRepositoryRetain) {
+			controllerutil.RemoveFinalizer(&repo, codev1alpha1.FinalizerRepositoryRetain)
+			controllerutil.RemoveFinalizer(&repo, codev1alpha1.FinalizerRepository)
+			return ctrl.Result{}, c.Update(ctx, &repo)
+		}
 		if controllerutil.ContainsFinalizer(&repo, codev1alpha1.FinalizerRepository) {
 			// Best-effort host delete only when we could resolve everything;
 			// if the Connection/credential is already gone we still release.
-			if ready {
+			b, conn, cred, notReady := r.resolve(ctx, c, &repo)
+			if notReady == "" {
 				if err := b.DeleteRepository(ctx, conn, cred, &repo); err != nil {
 					if wait, msg, ok := shared.RateLimitWait(err, time.Now()); ok {
 						return r.waitForRateLimit(ctx, c, &repo, msg, wait)
@@ -91,14 +94,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	if controllerutil.AddFinalizer(&repo, codev1alpha1.FinalizerRepository) {
+	if repo.RetainsRemote() {
+		// Migrate in one update. A confirmed removal only targets a version
+		// without the destructive finalizer. Kubernetes disallows adding it
+		// once deletion starts, even if the import annotation later changes.
+		added := controllerutil.AddFinalizer(&repo, codev1alpha1.FinalizerRepositoryRetain)
+		removed := controllerutil.RemoveFinalizer(&repo, codev1alpha1.FinalizerRepository)
+		if added || removed {
+			return ctrl.Result{Requeue: true}, c.Update(ctx, &repo)
+		}
+	} else if controllerutil.AddFinalizer(&repo, codev1alpha1.FinalizerRepository) {
 		if err := c.Update(ctx, &repo); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	if !ready {
+	b, conn, cred, notReady := r.resolve(ctx, c, &repo)
+	if notReady != "" {
 		// notReady names exactly which piece is missing (wrong connectionRef,
 		// unknown provider, or unreadable credential) so the status is actionable.
 		return r.fail(ctx, c, &repo, "ConnectionNotReady", notReady)

@@ -313,8 +313,8 @@ onUnmounted(() => {
     </div>
 
     <form class="k-create-surface k-create-surface--guided" :aria-busy="submitting" novalidate @submit.prevent="submit">
-      <div class="k-create-body k-create-body--guided">
-        <div class="k-create-fields">
+      <div class="k-create-body k-create-body--guided code-create-body">
+        <div class="k-create-fields code-create-fields">
           <div class="field">
             <label id="code-repository-connection-label" class="field-label" for="code-repository-connection">Connection</label>
             <FormSelect

@@ -228,6 +228,11 @@ func (s *Server) startRunAction(r *http.Request, c *agentsclient.Client, id iden
 	_, resp, err := s.invokeRun(r, c, id, agent, invokeRunRequest{
 		Task: in.Task, IdempotencyKey: in.IdempotencyKey, ExpectedAgentUID: in.ExpectedAgentUID,
 		ResultSchema: in.ResultSchema, Limits: in.RunLimits,
+		// start-run is an automation grant: the run spends the agent's
+		// configured models as a Schedule or Trigger run does
+		// (docs/agents-model-provider-connections.md, "Access"). Recorded on
+		// the run, so every turn sees it, whichever request resumes it.
+		modelUseDelegated: true,
 	})
 	if err != nil {
 		return nil, actionErrorFor(err)

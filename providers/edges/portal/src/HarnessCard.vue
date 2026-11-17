@@ -8,10 +8,11 @@
 // machine), enabled (spec.harness asks for it) and ready (its runner answers
 // runner/v1). "Installed but switched off" and "asked for but not installed"
 // are different situations, so they read differently.
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { Bot, ChevronDown, ChevronUp, PowerOff } from 'lucide-vue-next'
 import { updateEdgeHarness } from './api'
 import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
+import InlineNotification from './portalkit/InlineNotification.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import {
   HARNESS_NAMES,
@@ -63,7 +64,10 @@ interface HarnessRow {
 // agent last reported, and awaitingAgent says so in words.
 const requested = ref<EdgeHarnessSpec | null>(null)
 const saving = ref(false)
-const writeError = ref<string | null>(null)
+const savingOperation = ref<WriteOperation | null>(null)
+const switchError = ref<string | null>(null)
+const selectionError = ref<string | null>(null)
+const limitsError = ref<string | null>(null)
 const awaitingAgent = ref(false)
 const selectionExpanded = ref(false)
 // The machine's ceiling: what a turn may do without asking. Its own disclosure,
@@ -72,6 +76,17 @@ const selectionExpanded = ref(false)
 const limitsExpanded = ref(false)
 const permissionMode = ref<HarnessPermissionMode>('acceptEdits')
 const allowedToolsText = ref('')
+type WriteOperation = 'switch' | 'selection' | 'limits'
+interface WriteRequest {
+  id: number
+  scope: number
+  edgeName: string
+  edgeType: EdgeType
+  operation: WriteOperation
+}
+let scopeGeneration = 0
+let writeID = 0
+let active = true
 
 function specKey(spec: EdgeHarnessSpec | null | undefined): string {
   const mode = spec?.mode ?? 'auto'
@@ -105,6 +120,41 @@ const effective = computed<EdgeHarnessSpec>(() => requested.value ?? props.harne
 const mode = computed<HarnessMode>(() => effective.value.mode ?? 'auto')
 const harnessOn = computed(() => mode.value !== 'none')
 const controlsDisabled = computed(() => props.disabled || saving.value)
+
+function clearWriteError(operation: WriteOperation): void {
+  if (operation === 'switch') switchError.value = null
+  else if (operation === 'selection') selectionError.value = null
+  else limitsError.value = null
+}
+
+function setWriteError(operation: WriteOperation, message: string): void {
+  if (operation === 'switch') switchError.value = message
+  else if (operation === 'selection') selectionError.value = message
+  else limitsError.value = message
+}
+
+function isCurrentWrite(request: WriteRequest): boolean {
+  return active && request.id === writeID && request.scope === scopeGeneration &&
+    request.edgeName === props.edgeName && request.edgeType === props.edgeType
+}
+
+watch(() => `${props.edgeType}\u0000${props.edgeName}`, () => {
+  scopeGeneration += 1
+  writeID += 1
+  requested.value = null
+  saving.value = false
+  savingOperation.value = null
+  switchError.value = null
+  selectionError.value = null
+  limitsError.value = null
+  awaitingAgent.value = false
+}, { flush: 'sync' })
+
+onUnmounted(() => {
+  active = false
+  scopeGeneration += 1
+  writeID += 1
+})
 
 const reported = computed(() => new Map((props.harnesses ?? []).map((status) => [status.name, status])))
 
@@ -250,41 +300,65 @@ watch(() => specKey(props.harness), () => {
   if (requested.value && sameSpec(props.harness, requested.value)) requested.value = null
 })
 
-async function write(spec: EdgeHarnessSpec) {
+async function write(spec: EdgeHarnessSpec, operation: WriteOperation): Promise<void> {
   if (controlsDisabled.value) return
+  const request: WriteRequest = {
+    id: ++writeID,
+    scope: scopeGeneration,
+    edgeName: props.edgeName,
+    edgeType: props.edgeType,
+    operation,
+  }
   saving.value = true
-  writeError.value = null
+  savingOperation.value = operation
+  clearWriteError(operation)
   try {
-    await updateEdgeHarness(props.edgeName, props.edgeType, spec)
+    await updateEdgeHarness(request.edgeName, request.edgeType, spec)
+    if (!isCurrentWrite(request)) return
     requested.value = spec
     // The spec write is done; the machine has not confirmed it yet.
     awaitingAgent.value = !agentAgrees.value
     emit('changed')
   } catch (error) {
+    if (!isCurrentWrite(request)) return
     requested.value = null
-    writeError.value = (error as ErrorResponse)?.message ?? 'Could not save the harness setting.'
+    const fallback = operation === 'switch'
+      ? 'Could not update the harness setting.'
+      : operation === 'selection'
+        ? 'Could not save the harness choice.'
+        : 'Could not save permissions.'
+    setWriteError(operation, (error as ErrorResponse)?.message ?? fallback)
   } finally {
-    saving.value = false
+    if (isCurrentWrite(request)) {
+      saving.value = false
+      savingOperation.value = null
+    }
   }
 }
 
-function onToggle(event: Event) {
-  const on = (event.target as HTMLInputElement).checked
-  void write({ mode: on ? 'auto' : 'none', ...limits.value })
+function onToggle(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const on = input.checked
+  // Keep the native control on the authoritative spec until the write lands.
+  // This also avoids a user-visible optimistic state that has no status yet.
+  input.checked = harnessOn.value
+  return write({ mode: on ? 'auto' : 'none', ...limits.value }, 'switch')
 }
 
 function onSaveLimits() {
   if (!limitsDirty.value) return
-  void write({ ...(props.harness ?? { mode: 'auto' }), ...limits.value })
+  void write({ ...(props.harness ?? { mode: 'auto' }), ...limits.value }, 'limits')
 }
 
 function onSaveSelection() {
   if (!selectionDirty.value) return
-  void write({ ...selectionSpec.value, ...limits.value })
+  void write({ ...selectionSpec.value, ...limits.value }, 'selection')
 }
 
 const announcement = computed(() => {
-  if (saving.value) return 'Saving the harness setting.'
+  if (savingOperation.value === 'switch') return 'Saving harness availability.'
+  if (savingOperation.value === 'selection') return 'Saving harness choice.'
+  if (savingOperation.value === 'limits') return 'Saving harness permissions.'
   if (awaitingAgent.value) return 'Harness setting saved. Waiting for the machine to confirm.'
   return `Coding harnesses are ${harnessOn.value ? 'on' : 'off'} for this machine. ${switchHelp.value}`
 })
@@ -324,7 +398,6 @@ const announcement = computed(() => {
 
     <div class="edge-harness">
       <p class="edge-detail__sr-only" role="status" aria-live="polite">{{ announcement }}</p>
-      <div v-if="writeError" class="banner error" role="alert">{{ writeError }}</div>
 
       <label class="edge-harness__switch k-checkbox-hit">
         <input
@@ -335,7 +408,9 @@ const announcement = computed(() => {
           aria-labelledby="edges-harness-enabled-label"
           aria-describedby="edges-harness-enabled-help"
           :checked="harnessOn"
-          :disabled="controlsDisabled"
+          :aria-disabled="saving ? 'true' : undefined"
+          :aria-busy="savingOperation === 'switch' ? 'true' : undefined"
+          :disabled="props.disabled"
           @change="onToggle"
         />
         <span class="edge-harness__switch-text">
@@ -345,6 +420,12 @@ const announcement = computed(() => {
           <span id="edges-harness-enabled-help" class="muted small">{{ switchHelp }}</span>
         </span>
       </label>
+      <InlineNotification
+        v-if="switchError"
+        tone="error"
+        title="Could not change harness availability"
+        :message="switchError"
+      />
 
       <div v-if="!harnessOn" class="waiting edge-harness__off" role="note">
         <PowerOff :size="14" aria-hidden="true" />
@@ -419,13 +500,20 @@ const announcement = computed(() => {
           <button
             type="button"
             class="k-btn k-btn--ghost"
-            :disabled="controlsDisabled || !limitsDirty"
-            :aria-busy="saving || undefined"
+            :disabled="props.disabled || !limitsDirty"
+            :aria-disabled="saving ? 'true' : undefined"
+            :aria-busy="savingOperation === 'limits' ? 'true' : undefined"
             @click="onSaveLimits"
           >
-            {{ saving ? 'Saving…' : 'Save permissions' }}
+            {{ savingOperation === 'limits' ? 'Saving permissions…' : 'Save permissions' }}
           </button>
         </div>
+        <InlineNotification
+          v-if="limitsError"
+          tone="error"
+          title="Could not save permissions"
+          :message="limitsError"
+        />
       </fieldset>
 
       <!--
@@ -466,13 +554,20 @@ const announcement = computed(() => {
           <button
             type="button"
             class="k-btn k-btn--ghost"
-            :disabled="controlsDisabled || !selectionDirty"
-            :aria-busy="saving || undefined"
+            :disabled="props.disabled || !selectionDirty"
+            :aria-disabled="saving ? 'true' : undefined"
+            :aria-busy="savingOperation === 'selection' ? 'true' : undefined"
             @click="onSaveSelection"
           >
-            {{ saving ? 'Saving…' : 'Save harness choice' }}
+            {{ savingOperation === 'selection' ? 'Saving harness choice…' : 'Save harness choice' }}
           </button>
         </div>
+        <InlineNotification
+          v-if="selectionError"
+          tone="error"
+          title="Could not save harness choice"
+          :message="selectionError"
+        />
       </fieldset>
     </div>
   </ResourceSectionCard>

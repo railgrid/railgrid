@@ -653,7 +653,7 @@ test('gives every ResourceTable caller a descriptive table and scroll-region nam
 
   const workloads = fs.readFileSync(new URL('../providers/edges/portal/src/Workloads.vue', import.meta.url), 'utf8')
   assert.match(workloads, /<template #after-row="\{ row, columnCount \}">/)
-  assert.match(workloads, /<td :colspan="columnCount">/)
+  assert.match(workloads, /<td\b[^>]*:colspan="columnCount"[^>]*>/)
   assert.doesNotMatch(workloads, /:colspan="workloadColumns\.length"/)
 })
 

@@ -13,6 +13,7 @@ const props = defineProps<{
   rowLabel: string
   idPrefix: string
   disabled?: boolean
+  focusFirstMeter?: boolean
 }>()
 const emit = defineEmits<{ 'update:modelValue': [value: Limit[]] }>()
 
@@ -43,79 +44,86 @@ function remove(index: number): void {
     <div
       v-for="(limit, i) in modelValue"
       :key="i"
-      class="mb-5 flex flex-wrap items-end gap-2"
+      role="group"
+      :aria-labelledby="`${idPrefix}-title-${i}`"
+      class="mb-5 min-w-0"
     >
-      <div class="w-full">
-        <p class="text-sm font-medium">{{ meterDefinition(limit.meter)?.label || `Custom ${rowLabel.toLowerCase()} ${i + 1}` }}</p>
-        <p :id="`${idPrefix}-hint-${i}`" class="mt-1 text-xs text-text-muted">{{ meterDefinition(limit.meter)?.description || 'Enter the exact meter ID supplied by your provider. Units are defined by that meter.' }}</p>
-      </div>
-      <div>
-        <label :for="`${idPrefix}-meter-${i}`" class="block text-[11px] text-text-muted">Meter ID</label>
-        <input
-          :id="`${idPrefix}-meter-${i}`"
-          :value="limit.meter"
-          :list="`${idPrefix}-known-meters`"
-          :aria-describedby="`${idPrefix}-hint-${i}`"
-          class="k-input mt-1 w-40 font-mono text-sm"
-          placeholder="e.g. workspaces"
+      <div class="mb-2 flex min-w-0 items-start justify-between gap-3">
+        <div class="min-w-0">
+          <p :id="`${idPrefix}-title-${i}`" class="text-sm font-medium">{{ meterDefinition(limit.meter)?.label || `Custom ${rowLabel.toLowerCase()} ${i + 1}` }}</p>
+          <p :id="`${idPrefix}-hint-${i}`" class="mt-1 text-xs text-text-muted">{{ meterDefinition(limit.meter)?.description || 'Enter the exact meter ID supplied by your provider. Units are defined by that meter.' }}</p>
+        </div>
+        <button
+          type="button"
+          class="k-btn k-btn--ghost shrink-0 px-2 py-1.5 text-xs disabled:opacity-50"
           :disabled="disabled"
-          :aria-label="`${rowLabel} ${i + 1} meter`"
-          required
-          @input="update(i, { meter: ($event.target as HTMLInputElement).value.trim() })"
-        />
-      </div>
-      <div>
-        <label :for="`${idPrefix}-shape-${i}`" class="block text-[11px] text-text-muted">Shape</label>
-        <select
-          :id="`${idPrefix}-shape-${i}`"
-          :value="limit.shape"
-          class="k-input mt-1 w-44 text-sm"
-          :disabled="disabled"
-          :aria-label="`${rowLabel} ${i + 1} shape`"
-          @change="update(i, { shape: ($event.target as HTMLSelectElement).value })"
+          :aria-label="`Remove ${rowLabel.toLowerCase()} ${i + 1}`"
+          @click="remove(i)"
         >
-          <option v-for="s in shapes" :key="s.value" :value="s.value">{{ s.label }}</option>
-        </select>
+          <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </button>
       </div>
-      <div>
-        <label :for="`${idPrefix}-enforce-${i}`" class="block text-[11px] text-text-muted">Enforce</label>
-        <select
-          :id="`${idPrefix}-enforce-${i}`"
-          :value="limit.enforce"
-          class="k-input mt-1 w-44 text-sm"
-          :disabled="disabled"
-          :aria-label="`${rowLabel} ${i + 1} enforcement`"
-          @change="update(i, { enforce: ($event.target as HTMLSelectElement).value })"
-        >
-          <option v-for="m in modes" :key="m.value" :value="m.value">{{ m.label }}</option>
-        </select>
+      <div class="grid min-w-0 grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2">
+        <div class="min-w-0">
+          <label :for="`${idPrefix}-meter-${i}`" class="block text-[11px] text-text-muted">Meter ID</label>
+          <input
+            :id="`${idPrefix}-meter-${i}`"
+            :data-initial-focus="focusFirstMeter && i === 0 && !disabled ? '' : undefined"
+            :value="limit.meter"
+            :list="`${idPrefix}-known-meters`"
+            :aria-describedby="`${idPrefix}-hint-${i}`"
+            class="k-input mt-1 w-full min-w-0 font-mono text-sm"
+            placeholder="e.g. workspaces"
+            :disabled="disabled"
+            :aria-label="`${rowLabel} ${i + 1} meter`"
+            required
+            @input="update(i, { meter: ($event.target as HTMLInputElement).value.trim() })"
+          />
+        </div>
+        <div class="min-w-0">
+          <label :for="`${idPrefix}-shape-${i}`" class="block text-[11px] text-text-muted">Shape</label>
+          <select
+            :id="`${idPrefix}-shape-${i}`"
+            :value="limit.shape"
+            class="k-input mt-1 w-full min-w-0 text-sm"
+            :disabled="disabled"
+            :aria-label="`${rowLabel} ${i + 1} shape`"
+            @change="update(i, { shape: ($event.target as HTMLSelectElement).value })"
+          >
+            <option v-for="s in shapes" :key="s.value" :value="s.value">{{ s.label }}</option>
+          </select>
+        </div>
+        <div class="min-w-0">
+          <label :for="`${idPrefix}-enforce-${i}`" class="block text-[11px] text-text-muted">Enforce</label>
+          <select
+            :id="`${idPrefix}-enforce-${i}`"
+            :value="limit.enforce"
+            class="k-input mt-1 w-full min-w-0 text-sm"
+            :disabled="disabled"
+            :aria-label="`${rowLabel} ${i + 1} enforcement`"
+            @change="update(i, { enforce: ($event.target as HTMLSelectElement).value })"
+          >
+            <option v-for="m in modes" :key="m.value" :value="m.value">{{ m.label }}</option>
+          </select>
+        </div>
+        <div class="min-w-0">
+          <label :for="`${idPrefix}-max-${i}`" class="block text-[11px] text-text-muted">
+            Max<span v-if="meterDefinition(limit.meter)" class="text-text-muted"> ({{ meterDefinition(limit.meter)?.unit }})</span><span v-if="limit.enforce === 'Meter'" class="text-text-muted"> (optional)</span>
+          </label>
+          <input
+            :id="`${idPrefix}-max-${i}`"
+            :value="limit.max"
+            :aria-describedby="`${idPrefix}-hint-${i}`"
+            class="k-input mt-1 w-full min-w-0 font-mono text-sm"
+            inputmode="decimal"
+            placeholder="e.g. 10"
+            :disabled="disabled"
+            :required="limit.enforce !== 'Meter'"
+            :aria-label="`${rowLabel} ${i + 1} max`"
+            @input="update(i, { max: ($event.target as HTMLInputElement).value.trim() })"
+          />
+        </div>
       </div>
-      <div>
-        <label :for="`${idPrefix}-max-${i}`" class="block text-[11px] text-text-muted">
-          Max<span v-if="meterDefinition(limit.meter)" class="text-text-muted"> ({{ meterDefinition(limit.meter)?.unit }})</span><span v-if="limit.enforce === 'Meter'" class="text-text-muted"> (optional)</span>
-        </label>
-        <input
-          :id="`${idPrefix}-max-${i}`"
-          :value="limit.max"
-          :aria-describedby="`${idPrefix}-hint-${i}`"
-          class="k-input mt-1 w-24 font-mono text-sm"
-          inputmode="decimal"
-          placeholder="e.g. 10"
-          :disabled="disabled"
-          :required="limit.enforce !== 'Meter'"
-          :aria-label="`${rowLabel} ${i + 1} max`"
-          @input="update(i, { max: ($event.target as HTMLInputElement).value.trim() })"
-        />
-      </div>
-      <button
-        type="button"
-        class="k-btn k-btn--ghost px-2 py-1.5 text-xs disabled:opacity-50"
-        :disabled="disabled"
-        :aria-label="`Remove ${rowLabel.toLowerCase()} ${i + 1}`"
-        @click="remove(i)"
-      >
-        <X class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
     </div>
     <button
       type="button"

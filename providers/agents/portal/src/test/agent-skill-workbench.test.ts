@@ -10,6 +10,107 @@ function deferred<T>() {
 }
 
 describe('Workspace skills library', () => {
+  it('keeps returned rows usable and replaces a warning-bearing result after retry', async () => {
+    const skill = { id: 'workspace:review', name: 'Review', description: 'Review changes.', scope: 'workspace', enabled: false, editable: true, resources: [] }
+    const retryResult = deferred<{ skills: typeof skill[]; warnings: string[] }>()
+    const getSkillLibrary = vi.fn()
+      .mockResolvedValueOnce({ skills: [skill], warnings: ['Provider skills could not be loaded. Retry to refresh the library.'] })
+      .mockImplementationOnce(() => retryResult.promise)
+    const api = stubApi({ getSkillLibrary })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(SkillsLibrary, { store, api })
+
+    try {
+      expect(text(view.element)).toContain('Catalog needs attention.')
+      expect(text(view.element)).toContain('Returned skills remain usable')
+      expect(text(view.element)).toContain('1 listed')
+      expect(view.element.querySelector('button[aria-label*="Review"]')).not.toBeNull()
+
+      const retry = view.element.querySelector<HTMLButtonElement>('[aria-label="Retry"]')!
+      retry.focus()
+      retry.click()
+      await settleVue(3)
+      expect(retry.getAttribute('aria-busy')).toBe('true')
+      expect(document.activeElement).toBe(retry)
+      retry.click()
+      await settleVue(2)
+      expect(getSkillLibrary).toHaveBeenCalledTimes(2)
+
+      retryResult.resolve({ skills: [skill], warnings: [] })
+      await settleVue(8)
+      expect(text(view.element)).not.toContain('Catalog needs attention.')
+      expect(text(view.element)).toContain('1 skill')
+      expect(document.activeElement).toBe(view.element.querySelector('[aria-label="Skill catalog"]'))
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('retains selected details but pauses actions if a warning-bearing refresh omits the skill', async () => {
+    const skill = {
+      id: 'workspace:review', name: 'Review', description: 'Review changes.', scope: 'workspace',
+      packageName: 'review', enabled: false, editable: true, resources: [], instructions: 'Review the rollout.',
+    }
+    const retryResult = deferred<{ skills: never[]; warnings: string[] }>()
+    const getSkillLibrary = vi.fn()
+      .mockResolvedValueOnce({ skills: [skill], warnings: ['Published skill could not be read.'] })
+      .mockImplementationOnce(() => retryResult.promise)
+    const api = stubApi({
+      getSkillLibrary,
+      getSkillLibraryDetail: async () => skill,
+    })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(SkillsLibrary, { store, api })
+
+    try {
+      view.element.querySelector<HTMLButtonElement>('button[aria-label*="Review"]')!.click()
+      await settleVue(8)
+      expect(text(view.element)).toContain('Review the rollout.')
+
+      const retry = view.element.querySelector<HTMLButtonElement>('[aria-label="Retry"]')!
+      retry.click()
+      await settleVue(3)
+      retryResult.resolve({ skills: [], warnings: ['Provider skills could not be loaded.'] })
+      await settleVue(8)
+
+      expect(view.element.querySelector('[aria-label="Skill details"]')?.textContent).toContain('Skill not listed in the latest catalog response.')
+      expect(view.element.querySelector('[aria-label="Skill details"]')?.textContent).toContain('Review the rollout.')
+      expect(view.element.querySelector('button[aria-label="Delete workspace skill"]')?.hasAttribute('disabled')).toBe(true)
+      expect(view.element.querySelector('button')?.textContent).not.toContain('Review')
+      expect(view.element.querySelector('[aria-label="Skill catalog"] .skill-catalog-empty-text')?.textContent).toContain('No skills were listed in this response.')
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('keeps warning details and one focused retry when a catalog retry fails', async () => {
+    const getSkillLibrary = vi.fn()
+      .mockResolvedValueOnce({ skills: [], warnings: ['Workspace skills could not be loaded. Retry to refresh the library.'] })
+      .mockRejectedValueOnce(new Error('Retry failed'))
+    const api = stubApi({ getSkillLibrary })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(SkillsLibrary, { store, api })
+
+    try {
+      const warningRetry = [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.getAttribute('aria-label') === 'Retry')!
+      warningRetry.focus()
+      warningRetry.click()
+      await settleVue(8)
+
+      expect(text(view.element)).toContain('Retry failed')
+      expect(text(view.element)).toContain('Workspace skills could not be loaded.')
+      const retries = [...view.element.querySelectorAll<HTMLButtonElement>('button')].filter(button => button.getAttribute('aria-label') === 'Retry')
+      expect(retries).toHaveLength(1)
+      expect(document.activeElement).toBe(retries[0])
+      expect(getSkillLibrary).toHaveBeenCalledTimes(2)
+    } finally {
+      view.unmount()
+    }
+  })
+
   it('uses the shared multi-term search across skill names and scopes', async () => {
     const skill = { id: 'workspace:review', name: 'Review', description: 'Check a change', scope: 'workspace', enabled: true, editable: true, resources: [] }
     const api = stubApi({ getSkillLibrary: async () => ({ skills: [skill], catalogDigest: '', warnings: [] }) })
@@ -127,6 +228,82 @@ describe('Workspace skills library', () => {
     view.unmount()
   })
 
+  it('keeps the last detail visible but prevents editing after a same-skill refresh fails', async () => {
+    const skill = { id: 'workspace:review', name: 'Review', description: '', scope: 'workspace', packageName: 'review', enabled: true, editable: true }
+    const getSkillLibraryDetail = vi.fn()
+      .mockResolvedValueOnce({ ...skill, instructions: 'Previous instructions.', version: '7', sourceUID: 'review-uid' })
+      .mockRejectedValueOnce(new Error('Read failed'))
+      .mockResolvedValueOnce({ ...skill, instructions: 'New instructions.', version: '8', sourceUID: 'review-uid' })
+    const api = stubApi({ getSkillLibrary: async () => ({ skills: [skill] }), getSkillLibraryDetail })
+    const view = await mountVue(SkillsLibrary, { store: makeStore(api), api })
+    try {
+      const row = view.element.querySelector<HTMLButtonElement>('button[aria-label*="Review"]')!
+      const edit = () => [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(el => text(el) === 'Edit')!
+      row.click()
+      await settleVue(8)
+      expect(edit().disabled).toBe(false)
+      row.click()
+      await settleVue(8)
+      expect(text(view.element)).toContain('Previous instructions.')
+      expect(text(view.element)).toContain('Showing the last loaded details')
+      expect(edit().disabled).toBe(true)
+      view.element.querySelector<HTMLButtonElement>('[aria-label="Retry"]')!.click()
+      await settleVue(8)
+      expect(text(view.element)).toContain('New instructions.')
+      expect(edit().disabled).toBe(false)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it.each([
+    { uid: 'review-uid', resourceVersion: '8', changesDuringSave: false },
+    { uid: 'replacement-uid', resourceVersion: '7', changesDuringSave: false },
+    { uid: 'review-uid', resourceVersion: '7', changesDuringSave: true },
+  ])('keeps the draft when the source changes before or during save (%j)', async ({ changesDuringSave, ...metadata }) => {
+    const document = '---\nname: Review\ndescription: Review evidence.\n---\nOriginal instructions.'
+    const draft = document.replace('Original', 'Draft')
+    const skill = { id: 'workspace:review', name: 'Review', description: 'Review evidence.', scope: 'workspace', packageName: 'review', enabled: true, editable: true }
+    const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT' && changesDuringSave) {
+        return Response.json({ kind: 'Status', status: 'Failure', reason: 'Conflict', code: 409 }, { status: 409 })
+      }
+      return Response.json({
+        apiVersion: 'agents.railgrid.ai/v1alpha1',
+        kind: 'Skill',
+        metadata: { name: 'review', ...metadata },
+        spec: { document: document.replace('Original', 'Other editor’s') },
+      })
+    })
+    const api = stubApi({
+      context: () => ({ tenant: 'workspace-cluster', fetch }),
+      getSkillLibrary: async () => ({ skills: [skill] }),
+      getSkillLibraryDetail: async () => ({ ...skill, document, instructions: 'Original instructions.', version: '7', sourceUID: 'review-uid' }),
+    })
+    const view = await mountVue(SkillsLibrary, { store: makeStore(api), api })
+    try {
+      const button = (label: string) => [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(el => text(el) === label)!
+      view.element.querySelector<HTMLButtonElement>('button[aria-label*="Review"]')!.click()
+      await settleVue(8)
+      button('Edit').click()
+      await settleVue()
+      const editor = view.element.querySelector<HTMLTextAreaElement>('.agents-skill-workbench__document-editor')!
+      editor.value = draft
+      editor.dispatchEvent(new Event('input', { bubbles: true }))
+      button('Save skill').click()
+      await vi.waitFor(() => {
+        expect(text(view.element)).toContain('This skill changed since you opened it.')
+      })
+      expect(fetch.mock.calls.map(([, init]) => init?.method)).toEqual(changesDuringSave ? ['GET', 'PUT'] : ['GET'])
+      if (changesDuringSave) {
+        expect(JSON.parse(String(fetch.mock.calls[1][1]?.body))).toMatchObject({ metadata: { uid: 'review-uid', resourceVersion: '7' } })
+      }
+      expect(editor.value).toBe(draft)
+    } finally {
+      view.unmount()
+    }
+  })
+
   it('preserves the original YAML document when exporting and saving an unchanged edit', async () => {
     const sourceDocument = [
       '---',
@@ -156,6 +333,8 @@ describe('Workspace skills library', () => {
       ...skill,
       instructions: 'Fallback text must not replace the source document.',
       document: sourceDocument,
+      version: '7',
+      sourceUID: 'review-uid',
       resources: [],
     }
     let savedDocument = ''
@@ -164,7 +343,7 @@ describe('Workspace skills library', () => {
         return new Response(JSON.stringify({
           apiVersion: 'agents.railgrid.ai/v1alpha1',
           kind: 'Skill',
-          metadata: { name: 'release-review', resourceVersion: '7' },
+          metadata: { name: 'release-review', uid: 'review-uid', resourceVersion: '7' },
           spec: { document: sourceDocument, resources: [] },
         }))
       }

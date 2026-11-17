@@ -79,7 +79,8 @@ describe('Service detail narrow-screen regressions', () => {
     expect(serviceEdit).toContain("busy: deleting.value")
     expect(serviceEdit).toMatch(/<ActionMenu[\s\S]*label="More service actions"[\s\S]*@select="selectAction"/)
     expect(serviceEdit).toMatch(/deleting\.value = true[\s\S]*await deleteEdgeService\(name\)[\s\S]*emit\('deleted'\)/)
-    expect(serviceEdit).toMatch(/mutationError\.value = errorMessage\(error, 'Delete failed'\)[\s\S]*deleting\.value = false/)
+    expect(serviceEdit).toMatch(/deleteError\.value = errorMessage\(error, 'Delete failed'\)[\s\S]*deleting\.value = false/)
+    expect(serviceEdit).toMatch(/<InlineNotification v-if="deleteError" tone="error" title="Could not delete service"/)
   })
 
   it('uses the provider UI route as the service backlink fallback', () => {

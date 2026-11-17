@@ -117,7 +117,7 @@ describe('deleteConnection', () => {
 })
 
 describe.each([
-  ['Repository', 'repositories', api.deleteRepository],
+  ['Repository', 'repositories', (name: string) => api.deleteRepository({ name, uid: 'repo-uid', resourceVersion: '7' })],
   ['DeployKey', 'deploykeys', api.deleteDeployKey],
   ['Collaborator', 'collaborators', api.deleteCollaborator],
 ] as const)('delete%s', (kind, resource, remove) => {
@@ -284,6 +284,68 @@ describe('getRepository health snapshot', () => {
     }])
     expect(calls[0].method).toBe('GET')
     expect(calls[0].path).toBe(`/clusters/repository-list-urls${API_ROOT}/repositories`)
+  })
+})
+
+describe('repository existing-only projection', () => {
+  const reads = [
+    ['list', async () => (await api.listRepositoriesPage()).items[0]],
+    ['detail', () => api.getRepository('orders')],
+  ] as const
+
+  it.each(reads)('%s reads map the exact existing-only annotation', async (readKind, readRepository) => {
+    setAPIContext({ tenant: `repository-existing-only-${readKind}`, token: 'repository-existing-only-token' })
+    const metadata: Record<string, unknown> = { name: 'orders', uid: 'orders-uid' }
+    metadata.annotations = { 'code.railgrid.ai/existing-only': 'true' }
+    stubFetch(() => readKind === 'list'
+      ? kubeList([{ metadata, spec: { connectionRef: 'github', name: 'orders', owner: 'railgrid' } }])
+      : response({ metadata, spec: { connectionRef: 'github', name: 'orders', owner: 'railgrid' } }))
+
+    await expect(readRepository()).resolves.toMatchObject({ existingOnly: true, retainsRemote: false })
+  })
+
+  it.each(reads)('%s recognizes retention only when the destructive finalizer is absent', async (readKind, readRepository) => {
+    setAPIContext({ tenant: `repository-retention-${readKind}`, token: 'test-token' })
+    const finalizers = ['repositories.code.railgrid.ai/retain-remote']
+    const item = {
+      metadata: { name: 'orders', uid: 'orders-uid', resourceVersion: '7', finalizers },
+      spec: { connectionRef: 'github', name: 'orders' },
+    }
+    stubFetch(() => readKind === 'list' ? kubeList([item]) : response(item))
+    await expect(readRepository()).resolves.toMatchObject({ retainsRemote: true, resourceVersion: '7' })
+
+    finalizers.push('repositories.code.railgrid.ai/finalizer')
+    await expect(readRepository()).resolves.toMatchObject({ retainsRemote: false })
+  })
+
+  it.each(reads)('%s reads preserve false for a missing existing-only marker', async (readKind, readRepository) => {
+    setAPIContext({ tenant: `repository-existing-only-absent-${readKind}`, token: 'repository-existing-only-token' })
+    stubFetch(() => {
+      const item = {
+        metadata: { name: 'orders', uid: 'orders-uid' },
+        spec: { connectionRef: 'github', name: 'orders', owner: 'railgrid' },
+      }
+      return readKind === 'list' ? kubeList([item]) : response(item)
+    })
+
+    await expect(readRepository()).resolves.toMatchObject({ existingOnly: false })
+  })
+
+  it.each(reads)('%s reads do not treat a false annotation value as existing-only', async (readKind, readRepository) => {
+    setAPIContext({ tenant: `repository-existing-only-false-${readKind}`, token: 'repository-existing-only-token' })
+    stubFetch(() => {
+      const item = {
+        metadata: {
+          name: 'orders',
+          uid: 'orders-uid',
+          annotations: { 'code.railgrid.ai/existing-only': 'false' },
+        },
+        spec: { connectionRef: 'github', name: 'orders', owner: 'railgrid' },
+      }
+      return readKind === 'list' ? kubeList([item]) : response(item)
+    })
+
+    await expect(readRepository()).resolves.toMatchObject({ existingOnly: false })
   })
 })
 
@@ -744,12 +806,35 @@ describe('repository registration', () => {
   })
 })
 
+describe('conditional repository deletion', () => {
+  it('sends the reviewed object identity and never retries a conflict by name', async () => {
+    setAPIContext({ tenant: 'changed-repository', token: 'test-token' })
+    const calls = stubFetch(() => kubeStatus(409, 'Conflict', 'precondition failed'))
+
+    await expect(api.deleteRepository({ name: 'orders', uid: 'reviewed-uid', resourceVersion: '7' }))
+      .rejects.toMatchObject({ reason: 'Conflict', message: 'The repository changed. Refresh it and review the removal again.' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      method: 'DELETE',
+      body: { preconditions: { uid: 'reviewed-uid', resourceVersion: '7' } },
+    })
+  })
+
+  it('does not send a delete when the snapshot is missing its resource version', async () => {
+    setAPIContext({ tenant: 'missing-repository-version', token: 'test-token' })
+    const calls = stubFetch(() => response({}))
+    await expect(api.deleteRepository({ name: 'orders', uid: 'orders-uid' }))
+      .rejects.toMatchObject({ reason: 'ProtocolError' })
+    expect(calls).toHaveLength(0)
+  })
+})
+
 describe('delete request authority', () => {
   it('rejects a pending delete response after a same-workspace token rotation', async () => {
     setAPIContext({ tenant: 'delete-context', token: 'old-token' })
     let resolveResponse!: (value: Response) => void
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { resolveResponse = resolve })))
-    const pending = api.deleteRepository('orders')
+    const pending = api.deleteRepository({ name: 'orders', uid: 'orders-uid', resourceVersion: '7' })
     setAPIContext({ tenant: 'delete-context', token: 'new-token' })
     resolveResponse(kubeStatus(500, 'InternalError', 'old failure'))
     await expect(pending).rejects.toMatchObject({ reason: 'ContextChanged' })

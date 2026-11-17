@@ -3,7 +3,7 @@ import { loadSkillLibrary, loadSkillLibraryDetail } from '../skill-library'
 import type { RailgridContext } from '../types'
 
 const document = '---\nname: Review\ndescription: Review evidence\n---\nCheck the evidence.'
-const workspace = { metadata: { name: 'review-package', resourceVersion: '3' }, spec: { document, resources: [{ name: 'checklist.md', content: 'Check permissions.' }] } }
+const workspace = { metadata: { name: 'review-package', uid: 'review-uid', resourceVersion: '3' }, spec: { document, resources: [{ name: 'checklist.md', content: 'Check permissions.' }] } }
 function context(providerStatus = 200) {
   const fetch = vi.fn(async (url: RequestInfo | URL) => {
     const path = String(url)
@@ -36,6 +36,7 @@ describe('workspace skill library', () => {
   it('reads details using the source object name rather than the display name', async () => {
     const { ctx, fetch } = context()
     const detail = await loadSkillLibraryDetail(ctx, 'workspace:review-package')
+    expect(detail).toMatchObject({ sourceUID: 'review-uid', version: '3' })
     expect(detail.instructions).toBe('Check the evidence.')
     expect(detail.resources?.[0].content).toBe('Check permissions.')
     expect(fetch).toHaveBeenCalledOnce()
