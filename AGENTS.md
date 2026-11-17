@@ -871,8 +871,7 @@ motion. Check provider styles imported as raw strings as well as compiled CSS;
 a successful Vite build does not validate an injected stylesheet. When an audit
 finds a recurring mechanical violation, add focused positive/negative guard
 fixtures. Keep unresolved legacy occurrences in an explicit shrinking backlog,
-not the registry of legitimate design exceptions. The audit evidence in
-`docs/audits/design-system/` is not a second design authority.
+not the registry of legitimate design exceptions.
 
 Treat each entry's `status`, `authority`, `implementation.state`, and
 `verification` metadata as part of the contract. Draft/proposed entries and
