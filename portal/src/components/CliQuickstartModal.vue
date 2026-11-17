@@ -1,23 +1,20 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { useEscapeKey } from '@/composables/useEscapeKey'
 import { useClipboardFeedback } from '@/portalkit/useClipboardFeedback'
 import InlineNotification from '@/portalkit/InlineNotification.vue'
-import { Terminal, X, Copy, Check, Loader2, ExternalLink, Download, Package, Code2 } from 'lucide-vue-next'
+import { X, Copy, Check, Loader2, ExternalLink } from 'lucide-vue-next'
 
 const emit = defineEmits<{ close: [] }>()
 
-useEscapeKey(() => emit('close'))
+type Step = 'install' | 'login' | 'verify'
 
-const dialogRef = ref<HTMLElement | null>(null)
-const closeButton = ref<HTMLButtonElement | null>(null)
-let previousFocus: HTMLElement | null = null
+const dialogRef = ref<HTMLDialogElement | null>(null)
 
 function onKeydown(event: KeyboardEvent) {
   if (event.key !== 'Tab') return
   const focusable = Array.from(dialogRef.value?.querySelectorAll<HTMLElement>(
-    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+    'button:not([disabled]), a[href]',
   ) ?? [])
   if (!focusable.length) return
   const first = focusable[0]
@@ -32,16 +29,12 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 onMounted(() => {
-  previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-  window.addEventListener('keydown', onKeydown)
-  nextTick(() => closeButton.value?.focus())
+  // Let the account menu return focus to its trigger before opening the dialog.
+  nextTick(() => dialogRef.value?.showModal())
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown)
-  const target = previousFocus
-  previousFocus = null
-  nextTick(() => target?.isConnected && target.focus())
+  dialogRef.value?.close()
 })
 
 const auth = useAuthStore()
@@ -49,10 +42,10 @@ const auth = useAuthStore()
 type Method = 'binary' | 'krew' | 'source'
 const method = ref<Method>('binary')
 
-const methods: { id: Method; label: string; description: string; icon: typeof Download }[] = [
-  { id: 'binary', label: 'Binary', description: 'Prebuilt release', icon: Download },
-  { id: 'krew', label: 'Krew', description: 'kubectl plugin', icon: Package },
-  { id: 'source', label: 'Source', description: 'go install', icon: Code2 },
+const methods: { id: Method; label: string }[] = [
+  { id: 'binary', label: 'Binary' },
+  { id: 'krew', label: 'Krew' },
+  { id: 'source', label: 'Source' },
 ]
 
 const hubURL = computed(() => window.location.origin)
@@ -90,10 +83,25 @@ const verifySnippet = computed(
   () => `${cliBinary.value} edge list`,
 )
 
+const steps = computed(() => [
+  { id: 'install', title: 'Install', command: installSnippet.value },
+  { id: 'login', title: 'Log in', command: loginSnippet.value },
+  { id: 'verify', title: 'Verify access', command: verifySnippet.value },
+] as const)
+
 const { copiedField, pendingField, errors: copyErrors, copy: copyValue } = useClipboardFeedback(() => method.value)
-const copyLabels: Record<string, string> = { install: 'Installation command', login: 'Login command', verify: 'Verification command' }
-const copyStatus = computed(() => copiedField.value ? `${copyLabels[copiedField.value]} copied.` : '')
-function copy(text: string, field: string) {
+const copyLabels: Record<Step, string> = {
+  install: 'Installation command',
+  login: 'Login command',
+  verify: 'Verification command',
+}
+const copyStatus = computed(() => copiedField.value ? `${copyLabels[copiedField.value as Step]} copied.` : '')
+
+function selectMethod(id: Method) {
+  method.value = id
+}
+
+function copy(text: string, field: Step) {
   return copyValue(text, field, `Could not copy the ${copyLabels[field].toLowerCase()}. Select the command and copy it manually, or try again.`)
 }
 
@@ -102,186 +110,149 @@ const releasesURL = 'https://github.com/railgrid/railgrid/releases/latest'
 
 <template>
   <Teleport to="body">
-    <div
-      class="k-modal-overlay"
-      @click.self="$emit('close')"
+    <dialog
+      ref="dialogRef"
+      class="k-modal-overlay cli-dialog"
+      aria-labelledby="cli-quickstart-title"
+      aria-describedby="cli-quickstart-description"
+      @click.self="emit('close')"
+      @cancel.prevent="emit('close')"
+      @keydown="onKeydown"
     >
-      <div ref="dialogRef" class="k-modal w-full max-w-2xl max-h-[90vh] overflow-y-auto p-0" role="dialog" aria-modal="true" aria-labelledby="cli-quickstart-title">
-        <!-- Header (terminal-style) -->
-        <div class="flex items-center justify-between border-b border-border-subtle bg-surface-overlay/60 px-4 py-2.5">
-          <div class="flex items-center gap-2">
-            <div class="flex items-center gap-1.5">
-              <div class="h-2.5 w-2.5 rounded-full bg-danger/60" />
-              <div class="h-2.5 w-2.5 rounded-full bg-warning/60" />
-              <div class="h-2.5 w-2.5 rounded-full bg-success/60" />
-            </div>
-            <Terminal class="ml-2 h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
-            <span class="font-mono text-[11px] font-semibold tracking-wider text-text-secondary">
-              railgrid — quickstart
-            </span>
+      <div class="k-modal cli-dialog-panel">
+        <header class="mb-5 flex items-start justify-between gap-3">
+          <div>
+            <h2 id="cli-quickstart-title" class="k-modal__title cli-dialog-title">Install the Railgrid CLI</h2>
+            <p id="cli-quickstart-description" class="k-modal__message mb-0 text-[13px]">
+              Install the CLI, then connect it to this hub.
+            </p>
           </div>
           <button
-            ref="closeButton"
             type="button"
-            class="k-btn k-btn--ghost h-7 w-7 p-0 text-text-muted transition-all hover:text-text-primary"
+            class="k-btn k-btn--ghost cli-dialog-close"
             aria-label="Close CLI quickstart dialog"
-            @click="$emit('close')"
+            autofocus
+            @click="emit('close')"
           >
-            <X class="h-3.5 w-3.5" :stroke-width="2" />
+            <X class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
           </button>
-        </div>
+        </header>
 
-        <div class="space-y-5 p-6">
-          <!-- Intro -->
-          <div>
-            <h2 id="cli-quickstart-title" class="text-[15px] font-bold text-text-primary">Install & log in to the CLI</h2>
-            <p class="mt-1 text-[12px] text-text-muted">
-              The <span class="font-mono text-text-secondary">railgrid</span> CLI talks to this hub at
-              <span class="font-mono text-text-secondary">{{ hubURL }}</span>.
-              Once installed, log in once and your kubeconfig will be updated automatically.
-            </p>
-            <p class="sr-only" role="status" aria-live="polite">{{ copyStatus }}</p>
-          </div>
+        <div class="divide-y divide-border-subtle">
+          <section
+            v-for="(step, index) in steps"
+            :key="step.id"
+            :aria-labelledby="'cli-step-' + step.id"
+            class="space-y-2 py-4 first:pt-0 last:pb-0"
+          >
+            <h3 :id="'cli-step-' + step.id" class="text-[15px] font-semibold">
+              {{ index + 1 }}. {{ step.title }}
+            </h3>
 
-          <!-- Step 1: install method tabs -->
-          <div>
-            <div class="mb-2 flex items-center gap-2">
-                <span class="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-bold text-on-accent">
-                1
-              </span>
-              <span class="text-[11px] font-semibold uppercase tracking-[0.15em] text-text-muted">
-                Install the CLI
-              </span>
-            </div>
-
-            <div class="mb-2 flex gap-1.5" role="group" aria-label="Installation method">
+            <div v-if="step.id === 'install'" class="k-tabs k-tabs--secondary cli-methods" role="group" aria-label="Installation method">
               <button
-                v-for="m in methods"
-                :key="m.id"
+                v-for="option in methods"
+                :key="option.id"
                 type="button"
-                :aria-pressed="method === m.id"
-                class="k-btn k-btn--ghost flex flex-1 items-center gap-1.5 rounded-md border px-2.5 py-2 text-left transition-all"
-                :class="
-                  method === m.id
-                    ? 'border-accent/40 bg-accent/5'
-                    : 'border-border-subtle bg-surface-overlay/40 hover:bg-surface-hover'
-                "
-                @click="method = m.id"
+                class="k-tab"
+                :class="{ 'k-tab--active': method === option.id }"
+                :aria-pressed="method === option.id"
+                @click="selectMethod(option.id)"
               >
-                <component :is="m.icon" class="h-3.5 w-3.5 shrink-0" :class="method === m.id ? 'text-accent' : 'text-text-muted'" :stroke-width="1.75" />
-                <span class="min-w-0">
-                  <span class="block text-[11px] font-semibold text-text-primary">{{ m.label }}</span>
-                  <span class="block truncate text-[10px] text-text-muted">{{ m.description }}</span>
-                </span>
+                {{ option.label }}
               </button>
             </div>
 
-            <div class="rounded-xl border border-border-subtle bg-surface-overlay/60 p-3">
-              <div class="mb-1.5 flex items-center justify-between">
-                <span class="font-mono text-[9px] uppercase tracking-[0.2em] text-text-muted/70">$ shell</span>
-                <button
-                  type="button"
-                  aria-label="Copy installation command"
-                  :aria-disabled="pendingField !== null"
-                  :aria-busy="pendingField === 'install'"
-                  class="k-btn k-btn--ghost flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-muted transition-all hover:text-accent"
-                  @click="copy(installSnippet, 'install')"
-                >
-                  <component :is="pendingField === 'install' ? Loader2 : copiedField === 'install' ? Check : Copy" class="h-3 w-3" :class="{ 'k-spin': pendingField === 'install' }" :stroke-width="2" aria-hidden="true" />
-                  {{ pendingField === 'install' ? 'Copying…' : copiedField === 'install' ? 'Copied' : 'Copy' }}
-                </button>
-              </div>
-              <pre class="overflow-x-auto rounded-lg bg-surface/80 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ installSnippet }}</pre>
-              <InlineNotification v-if="copyErrors.install" tone="error" :message="copyErrors.install" class="mt-2" />
+            <div class="flex min-w-0 items-start gap-1 rounded-md border border-border-default bg-surface-overlay/60 p-1">
+              <pre class="min-w-0 flex-1 whitespace-pre-wrap px-2 py-2 font-mono text-xs leading-relaxed text-text-primary [overflow-wrap:anywhere]"><code>{{ step.command }}</code></pre>
+              <button
+                type="button"
+                class="k-btn k-btn--ghost cli-copy"
+                :aria-label="(pendingField === step.id ? 'Copying ' : copiedField === step.id ? 'Copied ' : 'Copy ') + copyLabels[step.id].toLowerCase()"
+                :aria-disabled="pendingField !== null"
+                :aria-busy="pendingField === step.id"
+                @click="copy(step.command, step.id)"
+              >
+                <component :is="pendingField === step.id ? Loader2 : copiedField === step.id ? Check : Copy" class="h-3.5 w-3.5" :class="{ 'k-spin': pendingField === step.id }" :stroke-width="1.75" aria-hidden="true" />
+                {{ pendingField === step.id ? 'Copying…' : copiedField === step.id ? 'Copied' : 'Copy' }}
+              </button>
             </div>
 
+            <InlineNotification v-if="copyErrors[step.id]" tone="error" :message="copyErrors[step.id]" />
+
             <a
-              v-if="method === 'binary'"
+              v-if="step.id === 'install' && method === 'binary'"
               :href="releasesURL"
               target="_blank"
               rel="noopener"
-              class="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-accent transition-colors hover:text-accent-hover"
+              class="k-back-action inline-flex items-center"
             >
               Browse releases on GitHub
-              <ExternalLink class="h-3 w-3" :stroke-width="2" />
+              <ExternalLink :stroke-width="1.75" aria-hidden="true" />
             </a>
-          </div>
 
-          <!-- Step 2: login -->
-          <div>
-            <div class="mb-2 flex items-center gap-2">
-                <span class="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-bold text-on-accent">
-                2
-              </span>
-              <span class="text-[11px] font-semibold uppercase tracking-[0.15em] text-text-muted">
-                Log in to this hub
-              </span>
-            </div>
-
-            <div class="rounded-xl border border-border-subtle bg-surface-overlay/60 p-3">
-              <div class="mb-1.5 flex items-center justify-between">
-                <span class="font-mono text-[9px] uppercase tracking-[0.2em] text-text-muted/70">$ shell</span>
-                <button
-                  type="button"
-                  aria-label="Copy login command"
-                  :aria-disabled="pendingField !== null"
-                  :aria-busy="pendingField === 'login'"
-                  class="k-btn k-btn--ghost flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-muted transition-all hover:text-accent"
-                  @click="copy(loginSnippet, 'login')"
-                >
-                  <component :is="pendingField === 'login' ? Loader2 : copiedField === 'login' ? Check : Copy" class="h-3 w-3" :class="{ 'k-spin': pendingField === 'login' }" :stroke-width="2" aria-hidden="true" />
-                  {{ pendingField === 'login' ? 'Copying…' : copiedField === 'login' ? 'Copied' : 'Copy' }}
-                </button>
-              </div>
-              <pre class="overflow-x-auto rounded-lg bg-surface/80 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ loginSnippet }}</pre>
-              <InlineNotification v-if="copyErrors.login" tone="error" :message="copyErrors.login" class="mt-2" />
-            </div>
-
-            <p class="mt-2 text-[11px] text-text-muted">
-              A browser window opens for SSO; the CLI then writes a context named
-              <span class="font-mono text-text-secondary">railgrid</span> into
-              <span class="font-mono text-text-secondary">~/.kube/config</span>.
+            <p v-if="step.id === 'login'" class="text-[13px] text-text-secondary">
+              Your browser opens for SSO. The CLI adds a <code class="font-mono">railgrid</code> context to
+              <code class="font-mono">~/.kube/config</code>.
             </p>
-          </div>
-
-          <!-- Step 3: verify -->
-          <div>
-            <div class="mb-2 flex items-center gap-2">
-                <span class="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-bold text-on-accent">
-                3
-              </span>
-              <span class="text-[11px] font-semibold uppercase tracking-[0.15em] text-text-muted">
-                Verify
-              </span>
-            </div>
-
-            <div class="rounded-xl border border-border-subtle bg-surface-overlay/60 p-3">
-              <div class="mb-1.5 flex items-center justify-between">
-                <span class="font-mono text-[9px] uppercase tracking-[0.2em] text-text-muted/70">$ shell</span>
-                <button
-                  type="button"
-                  aria-label="Copy verification command"
-                  :aria-disabled="pendingField !== null"
-                  :aria-busy="pendingField === 'verify'"
-                  class="k-btn k-btn--ghost flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-muted transition-all hover:text-accent"
-                  @click="copy(verifySnippet, 'verify')"
-                >
-                  <component :is="pendingField === 'verify' ? Loader2 : copiedField === 'verify' ? Check : Copy" class="h-3 w-3" :class="{ 'k-spin': pendingField === 'verify' }" :stroke-width="2" aria-hidden="true" />
-                  {{ pendingField === 'verify' ? 'Copying…' : copiedField === 'verify' ? 'Copied' : 'Copy' }}
-                </button>
-              </div>
-              <pre class="overflow-x-auto rounded-lg bg-surface/80 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ verifySnippet }}</pre>
-              <InlineNotification v-if="copyErrors.verify" tone="error" :message="copyErrors.verify" class="mt-2" />
-            </div>
-          </div>
-
-          <!-- Footer note for clusterName context -->
-          <div v-if="auth.clusterName" class="rounded-xl border border-border-subtle bg-surface-overlay/40 px-3 py-2 text-[10px] text-text-muted">
-            Logged in as <span class="font-mono text-text-secondary">{{ auth.memberId || auth.user?.userId }}</span>
-            · workspace <span class="font-mono text-text-secondary">{{ auth.clusterName }}</span>
-          </div>
+          </section>
         </div>
+
+        <p class="sr-only" role="status" aria-live="polite">{{ copyStatus }}</p>
+        <p v-if="auth.clusterName" class="mt-4 break-words border-t border-border-subtle pt-3 text-xs text-text-secondary">
+          Logged in as <span class="font-mono">{{ auth.memberId || auth.user?.userId }}</span>
+          · workspace <span class="font-mono">{{ auth.clusterName }}</span>
+        </p>
       </div>
-    </div>
+    </dialog>
   </Teleport>
 </template>
+
+<style scoped>
+.cli-dialog {
+  padding: 12px;
+}
+
+.cli-dialog-panel {
+  width: min(100%, 42rem);
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px;
+}
+
+.cli-dialog-title {
+  font-size: 20px;
+}
+
+.cli-dialog-close {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.cli-methods {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+
+.cli-copy {
+  flex: none;
+  width: 76px;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+@media (min-width: 640px) {
+  .cli-dialog {
+    padding: 24px;
+  }
+
+  .cli-dialog-panel {
+    max-height: calc(100dvh - 48px);
+    padding: 24px;
+  }
+}
+</style>
