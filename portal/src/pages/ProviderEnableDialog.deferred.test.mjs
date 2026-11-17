@@ -226,8 +226,8 @@ export {
   watchCalls,
   timers, timerDelays, unmountCallbacks,
   toastCalls,
-  ${isWizard ? '' : 'providerStatusLabel, providerStatusClass, canOpenProvider, canDisableFromThisProjection,'}
-  ${isWizard ? 'props, plan, goal, goalExplicit, step, audience, restore, storageKey, persist, selectAudience, canOpen, setupReady, setupDataCurrent, canSkipSetup, memberJourney, explore, exploring,' : 'onDisable, disableOperations, hasPendingDeletion, route, router, setTab, startInstall, cancelInstall, resumeManualInstall, showInstructions, canManageSelfHostedCredentials, activeRegistration, finishInstall, selfHostedHeading, selfHostNotice, removeSelfHosted, selfHostRemoval, removalOperations, clearSelfHostRemoval, confirmingRemoval, selfHostError, trackDeletingSelfHostedProviders, normalizeProviderRoute, installProvider, inventoryScope, currentTenantScope, refreshOrgProviderInventory, restartInventoryPolling, stopInventoryPolling, stopSelfHostRemovalPolling, onInventoryVisibilityChange, document, setInventoryPollingMounted, resetRouteState,'}
+  ${isWizard ? '' : 'providerStatusLabel, providerStatusTone, canOpenProvider, canDisableFromThisProjection,'}
+  ${isWizard ? 'props, plan, goal, goalExplicit, step, audience, restore, storageKey, persist, selectAudience, canOpen, setupReady, setupDataCurrent, canSkipSetup, memberJourney, explore, exploring,' : 'onDisable, disableOperations, disableErrors, hasPendingDeletion, route, router, setTab, startInstall, cancelInstall, resumeManualInstall, showInstructions, canManageSelfHostedCredentials, activeRegistration, finishInstall, selfHostedHeading, selfHostNotice, removeSelfHosted, selfHostRemoval, removalOperations, clearSelfHostRemoval, confirmingRemoval, selfHostError, trackDeletingSelfHostedProviders, normalizeProviderRoute, installProvider, inventoryScope, currentTenantScope, refreshOrgProviderInventory, restartInventoryPolling, stopInventoryPolling, stopSelfHostRemovalPolling, onInventoryVisibilityChange, document, setInventoryPollingMounted, resetRouteState,'}
   confirmCalls,
   setConfirmBehavior,
 }
@@ -354,6 +354,7 @@ test('ProvidersPage ignores a deferred disable failure after a same-provider ena
   staleDisable.reject(new Error('old workspace disable failed'))
   await disabling
   assert.equal(caller.busy.value.edges, true, 'the stale disable cannot release the new enable busy state')
+  assert.equal(caller.disableErrors.value.size, 0, 'the stale disable cannot publish an error in the current scope')
   assert.equal(caller.actionError.value, null, 'the stale disable cannot replace the current scope error')
 
   currentEnable.resolve()
@@ -742,6 +743,26 @@ test('ProvidersPage Ready completion clears wizard route state and returns focus
   caller.setScope('org-a', 'workspace-a')
 })
 
+test('a provider disable failure stays separate from another provider’s consent dialog', async () => {
+  const caller = await loadCaller('pages/ProvidersPage.vue')
+  caller.setScope('org-a', 'workspace-a')
+  const disabled = { name: 'quickstart', displayName: 'Quickstart', requires: [] }
+  const enabled = { name: 'edges', displayName: 'Edges', requires: [] }
+  const pending = deferred()
+  caller.providerStore.disable = () => pending.promise
+  const disabling = caller.onDisable(disabled)
+  caller.openEnableDialog(enabled)
+  pending.reject(new Error('Could not disable Quickstart'))
+  await disabling
+  assert.equal(caller.dialogProvider.value.name, 'edges')
+  assert.equal(caller.actionError.value, null)
+  assert.equal(caller.disableErrors.value.get('quickstart').message, 'Could not disable Quickstart')
+  caller.closeEnableDialog()
+  assert.equal(caller.disableErrors.value.size, 1)
+  caller.setScope('org-b')
+  assert.equal(caller.disableErrors.value.size, 0)
+})
+
 test('ProvidersPage refuses to disable a changed workspace binding after migration confirmation', async () => {
   const caller = await loadCaller('pages/ProvidersPage.vue')
   caller.setScope('org-a', 'workspace-a')
@@ -770,7 +791,7 @@ test('ProvidersPage refuses to disable a changed workspace binding after migrati
   await disabling
 
   assert.equal(writes, 0, 'a binding that changed during confirmation is never disabled')
-  assert.match(caller.actionError.value, /binding changed while confirmation was open/)
+  assert.match(caller.disableErrors.value.get('quickstart').message, /binding changed while confirmation was open/)
 })
 
 test('catalog retains confirmed copy labels during same-workspace refreshes while actions require fresh bindings', async () => {
@@ -789,14 +810,14 @@ test('catalog retains confirmed copy labels during same-workspace refreshes whil
     store.bindingsStale = false
     const label = selfHosted ? 'Enabled · org copy' : 'Enabled · platform copy'
     assert.equal(caller.providerStatusLabel(provider), label)
-    const badgeClass = caller.providerStatusClass(provider)
+    const badgeTone = caller.providerStatusTone(provider)
     assert.equal(caller.canOpenProvider(provider), true)
     assert.equal(caller.canDisableFromThisProjection(provider), true)
 
     store.bindingsLoadState = 'loading'
     store.bindingsStale = true
     assert.equal(caller.providerStatusLabel(provider), label)
-    assert.equal(caller.providerStatusClass(provider), badgeClass)
+    assert.equal(caller.providerStatusTone(provider), badgeTone)
     assert.equal(caller.canOpenProvider(provider), false)
     assert.equal(caller.canDisableFromThisProjection(provider), false)
 

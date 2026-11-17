@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { containModalTab } from '@/portalkit/modal-focus'
+
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import { Loader2 } from 'lucide-vue-next'
 
@@ -66,6 +68,7 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <dialog
+      @keydown="containModalTab"
       ref="dialogRef"
       class="create-service-account-dialog k-modal"
       :aria-labelledby="`${id}-title`"

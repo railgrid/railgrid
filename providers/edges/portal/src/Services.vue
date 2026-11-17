@@ -3,7 +3,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted, onActivated, watch } f
 import { ArrowRight, RefreshCw, Plus, Check, Plug, Server } from 'lucide-vue-next'
 import {
   listServices, listServicesPage, deleteEdgeService, listEdges,
-  fetchServiceCatalog,
+  fetchServiceCatalog, isContextChangedError,
 } from './api'
 import type { CatalogEntry } from './api'
 import type { EdgeService, Edge, ErrorResponse } from './types'
@@ -71,7 +71,7 @@ const currentSnapshot = ref(false)
 const collectionPage = ref<HTMLElement | null>(null)
 const error = ref<string | null>(null)
 const deletingService = ref<string | null>(null)
-const deleteFailure = ref<{ name: string; message: string } | null>(null)
+const deleteFailures = ref<Record<string, { name: string; message: string }>>({})
 const servicesHeading = ref<HTMLElement | null>(null)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
@@ -465,17 +465,29 @@ async function onDelete(s: EdgeService) {
   try {
     await deleteEdgeService(s.name)
     if (stopped) return
-    deleteFailure.value = null
+    clearDeleteFailure(s.name)
     toast('info', `Service deletion requested for ${s.name}.`)
     const focusedAction = typeof document !== 'undefined' ? document.activeElement : null
     await refresh('foreground', true)
     await nextTick()
     if (focusedAction && !focusedAction.isConnected && document.activeElement === document.body) servicesHeading.value?.focus()
   } catch (e) {
-    if (!stopped) deleteFailure.value = { name: s.name, message: (e as ErrorResponse)?.message ?? 'The request failed.' }
+    if (!stopped && !isContextChangedError(e)) deleteFailures.value = { ...deleteFailures.value, [s.name]: { name: s.name, message: (e as ErrorResponse)?.message ?? 'The request failed.' } }
   } finally {
     deletingService.value = null
   }
+}
+
+function clearDeleteFailure(name: string) {
+  const next = { ...deleteFailures.value }
+  delete next[name]
+  deleteFailures.value = next
+}
+
+async function dismissDeleteFailure(name: string) {
+  clearDeleteFailure(name)
+  await nextTick()
+  servicesHeading.value?.focus()
 }
 
 async function retryFirstRun() {
@@ -538,6 +550,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
       </div>
     </header>
 
+    <InlineNotification v-for="(failure, key) in deleteFailures" :key="key" class="services-delete-error" tone="error" :title="`Could not delete ${failure.name}`" :message="`${failure.message} Try again from the service's action menu.`" dismissible @dismiss="dismissDeleteFailure(String(key))" />
     <InlineNotification v-if="showFirstRun && error" tone="error" :announce="refreshMode === 'background' ? 'polite' : 'assertive'" title="Could not refresh services" :message="`Showing the last successful result. ${error}`" action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="retryFirstRun" />
     <FirstRunGuide
       v-if="showFirstRun"
@@ -555,7 +568,6 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
     </FirstRunGuide>
 
     <div v-else class="services-table">
-      <InlineNotification v-if="deleteFailure" class="services-delete-error" tone="error" :title="`Could not delete ${deleteFailure.name}`" :message="`${deleteFailure.message} Try again from the service's action menu.`" />
       <ResourceTable
         :columns="serviceColumns"
         :rows="serviceRows"

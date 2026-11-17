@@ -194,7 +194,7 @@ function memberPrimaryValue(row: Record<string, unknown>): string {
       <template #role="{ row }">
         <span
           v-if="readonly"
-          class="k-badge k-badge--muted px-1.5 py-px text-[9px]"
+          class="k-badge k-badge--muted k-badge--label"
         >{{ memberRole(row) }}</span>
         <select
           v-else

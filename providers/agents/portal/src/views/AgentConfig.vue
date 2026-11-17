@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue'
 import {
-  ArrowLeftRight,
   Check,
   Circle,
   ChevronRight,
@@ -1619,9 +1618,10 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       <div v-if="connectionSlice.hasSnapshot && agent.spec?.channels?.length" class="agents-chan-inbound">
         <div v-for="bound in agent.spec.channels" :key="`${bound.name}-${bound.connectionRef}`" class="agents-inbound-line">
           <template v-if="inboundState(bound.connectionRef).found">
-            <span class="k-badge agents-badge" :class="{ 'agents-cat-channel': inboundState(bound.connectionRef).on }">
-              {{ bound.name }}<Star v-if="bound.primary" :stroke-width="1.75" aria-label="primary" /> · <ArrowLeftRight :stroke-width="1.75" aria-hidden="true" /> inbound {{ inboundState(bound.connectionRef).on ? 'on' : 'off' }}
+            <span class="k-badge k-badge--muted k-badge--label agents-badge">
+              {{ bound.name }}<Star v-if="bound.primary" :size="12" :stroke-width="1.75" aria-label="primary" />
             </span>
+            <StatusBadge :status="inboundState(bound.connectionRef).on ? 'inbound on' : 'inbound off'" :tone="inboundState(bound.connectionRef).on ? 'success' : 'muted'" />
             <span class="muted">{{ inboundState(bound.connectionRef).note }}</span>
             <span class="agents-inbound-actions">
               <button v-if="inboundState(bound.connectionRef).canEnable" class="k-btn k-btn--ghost secondary" type="button" @click="enableInbound(bound.connectionRef)">Enable inbound</button>
@@ -1629,7 +1629,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
             </span>
           </template>
           <template v-else>
-            <span class="k-badge agents-badge">{{ bound.name }}</span><span class="muted">Connection “{{ bound.connectionRef }}” not found — pick one above and save.</span>
+            <span class="k-badge k-badge--muted k-badge--label agents-badge">{{ bound.name }}</span><span class="muted">Connection “{{ bound.connectionRef }}” not found — pick one above and save.</span>
           </template>
         </div>
       </div>

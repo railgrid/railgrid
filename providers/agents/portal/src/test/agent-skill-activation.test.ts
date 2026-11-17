@@ -7,7 +7,56 @@ import { mountVue, settleVue, text } from './vue-helper'
 
 const skill = { id: 'workspace:review', name: 'Review', description: 'Review changes.', scope: 'workspace' as const, enabled: true, editable: true, resources: [] }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(done => { resolve = done })
+  return { promise, resolve }
+}
+
 describe('Agent skill activation', () => {
+  it('keeps a failed first catalog read distinct from an empty or missing-skill result', async () => {
+    const retryResult = deferred<{ skills: never[]; catalogDigest: string; warnings: string[] }>()
+    const getAgentSkillCatalog = vi.fn()
+      .mockRejectedValueOnce(new Error('Fixture catalog failure'))
+      .mockImplementationOnce(() => retryResult.promise)
+    const api = stubApi({ getAgentSkillCatalog })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { skills: [{ name: skill.id }] })]
+    const view = await mountVue(AgentSkillActivation, { store, api, name: 'scout' })
+
+    try {
+      const notice = view.element.querySelector('[role="alert"]')!
+      expect(text(notice)).toContain('Could not load skills for scout. Fixture catalog failure')
+      expect(text(view.element)).toContain('Skill availability is unknown until this catalog can be loaded.')
+      expect(text(view.element)).not.toContain('No skills are enabled for this agent.')
+      expect(text(view.element)).not.toContain('This enabled reference is missing from the current catalog.')
+
+      const retry = notice.querySelector<HTMLButtonElement>('button')!
+      retry.focus()
+      retry.click()
+      await settleVue(3)
+
+      expect(notice.isConnected).toBe(true)
+      expect(text(notice)).toContain('Fixture catalog failure')
+      expect(retry.getAttribute('aria-label')).toBe('Retrying skills…')
+      expect(retry.getAttribute('aria-busy')).toBe('true')
+      expect(retry.getAttribute('aria-disabled')).toBe('true')
+      expect(document.activeElement).toBe(retry)
+      retry.click()
+      await settleVue(2)
+      expect(getAgentSkillCatalog).toHaveBeenCalledTimes(2)
+
+      retryResult.resolve({ skills: [], catalogDigest: '', warnings: [] })
+      await settleVue(8)
+
+      expect(view.element.querySelector('[role="alert"]')).toBeNull()
+      expect(text(view.element)).toContain('This enabled reference is missing from the current catalog.')
+      expect(document.activeElement).toBe(view.element.querySelector('input[type="search"]'))
+    } finally {
+      view.unmount()
+    }
+  })
+
   it('clears a skill filter and returns focus to the search input', async () => {
     const api = stubApi({ getAgentSkillCatalog: async () => ({ skills: [], catalogDigest: '', warnings: [] }) })
     const store = makeStore(api)

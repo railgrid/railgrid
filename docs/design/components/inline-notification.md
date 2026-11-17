@@ -26,7 +26,9 @@ A short, context-free success receipt belongs in a [toast](toast.md). Avoid emit
    message can safely be removed.
 
 The shared `InlineNotification` renders these parts; the caller chooses the
-copy, executes actions, and owns subsequent state.
+copy, executes actions, and owns subsequent state. The default slot is a block
+container and may include structured flow content such as a bounded technical
+details disclosure. Keep the primary message concise and never include secrets.
 
 ## Behavior
 

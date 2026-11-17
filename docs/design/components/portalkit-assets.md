@@ -23,13 +23,13 @@ not be edited directly.
 | `form-select.ts` | [form select](form-select.md) |
 | `icons.ts` | [iconography](../foundations/iconography.md) |
 | `kube.ts` | [tenant request contract](portalkit-support.md) |
+| `modal-focus.ts` | [native modal focus boundary](confirm-dialog.md) |
 | `modal.ts` | [modal and confirmation support](confirm-dialog.md) |
 | `modal-popup.ts` | [popup hosting](menu.md) |
 | `resource-table-filter.ts` | [resource table](resource-table.md) |
 | `styles.ts` | [style handoff](portalkit-support.md) |
 | `tabs.ts` | [provider route tabs](tabs.md) |
 | `tenant.ts` | [tenant request contract](portalkit-support.md) |
-| `toast.ts` | [legacy toast compatibility](toast.md) |
 | `tooltip.ts` | [tooltip](tooltip.md) |
 
 These files are copied to the Quickstart portal. Vue portals receive only the
@@ -77,7 +77,7 @@ Vue portals because the SFC kit owns those contracts there.
 
 ## Shared plain assets in Vue portals
 
-The manifest copies `document-id.ts`, `page-context.ts`, `agent-context.ts`, `navigation.ts`,
+The manifest copies `document-id.ts`, `modal-focus.ts`, `page-context.ts`, `agent-context.ts`, `navigation.ts`,
 `dashboardtile.ts`, `railgrid-ui.css`, `icons.ts`, `kube.ts`, `page-state.ts`,
 `styles.ts`, `tabs.ts`, `tenant.ts`, and `tooltip.ts` to the root, Agents,
 App Studio, Code, Edges, Infrastructure, and Kuery Vue portals. Their contracts
@@ -87,10 +87,8 @@ are linked in the vanilla table above, except for:
 |---|---|
 | `page-state.ts` | [resource reads](../patterns/resource-reads.md) |
 
-The Vue toast pair is copied to every one of those except Agents;
-Agents receives the framework-neutral `toast.ts` compatibility file instead.
-Quickstart receives the complete vanilla TypeScript manifest, including that
-plain toast bus. Canonical READMEs and tests remain source-only support files
+The Vue toast transport and host are copied to every Vue portal and Quickstart.
+Canonical READMEs and tests remain source-only support files
 and are not distributed, including `Toast.behavior.test.mjs` and
 `Toast.conformance.test.mjs`.
 

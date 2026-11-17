@@ -36,11 +36,11 @@ test('compact icon-only switcher retains organization context in its accessible 
   assert.match(source, /v-if="workspaceReady"[\s\S]*?bg-success/)
   assert.match(source, /v-else-if="workspaceTriggerWarning"[\s\S]*?bg-warning/)
   const optionStart = source.indexOf('<button\n              v-for="workspace in filteredWorkspaces"')
-  const badgeStart = source.indexOf('class="k-badge shrink-0', optionStart)
+  const badgeStart = source.indexOf('<StatusBadge', optionStart)
   assert.ok(optionStart >= 0 && badgeStart > optionStart)
   const badge = source.slice(badgeStart, source.indexOf('>', badgeStart))
-  assert.match(badge, /text-\[10px\]/)
-  assert.doesNotMatch(badge, /text-\[8px\]/)
+  assert.match(badge, /:status="workspaceStatus\(workspace\)"/)
+  assert.doesNotMatch(badge, /text-\[\d+px\]/) // Canonical StatusBadge owns legible type sizing.
 })
 
 test('recovery states use concise truthful copy while retaining verification boundaries and Retry actions', () => {

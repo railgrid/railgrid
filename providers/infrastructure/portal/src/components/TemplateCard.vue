@@ -36,7 +36,7 @@ const exposure = computed(() => {
   >
     <div class="template-card-head">
       <div class="template-card-title">{{ template.displayName || template.name }}</div>
-      <span v-if="template.cloud" class="k-badge k-badge--muted">{{ template.cloud }}</span>
+      <span v-if="template.cloud" class="k-badge k-badge--muted k-badge--label">{{ template.cloud }}</span>
     </div>
     <p class="template-card-desc">{{ template.description }}</p>
     <span v-if="exposure" class="exposure-note">

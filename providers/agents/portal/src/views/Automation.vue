@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { containModalTab } from '../portalkit/modal-focus'
+
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Loader2, Plus, X } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
@@ -23,6 +25,7 @@ import FormSelect from '../portalkit/FormSelect.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import ResourceTableExpandButton from '../portalkit/ResourceTableExpandButton.vue'
 import AutomationTimestampStatus from './AutomationTimestampStatus.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../ui/toast'
@@ -172,6 +175,18 @@ const wantsGitHub = computed<boolean | null>(() => selectedWebhook.value ? selec
 // liveFilter is the filter the form currently describes, for the tester: it
 // re-evaluates as the lines and the GitHub fields change.
 const liveFilter = computed(() => draftFilter())
+const expandedStatus = ref<string | null>(null)
+const createControl = ref<HTMLButtonElement | null>(null)
+const statusOwner = domID(`automation-${props.kind}-status-owner`)
+watch([() => props.kind, () => props.agent, () => props.authorityEpoch, () => props.store, () => props.api], () => {
+  const focused = document.activeElement instanceof HTMLElement && document.activeElement.dataset.automationStatusOwner === statusOwner ? document.activeElement : null
+  expandedStatus.value = null
+  if (focused) void nextTick(() => {
+    if ((document.activeElement === focused || (!focused.isConnected && document.activeElement === document.body)) && createControl.value && !createControl.value.disabled) createControl.value.focus()
+  })
+}, { flush: 'sync' })
+const statusDetailsID = (name: string) => domID(`automation-${props.kind}-status-${name}`)
+
 const tableRows = computed(() => rows.value.map(row => {
   const status = statusText(row)
   const summary = workbenchStatus(row, status)
@@ -388,7 +403,7 @@ function invalidCondition(row: Automation): KubeCondition | undefined {
 }
 
 function conditionText(condition: KubeCondition): string {
-  return condition.message || condition.reason || 'Validation failed'
+  return condition.message || (condition.reason ? `Validation failed (${condition.reason}). Review the trigger configuration.` : 'Validation failed. Review the trigger configuration.')
 }
 
 function statusText(row: Automation): string {
@@ -797,6 +812,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
   >
     <template #actions>
       <button
+        ref="createControl"
         class="k-btn k-btn--ghost secondary"
         type="button"
         :data-automation-create="workbench ? kind : undefined"
@@ -852,12 +868,17 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         </template>
         <template #status="{ row }">
           <span class="muted">
-            <span v-if="automationStatus(row.resource as Automation)?.disabledReason" class="k-badge agents-badge k-badge--warning agents-badge-warn">{{ automationStatus(row.resource as Automation)?.disabledReason }}</span>
-            <span v-else-if="invalidCondition(row.resource as Automation)" class="k-badge agents-badge k-badge--warning agents-badge-warn" :title="invalidCondition(row.resource as Automation)?.reason">{{ conditionText(invalidCondition(row.resource as Automation)!) }}</span>
-            <span v-else-if="automationSpec(row.resource as Automation).suspend" class="k-badge agents-badge">paused</span>
+            <template v-if="automationStatus(row.resource as Automation)?.disabledReason"><StatusBadge class="agents-badge" status="Disabled" tone="warning" /> <ResourceTableExpandButton :data-automation-status-owner="statusOwner" :expanded="expandedStatus === row.name" :label="`Show status details for ${row.name}`" :expanded-label="`Hide status details for ${row.name}`" :controls="statusDetailsID(String(row.name))" @click="expandedStatus = expandedStatus === row.name ? null : String(row.name)" /></template>
+            <template v-else-if="invalidCondition(row.resource as Automation)"><StatusBadge class="agents-badge" status="Invalid" tone="warning" /> <ResourceTableExpandButton :data-automation-status-owner="statusOwner" :expanded="expandedStatus === row.name" :label="`Show status details for ${row.name}`" :expanded-label="`Hide status details for ${row.name}`" :controls="statusDetailsID(String(row.name))" @click="expandedStatus = expandedStatus === row.name ? null : String(row.name)" /></template>
+            <StatusBadge v-else-if="automationSpec(row.resource as Automation).suspend" class="agents-badge" status="paused" tone="muted" />
             <AutomationTimestampStatus v-else :kind="kind" :status="automationStatus(row.resource as Automation)" />
             <button v-if="automationStatus(row.resource as Automation)?.lastRunID" class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: automationStatus(row.resource as Automation)!.lastRunID! })">last run</button>
           </span>
+        </template>
+        <template v-if="!workbench" #after-row="{ row, columnCount }">
+          <tr v-if="expandedStatus === row.name && (automationStatus(row.resource as Automation)?.disabledReason || invalidCondition(row.resource as Automation))" :id="statusDetailsID(String(row.name))">
+            <td :colspan="columnCount" class="agents-automation-detail">{{ automationStatus(row.resource as Automation)?.disabledReason || conditionText(invalidCondition(row.resource as Automation)!) }}</td>
+          </tr>
         </template>
         <template #actions="{ row }">
           <template v-if="workbench">
@@ -890,6 +911,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
     v-else
     :is="showCreateModal ? 'dialog' : 'div'"
     ref="formSurface"
+    @keydown="containModalTab"
     :class="showCreateModal ? ['k-modal', 'agents-automation-dialog', { 'agents-automation-dialog--wide': kind === 'trigger' }] : 'k-create-page'"
     :aria-labelledby="showCreateModal ? domID(`automation-${kind}-dialog-title`) : undefined"
     :aria-describedby="showCreateModal ? domID(`automation-${kind}-dialog-description`) : undefined"
@@ -991,6 +1013,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
 </template>
 
 <style scoped>
+.agents-automation-detail { padding: 12px 20px; white-space: normal; overflow-wrap: anywhere; color: var(--color-text-secondary); }
 .agents-automation-dialog {
   --automation-dialog-gutter: 24px;
   --automation-dialog-width: 35rem;

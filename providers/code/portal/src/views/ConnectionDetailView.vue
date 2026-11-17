@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { portalHref } from '../portalkit/navigation'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { GitBranch, KeyRound, Link2, Plug, RefreshCw, User } from 'lucide-vue-next'
 import { api } from '../api'
 import type { ConnectionDetail, ErrorResponse } from '../types'
 import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
@@ -31,6 +32,7 @@ const deletionScope = 'connection'
 
 const conn = ref<ConnectionDetail | null>(null)
 const error = ref<string | null>(null)
+const detailRoot = ref<HTMLElement | null>(null)
 const mutationError = ref<string | null>(null)
 const loading = ref(true)
 const loaded = ref(false)
@@ -174,6 +176,12 @@ function refreshFromHeader(): void {
   if (!connectionActionBusy.value) load('foreground')
 }
 
+async function dismissMutationError() {
+  mutationError.value = null
+  await nextTick()
+  detailRoot.value?.querySelector<HTMLElement>('.k-resource-page__title')?.focus({ preventScroll: true })
+}
+
 async function deleteConnection() {
   const current = conn.value
   if (!current || deleting.value) return
@@ -186,15 +194,15 @@ async function deleteConnection() {
   if (!ok || !mounted) return
   const lock = operationKey('connection', current.name)
   if (!operations.acquire(lock, 'deleting')) return
-  mutationError.value = null
   try {
     await api.deleteConnection(current.name)
     if (!mounted || conn.value?.name !== current.name || conn.value?.uid !== current.uid) return
+    mutationError.value = null
     props.deletions.acknowledge(deletionScope, current.name, current.uid)
     toast('info', `Connection deletion requested for ${current.name}.`)
     emit('back')
   } catch (e) {
-    mutationError.value = errMessage(e)
+    if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged' && conn.value?.name === current.name && conn.value?.uid === current.uid) mutationError.value = errMessage(e)
   } finally {
     operations.release(lock)
   }
@@ -257,7 +265,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="connection-detail">
+  <div ref="detailRoot" class="connection-detail">
     <ResourceBackLink class="connection-detail__back" :href="portalHref('/ui/providers/code/connections')" @back="emit('back')">
       Connections
     </ResourceBackLink>
@@ -320,7 +328,7 @@ onUnmounted(() => {
 
         <template #body>
           <template v-if="conn">
-            <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">{{ mutationError }}</p>
+            <InlineNotification v-if="mutationError" tone="error" :title="`Could not delete connection ${name}`" :message="`${mutationError} Try again using the connection delete action.`" dismissible @dismiss="dismissMutationError" />
             <p v-if="deleting" class="connection-detail__deleting" role="status" aria-live="polite">
               Deleting this connection. The last successful snapshot remains visible until the hub confirms removal.
             </p>

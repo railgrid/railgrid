@@ -560,7 +560,7 @@ function cancel(): void {
       <template #name="{ row }">
         <a class="k-btn k-btn--ghost k-table-resource-link" :href="hashFor({ kind: 'edit', resource: 'webhook', name: asWebhook(row).metadata.name })" :title="asWebhook(row).metadata.name" @click="followLink($event, () => openDetail(asWebhook(row)))">{{ asWebhook(row).spec.displayName || asWebhook(row).metadata.name }}</a>
         <code v-if="asWebhook(row).spec.displayName" class="agents-resource-id">{{ asWebhook(row).metadata.name }}</code>
-        <span v-if="invalidCondition(asWebhook(row))" class="k-badge agents-badge k-badge--warning agents-badge-warn" :title="invalidCondition(asWebhook(row))?.message">{{ invalidCondition(asWebhook(row))?.reason || 'Invalid' }}</span>
+        <StatusBadge v-if="invalidCondition(asWebhook(row))" class="agents-badge" :status="invalidCondition(asWebhook(row))?.reason || 'Invalid'" tone="warning" :title="invalidCondition(asWebhook(row))?.message" />
       </template>
       <template #source="{ row }">{{ row.sourceLabel }}</template>
       <template #routes="{ row }"><span class="muted">{{ row.routes }}</span></template>

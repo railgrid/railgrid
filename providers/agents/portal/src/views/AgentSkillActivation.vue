@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import StatusBadge from '../portalkit/StatusBadge.vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { Loader2, Search, TriangleAlert, X } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import Tabs from '../portalkit/Tabs.vue'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { filterAssistantSkills } from '../agentkit/composerSkillsSearch'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import ConfigSaveFeedback, { type ConfigSaveStatus } from '../components/ConfigSaveFeedback.vue'
@@ -30,15 +32,20 @@ function addSkills() { view.value = 'available'; query.value = ''; searchInput.v
 const searchInput = ref<HTMLInputElement | null>(null)
 function clearSearch() { query.value = ''; searchInput.value?.focus() }
 const loading = ref(false)
+const catalogHasSnapshot = ref(false)
 const error = ref('')
+const errorNotice = ref<HTMLElement | null>(null)
 const busySkill = ref('')
 const saveStatus = ref<ConfigSaveStatus>('idle')
 const saveError = ref('')
 let requestSerial = 0
+let mutationSerial = 0
 
 const agent = computed(() => { revision.value; return props.store.agent(props.name) })
 const enabledIDs = computed(() => new Set((agent.value?.spec.skills || []).map((item) => item.name)))
-const missingSkillIDs = computed(() => [...enabledIDs.value].filter((id) => !catalog.value.skills.some((skill) => skill.id === id)))
+const missingSkillIDs = computed(() => catalogHasSnapshot.value
+  ? [...enabledIDs.value].filter((id) => !catalog.value.skills.some((skill) => skill.id === id))
+  : [])
 const availableSkills = computed(() => catalog.value.skills.filter(skill => !enabledIDs.value.has(skill.id)))
 const filteredSkills = computed(() => filterAssistantSkills(
   [...catalog.value.skills].filter(skill => view.value === 'enabled' ? enabledIDs.value.has(skill.id) : !enabledIDs.value.has(skill.id))
@@ -46,16 +53,30 @@ const filteredSkills = computed(() => filterAssistantSkills(
 const filteredMissingSkillIDs = computed(() => view.value === 'enabled' ? missingSkillIDs.value.filter(id => !query.value.trim() || id.toLocaleLowerCase().includes(query.value.trim().toLocaleLowerCase())) : [])
 
 async function load(): Promise<void> {
+  if (loading.value) return
   const serial = ++requestSerial
   const name = props.name
   const api = props.api
   const authority = captureAuthority()
   loading.value = true
-  error.value = ''
   try {
     const result = await api.getAgentSkillCatalog(name)
     if (serial !== requestSerial || props.name !== name || props.api !== api || !authorityIsCurrent(authority)) return
+    const restoreFocus = Boolean(error.value && errorNotice.value?.contains(document.activeElement))
     catalog.value = result
+    catalogHasSnapshot.value = true
+    error.value = ''
+    await nextTick()
+    if (
+      restoreFocus &&
+      serial === requestSerial &&
+      props.name === name &&
+      props.api === api &&
+      authorityIsCurrent(authority) &&
+      (!document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected)
+    ) {
+      searchInput.value?.focus({ preventScroll: true })
+    }
   } catch (reason) {
     if (serial === requestSerial && props.name === name && props.api === api && authorityIsCurrent(authority)) error.value = (reason as Error).message
   } finally {
@@ -64,9 +85,10 @@ async function load(): Promise<void> {
 }
 
 async function updateEnabled(skillID: string, skillName: string, enabled: boolean): Promise<void> {
-  if (busySkill.value) return
+  if (busySkill.value || loading.value) return
   const authority = captureAuthority()
   const name = props.name
+  const operationSerial = ++mutationSerial
   const ownsPane = () => authorityIsCurrent(authority) && props.name === name
   busySkill.value = skillID
   saveStatus.value = 'pending'
@@ -88,7 +110,7 @@ async function updateEnabled(skillID: string, skillName: string, enabled: boolea
     else toast('ok', `${enabled ? 'Enabled' : 'Disabled'} “${skillName}” for this agent.`)
     if (ownsPane()) await load()
   } finally {
-    if (busySkill.value === skillID) {
+    if (operationSerial === mutationSerial && busySkill.value === skillID) {
       busySkill.value = ''
       if (saveStatus.value === 'pending') saveStatus.value = 'idle'
     }
@@ -100,6 +122,13 @@ function setEnabled(skill: Pick<AgentSkill, 'id' | 'name'>, enabled: boolean): P
 }
 
 watch([() => props.name, () => props.api, () => props.authorityEpoch], () => {
+  requestSerial += 1
+  mutationSerial += 1
+  catalog.value = { skills: [], warnings: [] }
+  catalogHasSnapshot.value = false
+  loading.value = false
+  error.value = ''
+  busySkill.value = ''
   saveStatus.value = 'idle'
   saveError.value = ''
   void load()
@@ -108,7 +137,7 @@ watch([() => props.name, () => props.api, () => props.authorityEpoch], () => {
 
 <template>
   <div class="agents-skill-activation">
-    <Tabs :tabs="[{ id: 'enabled', label: 'Enabled', count: enabledIDs.size }, { id: 'available', label: 'Available', count: availableSkills.length }]" :active="view" aria-label="Agent skill lists" @select="view = $event as 'enabled' | 'available'" />
+    <Tabs :tabs="[{ id: 'enabled', label: 'Enabled', count: enabledIDs.size }, { id: 'available', label: 'Available', count: catalogHasSnapshot ? availableSkills.length : undefined }]" :active="view" aria-label="Agent skill lists" @select="view = $event as 'enabled' | 'available'" />
     <div class="agents-skill-activation__toolbar">
       <label class="k-ai-search k-ai-search--clearable agents-skill-activation__search">
         <Search class="k-ai-search__icon" :stroke-width="1.75" aria-hidden="true" />
@@ -119,23 +148,30 @@ watch([() => props.name, () => props.api, () => props.authorityEpoch], () => {
     </div>
     <p class="agents-hint">Changes save automatically.</p>
     <ConfigSaveFeedback action="skills" :status="saveStatus" :error="saveError" />
-    <div v-if="error" class="agents-state agents-state-error" role="alert">
-      <span>Could not load skills. {{ error }}</span>
-      <button class="k-btn k-btn--ghost secondary" type="button" :disabled="loading" @click="load">{{ loading ? 'Retrying…' : 'Retry' }}</button>
+    <div v-if="error" ref="errorNotice" class="mb-3">
+      <InlineNotification
+        :tone="catalogHasSnapshot ? 'warning' : 'error'"
+        :message="catalogHasSnapshot ? `Could not refresh skills for ${name}. Showing the last loaded catalog. ${error}` : `Could not load skills for ${name}. ${error}`"
+        action-label="Retry"
+        action-busy-label="Retrying skills…"
+        :action-busy="loading"
+        @action="load"
+      />
     </div>
-    <p v-else-if="loading && !catalog.skills.length" class="agents-state agents-state-loading" role="status"><Loader2 class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" /> Loading skills…</p>
-    <ul v-else-if="filteredSkills.length || filteredMissingSkillIDs.length" class="agents-skill-activation__list" role="list" :aria-label="view === 'enabled' ? 'Enabled skills' : 'Available skills'">
+    <p v-if="loading && !catalogHasSnapshot" class="agents-state agents-state-loading" role="status"><Loader2 class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" /> Loading skills…</p>
+    <p v-else-if="loading && catalogHasSnapshot" class="sr-only" role="status" aria-live="polite">Refreshing skills…</p>
+    <ul v-if="catalogHasSnapshot && (filteredSkills.length || filteredMissingSkillIDs.length)" class="agents-skill-activation__list" role="list" :aria-label="view === 'enabled' ? 'Enabled skills' : 'Available skills'">
       <li v-for="id in filteredMissingSkillIDs" :key="`missing:${id}`" class="agents-skill-activation__row">
         <div class="agents-skill-activation__summary">
           <div class="agents-skill-activation__name">
             <TriangleAlert :size="14" class="text-warning" aria-hidden="true" />
             <strong>Unavailable skill</strong>
-            <span class="k-badge agents-badge">Enabled</span>
+            <StatusBadge class="agents-badge" status="Enabled" tone="muted" />
           </div>
           <p>This enabled reference is missing from the current catalog. Remove it or restore the skill.</p>
           <code>{{ id }}</code>
         </div>
-        <button type="button" class="k-btn k-btn--ghost secondary shrink-0 agents-skill-activation__action" :disabled="Boolean(busySkill)" :aria-busy="busySkill === id ? 'true' : undefined" @click="updateEnabled(id, id, false)">
+          <button type="button" class="k-btn k-btn--ghost secondary shrink-0 agents-skill-activation__action" :disabled="Boolean(busySkill) || loading" :aria-busy="busySkill === id ? 'true' : undefined" @click="updateEnabled(id, id, false)">
           <Loader2 v-if="busySkill === id" class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" />
           {{ busySkill === id ? 'Saving…' : 'Remove' }}
         </button>
@@ -144,8 +180,8 @@ watch([() => props.name, () => props.api, () => props.authorityEpoch], () => {
         <div class="agents-skill-activation__summary">
           <div class="agents-skill-activation__name">
             <strong>{{ skill.name }}</strong>
-            <span class="k-badge agents-badge">{{ skill.scope }}</span>
-            <span v-if="!skill.editable" class="k-badge agents-badge">Read-only</span>
+            <span class="k-badge k-badge--muted k-badge--label agents-badge">{{ skill.scope }}</span>
+            <span v-if="!skill.editable" class="k-badge k-badge--muted k-badge--label agents-badge">Read-only</span>
           </div>
           <p>{{ skill.description || 'No description provided.' }}</p>
           <code>{{ skill.id }}</code>
@@ -153,7 +189,7 @@ watch([() => props.name, () => props.api, () => props.authorityEpoch], () => {
         <button
           type="button"
           class="k-btn k-btn--ghost secondary shrink-0 agents-skill-activation__action"
-          :disabled="Boolean(busySkill)"
+          :disabled="Boolean(busySkill) || loading"
           :aria-label="`${enabledIDs.has(skill.id) ? 'Disable' : 'Enable'} ${skill.name} for ${name}`"
           :aria-busy="busySkill === skill.id ? 'true' : undefined"
           @click="setEnabled(skill, !enabledIDs.has(skill.id))"
@@ -163,8 +199,9 @@ watch([() => props.name, () => props.api, () => props.authorityEpoch], () => {
         </button>
       </li>
     </ul>
-    <p v-else-if="query.trim()" class="agents-hint" role="status">No skills match this search.</p>
-    <div v-else class="agents-state agents-state-empty" role="status">
+    <p v-else-if="error && !catalogHasSnapshot" class="agents-hint" role="status">Skill availability is unknown until this catalog can be loaded.</p>
+    <p v-else-if="catalogHasSnapshot && query.trim()" class="agents-hint" role="status">No skills match this search.</p>
+    <div v-else-if="catalogHasSnapshot" class="agents-state agents-state-empty" role="status">
       <p>{{ view === 'enabled' ? 'No skills are enabled for this agent.' : 'No additional skills are available.' }}</p>
       <p>{{ view === 'enabled' ? 'Add skills to make them available in chat.' : 'Create or import reusable skills in the Skills library.' }}</p>
     </div>

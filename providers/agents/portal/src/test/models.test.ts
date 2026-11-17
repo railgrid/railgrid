@@ -1208,3 +1208,26 @@ describe('credential display-name edits', () => {
     expect(store.credentials.data.find(item => item.name === binding.name)?.displayName).toBe('Friendly model')
   })
 })
+
+describe('model probe failure feedback', () => {
+  it.each(['result', 'exception'])('keeps a %s failure inline without a duplicate toast', async kind => {
+    localStorage.setItem('railgrid:agents:models:layout', 'grid')
+    toast.mockReset()
+    const testCredential = kind === 'result'
+      ? vi.fn().mockResolvedValue({ ok: false, latencyMS: 0, error: 'Fixture failure' })
+      : vi.fn().mockRejectedValue(new Error('Fixture failure'))
+    const api = stubApi({ catalog: async () => [], usage: async () => usageWithNulls, testCredential })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'fixture', model: 'fixture-model', ready: true }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api })
+    await settleVue(4, 150)
+    ;[...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test connection')!.click()
+    await settleVue()
+    expect(view.element.textContent).toContain('Test failed')
+    expect(view.element.querySelector('[role="alert"]')).not.toBeNull()
+    expect(toast).not.toHaveBeenCalled()
+    view.unmount()
+    localStorage.removeItem('railgrid:agents:models:layout')
+  })
+})

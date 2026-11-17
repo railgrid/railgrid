@@ -23,6 +23,8 @@ import { createAgentContextPublisher } from '@/providers/agentContextPublisher'
 import { createProviderContext, createProviderContextEpoch, guardProviderContextCallback } from '@/providers/providerContext'
 import { AlertCircle, Puzzle } from 'lucide-vue-next'
 import { useDelayedLoading } from '@/portalkit/useDelayedLoading'
+import StatusBadge from '@/portalkit/StatusBadge.vue'
+import InlineNotification from '@/portalkit/InlineNotification.vue'
 
 const pageResource = usePageResourceStore()
 const resourceSource = {}
@@ -70,6 +72,7 @@ const elementRef = ref<HTMLElement | null>(null)
 // Loading state covers script fetch + customElements.whenDefined.
 const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const loadError = ref<string | null>(null)
+const bundleReloading = ref(false)
 const providerLoadPending = computed(() => loadState.value === 'loading')
 const showProviderLoading = useDelayedLoading(providerLoadPending)
 const providerFullBleedOverride = ref<boolean | null>(null)
@@ -105,12 +108,12 @@ const providerReadinessLabel = computed(() => {
     default: return 'Starting'
   }
 })
-const providerReadinessClass = computed(() => {
-  if (bindingUnavailable.value) return 'border border-warning/30 bg-warning-subtle text-warning'
-  if (entry.value?.ready) return 'border border-success/30 bg-success-subtle text-success'
-  if (entry.value?.readinessReason === 'HeartbeatStale') return 'border border-danger/30 bg-danger-subtle text-danger'
-  if (entry.value?.readinessReason === 'BackendUnhealthy') return 'border border-warning/30 bg-warning-subtle text-warning'
-  return 'border border-border-default bg-surface-overlay text-text-muted'
+const providerReadinessTone = computed(() => {
+  if (bindingUnavailable.value) return 'warning'
+  if (entry.value?.ready) return 'success'
+  if (entry.value?.readinessReason === 'HeartbeatStale') return 'danger'
+  if (entry.value?.readinessReason === 'BackendUnhealthy') return 'warning'
+  return 'muted'
 })
 const catalogSettled = computed(() =>
   providers.loaded && !providers.loading && !providers.error && providers.catalogOrgUUID === tenant.orgUUID,
@@ -169,7 +172,8 @@ const bindingsAuthoritative = computed(() =>
 )
 const bindingErrorCurrent = computed(() =>
   requiresBinding.value &&
-  providers.bindingsLoadState === 'error' &&
+  !!providers.bindingsError &&
+  (providers.bindingsLoadState === 'error' || providers.bindingsLoadState === 'loading') &&
   bindingRequestCurrent.value,
 )
 const bindingNoWorkspace = computed(() =>
@@ -348,6 +352,7 @@ function clearMountedElement() {
   elementRef.value = null
   loadState.value = 'idle'
   loadError.value = null
+  bundleReloading.value = false
 }
 
 // mountElement creates a fresh custom-element instance and appends it into
@@ -371,7 +376,6 @@ function mountElement(name: string, generation?: number): boolean {
 async function loadAndMount(name: string, version: string | undefined, mount: HTMLDivElement) {
   const generation = ++mountGeneration
   loadState.value = 'loading'
-  loadError.value = null
 
   // Wait until the element is defined. customElements.whenDefined resolves
   // immediately if the tag is already registered (re-mount on nav).
@@ -426,6 +430,7 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
     mountRef.value !== mount ||
     !mountElement(name, generation)
   ) return
+  loadError.value = null
   loadState.value = 'ready'
 }
 
@@ -542,13 +547,31 @@ function onLayoutChange(e: Event) {
   if (typeof fullBleed === 'boolean') providerFullBleedOverride.value = fullBleed
 }
 
+const providerFrame = ref<HTMLElement | null>(null)
+const providerHeading = ref<HTMLElement | null>(null)
+
+async function restoreRetryFocus(action: () => Promise<unknown>): Promise<void> {
+  const focused = document.activeElement
+  const context = [props.providerName, tenant.orgUUID, tenant.workspaceUUID, routeContext.generation] as const
+  try { await action() } catch { /* The current failure remains visible. */ }
+  await nextTick()
+  if (context[0] === props.providerName && context[1] === tenant.orgUUID &&
+      context[2] === tenant.workspaceUUID && context[3] === routeContext.generation &&
+      focused && !focused.isConnected && document.activeElement === document.body) {
+    ;(providerHeading.value ?? providerFrame.value)?.focus()
+  }
+}
+
 function retryCatalog() {
-  void providers.load(tenant.orgUUID).catch(() => {})
-  if (providers.isEnabled(props.providerName)) void providers.refreshBindings().catch(() => {})
+  void restoreRetryFocus(async () => {
+    const catalog = providers.load(tenant.orgUUID)
+    const bindings = providers.isEnabled(props.providerName) ? providers.refreshBindings().catch(() => {}) : Promise.resolve()
+    await Promise.all([catalog, bindings])
+  })
 }
 
 function retryBindings() {
-  void providers.refreshBindings().catch(() => {})
+  void restoreRetryFocus(() => providers.refreshBindings())
 }
 
 function retryProviderBundle() {
@@ -556,11 +579,13 @@ function retryProviderBundle() {
   const mount = mountRef.value
   if (!provider || !mount || !accessAllowed.value) return
   if (!canReloadProviderScriptInDocument(provider.name)) {
-    window.location.reload()
+    if (bundleReloading.value) return
+    bundleReloading.value = true
+    void nextTick(() => window.location.reload())
     return
   }
   invalidateProviderScript(provider.name, provider.version)
-  void loadAndMount(provider.name, provider.version, mount)
+  void restoreRetryFocus(() => loadAndMount(provider.name, provider.version, mount))
 }
 
 function onProviderBootstrapRetry(event: Event) {
@@ -584,7 +609,7 @@ onBeforeUnmount(() => {
 
 <template>
   <AppLayout :full-bleed="isFullBleedProvider">
-    <div class="flex h-full min-h-0 min-w-0 flex-col">
+    <div ref="providerFrame" class="flex h-full min-h-0 min-w-0 flex-col" tabindex="-1">
       <!-- Portal chrome. Lives outside the provider's own element so the
            name/version/status come from the catalog, not the provider. -->
       <header v-if="catalogSettled && entry && !isFullBleedProvider" class="mb-4 flex flex-wrap items-center gap-3">
@@ -600,15 +625,10 @@ onBeforeUnmount(() => {
         </div>
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
-            <h1 class="truncate text-base font-semibold text-text-primary">
+            <h1 ref="providerHeading" tabindex="-1" class="truncate text-base font-semibold text-text-primary">
               {{ entry.displayName }}
             </h1>
-            <span
-              class="rounded-sm px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider"
-              :class="providerReadinessClass"
-            >
-              {{ providerReadinessLabel }}
-            </span>
+            <StatusBadge :status="providerReadinessLabel" :tone="providerReadinessTone" />
           </div>
           <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">
             {{ entry.name }}<span v-if="entry.version"> · {{ entry.version }}</span>
@@ -616,19 +636,9 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <div
-        v-if="catalogError"
-        class="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-sm text-danger"
-      >
-        <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
-        <div class="min-w-0">
-          <div class="font-medium">Failed to load provider catalog</div>
-          <div class="mt-1 text-xs font-mono">{{ catalogError }}</div>
-          <button type="button" class="k-btn k-btn--text mt-3 text-[11px]" @click="retryCatalog">
-            Retry
-          </button>
-        </div>
-      </div>
+      <InlineNotification v-if="catalogError" tone="error" title="Failed to load provider catalog"
+        :message="catalogError" action-label="Retry" action-busy-label="Retrying…"
+        :action-busy="providers.loading" @action="retryCatalog" />
       <div v-else-if="catalogLoading" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted" role="status" aria-live="polite" aria-busy="true">
         Loading provider catalog&hellip;
       </div>
@@ -663,19 +673,9 @@ onBeforeUnmount(() => {
       <div v-else-if="entry && !entry.serving?.ui" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
         This provider does not publish a portal UI.
       </div>
-      <div
-        v-else-if="bindingErrorCurrent"
-        class="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-sm text-danger"
-      >
-        <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
-        <div class="min-w-0">
-          <div class="font-medium">Could not check provider access</div>
-          <div class="mt-1 text-xs font-mono">{{ providers.bindingsError }}</div>
-          <button type="button" class="k-btn k-btn--text mt-3 text-[11px]" @click="retryBindings">
-            Retry
-          </button>
-        </div>
-      </div>
+      <InlineNotification v-else-if="bindingErrorCurrent" tone="error" title="Could not check provider access"
+        :message="providers.bindingsError || ''" action-label="Retry" action-busy-label="Retrying…"
+        :action-busy="providers.bindingsLoadState === 'loading'" @action="retryBindings" />
       <div
         v-else-if="bindingNoWorkspace"
         class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
@@ -713,6 +713,9 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
+      <InlineNotification v-else-if="loadError" tone="error" title="Failed to load provider bundle"
+        :message="loadError" :action-label="canRetryProviderBundleInDocument ? 'Retry' : 'Reload page'"
+        action-busy-label="Retrying…" :action-busy="loadState === 'loading' || bundleReloading" @action="retryProviderBundle" />
       <div
         v-else-if="loadState === 'loading' && showProviderLoading && isAppStudioWorkspaceRoute"
         class="grid min-h-0 flex-1 grid-cols-1 overflow-hidden rounded-lg border border-border-subtle bg-border-subtle md:grid-cols-[minmax(12rem,18rem)_minmax(0,2fr)_minmax(16rem,28rem)]"
@@ -744,19 +747,7 @@ onBeforeUnmount(() => {
       >
         Loading provider&hellip;
       </div>
-      <div
-        v-else-if="loadState === 'error'"
-        class="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-sm text-danger"
-      >
-        <AlertCircle class="h-4 w-4 mt-0.5" :stroke-width="1.75" />
-        <div>
-          <div class="font-medium">Failed to load provider bundle</div>
-          <div class="mt-1 text-xs font-mono">{{ loadError }}</div>
-          <button type="button" class="k-btn k-btn--text mt-3 text-[11px]" @click="retryProviderBundle">
-            {{ canRetryProviderBundleInDocument ? 'Retry' : 'Reload page' }}
-          </button>
-        </div>
-      </div>
+
 
       <!-- The provider's custom element mounts here. No iframe, no border,
            no scrollbars; it's just DOM in the portal's tree. -->

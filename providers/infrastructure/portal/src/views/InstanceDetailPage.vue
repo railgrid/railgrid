@@ -2,7 +2,7 @@
 import type { PublishPageResource } from '../portalkit/page-context'
 import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import { portalHref } from '../portalkit/navigation'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Boxes, CalendarClock, FileCode2, RefreshCw } from 'lucide-vue-next'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import ViewValue from '../components/ViewValue.vue'
@@ -10,6 +10,7 @@ import { api, isContextChangedError } from '../api'
 import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import ConditionsPanel, { type ConditionInfo } from '../portalkit/ConditionsPanel.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
@@ -38,7 +39,8 @@ const refreshMode = ref<ResourceRefreshMode>('foreground')
 const loaded = ref(false)
 const error = ref<string | null>(null)
 const deleting = ref(false)
-const deleteError = ref<string | null>(null)
+const detailRoot = ref<HTMLElement | null>(null)
+const deleteError = ref<{ name: string; uid?: string; message: string } | null>(null)
 const conditionsSection = ref<InstanceType<typeof ResourceSectionCard> | null>(null)
 let active = true
 let mounted = false
@@ -235,6 +237,7 @@ watch(
     view.value = null
     loaded.value = false
     error.value = null
+    deleteError.value = null
     void load()
   },
   { immediate: true },
@@ -243,7 +246,6 @@ watch(
 async function executeDelete() {
   if (deleting.value || deletionInProgress.value || !inst.value) return
   const expectedInstance = inst.value
-  deleteError.value = null
   const confirmed = await confirmDialog({
     title: 'Delete instance',
     message: `"${props.instanceName}" and the resources it provisioned, including its bridged credentials Secret, will be permanently deleted.`,
@@ -260,16 +262,24 @@ async function executeDelete() {
   try {
     await api.deleteInstance(props.instanceName)
     if (active) {
+      if (deleteError.value?.name === deletingInstance.name && deleteError.value.uid === deletingInstance.uid) deleteError.value = null
       props.tombstones.add(deletingInstance.name, deletingInstance.uid)
       toast('info', `Instance deletion requested for ${deletingInstance.name}.`)
       navigatingAway = true
       emit('navigate', 'instances')
     }
   } catch (caught) {
-    if (active && !isContextChangedError(caught)) deleteError.value = errorMessage(caught, 'delete failed')
+    if (active && sameResourceIdentity(deletingInstance, inst.value) && !isContextChangedError(caught)) deleteError.value = { name: deletingInstance.name, uid: deletingInstance.uid, message: errorMessage(caught, 'delete failed') }
   } finally {
     deleting.value = false
   }
+}
+
+
+async function dismissDeleteError() {
+  deleteError.value = null
+  await nextTick()
+  detailRoot.value?.querySelector<HTMLElement>('.k-resource-page__title')?.focus({ preventScroll: true })
 }
 
 function selectAction(action: string) {
@@ -294,7 +304,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="instance-detail">
+  <section ref="detailRoot" class="instance-detail">
     <ResourceBackLink
       class="instance-detail__back"
       :href="portalHref('/ui/providers/infrastructure/instances')"
@@ -364,10 +374,7 @@ onUnmounted(() => {
       </template>
       <template #body>
         <p v-if="deleting" class="instance-message" role="status" aria-live="polite">Deleting this instance. The last successful snapshot remains visible until the hub confirms removal.</p>
-        <div v-if="deleteError" class="mutation-error" role="alert" aria-live="assertive">
-          <span>{{ deleteError }}</span>
-          <button type="button" class="k-btn k-btn--ghost" @click="deleteError = null">Dismiss</button>
-        </div>
+        <InlineNotification v-if="deleteError" tone="error" :title="`Could not delete instance ${deleteError.name}`" :message="`${deleteError.message} Try again using the instance delete action.`" dismissible @dismiss="dismissDeleteError" />
 
         <div v-if="inst" class="instance-detail__sections">
           <template v-if="detailGroups.length">

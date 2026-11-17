@@ -558,7 +558,7 @@ onBeforeUnmount(() => {
                 <ApprovalDisclosure v-if="item.kind === 'change'" :tool="item.payload?.tool" :args="item.payload?.args" />
                 <div class="agents-approval-meta">
                   <template v-if="!viewingInbox">
-                    <span class="k-badge agents-badge">{{ item.agentName }}</span>
+                    <span class="k-badge k-badge--muted k-badge--label agents-badge">{{ item.agentName }}</span>
                     <ResourceTimestamp :value="item.createdAt" label="Request created" />
                   </template>
                   <button v-if="item.runID" class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: item.runID! })">View run</button>
@@ -657,17 +657,17 @@ onBeforeUnmount(() => {
             <span>{{ row.trigger }} · {{ row.class }}<template v-if="row.parentRunID"> · delegated</template></span>
             <span v-if="row.durationMS">{{ fmtDuration(Number(row.durationMS)) }}</span>
             <ResourceTimestamp :value="String(row.when)" label="Run started" />
-            <span v-if="ranOnHarness(row)" class="k-badge agents-badge" title="This run's turn ran on a coding harness on an edge machine.">harness</span>
+            <span v-if="ranOnHarness(row)" class="k-badge k-badge--muted k-badge--label agents-badge" title="This run's turn ran on a coding harness on an edge machine.">harness</span>
           </span>
           <template v-else><br><span class="agents-run-secondary">{{ row.agent }}</span></template>
         </template>
         <template #trigger="{ row }">
           <span class="agents-run-cell">
-            <span><span class="mono">{{ row.trigger }}</span><span v-if="ranOnHarness(row)" class="k-badge agents-badge" title="This run's turn ran on a coding harness on an edge machine.">harness</span></span>
+            <span><span class="mono">{{ row.trigger }}</span><span v-if="ranOnHarness(row)" class="k-badge k-badge--muted k-badge--label agents-badge" title="This run's turn ran on a coding harness on an edge machine.">harness</span></span>
             <span class="agents-run-secondary">{{ row.class }}<template v-if="row.parentRunID"> · delegated</template></span>
           </span>
         </template>
-        <template #phase="{ row }"><span :class="{ 'agents-run-compact-phase': agent }"><StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta(row.phase as RunPhase).cls}`" :status="phaseMeta(row.phase as RunPhase).label" :tone="phaseMeta(row.phase as RunPhase).tone" /> <span v-if="Number(row.attempt) > 1" class="k-badge agents-badge">try {{ row.attempt }}</span></span></template>
+        <template #phase="{ row }"><span :class="{ 'agents-run-compact-phase': agent }"><StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta(row.phase as RunPhase).cls}`" :status="phaseMeta(row.phase as RunPhase).label" :tone="phaseMeta(row.phase as RunPhase).tone" /> <span v-if="Number(row.attempt) > 1" class="k-badge k-badge--muted k-badge--label agents-badge">try {{ row.attempt }}</span></span></template>
         <template #duration="{ row }"><span class="muted">{{ row.durationMS ? fmtDuration(Number(row.durationMS)) : '—' }}</span></template>
         <template #usage="{ row }"><span class="agents-run-cell mono">{{ fmtTokens(Number(row.inputTokens) + Number(row.outputTokens)) }}<span class="agents-run-secondary">{{ fmtUSD(Number(row.usdMicros)) }}</span></span></template>
         <template #when="{ row }"><ResourceTimestamp :value="String(row.when)" label="Run started" /></template>

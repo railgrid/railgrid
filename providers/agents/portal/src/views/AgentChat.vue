@@ -177,6 +177,14 @@ async function saveRename(title: string, target = renameTarget.value): Promise<v
 const sessionsError = ref<string | null>(null)
 const sessionsHasSnapshot = ref(false)
 const sessionsLoading = ref(false)
+let sessionRetryFocusTarget: HTMLButtonElement | null = null
+let sessionRetryFocusChange = 0
+function observeSessionRetryFocus(event: FocusEvent): void {
+  if (!sessionRetryFocusTarget) return
+  const target = event.target
+  if (!(target instanceof HTMLElement) || target === document.body || target === document.documentElement) return
+  if (target !== sessionRetryFocusTarget) sessionRetryFocusChange += 1
+}
 const sessionID = ref('')
 const selectingSessionID = ref('')
 watch(sessionID, () => {
@@ -216,6 +224,7 @@ const attachmentInputCapabilities = ref<AgentInputCapabilities | undefined>(unde
 const attachmentCapabilityLoaded = ref(false)
 const providerResourceCatalog = ref<AgentProviderResourceCoordinate[]>([])
 const composer = ref<InstanceType<typeof AgentRichComposer> | null>(null)
+const conversationHeading = ref<HTMLElement | null>(null)
 const composerDraftKey = computed(() => agentChatDraftStorageKey(props.api.contextAuthority(), props.name, sessionID.value))
 const composerOwnerKey = computed(() => {
   const authority = props.api.contextAuthority()
@@ -422,6 +431,9 @@ const overlayChatSearch = ref('')
 const overlayChatSearchInput = ref<HTMLInputElement | null>(null)
 const overlayDrafts = ref(new Map<string, string>())
 const overlayScrollPositions = new Map<string, number>()
+function sessionRetryViewKey(): string {
+  return JSON.stringify([props.overlay, props.compact, props.composerOnly, props.overlayHidden, props.pageContext, overlayChatsVisible.value])
+}
 const filteredOverlayChats = computed(() => conversationItems.value.filter(item =>
   (item.title || '').toLocaleLowerCase().includes(overlayChatSearch.value.trim().toLocaleLowerCase())))
 function overlayChatGroup(item: AIConversationItem): string {
@@ -449,7 +461,7 @@ function publishOverlayView(): void {
 function showOverlayChats(): void {
   saveOverlayConversation()
   overlayChatsVisible.value = true
-  void loadSessions()
+  if (!sessionsLoading.value) refreshSessions()
   void nextTick(() => overlayChatSearchInput.value?.focus())
 }
 function saveOverlayConversation(): void {
@@ -1953,21 +1965,62 @@ function refreshSessions(name = props.name, api = props.api): void {
 }
 
 async function retrySessions(): Promise<void> {
-  if (sessionID.value || sessionsHasSnapshot.value) {
-    refreshSessions()
-    return
-  }
-
+  if (sessionsLoading.value) return
+  const name = props.name
+  const api = props.api
+  const authority = captureAuthority()
+  const ownership = chatOwnershipSerial
+  const view = sessionRetryViewKey()
   const active = document.activeElement
   const retryButton = active instanceof HTMLButtonElement && active.closest('.agents-chat-sessions-notice') ? active : null
-  const retry = openAgent(true)
-  const serial = openSerial
-  await retry
-  await nextTick()
-  // A disabled button can lose focus during the retry. Restore it after a
-  // failure only when the user has not moved focus to another control.
-  if (serial === openSerial && retryButton?.isConnected && !retryButton.disabled && document.activeElement === document.body) {
-    retryButton.focus({ preventScroll: true })
+  const focusChange = sessionRetryFocusChange
+  if (retryButton) sessionRetryFocusTarget = retryButton
+
+  const retry = sessionID.value || sessionsHasSnapshot.value
+    ? loadSessions(name, api)
+    : openAgent(true)
+  const sessionSerial = sessionReadSerial
+  const openVersion = openSerial
+  let restoreContentFocus = false
+  let restoreRetryFocus = false
+  try {
+    await retry
+    await nextTick()
+    const retryContextIsCurrent = Boolean(
+      retryButton &&
+      name === props.name &&
+      api === props.api &&
+      authorityIsCurrent(authority) &&
+      ownership === chatOwnershipSerial &&
+      view === sessionRetryViewKey() &&
+      sessionSerial === sessionReadSerial &&
+      openVersion === openSerial &&
+      focusChange === sessionRetryFocusChange,
+    )
+    const focusStayedAtRetryOrBody = document.activeElement === document.body || document.activeElement === retryButton
+    restoreContentFocus = Boolean(retryContextIsCurrent && sessionsError.value === null && focusStayedAtRetryOrBody)
+    restoreRetryFocus = Boolean(
+      retryContextIsCurrent &&
+      sessionsError.value !== null &&
+      retryButton?.isConnected &&
+      !retryButton.disabled &&
+      document.activeElement === document.body,
+    )
+  } finally {
+    if (sessionRetryFocusTarget === retryButton) sessionRetryFocusTarget = null
+  }
+
+  if (restoreRetryFocus) {
+    retryButton?.focus({ preventScroll: true })
+    return
+  }
+  if (!restoreContentFocus) return
+  if (overlayChatsVisible.value && props.overlay && !props.composerOnly) {
+    overlayChatSearchInput.value?.focus({ preventScroll: true })
+  } else if (sessionInputReady.value && composer.value) {
+    composer.value.focus()
+  } else {
+    conversationHeading.value?.focus({ preventScroll: true })
   }
 }
 
@@ -3225,6 +3278,7 @@ onMounted(() => {
   chatHost?.value?.addEventListener('railgrid-overlay-new-chat', createOverlayChat)
   publishOverlayView()
   bindServer(props.store)
+  document.addEventListener('focusin', observeSessionRetryFocus)
   window.addEventListener('resize', syncMobileRailViewport)
   void openAgent()
 })
@@ -3238,6 +3292,7 @@ onBeforeUnmount(() => {
   chatHost?.value?.removeEventListener('railgrid-overlay-show-chats', showOverlayChats)
   chatHost?.value?.removeEventListener('railgrid-overlay-new-chat', createOverlayChat)
   logResizeObserver?.disconnect()
+  document.removeEventListener('focusin', observeSessionRetryFocus)
   clearDetachedStarts()
   mounted = false
   initializedFor = ''
@@ -3292,7 +3347,7 @@ defineExpose({
       <slot name="leading" />
       <slot name="heading" :active-session-label="activeSessionLabel" :title-control="titleControl">
         <div class="agents-chat-title">
-          <strong>Conversation</strong>
+          <strong ref="conversationHeading" role="heading" aria-level="2" tabindex="-1">Conversation</strong>
           <ChatTitleControl v-bind="titleControl" />
         </div>
       </slot>
@@ -3305,9 +3360,19 @@ defineExpose({
 
     <section v-if="overlay && overlayChatsVisible && !composerOnly" class="agents-overlay-chats" aria-label="Chats">
       <label class="agents-overlay-chats__search"><Search :size="16" aria-hidden="true" /><input ref="overlayChatSearchInput" v-model="overlayChatSearch" type="search" placeholder="Search chats" aria-label="Search chats" /></label>
-      <div v-if="sessionsError" role="alert" class="agents-overlay-chats__state">Could not refresh chats. {{ sessionsError }} <button class="k-btn k-btn--ghost" :disabled="sessionsLoading" @click="retrySessions">Retry</button></div>
-      <p v-if="sessionsLoading && !sessionsHasSnapshot" role="status">Loading chats…</p>
-      <p v-else-if="!filteredOverlayChats.length" class="muted" role="status">{{ overlayChatSearch ? 'No chats match your search.' : 'No chats yet. Start a new chat above.' }}</p>
+      <InlineNotification
+        v-if="sessionsError"
+        class="agents-chat-read-notice agents-chat-sessions-notice agents-overlay-chats__notice"
+        :tone="sessionsHasSnapshot ? 'warning' : 'error'"
+        :title="sessionsHasSnapshot ? 'Could not refresh conversations' : 'Could not load conversations'"
+        :message="sessionsHasSnapshot ? `Showing the last loaded conversations. ${sessionsError}` : sessionsError"
+        action-label="Retry"
+        action-busy-label="Retrying…"
+        :action-busy="sessionsLoading"
+        @action="retrySessions"
+      />
+      <p v-if="sessionsLoading && !sessionsHasSnapshot && !sessionsError" role="status">Loading chats…</p>
+      <p v-else-if="sessionsHasSnapshot && !filteredOverlayChats.length" class="muted" role="status">{{ overlayChatSearch ? 'No chats match your search.' : 'No chats yet. Start a new chat above.' }}</p>
       <div v-for="group in overlayChatGroups" :key="group.label" class="agents-overlay-chats__group"><h3>{{ group.label }}</h3>
       <div v-for="item in group.items" :key="item.id"><button type="button" class="agents-overlay-chats__row" :disabled="!!selectingSessionID" :aria-current="item.id === sessionID ? 'true' : undefined" @click="selectOverlayChat(item.id)">
         <span class="agents-overlay-chats__text"><strong>{{ item.title }}</strong><span class="muted">{{ name }}</span></span>
@@ -3357,6 +3422,7 @@ defineExpose({
         <InlineNotification
           v-if="sessionsError"
           class="agents-chat-read-notice agents-chat-sessions-notice"
+          :announce="overlay && overlayChatsVisible && !composerOnly ? 'off' : 'auto'"
           :tone="sessionsHasSnapshot ? 'warning' : 'error'"
           :title="sessionsHasSnapshot ? 'Could not refresh conversations' : 'Could not load conversations'"
           :message="sessionsHasSnapshot ? `Showing the last loaded conversations. ${sessionsError}` : sessionsError"
@@ -3658,6 +3724,7 @@ defineExpose({
 .agents-chat-rename-error { color: var(--color-text-error); font-size: 12px; }
 
 .agents-overlay-chats { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
+.agents-overlay-chats__notice { width: 100%; max-width: none; margin: 0 0 12px; }
 .agents-overlay-chats__search { display: flex; flex-direction: row; align-items: center; gap: 8px; margin-bottom: 20px; padding: 0 10px; min-height: 36px; border: 1px solid var(--color-border-default); border-radius: var(--radius-md, 6px); background: var(--color-surface-raised); color: var(--color-text-secondary); }
 .agents-overlay-chats__search:focus-within { border-color: var(--color-accent); outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .agents-overlay-chats__search > svg { flex-shrink: 0; }
@@ -3673,5 +3740,4 @@ defineExpose({
 .agents-overlay-chats__text > span { font-size: 12px; }
 .agents-overlay-chats__status { color: var(--color-accent); font-size: 11px; flex-shrink: 0; }
 .agents-overlay-chats__group h3 { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); margin: 24px 0 8px; }
-.agents-overlay-chats__state { margin-bottom: 12px; font-size: 13px; }
 </style>

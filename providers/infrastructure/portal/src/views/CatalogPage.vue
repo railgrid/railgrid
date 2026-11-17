@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowRight } from 'lucide-vue-next'
+import { ArrowRight, Search, X } from 'lucide-vue-next'
 import TemplateCard from '../components/TemplateCard.vue'
 import { api, isContextChangedError } from '../api'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableFilter from '../portalkit/ResourceTableFilter.vue'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { readLayoutPreference, writeLayoutPreference, type LayoutMode } from '../portalkit/layoutPreference'
 import { portalHref } from '../portalkit/navigation'
 import { useDelayedLoading } from '../portalkit/useDelayedLoading'
+import { filterTableRows } from '../portalkit/table'
 import type { Template } from '../types'
 
 const emit = defineEmits<{
@@ -22,10 +24,14 @@ const error = ref<string | null>(null)
 const initialReadPending = computed(() => !loaded.value && loading.value && !error.value)
 const showInitialLoading = useDelayedLoading(initialReadPending)
 const heading = ref<HTMLElement | null>(null)
-const gridRetry = ref<HTMLButtonElement | null>(null)
+const gridWarning = ref<HTMLElement | null>(null)
 const templates = ref<Template[]>([])
 const category = ref('')
 const cloud = ref('')
+const query = ref('')
+const gridSearch = ref<HTMLInputElement | null>(null)
+const page = ref<HTMLElement | null>(null)
+const searchKeys = ['identity', 'name', 'description', 'category', 'kind']
 const layoutPreferenceKey = 'railgrid:portal:infrastructure:templates-layout'
 const layout = ref<LayoutMode>(readLayoutPreference(layoutPreferenceKey))
 let requestSerial = 0
@@ -60,6 +66,10 @@ const tableRows = computed<Array<Record<string, unknown>>>(() => filtered.value.
   version: template.version ? `v${template.version}` : '—',
   exposure: exposureLabel(template.exposure),
 })))
+const gridTemplates = computed(() => {
+  const names = new Set(filterTableRows(tableRows.value, query.value, searchKeys, {}).map(row => row.name))
+  return filtered.value.filter(template => names.has(template.name))
+})
 
 watch(layout, mode => writeLayoutPreference(layoutPreferenceKey, mode))
 
@@ -70,7 +80,7 @@ async function load() {
   try {
     const r = await api.listTemplates()
     if (serial !== requestSerial) return
-    const restoreFocus = document.activeElement === gridRetry.value && !!gridRetry.value
+    const restoreFocus = !!gridWarning.value?.contains(document.activeElement)
     templates.value = r.items || []
     loaded.value = true
     error.value = null
@@ -88,9 +98,17 @@ async function load() {
 onMounted(load)
 onUnmounted(() => { requestSerial += 1 })
 
-function clearFilters() {
+async function clearFilters() {
   category.value = ''
   cloud.value = ''
+  query.value = ''
+  await nextTick()
+  ;(gridSearch.value ?? page.value?.querySelector<HTMLInputElement>('input[type="search"]'))?.focus()
+}
+
+function clearSearch() {
+  query.value = ''
+  gridSearch.value?.focus()
 }
 
 function exposureLabel(exposure: Template['exposure']): string {
@@ -120,7 +138,7 @@ function followInstancesLink(event: MouseEvent): void {
 </script>
 
 <template>
-  <section class="page" :aria-busy="loading">
+  <section ref="page" class="page" :aria-busy="loading">
     <header class="page-head">
       <div>
         <h2 ref="heading" class="page-title" tabindex="-1">Templates</h2>
@@ -130,6 +148,11 @@ function followInstancesLink(event: MouseEvent): void {
     </header>
 
     <div class="filters">
+      <div v-if="layout === 'grid'" class="k-table__search" role="search">
+        <Search class="k-table__search-icon" :stroke-width="1.75" aria-hidden="true" />
+        <input ref="gridSearch" v-model="query" class="k-table__search-input" type="search" aria-label="Search Infrastructure templates" placeholder="Search templates…" autocomplete="off">
+        <button v-if="query" class="k-table__search-clear" type="button" aria-label="Clear search" @click="clearSearch"><X :stroke-width="1.75" aria-hidden="true" /></button>
+      </div>
       <ResourceTableFilter
         v-if="categoryOptions.length > 1"
         v-model="category"
@@ -149,9 +172,8 @@ function followInstancesLink(event: MouseEvent): void {
 
     <template v-if="layout === 'grid'">
       <span v-if="loaded && loading" class="sr-only" role="status" aria-live="polite">Updating template catalog…</span>
-      <div v-if="loaded && error" class="stale-banner" role="alert" aria-live="assertive">
-        <span>Showing the last successful result. {{ error }}</span>
-        <button ref="gridRetry" type="button" class="k-btn k-btn--ghost" :aria-disabled="loading" @click="load">{{ loading ? 'Retrying…' : 'Retry' }}</button>
+      <div v-if="loaded && error" ref="gridWarning">
+        <InlineNotification tone="error" :message="`Showing the last successful result. ${error}`" action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="load" />
       </div>
       <div
         v-if="initialReadPending"
@@ -168,21 +190,20 @@ function followInstancesLink(event: MouseEvent): void {
           <div class="shimmer page-loading-line page-loading-line-mid" />
         </div>
       </div>
-      <div v-else-if="!loaded && error" class="read-error" role="alert" aria-live="assertive">
-        <span>{{ error }}</span>
-        <button ref="gridRetry" type="button" class="k-btn k-btn--ghost" :aria-disabled="loading" @click="load">{{ loading ? 'Retrying…' : 'Retry' }}</button>
+      <div v-else-if="!loaded && error" ref="gridWarning">
+        <InlineNotification tone="error" :message="error" action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="load" />
       </div>
       <div v-else-if="templates.length === 0" class="empty-state" role="status">
         <span>No infrastructure templates are available in this workspace.</span>
-        <button type="button" class="k-btn k-btn--ghost" @click="load">Refresh catalog</button>
+        <button v-if="!error" type="button" class="k-btn k-btn--ghost" @click="load">Refresh catalog</button>
       </div>
-      <div v-else-if="filtered.length === 0" class="empty-state" role="status">
-        <span>No templates match the current filters.</span>
-        <button type="button" class="k-btn k-btn--ghost" @click="clearFilters">Clear filters</button>
+      <div v-else-if="gridTemplates.length === 0" class="empty-state" role="status">
+        <span>No templates match the current search and filters.</span>
+        <button type="button" class="k-btn k-btn--ghost" @click="clearFilters">{{ query ? 'Clear search and filters' : 'Clear filters' }}</button>
       </div>
       <div v-else class="grid">
         <TemplateCard
-          v-for="t in filtered"
+          v-for="t in gridTemplates"
           :key="t.name"
           :template="t"
           :href="templateHref(t.name)"
@@ -193,12 +214,13 @@ function followInstancesLink(event: MouseEvent): void {
 
     <template v-else>
       <ResourceTable
+        v-model:query="query"
         :columns="tableColumns"
         :rows="tableRows"
         aria-label="Infrastructure templates"
         searchable
         search-placeholder="Search templates…"
-        :search-keys="['identity', 'name', 'description', 'category', 'kind']"
+        :search-keys="searchKeys"
         paginated
         row-key="name"
         :loaded="loaded"
@@ -221,11 +243,11 @@ function followInstancesLink(event: MouseEvent): void {
         <template #version="{ value }"><span class="cell-mono">{{ value }}</span></template>
         <template #exposure="{ value }"><span class="k-badge k-badge--muted k-badge--label">{{ value }}</span></template>
       </ResourceTable>
-      <div v-if="loaded && templates.length === 0" class="empty-followup">
+      <div v-if="loaded && !error && templates.length === 0" class="empty-followup">
         <button type="button" class="k-btn k-btn--ghost" @click="load">Refresh catalog</button>
       </div>
-      <div v-else-if="loaded && filtered.length === 0" class="empty-followup">
-        <button type="button" class="k-btn k-btn--ghost" @click="clearFilters">Clear filters</button>
+      <div v-else-if="loaded && gridTemplates.length === 0 && (category || cloud)" class="empty-followup">
+        <button type="button" class="k-btn k-btn--ghost" @click="clearFilters">{{ query ? 'Clear search and filters' : 'Clear filters' }}</button>
       </div>
     </template>
   </section>

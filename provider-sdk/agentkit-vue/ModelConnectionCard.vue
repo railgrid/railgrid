@@ -14,7 +14,7 @@ withDefaults(defineProps<{ name: string; model: string; endpoint?: string; endpo
     <div class="k-model-connection__heading">
       <span class="k-model-connection__icon" aria-hidden="true"><Cpu :stroke-width="1.75" /></span>
       <div class="k-model-connection__identity"><h3>{{ name }}</h3><p :title="model">{{ model }}</p></div>
-      <StatusBadge v-if="isDefault" status="Default" tone="muted" />
+      <span v-if="isDefault" class="k-badge k-badge--muted k-badge--label">Default</span>
     </div>
     <dl class="k-model-connection__endpoint"><dt>{{ endpointLabel }}</dt><dd :title="endpoint">{{ endpoint || 'Provider default' }}</dd></dl>
     <div class="k-model-connection__state">

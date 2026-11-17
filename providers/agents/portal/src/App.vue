@@ -3,6 +3,7 @@ import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRe
 import { Bot, Gauge, RefreshCw, Settings } from 'lucide-vue-next'
 import Tabs, { type PortalTabItem } from './portalkit/Tabs.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
+import ToastHost from './portalkit/ToastHost.vue'
 import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import { resolveConfirm } from './portalkit/confirm'
 import { ApiClient, type ContextAuthority } from './api'
@@ -648,7 +649,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       </section>
       <template v-if="route.kind === 'menu' && route.menu === 'agents' && route.assistantSettings">
         <ResourceBackLink href="#/agents" @back="go(DEFAULT_ROUTE)">Back to Agents</ResourceBackLink>
-        <WorkspaceAssistantCard v-if="ctx.agentOverlay" :key="routeSurfaceKey" :store="store" :overlay-control="ctx.agentOverlay" />
+        <WorkspaceAssistantCard v-if="ctx.agentOverlay" :key="routeSurfaceKey" :store="store" :api="api" :overlay-control="ctx.agentOverlay" />
         <section v-else class="k-resource-page k-resource-page--collection">
           <h2 class="k-resource-page__title">Workspace assistant settings</h2>
           <p class="muted">Workspace assistant settings are available in the workspace portal.</p>
@@ -879,5 +880,6 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       />
     </div>
     <ConfirmDialog />
+    <ToastHost owner="fallback" />
   </div>
 </template>

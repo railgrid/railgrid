@@ -2,6 +2,7 @@ import { createKubeClient, type KubeClient, type KubeObject, type KubeResourceRe
 import { ic } from './portalkit/icons'
 import { providerFetch, type ProviderFetch } from './portalkit/tenant'
 import { toast } from './portalkit/toast'
+import { mountToastFallback } from './toastFallback'
 
 // QuickstartElement is the custom element the railgrid portal renders for this
 // provider — Pillar 3 of the provider contract, in the smallest form that is
@@ -57,6 +58,7 @@ interface Greeting extends KubeObject {
 }
 
 export class QuickstartElement extends HTMLElement {
+  private _unmountToast: (() => void) | null = null
   private _ctx: RailgridContext | null = null
   private _items: Greeting[] = []
   private _loaded = false
@@ -106,12 +108,15 @@ export class QuickstartElement extends HTMLElement {
 
   connectedCallback(): void {
     this._active = true
+    this._unmountToast ??= mountToastFallback()
     this._render()
     if (this._canLoad()) void this._load()
   }
 
   disconnectedCallback(): void {
     this._active = false
+    this._unmountToast?.()
+    this._unmountToast = null
     this._generation += 1
     this._readSerial += 1
     this._busy = ''
@@ -351,6 +356,11 @@ export class QuickstartElement extends HTMLElement {
     const name = item.metadata?.name || ''
     const ready = item.status?.conditions?.find(c => c.type === 'Ready')
     const isReady = ready?.status === 'True'
+    const isPending = !ready
+    const statusLabel = isReady ? 'Ready' : isPending ? 'Pending' : ready.status === 'Unknown' ? 'Status unknown' : ready.reason === 'MessageEmpty' ? 'Message needed' : 'Needs attention'
+    const statusDetail = ready?.reason === 'MessageEmpty'
+      ? 'Add a message before greeting.'
+      : !isReady && !isPending ? ready?.message || 'Check this greeting’s status.' : ''
     // status.observedAt is the proof a reconciler is running: it is absent
     // until the provider's controller has seen the object.
     const observedDate = item.status?.observedAt ? new Date(item.status.observedAt) : null
@@ -368,13 +378,15 @@ export class QuickstartElement extends HTMLElement {
       <li class="quickstart-row">
         <button class="k-btn k-btn--text quickstart-row-name" type="button" data-open="${escapeHTML(name)}">${escapeHTML(name)}</button>
         <span class="quickstart-row-message" title="${escapeHTML(item.spec?.message || '')}">${escapeHTML(item.spec?.message || '')}</span>
-        <span class="k-badge ${isReady ? 'k-badge--success' : 'k-badge--warning'}" title="${escapeHTML(ready?.message || '')}">
-          ${isReady ? 'Ready' : escapeHTML(ready?.reason || 'Pending')}
+        <span class="k-badge k-status-badge ${isReady ? 'k-badge--success' : 'k-badge--warning'}" title="${escapeHTML(statusDetail)}">
+          <span class="k-badge__dot ${isReady ? 'k-badge__dot--success' : 'k-badge__dot--warning'}${isPending ? ' live-dot' : ''}" aria-hidden="true"></span>
+          ${escapeHTML(statusLabel)}
         </span>
         <span class="quickstart-row-observed">${validObserved ? `<button class="k-resource-timestamp__button" type="button" data-observed-for="${escapeHTML(name)}" data-observed-time="${escapeHTML(observed)}" data-observed-exact="${escapeHTML(observedExact)}" aria-label="Last observed: ${escapeHTML(observed)} — ${escapeHTML(observedExact)}" aria-pressed="${expandedObserved}" title="${escapeHTML(observedExact)}"><time datetime="${escapeHTML(observedDate.toISOString())}">${escapeHTML(expandedObserved ? observedExact : observed)}</time></button>` : escapeHTML(observed)}</span>
         <button class="k-btn k-btn--ghost" type="button" data-greet="${escapeHTML(name)}" ${pending ? 'aria-disabled="true"' : ''} aria-busy="${pending}" aria-label="${pending ? 'Greeting' : 'Greet'} ${escapeHTML(name)}">
           ${ic('send')} ${pending ? 'Greeting…' : 'Greet'}
         </button>
+        ${statusDetail ? `<span class="quickstart-row-status-detail">${escapeHTML(statusDetail)}</span>` : ''}
         ${pending ? `<span class="quickstart-row-result" role="status">Greeting ${escapeHTML(name)}…</span>` : ''}
         ${result ? `<span class="quickstart-row-result ${result.error ? 'quickstart-error' : 'quickstart-greeted'}" role="${result.error ? 'alert' : 'status'}">${escapeHTML(name)}: ${escapeHTML(result.message)}</span>` : ''}
       </li>

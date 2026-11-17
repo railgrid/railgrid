@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, nextTick, onMounted, onUnmounted, onActivated } from 'vue'
 import { ArrowRight, RefreshCw, Plus, ChevronRight, ChevronDown, Boxes, Server } from 'lucide-vue-next'
-import { listWorkloads, listWorkloadsPage, deleteWorkload, listEdges } from './api'
+import { listWorkloads, listWorkloadsPage, deleteWorkload, listEdges, isContextChangedError } from './api'
 import type { Workload, Edge, ErrorResponse } from './types'
 import { confirmDialog } from './portalkit/confirm'
 import { toast } from './portalkit/toast'
@@ -37,7 +37,7 @@ const currentSnapshot = ref(false)
 const collectionPage = ref<HTMLElement | null>(null)
 const error = ref<string | null>(null)
 const deletingWorkload = ref<string | null>(null)
-const deleteFailure = ref<{ name: string; message: string } | null>(null)
+const deleteFailures = ref<Record<string, { name: string; message: string }>>({})
 const workloadsHeading = ref<HTMLElement | null>(null)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
@@ -377,17 +377,29 @@ async function onDelete(w: Workload) {
   try {
     await deleteWorkload(w.name)
     if (stopped) return
-    deleteFailure.value = null
+    clearDeleteFailure(w.name)
     toast('info', `Workload deletion requested for ${w.name}.`)
     const focusedAction = typeof document !== 'undefined' ? document.activeElement : null
     await refresh('foreground', true)
     await nextTick()
     if (focusedAction && !focusedAction.isConnected && document.activeElement === document.body) workloadsHeading.value?.focus()
   } catch (e) {
-    if (!stopped) deleteFailure.value = { name: w.name, message: (e as ErrorResponse)?.message ?? 'The request failed.' }
+    if (!stopped && !isContextChangedError(e)) deleteFailures.value = { ...deleteFailures.value, [w.name]: { name: w.name, message: (e as ErrorResponse)?.message ?? 'The request failed.' } }
   } finally {
     deletingWorkload.value = null
   }
+}
+
+function clearDeleteFailure(name: string) {
+  const next = { ...deleteFailures.value }
+  delete next[name]
+  deleteFailures.value = next
+}
+
+async function dismissDeleteFailure(name: string) {
+  clearDeleteFailure(name)
+  await nextTick()
+  workloadsHeading.value?.focus()
 }
 
 async function retryFirstRun() {
@@ -473,7 +485,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       <template #actions><a class="k-btn k-btn--primary" :href="firstRunHref" @click="followFirstRunLink">{{ hasKubernetesEdges ? 'Create workload' : 'Connect edge' }} <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>
     </FirstRunGuide>
 
-    <InlineNotification v-if="deleteFailure && !showFirstRun" tone="error" :title="`Could not delete ${deleteFailure.name}`" :message="`${deleteFailure.message} Try again using the workload's delete action.`" />
+    <InlineNotification v-for="(failure, key) in deleteFailures" :key="key" tone="error" :title="`Could not delete ${failure.name}`" :message="`${failure.message} Try again using the workload's delete action.`" dismissible @dismiss="dismissDeleteFailure(String(key))" />
 
     <ResourceTable
       v-if="!showFirstRun"

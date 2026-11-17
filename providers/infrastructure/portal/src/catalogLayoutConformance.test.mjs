@@ -11,7 +11,7 @@ describe('Infrastructure template catalog layouts', () => {
     expect(source).toContain("'railgrid:portal:infrastructure:templates-layout'")
     expect(source).toContain('ref<LayoutMode>(readLayoutPreference(layoutPreferenceKey))')
     expect(source).toContain('watch(layout, mode => writeLayoutPreference(layoutPreferenceKey, mode))')
-    const toolbar = source.match(/<div class="filters">([\s\S]*?)<\/div>/)?.[1] ?? ''
+    const toolbar = source.match(/<div class="filters">([\s\S]*?)<template v-if="layout === 'grid'">/)?.[1] ?? ''
     expect(toolbar.match(/<ResourceTableFilter\b[\s\S]*?\/>/g)).toEqual([
       expect.stringContaining('v-model="category"'),
       expect.stringContaining('v-model="cloud"'),
@@ -49,7 +49,8 @@ describe('Infrastructure template catalog layouts', () => {
     expect(columns).toContain("{ key: 'version', label: 'Version' }")
     expect(columns).toContain("{ key: 'exposure', label: 'Exposure' }")
     expect(columns).not.toContain("key: 'cloud'")
-    expect(source).toContain(":search-keys=\"['identity', 'name', 'description', 'category', 'kind']\"")
+    expect(source).toContain("const searchKeys = ['identity', 'name', 'description', 'category', 'kind']")
+    expect(source).toContain(':search-keys="searchKeys"')
   })
 
   it('retains true-empty refresh and filter-empty clearing in both layouts', () => {

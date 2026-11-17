@@ -77,7 +77,7 @@ function handleLogout() {
         </div>
         <template v-if="sidebarExpanded">
           <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">RAILGRID</span>
-          <span class="k-badge k-badge--muted px-1.5 py-px text-[8px]">Admin</span>
+          <span class="k-badge k-badge--muted k-badge--label">Admin</span>
         </template>
         <button
           type="button"

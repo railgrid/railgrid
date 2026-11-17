@@ -7,11 +7,12 @@ import { mountVue, settleVue, unmountVueApps } from './vue-helper'
 
 afterEach(() => { unmountVueApps(); document.body.innerHTML = ''; vi.restoreAllMocks() })
 async function fixture(snapshot = true) {
-  const store = new AppStore(new ApiClient())
+  const api = new ApiClient()
+  const store = new AppStore(api)
   store.agents.data = snapshot ? [agentFixture()] : []
   store.agents.hasSnapshot = snapshot
   const control = { selectedAgent: 'scout', followContext: true, settingsOpen: false, configure: vi.fn(), setSettingsOpen: vi.fn(), select: vi.fn() }
-  const mounted = await mountVue(WorkspaceAssistantCard, { store, overlayControl: control })
+  const mounted = await mountVue(WorkspaceAssistantCard, { store, api, overlayControl: control })
   return { ...mounted, store, control }
 }
 function submit(element: HTMLElement) { element.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true })) }
@@ -56,11 +57,62 @@ describe('workspace assistant settings', () => {
     store.agents.error = 'Unavailable'
     store.dispatchEvent(new Event('change'))
     await settleVue()
-    expect(element.querySelector('[role="alert"]')!.textContent).toContain('Could not refresh agents')
+    expect(element.querySelector('[role="alert"]')!.textContent).toContain('Could not load agents')
     submit(element)
     expect(control.configure).not.toHaveBeenCalled()
     await chooseOff(element)
     submit(element)
     expect(control.configure).toHaveBeenCalledWith(null, true)
+  })
+
+  it.each([false, true])('retains a focused busy retry and recovers without losing the assistant draft (snapshot=%s)', async snapshot => {
+    const { element, store } = await fixture(snapshot)
+    store.agents.error = 'Unavailable'
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    const retry = element.querySelector<HTMLButtonElement>('.k-inline-notification__action')!
+    element.querySelector<HTMLButtonElement>('[role="switch"]')!.click()
+    await settleVue()
+    let resolve!: () => void
+    const pending = new Promise<void>(done => { resolve = done })
+    const load = vi.spyOn(store, 'load').mockImplementation(async () => {
+      store.agents.loading = true
+      store.dispatchEvent(new Event('change'))
+      await pending
+      store.agents.loading = false
+      store.agents.error = null
+      store.agents.hasSnapshot = true
+      store.dispatchEvent(new Event('change'))
+    })
+    retry.focus(); retry.click(); retry.click()
+    await settleVue()
+    expect(load).toHaveBeenCalledTimes(1)
+    expect(retry.getAttribute('aria-busy')).toBe('true')
+    expect(document.activeElement).toBe(retry)
+    expect(element.querySelector('.k-inline-notification')).not.toBeNull()
+    resolve(); await settleVue()
+    expect(element.querySelector('.k-inline-notification')).toBeNull()
+    expect(element.querySelector('[role="switch"]')!.getAttribute('aria-checked')).toBe('false')
+    expect(document.activeElement).toBe(element.querySelector('[aria-label="Workspace assistant settings"]'))
+  })
+
+  it('does not steal focus moved during a successful retry', async () => {
+    const { element, store } = await fixture()
+    store.agents.error = 'Unavailable'
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    let resolve!: () => void
+    const pending = new Promise<void>(done => { resolve = done })
+    vi.spyOn(store, 'load').mockImplementation(async () => {
+      await pending
+      store.agents.error = null
+      store.dispatchEvent(new Event('change'))
+    })
+    const retry = element.querySelector<HTMLButtonElement>('.k-inline-notification__action')!
+    retry.focus(); retry.click()
+    const select = element.querySelector<HTMLButtonElement>('[role="combobox"]')!
+    select.focus()
+    resolve(); await settleVue()
+    expect(document.activeElement).toBe(select)
   })
 })

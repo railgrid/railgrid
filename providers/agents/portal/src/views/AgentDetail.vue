@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import StatusBadge from '../portalkit/StatusBadge.vue'
 import ChatTitleControl from '../components/ChatTitleControl.vue'
 import { computed, ref, watch } from 'vue'
 import { Bot, PanelRight, Trash2 } from 'lucide-vue-next'
@@ -366,9 +367,7 @@ async function remove(): Promise<void> {
                   </AIConversationIdentity>
                 </template>
                 <template #actions>
-                  <span v-if="agent.status?.suspendedReason" class="k-badge k-badge--warning agents-badge-warn agents-agent-status" :title="agent.status.suspendedReason">
-                    {{ agent.status.suspendedReason }}
-                  </span>
+                  <StatusBadge v-if="agent.status?.suspendedReason" class="agents-agent-status" :status="agent.status.suspendedReason" tone="warning" :title="agent.status.suspendedReason" />
                   <button
                     v-if="!compact"
                     class="k-icon-action agents-workbench-toggle"

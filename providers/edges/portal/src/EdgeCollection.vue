@@ -18,6 +18,8 @@ const props = defineProps<{
   loading: boolean
   refreshMode: ResourceRefreshMode
   error: string | null
+  deleteFailures?: Record<string, { name: string; message: string }>
+  deletingEdge?: string | null
   foregroundLoading: boolean
 }>()
 
@@ -26,6 +28,7 @@ const emit = defineEmits<{
   refresh: []
   open: [row: Record<string, unknown>]
   delete: [edge: Edge]
+  dismissDeleteFailure: [key: string]
   connect: []
 }>()
 
@@ -51,6 +54,7 @@ const tableQuery = ref('')
 const tableFilters = ref<Record<string, string>>({ typeLabel: '', status: '' })
 const hasActiveTableFilters = computed(() => !!tableQuery.value.trim() || Object.values(tableFilters.value).some(Boolean))
 const showFirstRun = computed(() => props.loaded && props.edges.length === 0 && !hasActiveTableFilters.value)
+const collection = ref<HTMLElement | null>(null)
 const heading = ref<HTMLElement | null>(null)
 const firstRunWarning = ref<HTMLElement | null>(null)
 const refreshButton = ref<HTMLButtonElement | null>(null)
@@ -62,8 +66,9 @@ watch(() => showFirstRun.value && !!props.error, visible => {
   void nextTick(() => { if (document.activeElement === document.body) heading.value?.focus({ preventScroll: true }) })
 }, { flush: 'pre' })
 watch(showFirstRun, visible => {
-  if (!visible || typeof document === 'undefined' || document.activeElement !== refreshButton.value) return
-  const focused = refreshButton.value
+  if (!visible || typeof document === 'undefined') return
+  const focused = document.activeElement
+  if (focused !== refreshButton.value && !collection.value?.querySelector('.k-table--resource')?.contains(focused)) return
   void nextTick(() => {
     if (focused && !focused.isConnected && document.activeElement === document.body) heading.value?.focus()
   })
@@ -110,10 +115,16 @@ function refreshFromHeader(): void {
 // table therefore retains its own query, filters, cursor, page, and scroll
 // state; App revalidates the authoritative rows when the collection returns.
 onActivated(() => emit('activated'))
+
+async function dismissDeleteFailure(key: string) {
+  emit('dismissDeleteFailure', key)
+  await nextTick()
+  heading.value?.focus()
+}
 </script>
 
 <template>
-  <div class="edges-app">
+  <div ref="collection" class="edges-app">
     <header class="edges-header">
       <div>
         <h1 ref="heading" tabindex="-1">Edges</h1>
@@ -129,6 +140,13 @@ onActivated(() => emit('activated'))
       </div>
     </header>
 
+    <InlineNotification
+      v-for="(failure, key) in props.deleteFailures" :key="key"
+      tone="error"
+      :title="`Could not delete ${failure.name}`"
+      :message="`${failure.message} Try again using the edge's delete action.`"
+      dismissible @dismiss="dismissDeleteFailure(String(key))"
+    />
     <div v-if="showFirstRun && props.error" ref="firstRunWarning">
       <InlineNotification tone="warning" message="Edges could not be refreshed. Showing the last successful empty result." action-label="Retry" action-busy-label="Retrying…" :action-busy="props.loading" @action="emit('refresh')" />
     </div>
@@ -155,6 +173,7 @@ onActivated(() => emit('activated'))
       :loading="props.loading"
       :refresh-mode="props.refreshMode"
       :error="props.error"
+      :stale="props.loaded && !!props.error"
       retryable
       searchable
       v-model:query="tableQuery"
@@ -172,7 +191,7 @@ onActivated(() => emit('activated'))
       <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
       <template #agentVersion="{ value }"><span class="mono muted">{{ value }}</span></template>
       <template #lastHeartbeat="{ value }"><ResourceTimestamp :value="value ? String(value) : null" label="Last heartbeat" /></template>
-      <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete edge ${String(row.name)}`" @click="emit('delete', row as unknown as Edge)" /></div></template>
+      <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete edge ${String(row.name)}`" :disabled="!!props.deletingEdge" :busy="props.deletingEdge === row.rowKey" @click="emit('delete', row as unknown as Edge)" /></div></template>
     </ResourceTable>
   </div>
 </template>

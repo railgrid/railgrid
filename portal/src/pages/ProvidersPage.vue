@@ -8,6 +8,8 @@ import SelfHostInstructions from '@/components/SelfHostInstructions.vue'
 import SelfHostWizard from '@/components/SelfHostWizard.vue'
 import { confirmDialog } from '@/portalkit/confirm'
 import { toast } from '@/portalkit/toast'
+import StatusBadge from '@/portalkit/StatusBadge.vue'
+import InlineNotification from '@/portalkit/InlineNotification.vue'
 import { useProviderEnableFlow } from '@/composables/useProviderEnableFlow'
 import { useProvidersStore, type ProviderDTO } from '@/stores/providers'
 import { useOrgProvidersStore, type OrgProviderRegistration } from '@/stores/orgProviders'
@@ -24,7 +26,28 @@ const providers = useProvidersStore()
 const orgProviders = useOrgProvidersStore()
 const tenant = useTenantStore()
 const disableOperations = new Map<string, symbol>()
+const disableErrors = ref(new Map<string, { label: string; message: string }>())
 const currentTenantScope = computed(() => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`)
+const providersHeading = ref<HTMLElement | null>(null)
+
+async function retryProviderRead(action: () => Promise<unknown>) {
+  const focused = document.activeElement
+  const scope = currentTenantScope.value
+  const currentTab = tab.value
+  await action()
+  await nextTick()
+  if (scope === currentTenantScope.value && currentTab === tab.value && focused && !focused.isConnected && document.activeElement === document.body) providersHeading.value?.focus()
+}
+
+function retryCatalogRead() {
+  if (providers.loading) return
+  void retryProviderRead(() => providers.load(tenant.orgUUID))
+}
+
+function retryInventoryRead() {
+  if (orgProviders.loading || providers.loading) return
+  void retryProviderRead(refreshOrgProviderInventory)
+}
 
 // Two views of the same catalog: what you can turn on ("Catalog"), and what you
 // can run yourself ("Self-Hosting"). They are separate tabs rather than one list
@@ -416,19 +439,19 @@ function providerStatusLabel(p: ProviderDTO): string {
   return providers.hasMissingDependencies(p) ? 'Blocked' : 'Available'
 }
 
-function providerStatusClass(p: ProviderDTO): string {
+function providerStatusTone(p: ProviderDTO): 'warning' | 'muted' | 'success' {
   const binding = displayedWorkspaceBinding(p)
-  if (bindingUnavailable(p, binding)) return 'border border-warning/30 bg-warning-subtle text-warning'
-  if (!(binding ? providers.workspaceProvider(p.name)?.ready : p.ready)) return 'border border-warning/30 bg-warning-subtle text-warning'
-  if (p.serving?.ui?.builtinRoute) return 'border border-border-default bg-surface-overlay text-text-secondary'
-  if (providers.isDisabling(p.name)) return 'border border-warning/30 bg-warning-subtle text-warning'
+  if (bindingUnavailable(p, binding)) return 'warning'
+  if (!(binding ? providers.workspaceProvider(p.name)?.ready : p.ready)) return 'warning'
+  if (p.serving?.ui?.builtinRoute) return 'muted'
+  if (providers.isDisabling(p.name)) return 'warning'
   if (providers.isEnabled(p.name)) {
     return providers.isSelfManaged(p) && workspaceProviderCopy(p) === 'platform'
-      ? 'border border-warning/30 bg-warning-subtle text-warning'
-      : 'border border-accent/30 bg-accent/10 text-accent'
+      ? 'warning'
+      : 'success'
   }
-  if (providers.hasMissingDependencies(p)) return 'border border-warning/30 bg-warning-subtle text-warning'
-  return 'border border-success/30 bg-success-subtle text-success'
+  if (providers.hasMissingDependencies(p)) return 'warning'
+  return 'success'
 }
 
 function selfHostedPlatformBinding(p: ProviderDTO): boolean {
@@ -822,6 +845,7 @@ onMounted(() => {
 watch(dialogScope, () => {
   // Install instructions are scoped to this organization and workspace.
   disableOperations.clear()
+  disableErrors.value.clear()
   selfHostRequestGeneration += 1
   activeRegistration.value = null
   instructionName.value = null
@@ -899,13 +923,15 @@ async function onDisable(p: ProviderDTO) {
   const isCurrent = () => disableOperations.get(p.name) === operation &&
     dialogScope.value === scope && tenant.orgUUID === targetOrgUUID &&
     tenant.workspaceUUID === targetWorkspaceUUID && tenant.workspaceMode === targetWorkspaceMode
+  const reportFailure = (message: string) => {
+    disableErrors.value.set(p.name, { label: providerDisplayName(p), message })
+  }
 
   if (staleShadowBinding) {
-    actionError.value = 'Workspace provider details are not current. Refresh the Catalog before disabling this provider.'
+    reportFailure('Workspace provider details are not current. Refresh the Catalog before disabling this provider.')
     return
   }
   disableOperations.set(p.name, operation)
-  actionError.value = null
   try {
     if (migrationConfirmRequired) {
       migrationConfirming.value = { ...migrationConfirming.value, [p.name]: true }
@@ -923,16 +949,17 @@ async function onDisable(p: ProviderDTO) {
       if (!isCurrent()) return
       const bindingAfter = currentWorkspaceBinding(currentProvider)
       if (!bindingAfter || bindingIdentity(bindingAfter) !== bindingIdentity(bindingBefore!)) {
-        actionError.value = 'This workspace provider binding changed while confirmation was open. Review the current Catalog status before trying again.'
+        reportFailure('This workspace provider binding changed while confirmation was open. Review the current Catalog status before trying again.')
         return
       }
     }
     if (!isCurrent()) return
     busy.value = { ...busy.value, [p.name]: true }
     await providers.disable(p)
+    if (isCurrent()) disableErrors.value.delete(p.name)
   } catch (e) {
     if (isCurrent()) {
-      actionError.value = e instanceof Error ? e.message : String(e)
+      reportFailure(e instanceof Error ? e.message : String(e))
     }
   } finally {
     if (disableOperations.get(p.name) === operation) {
@@ -945,6 +972,12 @@ async function onDisable(p: ProviderDTO) {
       busy.value = next
     }
   }
+}
+
+async function dismissDisableError(name: string) {
+  disableErrors.value.delete(name)
+  await nextTick()
+  if (document.activeElement === document.body) providersHeading.value?.focus()
 }
 
 function dependencyNotice(p: ProviderDTO): string {
@@ -971,7 +1004,7 @@ function dependencyNotice(p: ProviderDTO): string {
     />
     <div v-else>
       <header class="mb-6">
-        <h1 class="text-xl font-semibold text-text-primary flex items-center gap-2">
+        <h1 ref="providersHeading" tabindex="-1" class="text-xl font-semibold text-text-primary flex items-center gap-2">
           <Puzzle class="h-5 w-5 text-accent" :stroke-width="1.75" />
           Providers
         </h1>
@@ -980,15 +1013,15 @@ function dependencyNotice(p: ProviderDTO): string {
         </p>
       </header>
 
-      <div v-if="providers.error" class="mb-4 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-sm text-danger flex items-start gap-2">
-        <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="1.75" />
-        <span>{{ providers.error }}</span>
-      </div>
+      <InlineNotification v-if="providers.error" class="mb-4"
+        :tone="providers.loaded ? 'warning' : 'error'" title="Could not load provider catalog"
+        :message="`${providers.loaded ? 'Showing the last successful result. ' : ''}${providers.error}`"
+        action-label="Retry" action-busy-label="Retrying…" :action-busy="providers.loading" @action="retryCatalogRead" />
 
-      <div v-if="actionError" class="mb-4 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-sm text-danger flex items-start gap-2">
-        <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="1.75" />
-        <span>{{ actionError }}</span>
-      </div>
+      <InlineNotification v-if="actionError && !dialogProvider" class="mb-4" tone="error" :message="actionError" />
+      <InlineNotification v-for="[name, failure] in disableErrors" :key="name" class="mb-4" tone="error"
+        :title="`Could not disable ${failure.label}`" :message="failure.message" dismissible
+        :announce="dialogProvider ? 'off' : 'auto'" @dismiss="dismissDisableError(name)" />
 
       <!-- Catalog vs Self-Hosting. Hidden entirely when the hub has no
            org-provider support, so the tab never leads to a dead surface. -->
@@ -1010,17 +1043,17 @@ function dependencyNotice(p: ProviderDTO): string {
         </button>
       </nav>
 
-      <div v-if="providers.loading && !providers.loaded" class="text-sm text-text-muted">
+      <div v-if="providers.loading && !providers.loaded && !providers.error" class="text-sm text-text-muted">
         Loading providers&hellip;
       </div>
 
       <!-- ===== Self-Hosting tab ===== -->
       <div v-else-if="tab === 'self-hosting'" class="space-y-6">
-        <p v-if="!inventoryCurrent && orgProviders.loading" role="status" class="text-sm text-text-muted">Loading self-hosted providers…</p>
-        <div v-if="inventoryScope === currentTenantScope && orgProviders.error" role="alert" class="text-sm text-danger">
-          Could not load self-hosted providers. Last known results are preserved.
-          <button type="button" class="k-btn k-btn--ghost" :disabled="orgProviders.loading" @click="refreshOrgProviderInventory">Retry</button>
-        </div>
+        <p v-if="!inventoryCurrent && orgProviders.loading && !orgProviders.error" role="status" class="text-sm text-text-muted">Loading self-hosted providers…</p>
+        <InlineNotification v-if="inventoryScope === currentTenantScope && orgProviders.error"
+          :tone="inventoryCurrent ? 'warning' : 'error'" title="Could not load self-hosted providers"
+          :message="inventoryCurrent ? 'Showing the last successful result.' : 'Check your connection and try again.'"
+          action-label="Retry" action-busy-label="Retrying…" :action-busy="orgProviders.loading || providers.loading" @action="retryInventoryRead" />
         <p class="text-sm text-text-muted">
           Run a provider inside your own cluster instead of using the platform's copy. railgrid
           prepares an isolated organization workspace and can install the provider through a
@@ -1108,22 +1141,15 @@ function dependencyNotice(p: ProviderDTO): string {
                   <h3 class="truncate text-sm font-semibold text-text-primary">
                     {{ providerDisplayName(p) }}
                   </h3>
-                  <span
-                    class="rounded-sm px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider"
-                    :class="
-                      p.ready && !p.deleting
-                        ? 'border border-success/30 bg-success-subtle text-success'
-                        : 'border border-warning/30 bg-warning-subtle text-warning'
-                    "
-                  >
-                    {{ p.deleting || selfHostRemoval[p.name] === 'requesting' || selfHostRemoval[p.name] === 'deleting' ? 'Removing' : p.ready ? 'Ready' : p.registered ? 'Not ready' : 'Awaiting registration' }}
-                  </span>
-                  <span
+                  <StatusBadge
+                    :status="p.deleting || selfHostRemoval[p.name] === 'requesting' || selfHostRemoval[p.name] === 'deleting' ? 'Removing' : p.ready ? 'Ready' : p.registered ? 'Not ready' : 'Awaiting registration'"
+                    :tone="p.ready && !p.deleting && selfHostRemoval[p.name] !== 'requesting' && selfHostRemoval[p.name] !== 'deleting' ? 'success' : 'warning'"
+                  />
+                  <StatusBadge
                     v-if="p.upgradeAvailable && !p.deleting"
-                    class="rounded-sm border border-warning/30 bg-warning-subtle px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning"
-                  >
-                    Update available
-                  </span>
+                    status="Update available"
+                    tone="warning"
+                  />
                 </div>
                 <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">
                   {{ p.name }}
@@ -1418,14 +1444,9 @@ function dependencyNotice(p: ProviderDTO): string {
               <Puzzle v-else class="h-5 w-5 text-text-muted" :stroke-width="1.75" />
             </div>
             <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-2">
+              <div class="flex flex-wrap items-center gap-2">
                 <h2 class="truncate text-sm font-semibold text-text-primary">{{ p.displayName }}</h2>
-                <span
-                  class="rounded-sm px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider"
-                  :class="providerStatusClass(p)"
-                >
-                  {{ providerStatusLabel(p) }}
-                </span>
+                <StatusBadge :status="providerStatusLabel(p)" :tone="providerStatusTone(p)" />
               </div>
               <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">{{ p.name }}<span v-if="p.version"> · {{ p.version }}</span></p>
             </div>
@@ -1553,23 +1574,23 @@ function dependencyNotice(p: ProviderDTO): string {
                  its heading. -->
             <span
               v-if="providers.isSelfManaged(p)"
-              class="rounded-md border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-accent"
+              class="k-badge k-badge--muted k-badge--label"
               title="Registered and operated by your organization"
             >
               Self-hosted
             </span>
             <span
               v-if="providers.isSelfManaged(p) && p.shadowsPlatform"
-              class="rounded-md border border-warning/30 bg-warning-subtle px-1.5 py-0.5 text-warning"
+              class="k-badge k-badge--muted k-badge--label"
               title="Your organization’s entry shadows the platform entry, but existing workspace bindings may still use either copy."
             >
               Overrides platform provider
             </span>
-            <span v-if="p.serving?.ui" class="rounded-md border border-border-subtle px-1.5 py-0.5">UI</span>
+            <span v-if="p.serving?.ui" class="k-badge k-badge--muted k-badge--label">UI</span>
             <!-- serving.backend is published as an empty object: its presence is
                  the whole answer, so test for the section, not its contents. -->
-            <span v-if="p.serving?.backend" class="rounded-md border border-border-subtle px-1.5 py-0.5">Backend</span>
-            <span v-if="p.export?.name" class="rounded-md border border-border-subtle px-1.5 py-0.5">API</span>
+            <span v-if="p.serving?.backend" class="k-badge k-badge--muted k-badge--label">Backend</span>
+            <span v-if="p.export?.name" class="k-badge k-badge--muted k-badge--label">API</span>
           </div>
 
           <div

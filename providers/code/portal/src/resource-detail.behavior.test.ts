@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
     listPackagesPage: vi.fn(),
     listPackages: vi.fn(),
     deleteRepository: vi.fn(),
+    deleteDeployKey: vi.fn(),
+    deleteCollaborator: vi.fn(),
     getConnection: vi.fn(),
     deleteConnection: vi.fn(),
   },
@@ -27,6 +29,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./api', () => ({ api: mocks.api }))
 vi.mock('./portalkit/confirm', () => ({ confirmDialog: mocks.confirmDialog }))
 vi.mock('./portalkit/toast', () => ({ toast: mocks.toast }))
+vi.mock('./portalkit/InlineNotification.vue', async () => {
+  const { h } = await import('vue')
+  return { default: { props: ['title', 'message', 'actionLabel', 'actionBusy', 'dismissible'], emits: ['action', 'dismiss'], setup: (props: { title: string; message: string; actionLabel: string; actionBusy: boolean; dismissible: boolean }, { emit }: { emit: (name: 'action' | 'dismiss') => void }) => () => h('div', [props.title, props.message, props.actionLabel ? h('button', { 'aria-busy': props.actionBusy ? 'true' : undefined, onClick: () => { if (!props.actionBusy) emit('action') } }, props.actionLabel) : null, props.dismissible ? h('button', { onClick: () => emit('dismiss') }, 'Dismiss') : null]) } }
+})
 vi.mock('./portalkit/ActionMenu.vue', async () => {
   const { h, ref } = await import('vue')
   type ActionItem = { id: string; label: string; disabled?: boolean; busy?: boolean }
@@ -239,7 +245,7 @@ function compileClientRender(source: string, filename: string): (ctx: unknown, c
       return `const { ${bindings} } = VueRuntime\n`
     })
     .replace('export function render', 'function render')
-  return new Function('VueRuntime', `${code}\nreturn render`)(VueRuntime) as (ctx: unknown, cache: unknown) => unknown
+  return new Function('VueRuntime', `${code}\nreturn render`)({ ...VueRuntime, vModelSelect: {} }) as (ctx: unknown, cache: unknown) => unknown
 }
 
 ;(RepoDetailView as unknown as { render: unknown }).render = compileClientRender(repoSource, 'RepoDetailView.vue')
@@ -430,6 +436,13 @@ describe('mounted resource deletion state', () => {
 
     expect(textContent(root)).not.toContain('Deleting this repository.')
     expect(textContent(root)).toContain('HTTPError: 500: delete failed')
+    expect(textContent(root)).toContain('Could not delete repository orders')
+    mocks.confirmDialog.mockResolvedValueOnce(false)
+    click(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More repository actions')!)
+    await settle()
+    click(findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Delete repository')!)
+    await settle()
+    expect(textContent(root)).toContain('HTTPError: 500: delete failed')
     expect(textContent(root)).toContain('orders')
     expect(findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Refresh')?.props.disabled).toBe(false)
     expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More repository actions')?.props.disabled).toBe(false)
@@ -613,4 +626,110 @@ describe('Code dashboard read state', () => {
       expect(state.repositories).toEqual([{ ...repository, name: 'caller-b-repository' }])
     } finally { app.unmount() }
   })
+})
+
+it('keeps cached connection choices while a failed read is retried once', async () => {
+  const retry = deferred<Connection[]>()
+  mocks.api.listConnections.mockReset().mockResolvedValueOnce([connection]).mockRejectedValueOnce({ reason: 'HTTPError', message: 'connections unavailable' }).mockReturnValueOnce(retry.promise)
+  mocks.api.listDeployKeys.mockResolvedValue([])
+  mocks.api.listCollaborators.mockResolvedValue([])
+  mocks.api.listPackagesPage.mockResolvedValue({ items: [], continue: '', resourceVersion: '' })
+  const { app, root, instance } = mount(RepoDetailView, { name: repository.name, deletions: createResourceDeletions() })
+  try {
+    await settle()
+    instance.setupState.connectionExpanded = true
+    instance.setupState.loadConnections()
+    await settle()
+    expect(textContent(root)).toContain('Showing cached connection choices')
+    const retryButton = findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Retry')!
+    click(retryButton)
+    click(retryButton)
+    await settle()
+    expect(mocks.api.listConnections).toHaveBeenCalledTimes(3)
+    expect(retryButton.props['aria-busy']).toBe('true')
+    expect(textContent(root)).toContain('Showing cached connection choices')
+    retry.resolve([connection])
+    await settle()
+    expect(textContent(root)).not.toContain('connections unavailable')
+  } finally { app.unmount() }
+})
+
+it('retains a failed key removal when a different key succeeds or confirmation is cancelled', async () => {
+  mocks.api.listConnections.mockResolvedValue([])
+  mocks.api.listDeployKeys.mockResolvedValue([])
+  mocks.api.listCollaborators.mockResolvedValue([])
+  mocks.api.listPackagesPage.mockResolvedValue({ items: [], continue: '', resourceVersion: '' })
+  mocks.api.deleteDeployKey.mockReset().mockRejectedValueOnce({ message: 'key A failed' }).mockResolvedValueOnce(undefined)
+  const { app, instance } = mount(RepoDetailView, { name: repository.name, deletions: createResourceDeletions() })
+  const first = { name: 'key-a', uid: 'a', title: 'Key A', repositoryRef: repository.name }
+  const second = { name: 'key-b', uid: 'b', title: 'Key B', repositoryRef: repository.name }
+  try {
+    await settle()
+    await instance.setupState.removeKey(first)
+    expect(instance.setupState.keyDeleteErrors['key-a:a']).toContain('Key A: key A failed')
+    mocks.confirmDialog.mockResolvedValueOnce(false)
+    await instance.setupState.removeKey(first)
+    expect(instance.setupState.keyDeleteErrors['key-a:a']).toContain('key A failed')
+    await instance.setupState.removeKey(second)
+    expect(instance.setupState.keyDeleteErrors['key-a:a']).toContain('key A failed')
+    expect(mocks.api.deleteDeployKey).toHaveBeenCalledTimes(2)
+  } finally { app.unmount() }
+})
+
+it('retains a failed collaborator removal until the matching identity succeeds', async () => {
+  mocks.api.listConnections.mockResolvedValue([])
+  mocks.api.listDeployKeys.mockResolvedValue([])
+  mocks.api.listCollaborators.mockResolvedValue([])
+  mocks.api.listPackagesPage.mockResolvedValue({ items: [], continue: '', resourceVersion: '' })
+  mocks.api.deleteCollaborator.mockReset().mockRejectedValueOnce({ message: 'remove failed' }).mockResolvedValue(undefined)
+  const { app, instance } = mount(RepoDetailView, { name: repository.name, deletions: createResourceDeletions() })
+  const first = { name: 'member', uid: 'old', username: 'alice', repositoryRef: repository.name }
+  try {
+    await settle()
+    await instance.setupState.removeCollab(first)
+    expect(instance.setupState.collabDeleteErrors['member:old']).toContain('alice: remove failed')
+    await instance.setupState.removeCollab({ ...first, uid: 'new' })
+    expect(instance.setupState.collabDeleteErrors['member:old']).toContain('remove failed')
+    await instance.setupState.removeCollab(first)
+    expect(instance.setupState.collabDeleteErrors['member:old']).toBeUndefined()
+  } finally { app.unmount() }
+})
+
+it.each([
+  { component: RepoDetailView, remove: 'deleteRepository', action: 'deleteRepository', data: repository, field: 'repositoryMutationError' },
+  { component: ConnectionDetailView, remove: 'deleteConnection', action: 'deleteConnection', data: connection, field: 'mutationError' },
+] as const)('ignores a pending $remove result invalidated by context rotation', async ({ component, remove, action, data, field }) => {
+  const pending = deferred<void>()
+  mocks.api[remove].mockReset().mockReturnValue(pending.promise)
+  const { app, instance } = mount(component, { name: data.name, deletions: createResourceDeletions() })
+  try {
+    await settle()
+    instance.setupState[field] = 'earlier failure'
+    const actionPromise = instance.setupState[action]() as Promise<void>
+    await settle()
+    pending.reject({ reason: 'ContextChanged', message: 'old context' })
+    await actionPromise
+    await settle()
+    expect(instance.setupState[field]).toBe('earlier failure')
+    expect(mocks.toast).not.toHaveBeenCalled()
+  } finally { app.unmount() }
+})
+
+it.each([
+  { action: 'removeKey', remove: 'deleteDeployKey', field: 'keyDeleteErrors', row: { name: 'key', uid: 'k', title: 'Key', repositoryRef: repository.name } },
+  { action: 'removeCollab', remove: 'deleteCollaborator', field: 'collabDeleteErrors', row: { name: 'member', uid: 'm', username: 'alice', repositoryRef: repository.name } },
+] as const)('ignores a pending $remove result invalidated by context rotation', async ({ action, remove, field, row }) => {
+  const pending = deferred<void>()
+  mocks.api[remove].mockReset().mockReturnValue(pending.promise)
+  const { app, instance } = mount(RepoDetailView, { name: repository.name, deletions: createResourceDeletions() })
+  try {
+    await settle()
+    instance.setupState[field] = { earlier: 'previous failure' }
+    const actionPromise = instance.setupState[action](row) as Promise<void>
+    await settle()
+    pending.reject({ reason: 'ContextChanged', message: 'old context' })
+    await actionPromise
+    expect(instance.setupState[field]).toEqual({ earlier: 'previous failure' })
+    expect(mocks.toast).not.toHaveBeenCalled()
+  } finally { app.unmount() }
 })

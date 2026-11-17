@@ -83,7 +83,7 @@ watch(() => props.actionBusy, busy => { if (!busy) actionRequested.value = false
     <Info v-else class="k-inline-notification__icon" :stroke-width="2" aria-hidden="true" />
     <div class="k-inline-notification__body">
       <strong v-if="title" class="k-inline-notification__title">{{ title }}</strong>
-      <span v-if="message || $slots.default" class="k-inline-notification__message"><slot>{{ message }}</slot></span>
+      <div v-if="message || $slots.default" class="k-inline-notification__message"><slot>{{ message }}</slot></div>
     </div>
     <button
       v-if="actionLabel"

@@ -288,10 +288,10 @@ describe('agents list layouts', () => {
     mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout"] [role="radio"][aria-checked="false"]')!.click()
     await settleVue()
     expect(mounted.element.querySelector<HTMLInputElement>('.agents-layout-search input')?.value).toBe('no matching agent')
-    expect(text(mounted.element.querySelector('.agents-layout-empty'))).toBe('No agents match your search.')
+    expect(text(mounted.element.querySelector('.agents-layout-empty'))).toContain('No agents match your search.')
   })
 
-  it('clears list-only filters with an explanation when switching to Cards', async () => {
+  it('preserves filters and matches when switching layouts', async () => {
     localStorage.setItem(AGENTS_LAYOUT_PREFERENCE_KEY, 'list')
     const api = stubApi()
     const store = makeStore(api)
@@ -314,10 +314,24 @@ describe('agents list layouts', () => {
       expect(text(rows[0])).toContain('codex')
     })
 
+    mounted.element.querySelectorAll<HTMLButtonElement>('.k-table__filter-trigger')[1]!.click()
+    await settleVue()
+    ;[...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => text(option) === 'Configured')!.click()
+    const search = mounted.element.querySelector<HTMLInputElement>('.k-table__search-input')!
+    search.value = 'codex'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await settleVue()
     mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout"] [role="radio"][aria-checked="false"]')!.click()
     await settleVue()
 
-    expect(mounted.element.querySelectorAll('.agents-card')).toHaveLength(2)
-    expect(text(mounted.element.querySelector('.sr-only[role=status]'))).toBe('List filters were cleared for Cards.')
+    expect(mounted.element.querySelectorAll('.agents-card')).toHaveLength(1)
+    expect(text(mounted.element.querySelector('.agents-card'))).toContain('codex')
+    expect(text(mounted.element.querySelector('.agents-layout-toolbar'))).toContain('Coding harness')
+    expect(text(mounted.element.querySelector('.agents-layout-toolbar'))).toContain('Configured')
+    expect(mounted.element.querySelector<HTMLInputElement>('.agents-layout-search input')?.value).toBe('codex')
+    mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout"] [role="radio"][aria-checked="false"]')!.click()
+    await settleVue()
+    expect(mounted.element.querySelectorAll('.k-table__row')).toHaveLength(1)
+    expect(text(mounted.element.querySelector('.k-table__row'))).toContain('codex')
   })
 })

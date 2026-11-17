@@ -2879,7 +2879,7 @@ describe('rich composer admission boundary', () => {
       content: 'Follow-up draft',
       contentParts: expect.arrayContaining([{ type: 'attachment', attachment: draftAttachment }]),
     }))
-    expect(text(document.getElementById('k-toasts'))).toContain('The previous send was not accepted. Your newer draft is still here.')
+    expect(text(document.querySelector('[data-railgrid-toast-host]'))).toContain('The previous send was not accepted. Your newer draft is still here.')
     expect(remove).not.toHaveBeenCalled()
   })
 
@@ -4196,6 +4196,184 @@ async function mountOverlayDraftTest(extra: Record<string, unknown>) {
   const input = composerEditor(view.element)!
   return { view, host, input, api }
 }
+
+it('distinguishes the compact Chats initial-read failure from an empty list', async () => {
+  const listSessions = vi.fn().mockRejectedValue(new Error('synthetic list read failure'))
+  const { view, host } = await mountOverlayDraftTest({
+    listSessions,
+  })
+  try {
+    host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+    await settle(6)
+    const overlay = view.element.querySelector<HTMLElement>('.agents-overlay-chats')!
+    expect(listSessions).toHaveBeenCalledTimes(2)
+    expect(text(overlay.querySelector('.agents-chat-sessions-notice strong'))).toBe('Could not load conversations')
+    expect(text(overlay)).not.toContain('No chats yet. Start a new chat above.')
+    expect(overlay.querySelector('.agents-chat-sessions-notice.k-inline-notification')?.getAttribute('role')).toBe('alert')
+    expect(view.element.querySelector('.agents-chat-main .agents-chat-sessions-notice.k-inline-notification')?.hasAttribute('role')).toBe(false)
+  } finally { host.remove() }
+})
+
+it('keeps the compact Chats failure visible through one retry and restores search focus after recovery', async () => {
+  const heldRetry = deferred<SessionMeta[]>()
+  const heldRecovery = deferred<SessionMeta[]>()
+  const listSessions = vi.fn()
+    .mockRejectedValueOnce(new Error('startup list read failed'))
+    .mockRejectedValueOnce(new Error('initial list read failed'))
+    .mockImplementationOnce(() => heldRetry.promise)
+    .mockImplementationOnce(() => heldRecovery.promise)
+  const { view, host } = await mountOverlayDraftTest({ listSessions })
+  try {
+    host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+    await settle(4)
+    const search = view.element.querySelector<HTMLInputElement>('.agents-overlay-chats input[type="search"]')!
+    const retry = view.element.querySelector<HTMLButtonElement>('.agents-overlay-chats .agents-chat-sessions-notice button')!
+    retry.focus()
+    retry.click()
+    await settle(3)
+
+    expect(listSessions).toHaveBeenCalledTimes(3)
+    expect(text(view.element.querySelector('.agents-overlay-chats .agents-chat-sessions-notice'))).toContain('initial list read failed')
+    expect(retry.disabled).toBe(false)
+    expect(retry.getAttribute('aria-disabled')).toBe('true')
+    expect(retry.getAttribute('aria-busy')).toBe('true')
+    retry.click()
+    await settle(2)
+    expect(listSessions).toHaveBeenCalledTimes(3)
+
+    retry.blur()
+    heldRetry.reject(new Error('retry read failed'))
+    await settle(6)
+    expect(text(view.element.querySelector('.agents-overlay-chats .agents-chat-sessions-notice'))).toContain('retry read failed')
+    expect(retry.getAttribute('aria-busy')).toBeNull()
+    expect(document.activeElement).toBe(retry)
+
+    const retryAgain = view.element.querySelector<HTMLButtonElement>('.agents-overlay-chats .agents-chat-sessions-notice button')!
+    retryAgain.focus()
+    retryAgain.click()
+    await settle(3)
+    expect(listSessions).toHaveBeenCalledTimes(4)
+    expect(retryAgain.getAttribute('aria-busy')).toBe('true')
+    heldRecovery.resolve([session('recovered-chat', 'Recovered conversation')])
+    await settle(10)
+
+    expect(view.element.querySelector('.agents-overlay-chats .agents-chat-sessions-notice')).toBeNull()
+    expect(text(view.element.querySelector('.agents-overlay-chats'))).toContain('Recovered conversation')
+    expect(document.activeElement).toBe(search)
+  } finally { host.remove() }
+})
+
+it('returns focus to the conversation composer after an initial list retry succeeds', async () => {
+  const heldRetry = deferred<SessionMeta[]>()
+  const listSessions = vi.fn()
+    .mockRejectedValueOnce(new Error('initial list read failed'))
+    .mockImplementationOnce(() => heldRetry.promise)
+  const { el } = await mountChat(scripted([]), { listSessions })
+  const retry = el.querySelector<HTMLButtonElement>('.agents-chat-sessions-notice button')!
+  retry.focus()
+  retry.click()
+  await settle(3)
+  expect(retry.getAttribute('aria-busy')).toBe('true')
+  heldRetry.resolve([])
+  await settle(10)
+  expect(el.querySelector('.agents-chat-sessions-notice')).toBeNull()
+  expect(document.activeElement).toBe(composerEditor(el))
+})
+
+it('keeps the last chat snapshot visible when the compact overlay refresh fails', async () => {
+  const listSessions = vi.fn()
+    .mockResolvedValueOnce([session('known-chat', 'Known conversation')])
+    .mockRejectedValueOnce(new Error('stale list refresh failed'))
+  const { view, host } = await mountOverlayDraftTest({ listSessions })
+  try {
+    host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+    await settle(6)
+    const overlay = view.element.querySelector<HTMLElement>('.agents-overlay-chats')!
+    expect(text(overlay.querySelector('.agents-chat-sessions-notice strong'))).toBe('Could not refresh conversations')
+    expect(text(overlay.querySelector('.agents-chat-sessions-notice'))).toContain('Showing the last loaded conversations.')
+    expect(text(overlay)).toContain('Known conversation')
+    expect(text(overlay)).not.toContain('No chats yet. Start a new chat above.')
+    expect(overlay.querySelector('.agents-chat-sessions-notice.k-inline-notification')?.getAttribute('role')).toBe('status')
+    expect(view.element.querySelector('.agents-chat-main .agents-chat-sessions-notice.k-inline-notification')?.hasAttribute('role')).toBe(false)
+  } finally { host.remove() }
+})
+
+it('does not override focus moved away from a compact Chats retry', async () => {
+  const heldRetry = deferred<SessionMeta[]>()
+  const listSessions = vi.fn()
+    .mockRejectedValueOnce(new Error('startup list read failed'))
+    .mockRejectedValueOnce(new Error('initial list read failed'))
+    .mockImplementationOnce(() => heldRetry.promise)
+  const { view, host } = await mountOverlayDraftTest({ listSessions })
+  const outside = document.createElement('button')
+  outside.textContent = 'Another control'
+  document.body.appendChild(outside)
+  try {
+    host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+    await settle(4)
+    const retry = view.element.querySelector<HTMLButtonElement>('.agents-overlay-chats .agents-chat-sessions-notice button')!
+    retry.focus()
+    retry.click()
+    await settle(3)
+    outside.focus()
+    heldRetry.resolve([session('recovered-chat', 'Recovered conversation')])
+    await settle(10)
+    expect(view.element.querySelector('.agents-overlay-chats .agents-chat-sessions-notice')).toBeNull()
+    expect(document.activeElement).toBe(outside)
+  } finally {
+    outside.remove()
+    host.remove()
+  }
+})
+
+it('refreshes a stale compact Chats list when reopened without starting duplicate reads', async () => {
+  const recovery = deferred<SessionMeta[]>()
+  const listSessions = vi.fn()
+    .mockResolvedValueOnce([session('known-chat', 'Known conversation')])
+    .mockRejectedValueOnce(new Error('transient refresh failure'))
+    .mockImplementationOnce(() => recovery.promise)
+  const { view, host } = await mountOverlayDraftTest({ listSessions })
+  try {
+    host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+    await settle(6)
+    view.element.querySelector<HTMLButtonElement>('.agents-overlay-chats__row')!.click()
+    await settle(6)
+    expect(view.element.querySelector('.agents-overlay-chats')).toBeNull()
+    host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+    host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+    await settle(6)
+    const overlay = view.element.querySelector<HTMLElement>('.agents-overlay-chats')!
+    expect(listSessions).toHaveBeenCalledTimes(3)
+    expect(text(overlay)).toContain('Known conversation')
+    expect(text(overlay)).toContain('transient refresh failure')
+    expect(overlay.querySelector('.agents-chat-sessions-notice button')?.getAttribute('aria-busy')).toBe('true')
+    recovery.resolve([session('recovered-chat', 'Recovered conversation')])
+    await settle(8)
+    expect(text(overlay)).toContain('Recovered conversation')
+    expect(overlay.querySelector('.agents-chat-sessions-notice')).toBeNull()
+  } finally { host.remove() }
+})
+
+it('does not restore retry focus into a changed agent context', async () => {
+  const heldRetry = deferred<SessionMeta[]>()
+  const listSessions = vi.fn()
+    .mockRejectedValueOnce(new Error('initial list read failed'))
+    .mockImplementationOnce(() => heldRetry.promise)
+    .mockResolvedValueOnce([session('nova-chat', 'Nova conversation')])
+  const { el, view } = await mountChat(scripted([]), { listSessions })
+  const retry = el.querySelector<HTMLButtonElement>('.agents-chat-sessions-notice button')!
+  retry.focus()
+  retry.click()
+  await settle(3)
+  await view.setProps({ name: 'nova' })
+  await settle(6)
+  const nextComposer = composerEditor(el)!
+  heldRetry.resolve([session('stale-scout-chat', 'Stale Scout conversation')])
+  await settle(8)
+  expect(text(el)).toContain('Nova conversation')
+  expect(text(el)).not.toContain('Stale Scout conversation')
+  expect(document.activeElement).not.toBe(nextComposer)
+})
 
 it('keeps unsent overlay chats accessible after starting another chat and refreshing history', async () => {
   const { view, host, input, api } = await mountOverlayDraftTest({ listSessions: async () => [] })

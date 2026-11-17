@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { Server, Boxes, Plug } from 'lucide-vue-next'
-import { setHostFetch, setToken, setTenant, listEdges, deleteEdge } from './api'
+import { setHostFetch, setToken, setTenant, listEdges, deleteEdge, isContextChangedError } from './api'
 import Wizard from './Wizard.vue'
 import Detail from './Detail.vue'
 import EdgeCollection from './EdgeCollection.vue'
@@ -121,6 +121,8 @@ function openDetail(row: Record<string, unknown>): void {
 const edges = ref<Edge[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
+const deleteFailures = ref<Record<string, { name: string; message: string }>>({})
+const deletingEdge = ref<string | null>(null)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
 // Nested list views keep their own cursor/cache authority. Remount them when
@@ -139,7 +141,6 @@ const poller = createAdaptiveRefreshTimer(() => {
 const edgeRefresh = createLatestRefreshController(async (requestID, mode) => {
   refreshMode.value = mode
   loading.value = true
-  if (mode === 'foreground') error.value = null
   try {
     const nextEdges = await listEdges()
     if (!edgeRefresh.isCurrent(requestID)) return
@@ -172,17 +173,31 @@ function onEdgeCollectionActivated(): void {
 }
 
 async function onDelete(edge: Edge) {
+  if (deletingEdge.value) return
+  const expectedContextGeneration = contextGeneration.value
   const label = edgeTypeLabel(edge.type)
   if (!(await confirmDialog({ title: `Delete ${label} edge "${edge.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
-  const expectedContextGeneration = contextGeneration.value
+  if (contextGeneration.value !== expectedContextGeneration || deletingEdge.value) return
+  deletingEdge.value = `${edge.type}/${edge.name}`
   try {
     await deleteEdge(edge)
     if (contextGeneration.value !== expectedContextGeneration) return
+    dismissDeleteFailure(`${edge.type}/${edge.name}`)
     toast('info', `${label} edge deletion requested for ${edge.name}.`)
     await refresh()
   } catch (e) {
-    error.value = (e as ErrorResponse)?.message ?? 'Delete failed'
+    if (contextGeneration.value === expectedContextGeneration && !isContextChangedError(e)) {
+      deleteFailures.value = { ...deleteFailures.value, [`${edge.type}/${edge.name}`]: { name: edge.name, message: (e as ErrorResponse)?.message ?? 'The request failed.' } }
+    }
+  } finally {
+    if (contextGeneration.value === expectedContextGeneration) deletingEdge.value = null
   }
+}
+
+function dismissDeleteFailure(key: string) {
+  const next = { ...deleteFailures.value }
+  delete next[key]
+  deleteFailures.value = next
 }
 
 // Re-auth + reload whenever the shell pushes a new context (token/workspace).
@@ -201,6 +216,8 @@ watch(
       workloadResult.value = null
       loading.value = Boolean(tenant)
       error.value = null
+      deleteFailures.value = {}
+      deletingEdge.value = null
       if (tenant) void refresh('foreground')
       return
     }
@@ -304,6 +321,9 @@ onUnmounted(() => {
         :loading="loading"
         :refresh-mode="refreshMode"
         :error="error"
+        :delete-failures="deleteFailures"
+        @dismiss-delete-failure="dismissDeleteFailure"
+        :deleting-edge="deletingEdge"
         :foreground-loading="foregroundLoading"
         @activated="onEdgeCollectionActivated"
         @refresh="refresh"

@@ -18,7 +18,7 @@ TS_SRC="$ROOT/provider-sdk/portalkit"
 TS_PORTALS=(
   "providers/quickstart/portal"
 )
-TS_FILES=(document-id.ts modal-popup.ts page-context.ts agent-context.ts navigation.ts dashboardtile.ts railgrid-ui.css form-select.ts icons.ts kube.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts toast.ts tooltip.ts)
+TS_FILES=(document-id.ts modal-focus.ts modal-popup.ts page-context.ts agent-context.ts navigation.ts dashboardtile.ts railgrid-ui.css form-select.ts icons.ts kube.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts tooltip.ts)
 
 # Vue SFC portals + files.
 VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
@@ -40,13 +40,8 @@ VUE_TOAST_PORTALS=(
   "providers/edges/portal"
   "providers/infrastructure/portal"
   "providers/kuery/portal"
+  "providers/agents/portal"
 )
-
-# Agents is now a Vue portal, but its provider-local subscription adapter still
-# depends on the frozen framework-neutral toast bus. Keep that one compatibility
-# file until Agents is explicitly migrated to the Vue host/service contract.
-AGENTS_PORTALS=("providers/agents/portal")
-AGENTS_LEGACY_FILES=(toast.ts)
 
 # Optional AgentKit assets are distributed only to the two AI consumers. The
 # explicit lists keep new conversation primitives reviewable and prevent an
@@ -73,7 +68,7 @@ AGENTKIT_VUE_FILES=(
 )
 
 # Plain assets from the vanilla kit are shared by both portal styles.
-VUE_SHARED_FILES=(page-context.ts agent-context.ts navigation.ts dashboardtile.ts railgrid-ui.css icons.ts kube.ts page-state.ts styles.ts tabs.ts tenant.ts tooltip.ts)
+VUE_SHARED_FILES=(modal-focus.ts page-context.ts agent-context.ts navigation.ts dashboardtile.ts railgrid-ui.css icons.ts kube.ts page-state.ts styles.ts tabs.ts tenant.ts tooltip.ts)
 ALL_PORTALS=("${TS_PORTALS[@]}" "${VUE_PORTALS[@]}")
 HOST_UI="$ROOT/portal/src/assets/railgrid-ui.css"
 
@@ -353,22 +348,18 @@ verify_all() {
   if ! verify_group "$TS_SRC" TS_PORTALS TS_FILES; then stale=1; fi
   if ! verify_group "$VUE_SRC" VUE_PORTALS VUE_FILES; then stale=1; fi
   if ! verify_group "$VUE_SRC" VUE_TOAST_PORTALS VUE_TOAST_FILES; then stale=1; fi
-  if ! verify_group "$TS_SRC" AGENTS_PORTALS AGENTS_LEGACY_FILES; then stale=1; fi
+  if ! verify_group "$VUE_SRC" TS_PORTALS VUE_TOAST_FILES; then stale=1; fi
   if ! verify_group "$TS_SRC" VUE_PORTALS VUE_SHARED_FILES; then stale=1; fi
   if ! verify_agentkit_plain_group; then stale=1; fi
   if ! verify_agentkit_vue_group; then stale=1; fi
 
-  local ts_expected=("${TS_FILES[@]}")
+  local ts_expected=("${TS_FILES[@]}" "${VUE_TOAST_FILES[@]}")
   local vue_expected=("${VUE_FILES[@]}" "${VUE_SHARED_FILES[@]}" "${VUE_TOAST_FILES[@]}")
   for p in "${TS_PORTALS[@]}"; do
     if ! verify_unexpected "$ROOT/$p/src/portalkit" ts_expected; then stale=1; fi
   done
   for p in "${VUE_TOAST_PORTALS[@]}"; do
     if ! verify_unexpected "$ROOT/$p/src/portalkit" vue_expected; then stale=1; fi
-  done
-  local agents_expected=("${VUE_FILES[@]}" "${VUE_SHARED_FILES[@]}" "${AGENTS_LEGACY_FILES[@]}")
-  for p in "${AGENTS_PORTALS[@]}"; do
-    if ! verify_unexpected "$ROOT/$p/src/portalkit" agents_expected; then stale=1; fi
   done
   local agentkit_expected=("${AGENTKIT_FILES[@]}" "${AGENTKIT_VUE_FILES[@]}")
   for p in "${AGENTKIT_PORTALS[@]}"; do
@@ -404,7 +395,7 @@ remove_obsolete
 sync_group "$TS_SRC" TS_PORTALS TS_FILES
 sync_group "$VUE_SRC" VUE_PORTALS VUE_FILES
 sync_group "$VUE_SRC" VUE_TOAST_PORTALS VUE_TOAST_FILES
-sync_group "$TS_SRC" AGENTS_PORTALS AGENTS_LEGACY_FILES
+sync_group "$VUE_SRC" TS_PORTALS VUE_TOAST_FILES
 sync_group "$TS_SRC" VUE_PORTALS VUE_SHARED_FILES
 sync_agentkit_plain_group
 sync_agentkit_vue_group

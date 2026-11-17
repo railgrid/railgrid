@@ -2,11 +2,14 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { Info } from 'lucide-vue-next'
 import FormSelect from '../portalkit/FormSelect.vue'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import type { RailgridContext } from '../types'
 import type { AppStore } from '../store'
-import { useStoreRevision } from '../vue/runtime'
-const props = defineProps<{ store: AppStore; overlayControl: NonNullable<RailgridContext['agentOverlay']> }>()
+import type { ApiClient } from '../api'
+import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+const props = defineProps<{ store: AppStore; api: ApiClient; overlayControl: NonNullable<RailgridContext['agentOverlay']> }>()
 const revision = useStoreRevision(() => props.store)
+const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 const agents = computed(() => { revision.value; return { ...props.store.agents } })
 const assistantPanel = ref<HTMLElement | null>(null)
 const assistantAgent = ref('')
@@ -46,6 +49,15 @@ function saveAssistant(): void {
   if (!canSave.value) return
   props.overlayControl.configure(assistantAgent.value || null, assistantContext.value)
 }
+
+async function retryAgents(): Promise<void> {
+  if (agents.value.loading) return
+  const authority = captureAuthority()
+  const focused = document.activeElement
+  await props.store.load('agents')
+  await nextTick()
+  if (authorityIsCurrent(authority) && focused && !focused.isConnected && document.activeElement === document.body) assistantPanel.value?.focus()
+}
 </script>
 <template>
     <section id="workspace-assistant-settings" ref="assistantPanel" class="k-resource-page k-resource-page--collection agents-assistant-settings" tabindex="-1" aria-label="Workspace assistant settings">
@@ -56,7 +68,10 @@ function saveAssistant(): void {
         </div>
       </header>
       <div class="k-card agents-assistant-settings__card">
-      <p v-if="agents.error" class="k-error" role="alert">Could not refresh agents. <button class="k-btn k-btn--text" type="button" :disabled="agents.loading" @click="store.load('agents')">Retry</button></p>
+      <InlineNotification v-if="agents.error" :tone="agents.hasSnapshot ? 'warning' : 'error'"
+        :title="agents.hasSnapshot ? 'Could not refresh agents' : 'Could not load agents'"
+        :message="agents.hasSnapshot ? 'Showing the last successful agent choices.' : 'Check your connection and try again.'"
+        action-label="Retry" action-busy-label="Retrying…" :action-busy="agents.loading" @action="retryAgents" />
       <p v-else-if="!agents.hasSnapshot" role="status">Loading agents…</p>
       <p v-if="unavailableAgent" role="status">This agent is unavailable. Choose another agent or turn the assistant off.</p>
       <form @submit.prevent="saveAssistant">

@@ -104,6 +104,8 @@ const props = withDefaults(defineProps<{
   searchEmptyText?: string
   combinedFilterEmptyText?: string
   interactive?: boolean
+  /** Optionally exclude individual rows from row navigation; nested controls stay independent. */
+  rowInteractive?: (row: Record<string, unknown>) => boolean
   searchable?: boolean
   searchPlaceholder?: string
   searchKeys?: string[]
@@ -1103,8 +1105,12 @@ function isExplicitControlTarget(event: Event): boolean {
   return Boolean(control && control !== currentTarget)
 }
 
+function isRowInteractive(row: Record<string, unknown>): boolean {
+  return props.interactive && (props.rowInteractive?.(row) ?? true)
+}
+
 function onRowClick(row: Record<string, unknown>, event?: MouseEvent | KeyboardEvent) {
-  if (!props.interactive || (event && isExplicitControlTarget(event))) return
+  if (!isRowInteractive(row) || (event && isExplicitControlTarget(event))) return
   emit('rowClick', row)
 }
 
@@ -1113,7 +1119,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
     if (stepRowDisclosure(event.currentTarget as HTMLElement, event.key === 'ArrowRight' ? 1 : -1)) event.preventDefault()
     return
   }
-  if (!props.interactive || event.repeat || isExplicitControlTarget(event)) return
+  if (!isRowInteractive(row) || event.repeat || isExplicitControlTarget(event)) return
   if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return
   event.preventDefault()
   onRowClick(row, event)
@@ -1301,11 +1307,11 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
               <tr
                 class="stagger-item k-table__row"
                 :class="{
-                  'k-table__row--interactive': interactive,
+                  'k-table__row--interactive': isRowInteractive(row),
                   'k-table__row--selected': selectionSurfaceVisible && isRowSelected(row) && rowSelectionState(row).selectable,
                 }"
-                :tabindex="interactive ? 0 : undefined"
-                :aria-label="interactive ? rowAriaLabel(row, i) : undefined"
+                :tabindex="isRowInteractive(row) ? 0 : undefined"
+                :aria-label="isRowInteractive(row) ? rowAriaLabel(row, i) : undefined"
                 :style="{ animationDelay: `${i * 35}ms` }"
                 @click="onRowClick(row, $event)"
                 @focusin="syncRowPrimaryOverflow"

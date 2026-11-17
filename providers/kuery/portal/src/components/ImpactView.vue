@@ -181,7 +181,7 @@ onBeforeUnmount(() => { loadGeneration += 1; controller?.abort(); destroyGraph()
           <div ref="graphHost" class="kuery-graph" role="img" :aria-label="`Impact visualization for ${title}`" :aria-describedby="legendRelations.length ? 'impact-help impact-bounds impact-legend-title' : 'impact-help impact-bounds'" />
         </div>
         <div v-else-if="relations.length" class="kuery-impact-list">
-          <section v-for="[relation, related] in relations" :key="relation"><h2>{{ RELATION_LABELS[relation] || relation }} <span class="k-badge">{{ RELATION_DIR[relation] === 'up' ? 'impacts this object' : RELATION_DIR[relation] === 'down' ? 'impacted by this object' : RELATION_DIR[relation] === 'lateral' ? 'related' : 'direction unknown' }}</span></h2><ul><li v-for="row in related" :key="row.id || resourceLabel(row)"><button type="button" class="kuery-related" @click="emit('inspect', row)">{{ resourceLabel(row) }}</button></li></ul></section>
+          <section v-for="[relation, related] in relations" :key="relation"><h2>{{ RELATION_LABELS[relation] || relation }} <span class="k-badge k-badge--muted k-badge--label">{{ RELATION_DIR[relation] === 'up' ? 'impacts this object' : RELATION_DIR[relation] === 'down' ? 'impacted by this object' : RELATION_DIR[relation] === 'lateral' ? 'related' : 'direction unknown' }}</span></h2><ul><li v-for="row in related" :key="row.id || resourceLabel(row)"><button type="button" class="kuery-related" @click="emit('inspect', row)">{{ resourceLabel(row) }}</button></li></ul></section>
         </div>
       </template>
     </ResourcePage>

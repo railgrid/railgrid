@@ -806,7 +806,7 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
             empty-text="No organizations found." @row-click="openOrganization"
           >
             <template #displayName="{ value, row }"><button type="button" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open metering for ${value}`" @click.stop="openOrganization(row)" @keydown.space.prevent.stop="openOrganization(row)">{{ value }}</button></template>
-            <template #planName="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
+            <template #planName="{ value }"><span class="k-badge k-badge--muted k-badge--label">{{ value }}</span></template>
             <template #stateText="{ row }"><StatusBadge :status="stateOf(row).status" :tone="stateOf(row).tone" :title="stateOf(row).title" /></template>
             <template #limits="{ row }"><MeteringUsageList variant="summary" :limits="limitsOf(row)" :usage="usageOf(row)" :window="windowOf(row)" /></template>
           </ResourceTable>
@@ -873,7 +873,7 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
           <ResourceTable :columns="c.columns" :rows="tableRows[c.key] ?? []" :aria-label="c.label" row-key="name" :interactive="true" :row-aria-label="(row: Row) => `View ${rowLabel(c, row)}`" searchable :search-placeholder="c.searchPlaceholder" :search-keys="c.searchKeys" paginated :loaded="loaded" :loading="loading" :refresh-mode="refreshMode" :empty-text="`No ${c.label.toLowerCase()}.`" @row-click="(row: Row) => openResource(c.key, row)">
             <template v-if="c.key !== 'meteringconfigs'" #displayName="{ value, row }"><button type="button" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open ${rowLabel(c, row)}`" @click.stop="openResource(c.key, row)" @keydown.space.prevent.stop="openResource(c.key, row)">{{ value }}</button></template>
             <template v-if="c.key === 'meteringconfigs'" #name="{ value, row }"><button type="button" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open ${rowLabel(c, row)}`" @click.stop="openResource(c.key, row)" @keydown.space.prevent.stop="openResource(c.key, row)">{{ value }}</button></template>
-            <template v-if="c.key === 'entitlements'" #plan="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
+            <template v-if="c.key === 'entitlements'" #plan="{ value }"><span class="k-badge k-badge--muted k-badge--label">{{ value }}</span></template>
             <template v-if="c.key === 'entitlements'" #limits="{ row }"><MeteringUsageList variant="summary" :limits="limitsOf(row)" :usage="usageOf(row)" :window="windowOf(row)" /></template>
             <template v-if="c.key === 'entitlements'" #state="{ row }"><StatusBadge :status="stateOf(row).status" :tone="stateOf(row).tone" :title="stateOf(row).title" /></template>
             <template v-if="c.key === 'accounts'" #usage="{ row }"><MeteringUsageList variant="summary" :usage="usageOf(row)" :window="windowOf(row)" /></template>
@@ -941,7 +941,7 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
       <ResourcePage :title="resourceTitle" :kind="selectedCollection?.noun || 'Metering resource'"
         :loaded="!!selectedResource" :loading="loading" :refresh-mode="refreshMode" :error="resourceReadError"
         :stale="!!selectedResource && !!resourceReadError" retryable @retry="refresh(true)">
-        <template #meta><span>Metering</span><template v-if="selectedCollectionKey === 'plans' && selectedResource"><span aria-hidden="true">·</span><span>{{ organizationsLoaded && !organizationError ? `${planCount(selectedResourceId)} ${planCount(selectedResourceId) === 1 ? 'organization' : 'organizations'}` : 'Organization count unavailable' }} · {{ planReferenceCount(selectedResourceId) }} {{ planReferenceCount(selectedResourceId) === 1 ? 'entitlement' : 'entitlements' }}</span><span v-if="selectedResourceId === status?.defaultPlan" class="k-badge k-badge--muted">Platform default</span></template></template>
+        <template #meta><span>Metering</span><template v-if="selectedCollectionKey === 'plans' && selectedResource"><span aria-hidden="true">·</span><span>{{ organizationsLoaded && !organizationError ? `${planCount(selectedResourceId)} ${planCount(selectedResourceId) === 1 ? 'organization' : 'organizations'}` : 'Organization count unavailable' }} · {{ planReferenceCount(selectedResourceId) }} {{ planReferenceCount(selectedResourceId) === 1 ? 'entitlement' : 'entitlements' }}</span><span v-if="selectedResourceId === status?.defaultPlan" class="k-badge k-badge--muted k-badge--label">Platform default</span></template></template>
         <template v-if="(selectedCollectionKey === 'plans' && isPlanArchived(selectedResource)) || (selectedCollectionKey === 'entitlements' && selectedResourceRow)" #status>
           <StatusBadge v-if="selectedCollectionKey === 'plans' && isPlanArchived(selectedResource)" status="Archived" tone="muted" />
           <StatusBadge v-else-if="selectedCollectionKey === 'entitlements' && selectedResourceRow" :status="stateOf(selectedResourceRow).status" :tone="stateOf(selectedResourceRow).tone" :title="stateOf(selectedResourceRow).title" />
@@ -1003,7 +1003,7 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
       <template #context><p class="mt-1 break-words text-sm font-medium">{{ orgLabel(assignment.name) }}</p><p class="mt-1 break-all font-mono text-[11px] text-text-muted">{{ assignment.name }}</p></template>
       <form id="metering-assignment-form" @submit.prevent="saveAssignment">
         <p v-if="actionError" class="mb-4 text-sm text-danger" role="alert">{{ actionError }}</p>
-        <div class="mb-5 flex flex-wrap items-center gap-3 text-xs"><span class="text-text-muted">Current plan</span><span class="k-badge k-badge--muted">{{ planLabel(String(selectedEntitlement?.spec?.plan ?? '')) }}</span><span class="text-text-muted">{{ sourceFor(orgs.find(o => o.name === assignment?.name)) }}</span></div>
+        <div class="mb-5 flex flex-wrap items-center gap-3 text-xs"><span class="text-text-muted">Current plan</span><span class="k-badge k-badge--muted k-badge--label">{{ planLabel(String(selectedEntitlement?.spec?.plan ?? '')) }}</span><span class="text-text-muted">{{ sourceFor(orgs.find(o => o.name === assignment?.name)) }}</span></div>
         <p v-if="selectedEntitlement?.metadata.labels?.['metering.railgrid.ai/plan-source'] === 'billing'" class="metering-message mb-4">Assigning a plan here replaces the subscription-managed plan with a platform-admin assignment.</p>
         <label for="metering-assignment-plan" class="mb-2 block text-xs font-medium">New plan</label>
         <select id="metering-assignment-plan" v-model="assignment.plan" data-initial-focus class="k-input w-full p-2.5 text-base sm:text-sm" :disabled="!!busy">

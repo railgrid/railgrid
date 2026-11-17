@@ -171,26 +171,76 @@ watch(
 const editingOrgName = ref(false)
 const orgNameDraft = ref('')
 const orgBusy = ref(false)
+const orgRenameGeneration = ref(0)
+const orgRenamePending = ref(false)
+const orgNameInput = ref<HTMLInputElement | null>(null)
+const orgRenameButton = ref<HTMLButtonElement | null>(null)
+const orgRenameEditor = ref<HTMLElement | null>(null)
+
+function trackRenameFocus(editor: HTMLElement | null): () => boolean {
+  if (!editor?.contains(document.activeElement)) return () => false
+  let movedOutside = false
+  const handleFocus = (event: FocusEvent) => {
+    if (event.target instanceof Node && event.target !== document.body && !editor.contains(event.target)) {
+      movedOutside = true
+    }
+  }
+  document.addEventListener('focusin', handleFocus)
+  return () => {
+    document.removeEventListener('focusin', handleFocus)
+    return !movedOutside && (document.activeElement === document.body || editor.contains(document.activeElement))
+  }
+}
+
+function cancelEditOrgName(): void {
+  if (orgBusy.value) return
+  orgRenameGeneration.value++
+  editingOrgName.value = false
+  nextTick(() => orgRenameButton.value?.focus())
+}
 
 function startEditOrgName(): void {
   const org = organizationSettingsOrg.value
   if (!org || !canEditOrg.value || orgMemberBulkLocked.value) return
+  orgRenameGeneration.value++
   orgNameDraft.value = org.displayName
   editingOrgName.value = true
+  nextTick(() => { orgNameInput.value?.focus(); orgNameInput.value?.select() })
 }
+
+watch([activeSection, () => tenant.orgUUID, () => tenant.workspaceMode, organizationTargetUUID], () => {
+  orgRenameGeneration.value++
+  editingOrgName.value = false
+  if (orgRenamePending.value) orgBusy.value = false
+  orgRenamePending.value = false
+}, { flush: 'sync' })
 
 async function saveOrgName(): Promise<void> {
   const target = organizationTargetUUID.value
-  if (!target || !canEditOrg.value || !orgNameDraft.value.trim() || orgMemberBulkLocked.value) return
+  if (!target || !canEditOrg.value || !orgNameDraft.value.trim() || orgMemberBulkLocked.value || orgBusy.value) return
+  const generation = orgRenameGeneration.value
+  const editor = orgRenameEditor.value
+  const finishTrackingFocus = trackRenameFocus(editor)
+  orgRenamePending.value = true
   orgBusy.value = true
   try {
     const ok = await tenant.patchOrgDisplayName(target, orgNameDraft.value.trim())
+    if (generation !== orgRenameGeneration.value || target !== organizationTargetUUID.value) return
     if (ok) {
       toast('ok', 'Organization renamed.')
       editingOrgName.value = false
     }
   } finally {
-    orgBusy.value = false
+    const restoreFocus = finishTrackingFocus()
+    if (generation === orgRenameGeneration.value && target === organizationTargetUUID.value) {
+      orgRenamePending.value = false
+      orgBusy.value = false
+      if (restoreFocus) void nextTick(() => {
+        if (generation === orgRenameGeneration.value && (document.activeElement === document.body || editor?.contains(document.activeElement))) {
+          (editingOrgName.value ? orgNameInput.value : orgRenameButton.value)?.focus()
+        }
+      })
+    }
   }
 }
 
@@ -1080,28 +1130,63 @@ watch(
 const editingWsName = ref(false)
 const wsNameDraft = ref('')
 const wsBusy = ref(false)
+const wsRenameGeneration = ref(0)
+const wsRenamePending = ref(false)
+const wsNameInput = ref<HTMLInputElement | null>(null)
+const wsRenameButton = ref<HTMLButtonElement | null>(null)
+const wsRenameEditor = ref<HTMLElement | null>(null)
+
+function cancelEditWsName() {
+  if (wsBusy.value) return
+  wsRenameGeneration.value++
+  editingWsName.value = false
+  nextTick(() => wsRenameButton.value?.focus())
+}
 const kubeconfigBusy = ref(false)
 
 function startEditWsName() {
   if (!selWs.value || !canEditWs.value) return
   // The default workspace has no display-name annotation, so the REST
   // projection omits the field — guard against undefined.
+  wsRenameGeneration.value++
   wsNameDraft.value = selWs.value.displayName ?? ''
   editingWsName.value = true
+  nextTick(() => { wsNameInput.value?.focus(); wsNameInput.value?.select() })
 }
+
+watch([activeSection, () => tenant.orgUUID, selectedWorkspaceUUID], () => {
+  wsRenameGeneration.value++
+  editingWsName.value = false
+  if (wsRenamePending.value) wsBusy.value = false
+  wsRenamePending.value = false
+}, { flush: 'sync' })
 
 async function saveWsName() {
   const target = selectedTarget()
-  if (!target || !canEditWs.value || !wsNameDraft.value.trim()) return
+  if (!target || !canEditWs.value || !wsNameDraft.value.trim() || wsBusy.value) return
+  const generation = wsRenameGeneration.value
+  const editor = wsRenameEditor.value
+  const finishTrackingFocus = trackRenameFocus(editor)
+  wsRenamePending.value = true
   wsBusy.value = true
   try {
     const ok = await tenant.patchWorkspaceDisplayName(target.org, target.ws, wsNameDraft.value.trim())
+    if (generation !== wsRenameGeneration.value || !isCurrentTarget(target)) return
     if (ok) {
       toast('ok', 'Workspace renamed.')
       editingWsName.value = false
     }
   } finally {
-    wsBusy.value = false
+    const restoreFocus = finishTrackingFocus()
+    if (generation === wsRenameGeneration.value && isCurrentTarget(target)) {
+      wsRenamePending.value = false
+      wsBusy.value = false
+      if (restoreFocus) void nextTick(() => {
+        if (generation === wsRenameGeneration.value && (document.activeElement === document.body || editor?.contains(document.activeElement))) {
+          (editingWsName.value ? wsNameInput.value : wsRenameButton.value)?.focus()
+        }
+      })
+    }
   }
 }
 
@@ -1502,6 +1587,8 @@ watch(
 
 onBeforeUnmount(() => {
   pageDisposed = true
+  orgRenameGeneration.value++
+  wsRenameGeneration.value++
   dismissToken()
   creationFeedbackGeneration++
   orgMemberBulkScopeGeneration.value++
@@ -2527,31 +2614,33 @@ watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organizatio
                     <span class="text-sm text-text-primary">{{ selWs.displayName || selWs.uuid }}</span>
                     <button
                       v-if="canEditWs"
+                      ref="wsRenameButton"
                       type="button"
                       class="k-btn k-btn--ghost min-h-11 px-2 text-[11px] text-text-muted hover:text-accent sm:min-h-0 sm:py-0.5"
                       @click="startEditWsName"
                     >
                       <Pencil class="h-3 w-3" :stroke-width="2" /> Rename Workspace
                     </button>
-                    <span v-else class="k-badge k-badge--muted" title="Workspace admins manage this setting">
-                      <span class="k-badge__dot k-badge__dot--muted" aria-hidden="true" />
+                    <span v-else class="k-badge k-badge--muted k-badge--label" title="Workspace admins manage this setting">
                       member
                     </span>
                   </div>
-                  <div v-else class="mt-1 flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <div v-else ref="wsRenameEditor" class="mt-1 flex flex-col gap-2 sm:flex-row sm:items-center">
                     <input
+                      ref="wsNameInput"
+                      :disabled="wsBusy"
                       v-model="wsNameDraft"
                       class="k-input min-h-11 min-w-0 flex-1 px-2 text-base sm:min-h-0 sm:py-1 sm:text-sm"
                       aria-label="Workspace display name"
-                      @keyup.enter="saveWsName"
-                      @keyup.esc="editingWsName = false"
+                      @keydown.enter="!$event.isComposing && $event.keyCode !== 229 && saveWsName()"
+                      @keydown.esc="!$event.isComposing && $event.keyCode !== 229 && cancelEditWsName()"
                     />
                     <div class="flex gap-2">
                       <button type="button" class="k-btn k-btn--primary min-h-11 px-3 text-[11px] sm:min-h-0 sm:py-1" :disabled="wsBusy || !wsNameDraft.trim()" @click="saveWsName">
                         <Loader2 v-if="wsBusy" class="h-3 w-3 animate-spin" :stroke-width="2" />
                         <Check v-else class="h-3 w-3" :stroke-width="2" /> Save name
                       </button>
-                      <button type="button" class="k-btn k-btn--ghost min-h-11 px-3 text-[11px] text-text-muted sm:min-h-0 sm:py-1" @click="editingWsName = false">Cancel</button>
+                      <button type="button" class="k-btn k-btn--ghost min-h-11 px-3 text-[11px] text-text-muted sm:min-h-0 sm:py-1" @click="cancelEditWsName" :disabled="wsBusy">Cancel</button>
                     </div>
                   </div>
                 </div>
@@ -2850,7 +2939,7 @@ watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organizatio
                     <span class="k-cell-mono">{{ row.uuid }}</span>
                   </template>
                   <template #role="{ row }">
-                    <span class="k-badge k-badge--muted">{{ row.role }}</span>
+                    <span class="k-badge k-badge--muted k-badge--label">{{ row.role }}</span>
                   </template>
                   <template #createdAt="{ row }">
                     <ResourceTimestamp :value="String(row.createdAt ?? '')" label="Service account created" />
@@ -2968,6 +3057,7 @@ watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organizatio
                 <span class="text-sm text-text-primary">{{ organizationSettingsOrg.displayName }}</span>
                 <button
                   v-if="canEditOrg"
+                  ref="orgRenameButton"
                   type="button"
                   class="k-btn k-btn--ghost px-2 py-0.5 text-[11px] text-text-muted transition-colors hover:text-accent disabled:opacity-50"
                   :disabled="!!organizationSettingsOrg.deletionRequestedAt || orgMemberBulkBusy"
@@ -2976,13 +3066,15 @@ watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organizatio
                   <Pencil class="inline h-3 w-3" :stroke-width="2" /> Rename
                 </button>
               </div>
-              <div v-else class="mt-1 flex flex-wrap items-center gap-2">
+              <div v-else ref="orgRenameEditor" class="mt-1 flex flex-wrap items-center gap-2">
                 <input
+                  ref="orgNameInput"
+                  :disabled="orgBusy"
                   v-model="orgNameDraft"
                   class="k-input min-w-[180px] flex-1 px-2 py-1 text-sm"
                   aria-label="Organization name"
-                  @keyup.enter="saveOrgName"
-                  @keyup.esc="editingOrgName = false"
+                  @keydown.enter="!$event.isComposing && $event.keyCode !== 229 && saveOrgName()"
+                  @keydown.esc="!$event.isComposing && $event.keyCode !== 229 && cancelEditOrgName()"
                 />
                 <button
                   type="button"
@@ -2996,7 +3088,8 @@ watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organizatio
                 <button
                   type="button"
                   class="k-btn k-btn--ghost px-2 py-1 text-[11px] text-text-muted hover:text-text-secondary"
-                  @click="editingOrgName = false"
+                  @click="cancelEditOrgName"
+                  :disabled="orgBusy"
                 >
                   Cancel
                 </button>
@@ -3146,7 +3239,7 @@ watch([canAddWsMembers, canAddOrgMembers, canCreateSA], ([workspace, organizatio
               </template>
               <template #name="{ row }">
                 <span>{{ row.name }}</span>
-                <span v-if="tenant.workspaceMode === 'workspace' && tenant.workspaceUUID === row.uuid" class="k-badge ml-2">Current workspace</span>
+                <span v-if="tenant.workspaceMode === 'workspace' && tenant.workspaceUUID === row.uuid" class="k-badge k-badge--muted k-badge--label ml-2">Current workspace</span>
               </template>
               <template #uuid="{ row }">
                 <span class="k-cell-mono">{{ row.uuid }}</span>
