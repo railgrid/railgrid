@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, nextTick, onMounted, onUnmounted, onActivated } from 'vue'
-import { ArrowRight, RefreshCw, Plus, ChevronRight, ChevronDown, Boxes, Server } from 'lucide-vue-next'
+import { computed, ref, nextTick, onMounted, onUnmounted, onActivated, useId } from 'vue'
+import { ArrowRight, RefreshCw, Plus, Boxes, Server } from 'lucide-vue-next'
 import { listWorkloads, listWorkloadsPage, deleteWorkload, listEdges, isContextChangedError } from './api'
 import type { Workload, Edge, ErrorResponse } from './types'
 import { confirmDialog } from './portalkit/confirm'
@@ -8,6 +8,7 @@ import { toast } from './portalkit/toast'
 import { portalHref } from './portalkit/navigation'
 import { edgeConnectPath, workloadDeployPath } from './routes'
 import ResourceTable from './portalkit/ResourceTable.vue'
+import ResourceTableExpandButton from './portalkit/ResourceTableExpandButton.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
@@ -135,6 +136,7 @@ const workloadFilters: TableFilterDefinition[] = [
 ]
 
 const expanded = ref<string | null>(null)
+const workloadDetailsPrefix = `edges-workload-details-${useId()}`
 function toggle(name: string) {
   expanded.value = expanded.value === name ? null : name
 }
@@ -517,15 +519,13 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       @row-click="(row) => toggle(String(row.name))"
     >
       <template #expand="{ row }">
-        <button
-          type="button"
-          class="k-table-action"
-          :aria-label="`Toggle workload ${String(row.name)}`"
-          :aria-expanded="expanded === row.name"
-          @click.stop="toggle(String(row.name))"
-        >
-          <component :is="expanded === row.name ? ChevronDown : ChevronRight" :size="14" aria-hidden="true" />
-        </button>
+        <ResourceTableExpandButton
+          :expanded="expanded === row.name"
+          :label="`Show details for workload ${String(row.name)}`"
+          :expanded-label="`Hide details for workload ${String(row.name)}`"
+          :controls="`${workloadDetailsPrefix}-${String(row.name)}`"
+          @click="toggle(String(row.name))"
+        />
       </template>
       <template #name="{ value }"><span class="name">{{ value }}</span></template>
       <template #image="{ value }"><span class="mono muted">{{ value }}</span></template>
@@ -535,8 +535,8 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       <template #ready="{ value }"><span class="mono">{{ value }}</span></template>
       <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete workload ${String(row.name)}`" :busy="deletingWorkload === row.name" :busy-label="`Deleting workload ${String(row.name)}…`" :disabled="!!deletingWorkload && deletingWorkload !== row.name" @click="onDelete(row as unknown as Workload)" /></div></template>
       <template #after-row="{ row, columnCount }">
-        <tr v-if="expanded === row.name" class="detail-row">
-          <td :colspan="columnCount">
+        <tr v-if="expanded === row.name" :id="`${workloadDetailsPrefix}-${String(row.name)}`" class="k-table__detail-row">
+          <td :colspan="columnCount" class="k-table__detail-cell">
             <div class="es-head">On each edge</div>
             <div class="muted es-target">
               Objects land in namespace <span class="mono">{{ row.namespace }}</span>

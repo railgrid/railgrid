@@ -339,8 +339,8 @@ watch(contextGeneration, () => {
     </div>
 
     <div v-if="isGitHub && !oauthAuthorized" class="k-create-surface k-create-surface--guided">
-      <div class="k-create-body k-create-body--guided">
-        <div class="k-create-fields">
+      <div class="k-create-body k-create-body--guided code-create-body">
+        <div class="k-create-fields code-create-fields">
           <span v-if="!oauthLoaded" class="muted" role="status" aria-live="polite">Checking GitHub sign-in…</span>
           <div v-else-if="oauthConfigError" class="error read-error" role="alert" aria-live="assertive">
             <span>GitHub sign-in configuration could not be loaded: {{ oauthConfigError }}</span>
@@ -365,8 +365,8 @@ watch(contextGeneration, () => {
     </div>
 
     <form v-if="method === 'token' || oauthAuthorized" class="k-create-surface k-create-surface--guided" :aria-busy="submitting" novalidate @submit.prevent="submit">
-      <div class="k-create-body k-create-body--guided">
-        <div class="k-create-fields">
+      <div class="k-create-body k-create-body--guided code-create-body">
+        <div class="k-create-fields code-create-fields">
           <p v-if="oauthAuthorized" class="muted" role="status">
             GitHub authorized<span v-if="oauthLogin"> as <code>{{ oauthLogin }}</code></span>.
           </p>
