@@ -1,4 +1,5 @@
 /* Activity composition. PortalKit owns tables, page chrome, badges and actions. */
+railgrid-provider-agents .agents-activity-tabs { margin-block-end: 16px; }
 railgrid-provider-agents .agents-run-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 railgrid-provider-agents .agents-run-preview { font-weight: 500; }
 railgrid-provider-agents .agents-run-secondary { color: var(--color-text-secondary); font-size: 11px; overflow-wrap: anywhere; }
