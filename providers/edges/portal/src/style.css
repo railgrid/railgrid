@@ -32,7 +32,7 @@ railgrid-provider-edges {
 railgrid-provider-edges .edges-app { display: flex; flex-direction: column; gap: 16px; font-size: 13px; }
 
 /* ── Header ── */
-railgrid-provider-edges .edges-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+railgrid-provider-edges .edges-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 railgrid-provider-edges .edges-header > :first-child { flex: 1 1 auto; min-width: 0; }
 railgrid-provider-edges .edges-header > :first-child > div { min-width: 0; }
 railgrid-provider-edges .edges-header h1 { font-size: 18px; font-weight: 600; margin: 0; color: var(--color-text-primary, #e9e9f2); }
@@ -168,7 +168,6 @@ railgrid-provider-edges .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 
 
 /* Expanded Workloads row: per-edge status as a flat list (no table-in-table). */
-railgrid-provider-edges tr.detail-row td { background: var(--color-surface-overlay, #171927); padding: 12px 20px; }
 railgrid-provider-edges .es-head { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--color-text-muted, #5d5f78); margin-bottom: 8px; }
 railgrid-provider-edges .es-list { display: flex; flex-direction: column; gap: 6px; }
 railgrid-provider-edges .es-item { display: flex; align-items: center; gap: 12px; font-size: 12px; }
