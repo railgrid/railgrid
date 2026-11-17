@@ -348,5 +348,48 @@ class GoRetryTests(unittest.TestCase):
         self.assertIn("failed after 3 attempts", stderr)
 
 
+class GoInstallTests(unittest.TestCase):
+    """Pinned tool installs recover from transient module-download failures."""
+
+    def run_install(self, fail_times):
+        with tempfile.TemporaryDirectory(prefix="go-install test ") as tmp:
+            root = Path(tmp)
+            calls = root / "calls"
+            binary_dir = root / "bin"
+            binary_dir.mkdir()
+            fake_go = binary_dir / "go"
+            fake_go.write_text(
+                '#!/bin/sh\n'
+                'if [ "$1" = "mod" ]; then exit 0; fi\n'
+                'printf "%s\\n" "${GODEBUG-<unset>}" >> "$CALLS"\n'
+                '[ "$(wc -l < "$CALLS")" -gt "$FAIL_TIMES" ] || exit 7\n'
+                'printf "#!/bin/sh\\nexit 0\\n" > "$GOBIN/test-tool"\n'
+                'chmod +x "$GOBIN/test-tool"\n'
+            )
+            fake_go.chmod(0o755)
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ("GODEBUG", "GO_BUILD_GODEBUG")}
+            env.update(PATH=str(binary_dir) + os.pathsep + env["PATH"],
+                       GOBIN=str(root / "tools"), CALLS=str(calls),
+                       FAIL_TIMES=str(fail_times), GO_RETRY_ATTEMPTS="3",
+                       GO_RETRY_BACKOFF_SECONDS="0")
+            result = subprocess.run(
+                ["bash", str(ROOT / "hack/go-install.sh"),
+                 "example.com/test-tool", "test-tool", "v1.2.3"],
+                env=env, capture_output=True, text=True, check=False,
+            )
+            tool = root / "tools/test-tool"
+            return (result.returncode, calls.read_text().splitlines(),
+                    tool.is_symlink(), (root / "tools/test-tool-v1.2.3").exists())
+
+    def test_retries_install_and_publishes_the_pinned_tool(self):
+        self.assertEqual(self.run_install(fail_times=1),
+                         (0, ["<unset>", "http2client=0"], True, True))
+
+    def test_failed_install_does_not_publish_a_tool(self):
+        self.assertEqual(self.run_install(fail_times=3),
+                         (7, ["<unset>", "http2client=0", "http2client=0"], False, False))
+
+
 if __name__ == "__main__":
     unittest.main()

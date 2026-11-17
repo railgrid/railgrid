@@ -274,3 +274,20 @@ ceilings are unchanged.
 After the independent follow-ups landed together, the project navigation build
 used 1,421,646 B raw and 397,413 B gzip. The combined total ceilings are
 1,425,000 B raw and 399,000 B gzip. The path-specific ceilings stay the same.
+
+### Page and total headroom
+
+Bundle budgets flag growth in download size and in the amount of JavaScript
+the browser may need to parse. The total budget also catches growth across
+lazy chunks and static assets. The previous total ceiling left only 13 B of
+gzip margin on the merged build. The fixed page and total ceilings below leave
+about 13–15% room above the measured sizes for feature growth and build output
+variation. Bootstrap, dashboard, and authentication settings keep their own
+limits.
+
+| Scope | Measured raw / gzip | Raw / gzip limit | Raw / gzip headroom |
+| --- | ---: | ---: | ---: |
+| Page | 1,206,413 / 330,925 B | 1,380,000 / 380,000 B | 173,587 / 49,075 B |
+| Total assets | 1,425,152 / 398,987 B | 1,600,000 / 450,000 B | 174,848 / 51,013 B |
+
+Measurements use the production build with Node 22.23.5.

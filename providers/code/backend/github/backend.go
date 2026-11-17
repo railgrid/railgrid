@@ -156,7 +156,7 @@ func (b *Backend) EnsureRepository(ctx context.Context, conn *codev1alpha1.Conne
 	if repo.Status.RepoID != "" {
 		return backend.RepositoryResult{}, backend.ErrRepositoryIdentityConflict
 	}
-	if repo.Annotations["code.railgrid.ai/existing-only"] == "true" {
+	if repo.RetainsRemote() {
 		return backend.RepositoryResult{}, errors.New("github: registered repository is unavailable; existing-only registration cannot create it")
 	}
 
@@ -205,7 +205,7 @@ func (b *Backend) EnsureRepository(ctx context.Context, conn *codev1alpha1.Conne
 
 // DeleteRepository removes the repository. Idempotent: a missing repo is success.
 func (b *Backend) DeleteRepository(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository) error {
-	if repo.Annotations["code.railgrid.ai/existing-only"] == "true" {
+	if repo.RetainsRemote() {
 		return nil
 	}
 	c, err := b.client(ctx, cred, conn.Spec.BaseURL)

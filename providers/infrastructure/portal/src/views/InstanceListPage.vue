@@ -61,11 +61,6 @@ watch(() => firstRun.value && !!error.value, visible => {
   if (visible || typeof document === 'undefined' || !firstRunWarning.value?.contains(document.activeElement)) return
   void nextTick(() => { if (document.activeElement === document.body) pageHeading.value?.focus({ preventScroll: true }) })
 }, { flush: 'pre' })
-const firstRunSteps = [
-  { label: 'Choose a template', description: 'Browse the infrastructure templates available in this workspace.' },
-  { label: 'Configure your instance', description: 'Name the instance and set the template inputs.' },
-  { label: 'Follow provisioning', description: 'The instance page shows progress and the resources it creates.' },
-]
 const cursor = ref<string | null>(null)
 const pageInfo = ref<{ hasNext: boolean; nextCursor: string | null } | null>(null)
 // Client mode becomes a ready local authority after a complete cursor walk (or
@@ -497,8 +492,7 @@ onUnmounted(() => {
         title="Provision your first instance"
         description="Infrastructure templates create and manage resources for this workspace. Choose a template to get started."
         primary-label="Browse templates"
-        :steps="firstRunSteps"
-        journey-label="Infrastructure provisioning"
+        :steps="[]"
       >
         <template #icon><Package :size="24" :stroke-width="1.5" aria-hidden="true" /></template>
         <template #actions><a class="k-btn k-btn--primary" :href="portalHref('/ui/providers/infrastructure/templates')" @click="followCatalogLink">Browse templates <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>

@@ -845,8 +845,8 @@ describe('route-owned collection affordances', () => {
     toolsetsStore.toolsets.hasSnapshot = true
     const toolsets = await mount<Toolsets>('agents-toolsets', { store: toolsetsStore, api, routeOwned: true })
     expect(toolsets.querySelector('.k-first-run')).not.toBeNull()
-    expect([...toolsets.querySelectorAll('.k-first-run__step-status')].map(step => step.textContent?.trim()))
-      .toEqual(['Current step:', 'Upcoming step:', 'Upcoming step:'])
+    expect(toolsets.querySelector('.k-first-run--simple')).not.toBeNull()
+    expect(toolsets.querySelector('.k-first-run__journey')).toBeNull()
   })
 
   it('keeps core and edge-only toolset creation available when there are no connections', async () => {

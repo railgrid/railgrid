@@ -252,7 +252,13 @@ Removed outright: `/api/*` CRUD (use kubectl), `/api/whoami`,
   session, repository, callback or model override, and `idempotencyKey` is
   required. Both need consent (`consentAccepted: true`): each run spends the
   agent's model budget, and its answer can carry anything the agent's tools
-  returned. `task` is at most 65,536 characters. `get-run` reads only API
+  returned. The run spends the agent's configured models under the same
+  delegation as a Schedule run: any caller with RBAC on `agents/start-run`
+  needs no `use` on the agent's `modelproviderconnections` (the `run` verb
+  still does), and the delegation is recorded on the run, so an inbox
+  approval resumes it without asking the approver. Consent is App Studio's
+  grant step, not checked by Agents. `task` is at most
+  65,536 characters. `get-run` reads only API
   runs of this incarnation of the addressed agent (a chat, scheduled or
   triggered run, or one of an earlier same-named agent, is `run_not_found`)
   and returns the validated document inline as `structuredResult.value`.

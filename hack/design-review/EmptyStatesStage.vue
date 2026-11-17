@@ -15,16 +15,11 @@ async function retry() {
 }
 const columns = [{ key: 'name', label: 'Service', primary: true }, { key: 'edge', label: 'Edge' }]
 const rows = [{ name: 'home-assistant', edge: 'home-server' }, { name: 'sonarr', edge: 'media-server' }]
-const steps = [
-  { label: 'Edge', description: 'Connect the cluster or server that can reach the service.' },
-  { label: 'Service endpoint', description: 'Choose its type, address, protocol, and port.' },
-  { label: 'Credentials and Ready', description: 'Add credentials when required and let the controller verify it.' },
-]
 </script>
 
 <template>
   <div class="spec-stack empty-review">
-    <p class="spec-note">First-use anatomy: an optional icon, title and explanation, clear primary action, and an optional prerequisite journey. These examples use synthetic data; no resources are created.</p>
+    <p class="spec-note">First-use anatomy: an optional icon, title and explanation, and a clear primary action. These examples use synthetic data; no resources are created.</p>
     <div class="spec-row">
       <a class="review-source-link" href="http://127.0.0.1:5198/?provider=app&amp;route=~models">App Studio Models</a>
       <a class="review-source-link" href="http://127.0.0.1:5198/?provider=agents&amp;scenario=first-model&amp;route=%23%2Fmodels">Agents Models</a>
@@ -38,8 +33,8 @@ const steps = [
     </section>
 
     <section class="empty-review__case" aria-labelledby="prerequisite-title">
-      <div><h3 id="prerequisite-title">Prerequisite needed</h3><p class="spec-note">A guided path when another step must happen first.</p></div>
-      <FirstRunGuide title="Connect an edge first" description="A Service must run beside an edge before Railgrid can expose its endpoint and tools." primary-label="Connect edge" :steps="steps" journey-label="Service setup path" @primary="notice = 'Connect edge selected in the fixture.'"><template #icon><Server aria-hidden="true" /></template></FirstRunGuide>
+      <div><h3 id="prerequisite-title">Prerequisite needed</h3><p class="spec-note">The action connects the required resource.</p></div>
+      <FirstRunGuide title="Connect an edge first" description="A Service must run beside an edge before Railgrid can expose its endpoint and tools." primary-label="Connect edge" :steps="[]" @primary="notice = 'Connect edge selected in the fixture.'"><template #icon><Server aria-hidden="true" /></template></FirstRunGuide>
     </section>
 
     <section class="empty-review__case" aria-labelledby="no-results-title">

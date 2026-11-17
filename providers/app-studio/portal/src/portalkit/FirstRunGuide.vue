@@ -52,7 +52,7 @@ const boundedCurrentStep = computed(() => props.complete ? props.steps.length : 
       <span v-if="$slots.icon || steps.length" class="k-first-run__icon" aria-hidden="true"><slot name="icon" /></span>
       <div class="k-first-run__copy">
         <h3 :id="titleID">{{ title }}</h3>
-        <p>{{ description }}</p>
+        <p v-if="description">{{ description }}</p>
         <slot name="details" />
       </div>
       <div v-if="actionsVisible" class="k-first-run__actions">

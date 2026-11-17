@@ -184,6 +184,10 @@ var agentsSchema = []string{
 	// The JSON Schema a caller asked a run's final answer to match. Part of
 	// the request, so it is written at admission and never rewritten.
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS result_schema JSONB`,
+	// A run admitted under an automation grant (start-run/v1) spends the
+	// agent's configured models without asking an attending caller. Decided
+	// at admission and never cleared, so every resume path sees it.
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS model_use_delegated BOOLEAN NOT NULL DEFAULT false`,
 	// Retain only the non-secret coordinates needed for post-terminal runner
 	// cleanup observation after the resumable checkpoint has been cleared.
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS runner_cleanup_binding JSONB`,
@@ -1164,8 +1168,8 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 		INSERT INTO agents_runs
 			(id, org_uuid, workspace_uuid, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt,
 			 input, output, sources, idempotency_key, delivery, message, checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
-				backend, attempt_id, harness_session_id, repository, result, structured_result, invocation_fingerprint, invocation_agent_uid, invocation_prevented, retries, retry_at, harness_settings, model_settings, execution_owner, execution_lease_at, execution_epoch, agent_uid, recovery_identity, limits, usage_completeness, cost_basis, runner_cleanup_binding, result_schema)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47)
+				backend, attempt_id, harness_session_id, repository, result, structured_result, invocation_fingerprint, invocation_agent_uid, invocation_prevented, retries, retry_at, harness_settings, model_settings, execution_owner, execution_lease_at, execution_epoch, agent_uid, recovery_identity, limits, usage_completeness, cost_basis, runner_cleanup_binding, result_schema, model_use_delegated)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48)
 		ON CONFLICT (id) DO UPDATE SET
 			phase=EXCLUDED.phase, attempt=GREATEST(agents_runs.attempt,EXCLUDED.attempt), message=EXCLUDED.message,
 			retries=EXCLUDED.retries, retry_at=EXCLUDED.retry_at,
@@ -1184,13 +1188,14 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 			model_settings=COALESCE(agents_runs.model_settings, EXCLUDED.model_settings),
 			limits=COALESCE(agents_runs.limits, EXCLUDED.limits),
 			result_schema=COALESCE(agents_runs.result_schema, EXCLUDED.result_schema),
+			model_use_delegated=agents_runs.model_use_delegated OR EXCLUDED.model_use_delegated,
 			runner_cleanup_binding=COALESCE(EXCLUDED.runner_cleanup_binding, agents_runs.runner_cleanup_binding),
 			usage_completeness=EXCLUDED.usage_completeness, cost_basis=EXCLUDED.cost_basis`,
 		run.ID, scope.OrgUUID, scope.WorkspaceUUID, run.AgentName, run.SessionID, run.Trigger, run.ParentRunID,
 		string(run.Phase), run.Attempt, run.Input, run.Output, sources, run.IdempotencyKey, delivery, run.Message, nullBytes(run.Checkpoint),
 		run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), nullInt64(run.WorkedDurationMS),
-		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, structuredResult, run.InvocationFingerprint, run.InvocationAgentUID, run.InvocationPrevented, run.Retries, nullTime(run.RetryAt), harnessSettings, modelSettings, run.ExecutionOwner, executionLeaseAt, run.ExecutionEpoch, run.AgentUID, string(run.RecoveryIdentity), limits, run.UsageCompleteness, run.CostBasis, runnerCleanupBinding, resultSchema)
+		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, structuredResult, run.InvocationFingerprint, run.InvocationAgentUID, run.InvocationPrevented, run.Retries, nullTime(run.RetryAt), harnessSettings, modelSettings, run.ExecutionOwner, executionLeaseAt, run.ExecutionEpoch, run.AgentUID, string(run.RecoveryIdentity), limits, run.UsageCompleteness, run.CostBasis, runnerCleanupBinding, resultSchema, run.ModelUseDelegated)
 	if err != nil {
 		return err
 	}
@@ -1201,7 +1206,7 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 // change cannot drift one query out of step with scanRun.
 const runColumns = `id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, output, sources, idempotency_key, delivery, message,
 		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
-		       cancel_requested, cancel_requested_at, cancel_requested_by, backend, attempt_id, harness_session_id, repository, result, structured_result, invocation_fingerprint, invocation_agent_uid, invocation_prevented, retries, retry_at, harness_settings, model_settings, execution_owner, execution_lease_at, execution_epoch, agent_uid, recovery_identity, limits, usage_completeness, cost_basis, runner_cleanup_binding, result_schema`
+		       cancel_requested, cancel_requested_at, cancel_requested_by, backend, attempt_id, harness_session_id, repository, result, structured_result, invocation_fingerprint, invocation_agent_uid, invocation_prevented, retries, retry_at, harness_settings, model_settings, execution_owner, execution_lease_at, execution_epoch, agent_uid, recovery_identity, limits, usage_completeness, cost_basis, runner_cleanup_binding, result_schema, model_use_delegated`
 
 func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run, error) {
 	scope = p.normalizeScope(ctx, scope)
@@ -1713,7 +1718,7 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 		&run.Input, &run.Output, &sources, &run.IdempotencyKey, &delivery, &run.Message, &checkpoint, &run.InputTokens, &run.OutputTokens, &run.USDMicros,
 		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked, &run.CancelRequested, &cancelAt, &run.CancelRequestedBy,
 		&run.Backend, &run.AttemptID, &run.HarnessSessionID, &repository, &result, &structuredResult, &run.InvocationFingerprint, &run.InvocationAgentUID, &run.InvocationPrevented, &run.Retries, &retryAt, &harnessSettings, &modelSettings, &run.ExecutionOwner, &executionLeaseAt, &run.ExecutionEpoch, &run.AgentUID, &run.RecoveryIdentity,
-		&limits, &run.UsageCompleteness, &run.CostBasis, &runnerCleanupBinding, &resultSchema)
+		&limits, &run.UsageCompleteness, &run.CostBasis, &runnerCleanupBinding, &resultSchema, &run.ModelUseDelegated)
 	if err := r.Scan(dest...); err != nil {
 		return Run{}, err
 	}

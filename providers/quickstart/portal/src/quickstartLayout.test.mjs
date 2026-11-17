@@ -12,7 +12,7 @@ test('Quickstart keeps greeting creation on its own route using the canonical sk
   assert.match(source, /k-create-header/)
   assert.match(source, /k-create-actions[\s\S]*data-cancel[\s\S]*Create greeting/)
   assert.match(source, /data-create[\s\S]*New greeting/)
-  assert.match(source, /k-first-run__journey/)
+  assert.match(source, /k-first-run k-first-run--simple/)
   assert.match(source, /_navigate\('create\/greeting'\)/)
 })
 

@@ -114,6 +114,20 @@ railgrid-provider-code .code-create__back:hover {
 railgrid-provider-code .code-create__back:active { transform: none; }
 railgrid-provider-code .code-create__back svg { flex: none; }
 railgrid-provider-code .code-create-panel { max-width: 42rem; }
+/* Code's connection and repository forms are simple tasks. Keep their field
+ * track readable while the contextual rail uses the remaining wide surface. */
+railgrid-provider-code .code-create-body {
+  grid-template-columns: minmax(0, 42rem) minmax(17.5rem, 1fr);
+}
+railgrid-provider-code .code-create-fields {
+  width: 100%;
+  max-width: 42rem;
+}
+@container k-create-surface (max-width: 960px) {
+  railgrid-provider-code .code-create-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 railgrid-provider-code .code-row-actions {
   align-items: center;
   display: flex;

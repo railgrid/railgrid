@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.copy-control","title":"Copy control","kind":"component","status":"draft","authority":{"design":"informative","implementation":"reference"},"implementation":{"state":"partial","notes":"The cited implementation is evidence for this review; product-wide adoption has not been audited."},"appliesTo":["portal","provider-portals"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/copy-control.md","role":"design"},{"path":"providers/agents/portal/src/views/RunDetail.vue","role":"implementation"}],"verification":{"state":"unverified","checks":[{"kind":"review","ref":"Copy control design and product adoption audit","status":"pending"}]},"relatedDocuments":[{"id":"design.accessibility.interaction","relation":"see-also"},{"id":"design.foundations.recipes","relation":"see-also"}]}
+{"schema":1,"id":"design.components.copy-control","title":"Copy control","kind":"component","status":"draft","authority":{"design":"informative","implementation":"canonical"},"implementation":{"state":"partial","notes":"Shared useClipboardFeedback owns scoped asynchronous copy feedback; CLI setup, MCP setup and the account menu adopt it. Other cited views retain local presentation and lifecycle code."},"appliesTo":["portal","provider-portals"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/copy-control.md","role":"design"},{"path":"providers/agents/portal/src/views/RunDetail.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/useClipboardFeedback.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/clipboard-feedback.test.mjs","role":"reference"}],"verification":{"state":"partial","checks":[{"kind":"review","ref":"Copy control design and product adoption audit","status":"pending"},{"kind":"test","ref":"provider-sdk/portalkit-vue/clipboard-feedback.test.mjs","status":"passing","evidence":"Lifecycle tests cover pending-write guards, retained per-field errors, scope changes, obsolete completions, timers, disposal and unavailable clipboard. Browser evidence is recorded separately."}]},"relatedDocuments":[{"id":"design.accessibility.interaction","relation":"see-also"},{"id":"design.foundations.recipes","relation":"see-also"}]}
 ---
 
 # Copy control
@@ -28,6 +28,26 @@ For a masked one-time value, the displayed placeholder is not the copy source.
 ## Behavior
 
 Copy only the intended value; reset transient success and retain an error until the user can recover. Keep non-secret values selectable for manual copying. For a masked one-time credential or URL, keep it masked by default. Offer retry, or an explicit reveal followed by manual copying where that is supported; never suggest selecting the masked placeholder.
+
+### Scoped copy feedback
+
+Vue consumers can use `useClipboardFeedback` from PortalKit for the asynchronous
+feedback lifecycle. Supply a reactive scope that changes whenever the copied
+value or its owning context changes. The helper prevents duplicate pending
+writes, ignores obsolete completions, preserves each field's error during
+retry, and clears only that field's error on success. Success lasts briefly;
+changing scope or disposing the view clears feedback and timers. It never
+stores clipboard contents or includes exception details in feedback.
+
+Consumers own accessible action names, a polite success announcement, local
+`InlineNotification` errors, and pending semantics. Keep pending controls
+focusable with `aria-disabled` and `aria-busy`; the helper also guards repeated
+activation. CLI installation/login/verification, MCP endpoint/client setup and account
+identity copy use this contract. A selected method or client change cannot mark its new
+snippet as copied by an older request. Closing the account menu invalidates
+pending identity feedback, so reopening cannot show an obsolete result.
+Provider-specific copy surfaces have
+not all migrated.
 
 ### One-time credential handoff
 

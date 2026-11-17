@@ -706,12 +706,15 @@ onUnmounted(() => {
                 </div>
 
                 <!-- Join instructions are intentionally collapsed so the credential is not the default read. -->
-                <details v-if="!edge.connected && edge.joinToken" class="edge-disclosure">
-                  <summary>
-                    <span>Connect the agent</span>
-                    <span class="edge-disclosure__hint">Show join command</span>
+                <details v-if="!edge.connected && edge.joinToken" class="k-resource-technical">
+                  <summary class="k-resource-technical__summary">
+                    <span class="k-resource-technical__summary-copy">
+                      <span class="k-resource-technical__summary-label">Connect the agent</span>
+                      <span class="k-resource-technical__summary-context">Show join command</span>
+                    </span>
+                    <ChevronDown class="k-resource-technical__chevron" :size="16" aria-hidden="true" />
                   </summary>
-                  <div class="edge-disclosure__body">
+                  <div class="k-resource-technical__body edge-disclosure__body">
                     <p class="muted">This edge is waiting for its agent. Run on the target {{ type === 'kubernetes' ? 'cluster' : `${edgeTypeLabel} host` }}:</p>
                     <div class="snippet">
                       <div class="snippet-head"><span>railgrid agent join</span>
@@ -732,12 +735,15 @@ onUnmounted(() => {
                 </details>
 
                 <!-- Kubernetes: how to connect to the cluster. -->
-                <details v-if="type === 'kubernetes' && edge.connected" class="edge-disclosure">
-                  <summary>
-                    <span>Connect to this cluster</span>
-                    <span class="edge-disclosure__hint">Show kubectl command</span>
+                <details v-if="type === 'kubernetes' && edge.connected" class="k-resource-technical">
+                  <summary class="k-resource-technical__summary">
+                    <span class="k-resource-technical__summary-copy">
+                      <span class="k-resource-technical__summary-label">Connect to this cluster</span>
+                      <span class="k-resource-technical__summary-context">Show kubectl command</span>
+                    </span>
+                    <ChevronDown class="k-resource-technical__chevron" :size="16" aria-hidden="true" />
                   </summary>
-                  <div class="edge-disclosure__body">
+                  <div class="k-resource-technical__body edge-disclosure__body">
                     <p class="muted">Download a kubeconfig scoped to this edge and use kubectl through the hub tunnel:</p>
                     <div class="snippet">
                       <div class="snippet-head"><span>kubectl</span>
@@ -759,12 +765,15 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                 </details>
 
                 <!-- Server: SSH command + interactive terminal. -->
-                <details v-if="type === 'server' && edge.connected" class="edge-disclosure">
-                  <summary>
-                    <span>SSH access</span>
-                    <span class="edge-disclosure__hint">Show SSH command</span>
+                <details v-if="type === 'server' && edge.connected" class="k-resource-technical">
+                  <summary class="k-resource-technical__summary">
+                    <span class="k-resource-technical__summary-copy">
+                      <span class="k-resource-technical__summary-label">SSH access</span>
+                      <span class="k-resource-technical__summary-context">Show SSH command</span>
+                    </span>
+                    <ChevronDown class="k-resource-technical__chevron" :size="16" aria-hidden="true" />
                   </summary>
-                  <div class="edge-disclosure__body">
+                  <div class="k-resource-technical__body edge-disclosure__body">
                     <p class="muted">Open an interactive shell in the browser, or SSH from your own terminal:</p>
                     <div class="snippet">
                       <div class="snippet-head"><span>railgrid ssh</span>

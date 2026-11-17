@@ -53,11 +53,12 @@ labels describe progress, rather than acting as navigation. Edges connection and
 Databricks import use this recipe; providers retain ownership of step state and
 route-specific layout.
 
-For an authoritative first-use empty collection, use `FirstRunGuide.vue` (or
-matching vanilla `k-first-run*` markup). It explains the value, offers the
-immediate primary action, and shows the shortest meaningful journey. Missing
-prerequisites change the current step and action rather than leaving an inert
-empty table.
+For an authoritative empty resource collection, use the centered
+`FirstRunGuide.vue` with `:steps="[]"` (or matching vanilla
+`k-first-run--simple` markup). Explain the value and offer the immediate
+primary action when available. If a prerequisite is missing, explain it and
+offer the action that fulfills it. Multi-step creation flows show their
+progress after the user starts the flow.
 
 Agents connection creation uses the shared stepper for **Type → Configure →
 Review**. Type selection retains the existing typed creation route. Returning to Type and

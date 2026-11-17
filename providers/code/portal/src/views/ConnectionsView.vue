@@ -2,7 +2,7 @@
 import { ArrowRight, Link2 } from 'lucide-vue-next'
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
-import { CODE_JOURNEY_STEPS, codeFirstRunModel } from '../journey'
+import { codeFirstRunModel } from '../journey'
 import type { Connection, ErrorResponse } from '../types'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import InlineNotification from '../portalkit/InlineNotification.vue'
@@ -252,9 +252,7 @@ onUnmounted(() => {
       :description="firstRun.description"
       :primary-label="firstRun.primary.label"
       :secondary-label="firstRun.secondary?.label"
-      :steps="CODE_JOURNEY_STEPS"
-      :current-step="firstRun.currentStep"
-      journey-label="Code setup path"
+      :steps="[]"
     >
       <template #icon><Link2 :stroke-width="1.5" /></template>
       <template #actions>

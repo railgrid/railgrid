@@ -137,7 +137,7 @@ export function reviewCatalog({ manifestCode = read('hack/sync-portalkit.sh') } 
   const manifest = 'hack/sync-portalkit.sh'
   const distribution = [
     ['TS_FILES', 'portalkit'], ['VUE_SHARED_FILES', 'portalkit'], ['VUE_FILES', 'portalkit-vue'],
-    ['VUE_TOAST_FILES', 'portalkit-vue'], ['AGENTS_LEGACY_FILES', 'portalkit'],
+    ['VUE_TOAST_FILES', 'portalkit-vue'], ['VUE_LEGACY_FILES', 'portalkit'],
     ['AGENTKIT_FILES', 'agentkit'], ['AGENTKIT_VUE_FILES', 'agentkit-vue'],
   ]
   const assets = new Map()

@@ -462,6 +462,7 @@ describe('agent resource detail conformance', () => {
       ['H3', 'Needs your attention (1)'],
       ['H4', 'Allow this action?'],
       ['H3', 'Run history'],
+      ['H3', 'No runs yet. Chat with an agent or fire a schedule to see one here.'],
     ])
   })
 

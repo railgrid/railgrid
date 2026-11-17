@@ -19,6 +19,7 @@ const props = withDefaults(defineProps<{
   variant?: 'catalog' | 'workbench'
   title?: string
   emptyText?: string
+  incomplete?: boolean
 }>(), {
   query: '',
   selectedID: '',
@@ -29,6 +30,7 @@ const props = withDefaults(defineProps<{
   showStatus: true,
   title: 'Installed',
   emptyText: 'No skills are available yet.',
+  incomplete: false,
 })
 
 const emit = defineEmits<{
@@ -43,6 +45,15 @@ const filteredSkills = computed(() => filterAssistantSkills(props.skills, props.
 const displayQuery = computed(() => {
   const characters = Array.from(props.query.trim())
   return characters.length > 80 ? `${characters.slice(0, 80).join('')}…` : characters.join('')
+})
+const countText = computed(() => {
+  if (props.incomplete) return `${filteredSkills.value.length} ${props.query.trim() ? 'shown' : 'listed'}`
+  return `${filteredSkills.value.length} skill${filteredSkills.value.length === 1 ? '' : 's'}`
+})
+const emptyMessage = computed(() => {
+  if (!props.incomplete) return props.emptyText
+  if (props.query.trim()) return `No listed skills match “${displayQuery.value}”. Clear the search to review listed skills.`
+  return 'No skills were listed in this response. Review the warnings or retry.'
 })
 </script>
 
@@ -74,7 +85,7 @@ const displayQuery = computed(() => {
     <div class="k-ai-skill-catalog__region" :aria-busy="loading ? 'true' : undefined">
       <div class="flex items-center justify-between border-b border-border-subtle pb-2">
         <h3 class="text-[14px] font-semibold text-text-primary">{{ title }}</h3>
-        <span class="text-[11px] text-text-muted">{{ filteredSkills.length }} skill{{ filteredSkills.length === 1 ? '' : 's' }}</span>
+        <span class="text-[11px] text-text-muted">{{ countText }}</span>
       </div>
       <div v-if="loading && !skills.length" class="flex items-center gap-2 py-4 text-[12px] text-text-muted" :class="variant === 'catalog' ? 'mt-3 min-h-52 justify-center rounded-xl border border-dashed border-border-subtle' : ''" role="status">
         <Loader2 class="h-4 w-4 k-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
@@ -82,7 +93,7 @@ const displayQuery = computed(() => {
       </div>
       <div v-else-if="!filteredSkills.length" class="py-4 text-text-secondary" :class="variant === 'catalog' ? 'mt-3 flex min-h-52 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border-subtle px-5 text-center text-[13px] font-medium' : 'text-[12px]'" role="status">
         <Plug v-if="variant === 'catalog'" class="h-7 w-7 text-text-muted" :stroke-width="1.5" aria-hidden="true" />
-        <span class="skill-catalog-empty-text">{{ query.trim() ? `No skills match “${displayQuery}”. Clear the search to see all skills.` : emptyText }}</span>
+        <span class="skill-catalog-empty-text">{{ query.trim() && !incomplete ? `No skills match “${displayQuery}”. Clear the search to see all skills.` : emptyMessage }}</span>
       </div>
       <ul v-else :class="variant === 'workbench' ? 'divide-y divide-border-subtle border-b border-border-subtle' : 'skill-catalog-list mt-2 grid gap-x-4 gap-y-0.5'" aria-label="Installed skills">
         <li v-for="skill in filteredSkills" :key="skill.id" class="min-w-0">

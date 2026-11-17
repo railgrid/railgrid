@@ -30,7 +30,7 @@ the reconciler using that server's own identity).
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   Copy, Check, RefreshCw, Plug, Plus, ChevronRight, ChevronDown,
   Wrench, ArrowLeft, ShieldCheck, Loader2,
@@ -47,6 +47,8 @@ import ResourceSectionCard from '@/portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '@/portalkit/ResourceStatCards.vue'
 import StatusBadge from '@/portalkit/StatusBadge.vue'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
+import InlineNotification from '@/portalkit/InlineNotification.vue'
+import { useClipboardFeedback } from '@/portalkit/useClipboardFeedback'
 
 const { scopePath } = useScopedNavigation()
 
@@ -207,7 +209,6 @@ const connectLoading = ref(false)
 const connectError = ref<string | null>(null)
 const pendingDeletion = ref<string | null>(null)
 const mutationError = ref<string | null>(null)
-const copyError = ref<string | null>(null)
 const refreshMode = ref<'foreground' | 'background'>('foreground')
 let listRequestID = 0
 let connectRequestID = 0
@@ -297,7 +298,11 @@ watch(isCreate, (creating, wasCreating) => {
   }
 }, { immediate: true })
 
-const copiedField = ref<string | null>(null)
+const { copiedField, pendingField: copyPendingField, errors: copyErrors, copy: copyValue } = useClipboardFeedback(() => JSON.stringify([
+  orgUUID.value, workspaceUUID.value, selected.value, selectedClient.value,
+  selectedConnect.value?.endpointURL, selectedConnect.value?.token, selectedConnect.value?.tokenReady,
+]))
+const copyStatus = computed(() => copiedField.value === 'snippet' ? 'Setup snippet copied.' : copiedField.value === 'url' ? 'Endpoint copied.' : '')
 
 function setClientTabRef(client: Client, element: Element | null): void {
   if (element instanceof HTMLButtonElement) clientTabRefs.value[client] = element
@@ -329,18 +334,9 @@ function onClientTabKeydown(event: KeyboardEvent, client: Client): void {
 }
 
 async function copy(text: string, field: string) {
-  copiedField.value = null
-  copyError.value = null
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
-    await navigator.clipboard.writeText(text)
-    copiedField.value = field
-    setTimeout(() => (copiedField.value = null), 2000)
-  } catch {
-    copyError.value = field === 'snippet'
-      ? 'Could not copy the setup snippet. Allow clipboard access and try again.'
-      : 'Could not copy the endpoint. Allow clipboard access and try again.'
-  }
+  return copyValue(text, field, field === 'snippet'
+    ? 'Could not copy the setup snippet. Allow clipboard access and try again.'
+    : 'Could not copy the endpoint. Allow clipboard access and try again.')
 }
 
 function base(): string | null {
@@ -395,7 +391,6 @@ watch([orgUUID, workspaceUUID], () => {
   busy.value = false
   connect.value = {}
   connectError.value = null
-  copyError.value = null
   // The list is a tenant-owned snapshot too. Drop it before the replacement
   // read so a same-named server from the previous workspace is never shown.
   servers.value = []
@@ -408,9 +403,12 @@ watch([orgUUID, workspaceUUID], () => {
   void load()
 })
 
-function openDetail(row: Record<string, unknown>) {
+function detailLocation(row: Record<string, unknown>) {
   const name = (row._server as MCPServer).name
-  void router.push({ name: 'mcp-detail', params: { name } })
+  return { name: 'mcp-detail', params: { name } }
+}
+function openDetail(row: Record<string, unknown>) {
+  void router.push(detailLocation(row))
 }
 function onBackClick(event: MouseEvent, navigate: () => void): void {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
@@ -571,7 +569,6 @@ watch(selected, (name, previousName) => {
   connectRequestID += 1
   connect.value = {}
   connectError.value = null
-  copyError.value = null
   pendingDeletion.value = null
   mutationError.value = null
   resetToolInventory()
@@ -728,11 +725,11 @@ function clientTabID(client: Client): string {
           @row-click="openDetail"
         >
           <template #name="{ row }">
-            <button
+            <RouterLink
               class="k-btn k-btn--ghost k-table-resource-link"
-              type="button"
-              @click.stop="openDetail(row)"
-            >{{ (row as any).name }}</button>
+              :to="detailLocation(row)"
+              @click.stop
+            >{{ (row as any).name }}</RouterLink>
           </template>
           <template #displayName="{ value }">
             <span>{{ value }}</span>
@@ -834,16 +831,16 @@ function clientTabID(client: Client): string {
               <div class="grid min-w-0 gap-4">
                 <ResourceSectionCard id="mcp-connect" eyebrow="Connection" title="Connect an AI client" description="Use a client-specific setup snippet to connect to this workspace endpoint.">
                   <template v-if="selectedConnect">
+                    <p class="sr-only" role="status" aria-live="polite">{{ copyStatus }}</p>
                     <div class="flex min-w-0 items-center gap-2">
                       <code class="min-w-0 flex-1 truncate rounded-md bg-surface-overlay px-3 py-2 font-mono text-[12px] text-text-secondary">{{ selectedConnect.endpointURL }}</code>
-                      <button type="button" class="k-btn k-btn--ghost h-8 px-2.5 text-[12px]" @click="copy(selectedConnect.endpointURL, 'url')">
-                        <Check v-if="copiedField === 'url'" class="h-3.5 w-3.5 text-success" :stroke-width="2" />
-                        <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" /> Copy endpoint
+                      <button type="button" class="k-btn k-btn--ghost h-8 px-2.5 text-[12px]" :aria-disabled="copyPendingField !== null" :aria-busy="copyPendingField === 'url'" @click="copy(selectedConnect.endpointURL, 'url')">
+                        <Loader2 v-if="copyPendingField === 'url'" class="h-3.5 w-3.5 k-spin" :stroke-width="2" aria-hidden="true" />
+                        <Check v-else-if="copiedField === 'url'" class="h-3.5 w-3.5 text-success" :stroke-width="2" aria-hidden="true" />
+                        <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" /> Copy endpoint
                       </button>
                     </div>
-                    <div v-if="copyError" class="rounded-md border border-danger/30 bg-danger/5 p-3 text-[12px] text-danger" role="alert" aria-live="assertive">
-                      {{ copyError }}
-                    </div>
+                    <InlineNotification v-if="copyErrors.url" tone="error" :message="copyErrors.url" />
                     <div v-if="connectError" class="flex items-center justify-between gap-3 rounded-md border border-danger/30 bg-danger/5 p-3 text-[12px] text-danger" role="alert" aria-live="assertive">
                       <span>{{ connectError }}</span>
                       <button type="button" class="k-btn k-btn--ghost shrink-0 px-2 py-1 text-danger" :disabled="connectLoading" @click="loadConnect(selectedServer.name)">
@@ -886,13 +883,17 @@ function clientTabID(client: Client): string {
                             type="button"
                             class="k-btn k-btn--ghost h-8 px-2.5 text-[11px] disabled:opacity-40"
                             :disabled="!selectedConnect.tokenReady"
+                            :aria-disabled="copyPendingField !== null || !selectedConnect.tokenReady"
+                            :aria-busy="copyPendingField === 'snippet'"
                             @click="copySnippet"
                           >
-                            <Check v-if="copiedField === 'snippet'" class="h-3.5 w-3.5 text-success" :stroke-width="2" />
-                            <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" /> Copy setup snippet
+                            <Loader2 v-if="copyPendingField === 'snippet'" class="h-3.5 w-3.5 k-spin" :stroke-width="2" aria-hidden="true" />
+                            <Check v-else-if="copiedField === 'snippet'" class="h-3.5 w-3.5 text-success" :stroke-width="2" aria-hidden="true" />
+                            <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" /> Copy setup snippet
                           </button>
                         </div>
                         <pre class="block w-full min-w-0 max-w-full overflow-x-auto whitespace-pre rounded-b-md border border-border-subtle border-t-0 bg-surface-overlay p-3 font-mono text-[12px] leading-relaxed text-text-secondary"><code>{{ displaySnippet }}</code></pre>
+                        <InlineNotification v-if="copyErrors.snippet" tone="error" :message="copyErrors.snippet" class="mt-2" />
                       </div>
                     </div>
                     <p class="text-[11px] text-text-muted">Token is masked and injected only on copy. Keep it secret.</p>

@@ -51,6 +51,7 @@ Vue portals because the SFC kit owns those contracts there.
 | `LayoutSelector.vue` | [layout selector](layout-selector.md) |
 | `layoutPreference.ts` | [layout selector](layout-selector.md) |
 | `useAnchoredPopover.ts` | [dropdown and context menu](menu.md) |
+| `useClipboardFeedback.ts` | [copy control](copy-control.md) |
 | `ResourceBackLink.vue` | [resource back link](resource-back-link.md) |
 | `ResourceBoard.vue` | [resource board](resource-board.md) |
 | `ResourcePage.vue` | [resource page](resource-page.md) |

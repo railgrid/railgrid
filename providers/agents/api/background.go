@@ -935,6 +935,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	// resurrect a run the user already saw end.
 	var repository *repositoryAttempt
 	var resultSchema json.RawMessage
+	var modelUseDelegated bool
 	var modelSettings *store.ModelSettings
 	var harnessSettings *store.HarnessSettings
 	var storedRun *store.Run
@@ -958,6 +959,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		// starting a workspace turn in its place.
 		repository = repositoryAttemptFromStored(stored.Repository)
 		resultSchema = stored.ResultSchema
+		modelUseDelegated = stored.ModelUseDelegated
 		harnessSettings = stored.HarnessSettings
 		modelSettings = stored.ModelSettings
 		// A run picked up for the second time carries how many times it
@@ -976,15 +978,16 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		// Recorded on the run so a crash mid-flight can still be reported to
 		// whoever is waiting — the goroutine that knows this is the thing a
 		// restart destroys.
-		ReplyTarget:     job.ReplyTarget,
-		DeliveryKind:    string(job.Kind),
-		Repository:      repository,
-		ResultSchema:    resultSchema,
-		Limits:          runLimits,
-		HarnessSettings: harnessSettings,
-		ModelSettings:   modelSettings,
-		Retries:         retries,
-		MaxAttempts:     b.maxAttemptsFor(ctx, dyn, job),
+		ReplyTarget:       job.ReplyTarget,
+		DeliveryKind:      string(job.Kind),
+		Repository:        repository,
+		ResultSchema:      resultSchema,
+		ModelUseDelegated: modelUseDelegated,
+		Limits:            runLimits,
+		HarnessSettings:   harnessSettings,
+		ModelSettings:     modelSettings,
+		Retries:           retries,
+		MaxAttempts:       b.maxAttemptsFor(ctx, dyn, job),
 	}
 	// There is no user to act as here, so the run acts as the AGENT's own
 	// ServiceAccount through the virtual workspace.

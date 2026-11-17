@@ -167,6 +167,15 @@ terminal (`Succeeded`, `Failed`, `Aborted`) or `PendingApproval`.
   repository attempt, callback URL or model override. The run executes as
   the agent's own identity, as every unattended run does, so the grant
   authorizes starting it and lends the agent nothing of the caller's.
+- **The agent's models are delegated, not the caller's.** The run uses the
+  models configured on the agent (and on its configured `delegates`) under
+  the same delegation as a Schedule or Trigger run. Anyone authorized for
+  `agents/start-run` therefore needs no `use` on the agent's
+  `ModelProviderConnection`, so grant that subresource as you would Schedule
+  writes. The provider does not check consent; App Studio's grant flow does.
+  The delegation is recorded on the run, so it holds when an approval or a
+  recovery resumes it. The `run` verb, by contrast, still asks its caller for
+  `use`.
 - **`resultSchema`** makes the final answer one JSON document. The contract
   is appended to the task (so the transcript shows what was asked), a single
   outer Markdown code fence is tolerated, and the answer is validated when

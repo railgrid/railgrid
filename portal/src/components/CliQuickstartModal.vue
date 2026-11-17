@@ -1,16 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { X, Copy, Check, ExternalLink } from 'lucide-vue-next'
+import { useClipboardFeedback } from '@/portalkit/useClipboardFeedback'
+import InlineNotification from '@/portalkit/InlineNotification.vue'
+import { X, Copy, Check, Loader2, ExternalLink } from 'lucide-vue-next'
 
 const emit = defineEmits<{ close: [] }>()
 
 type Step = 'install' | 'login' | 'verify'
 
 const dialogRef = ref<HTMLDialogElement | null>(null)
-const copiedField = ref<Step | null>(null)
-const copyError = ref<Step | null>(null)
-let copyResetTimer: ReturnType<typeof setTimeout> | null = null
 
 function onKeydown(event: KeyboardEvent) {
   if (event.key !== 'Tab') return
@@ -36,7 +35,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   dialogRef.value?.close()
-  if (copyResetTimer) clearTimeout(copyResetTimer)
 })
 
 const auth = useAuthStore()
@@ -91,28 +89,20 @@ const steps = computed(() => [
   { id: 'verify', title: 'Verify access', command: verifySnippet.value },
 ] as const)
 
+const { copiedField, pendingField, errors: copyErrors, copy: copyValue } = useClipboardFeedback(() => method.value)
+const copyLabels: Record<Step, string> = {
+  install: 'Installation command',
+  login: 'Login command',
+  verify: 'Verification command',
+}
+const copyStatus = computed(() => copiedField.value ? `${copyLabels[copiedField.value as Step]} copied.` : '')
+
 function selectMethod(id: Method) {
-  if (method.value === id) return
   method.value = id
-  copiedField.value = null
-  copyError.value = null
 }
 
-async function copy(text: string, field: Step) {
-  copyError.value = null
-  const selectedMethod = method.value
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
-    await navigator.clipboard.writeText(text)
-    if (selectedMethod !== method.value) return
-    copiedField.value = field
-    if (copyResetTimer) clearTimeout(copyResetTimer)
-    copyResetTimer = setTimeout(() => {
-      if (copiedField.value === field) copiedField.value = null
-    }, 2000)
-  } catch {
-    if (selectedMethod === method.value) copyError.value = field
-  }
+function copy(text: string, field: Step) {
+  return copyValue(text, field, `Could not copy the ${copyLabels[field].toLowerCase()}. Select the command and copy it manually, or try again.`)
 }
 
 const releasesURL = 'https://github.com/railgrid/railgrid/releases/latest'
@@ -178,17 +168,17 @@ const releasesURL = 'https://github.com/railgrid/railgrid/releases/latest'
               <button
                 type="button"
                 class="k-btn k-btn--ghost cli-copy"
-                :aria-label="(copiedField === step.id ? 'Copied ' : 'Copy ') + step.id + ' command'"
+                :aria-label="(pendingField === step.id ? 'Copying ' : copiedField === step.id ? 'Copied ' : 'Copy ') + copyLabels[step.id].toLowerCase()"
+                :aria-disabled="pendingField !== null"
+                :aria-busy="pendingField === step.id"
                 @click="copy(step.command, step.id)"
               >
-                <component :is="copiedField === step.id ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
-                {{ copiedField === step.id ? 'Copied' : 'Copy' }}
+                <component :is="pendingField === step.id ? Loader2 : copiedField === step.id ? Check : Copy" class="h-3.5 w-3.5" :class="{ 'k-spin': pendingField === step.id }" :stroke-width="1.75" aria-hidden="true" />
+                {{ pendingField === step.id ? 'Copying…' : copiedField === step.id ? 'Copied' : 'Copy' }}
               </button>
             </div>
 
-            <p v-if="copyError === step.id" class="text-[13px] text-warning" role="status">
-              Copy failed. Select the command and copy it manually.
-            </p>
+            <InlineNotification v-if="copyErrors[step.id]" tone="error" :message="copyErrors[step.id]" />
 
             <a
               v-if="step.id === 'install' && method === 'binary'"
@@ -208,7 +198,7 @@ const releasesURL = 'https://github.com/railgrid/railgrid/releases/latest'
           </section>
         </div>
 
-        <p class="sr-only" role="status">{{ copiedField ? 'Copied ' + copiedField + ' command.' : '' }}</p>
+        <p class="sr-only" role="status" aria-live="polite">{{ copyStatus }}</p>
         <p v-if="auth.clusterName" class="mt-4 break-words border-t border-border-subtle pt-3 text-xs text-text-secondary">
           Logged in as <span class="font-mono">{{ auth.memberId || auth.user?.userId }}</span>
           · workspace <span class="font-mono">{{ auth.clusterName }}</span>

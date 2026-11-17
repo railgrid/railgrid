@@ -14,6 +14,129 @@ function deferred<T>() {
 }
 
 describe('Agent skill activation', () => {
+  it('keeps returned skills usable while a warning-bearing catalog is incomplete', async () => {
+    const api = stubApi({
+      getAgentSkillCatalog: async () => ({ skills: [skill], catalogDigest: '', warnings: ['skill source could not be listed'] }),
+    })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(AgentSkillActivation, { store, api, name: 'scout' })
+
+    try {
+      expect(text(view.element)).toContain('Catalog needs attention.')
+      expect(text(view.element)).toContain('Returned skills remain usable')
+      expect(text(view.element)).not.toContain('Available0')
+      const available = [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button).startsWith('Available'))
+      available!.click()
+      await settleVue()
+      expect(view.element.querySelector('button[aria-label="Enable Review for scout"]')).not.toBeNull()
+      expect(text(view.element)).not.toContain('No additional skills are available.')
+      expect(text(view.element)).toContain('skill source could not be listed')
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('keeps an absent enabled reference unresolved while the catalog has warnings', async () => {
+    const api = stubApi({ getAgentSkillCatalog: async () => ({ skills: [], catalogDigest: '', warnings: ['skill source could not be listed'] }) })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { skills: [{ name: 'workspace:possibly-unread' }] })]
+    const view = await mountVue(AgentSkillActivation, { store, api, name: 'scout' })
+
+    try {
+      expect(text(view.element)).toContain('Not listed in this catalog')
+      expect(text(view.element)).toContain('could not be verified because the catalog returned warnings')
+      expect(text(view.element)).not.toContain('This enabled reference is missing from the current catalog.')
+      expect([...view.element.querySelectorAll('button')].some(button => text(button).includes('Remove'))).toBe(false)
+      const available = [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button).startsWith('Available'))
+      available!.click()
+      await settleVue()
+      expect(text(view.element)).toContain('No skills were listed in this response. Review the warnings or retry.')
+      expect(text(view.element)).not.toContain('No additional skills are available.')
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('distinguishes no additional listed skills from an empty catalog when returned skills are already enabled', async () => {
+    const api = stubApi({ getAgentSkillCatalog: async () => ({ skills: [skill], catalogDigest: '', warnings: ['skill source could not be listed'] }) })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { skills: [{ name: skill.id }] })]
+    const view = await mountVue(AgentSkillActivation, { store, api, name: 'scout' })
+
+    try {
+      const available = [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button).startsWith('Available'))
+      available!.click()
+      await settleVue()
+      expect(text(view.element)).toContain('No additional skills were listed in this response.')
+      expect(text(view.element)).not.toContain('No skills were listed in this response.')
+      expect(text(view.element)).not.toContain('No additional skills are available.')
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('restores retry focus and marks a reference missing only after a clean catalog response', async () => {
+    const completed = deferred<{ skills: never[]; catalogDigest: string; warnings: string[] }>()
+    const getAgentSkillCatalog = vi.fn()
+      .mockResolvedValueOnce({ skills: [], catalogDigest: '', warnings: ['skill source could not be listed'] })
+      .mockImplementationOnce(() => completed.promise)
+    const api = stubApi({ getAgentSkillCatalog })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { skills: [{ name: 'workspace:later-confirmed-missing' }] })]
+    const view = await mountVue(AgentSkillActivation, { store, api, name: 'scout' })
+
+    try {
+      expect(text(view.element)).toContain('Not listed in this catalog')
+      const retry = [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button) === 'Retry')!
+      retry.focus()
+      retry.click()
+      await settleVue(3)
+
+      expect(retry.getAttribute('aria-busy')).toBe('true')
+      expect(document.activeElement).toBe(retry)
+      retry.click()
+      await settleVue(2)
+      expect(getAgentSkillCatalog).toHaveBeenCalledTimes(2)
+
+      completed.resolve({ skills: [], catalogDigest: '', warnings: [] })
+      await settleVue(8)
+
+      expect(text(view.element)).toContain('This enabled reference is missing from the current catalog.')
+      expect(text(view.element)).not.toContain('Not listed in this catalog')
+      expect(document.activeElement).toBe(view.element.querySelector('input[type="search"]'))
+      expect([...view.element.querySelectorAll('button')].some(button => text(button).includes('Remove'))).toBe(true)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it('keeps one recovery action and restores focus when a partial retry fails', async () => {
+    const getAgentSkillCatalog = vi.fn()
+      .mockResolvedValueOnce({ skills: [], catalogDigest: '', warnings: ['skill source could not be listed'] })
+      .mockRejectedValueOnce(new Error('Retry failed'))
+    const api = stubApi({ getAgentSkillCatalog })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(AgentSkillActivation, { store, api, name: 'scout' })
+
+    try {
+      const warningRetry = [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.getAttribute('aria-label') === 'Retry')!
+      warningRetry.focus()
+      warningRetry.click()
+      await settleVue(8)
+
+      expect(text(view.element)).toContain('Retry failed')
+      expect(text(view.element)).toContain('skill source could not be listed')
+      const retries = [...view.element.querySelectorAll<HTMLButtonElement>('button')].filter(button => button.getAttribute('aria-label') === 'Retry')
+      expect(retries).toHaveLength(1)
+      expect(document.activeElement).toBe(retries[0])
+      expect(getAgentSkillCatalog).toHaveBeenCalledTimes(2)
+    } finally {
+      view.unmount()
+    }
+  })
+
   it('keeps a failed first catalog read distinct from an empty or missing-skill result', async () => {
     const retryResult = deferred<{ skills: never[]; catalogDigest: string; warnings: string[] }>()
     const getAgentSkillCatalog = vi.fn()

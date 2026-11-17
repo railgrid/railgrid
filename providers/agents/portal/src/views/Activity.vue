@@ -480,7 +480,7 @@ onBeforeUnmount(() => {
         {{ (viewingInbox ? refreshingInbox : refreshingRuns) ? 'Refreshing…' : 'Refresh' }}
       </button>
     </template>
-    <Tabs v-if="!agent" variant="secondary" :tabs="activityTabs" :active="section" aria-label="Activity sections" @select="selectActivityTab" />
+    <Tabs v-if="!agent" class="agents-activity-tabs" variant="secondary" :tabs="activityTabs" :active="section" aria-label="Activity sections" @select="selectActivityTab" />
     <AgentUsage v-if="viewingUsage" :store="store" :api="api" />
     <template v-if="agent || viewingInbox">
       <div v-if="inboxSlice.error && !inboxSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">

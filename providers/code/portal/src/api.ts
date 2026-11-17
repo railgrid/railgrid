@@ -144,6 +144,9 @@ export function setAPIContext(context: APIReadContext): void {
 interface KCPMetadata {
   name: string
   uid: string
+  resourceVersion?: string
+  finalizers?: string[]
+  annotations?: Record<string, unknown> | null
   generation?: number | null
   creationTimestamp?: string | null
   deletionTimestamp?: string | null
@@ -477,14 +480,20 @@ function repoFromCR(cr: RawCR): Repository {
   const spec = cr.spec ?? {}
   const status = cr.status ?? {}
   const reconciliation = reconciliationState(cr)
+  const annotations = isRecord(cr.metadata.annotations) ? cr.metadata.annotations : undefined
+  const finalizers = cr.metadata.finalizers
   return {
     name: cr.metadata.name,
     uid: cr.metadata.uid,
+    resourceVersion: typeof cr.metadata.resourceVersion === 'string' ? cr.metadata.resourceVersion : undefined,
     deletionTimestamp: cr.metadata.deletionTimestamp ?? undefined,
     generation: reconciliation.generation,
     observedGeneration: reconciliation.observedGeneration,
     connectionRef: String(spec.connectionRef ?? ''),
     repo: String(spec.name ?? ''),
+    existingOnly: annotations?.['code.railgrid.ai/existing-only'] === 'true',
+    retainsRemote: Array.isArray(finalizers) && finalizers.includes('repositories.code.railgrid.ai/retain-remote') &&
+      !finalizers.includes('repositories.code.railgrid.ai/finalizer'),
     owner: spec.owner ? String(spec.owner) : undefined,
     visibility: String(spec.visibility ?? 'private'),
     description: spec.description ? String(spec.description) : undefined,
@@ -620,19 +629,22 @@ async function applyCR(manifest: Record<string, unknown>, context = captureReque
   return resource
 }
 
-// deleteCodeResource deletes a code-group resource by name. An exact
+// deleteCodeResource deletes a code-group resource. An exact
 // Kubernetes miss for that object makes retries idempotent; any other failure
 // (a type-level 404, a lookalike miss for a different object, a 5xx) surfaces.
 // Capture authority once so a concurrent workspace/token switch cannot redirect
 // any part of the request.
-async function deleteCodeResource(kind: CodeResourceKind, name: string): Promise<void> {
+async function deleteCodeResource(kind: CodeResourceKind, name: string, preconditions?: { uid: string; resourceVersion: string }): Promise<void> {
   const context = captureRequestContext()
   const ref = CODE_RESOURCES[kind]
   const client = kubeClientFor(context)
   try {
-    await client.delete(ref, name)
+    await client.delete(ref, name, { preconditions })
   } catch (error) {
     if (isKubeObjectNotFound(error, ref, name)) return
+    if (preconditions && isKubeError(error) && error.status === 409) {
+      throw { reason: 'Conflict', message: 'The repository changed. Refresh it and review the removal again.' } satisfies ErrorResponse
+    }
     if (isKubeError(error)) throw kubeErrorResponse(error)
     throw error
   }
@@ -944,8 +956,11 @@ export const api = {
     return repoFromCR(created)
   },
 
-  async deleteRepository(name: string): Promise<void> {
-    await deleteCodeResource('Repository', name)
+  async deleteRepository(repository: Pick<Repository, 'name' | 'uid' | 'resourceVersion'>): Promise<void> {
+    // The confirmation describes this exact snapshot, including its finalizers.
+    const { name, uid, resourceVersion } = repository
+    if (!uid || !resourceVersion) throw protocolError('The repository version is unavailable. Refresh it before removing it.')
+    await deleteCodeResource('Repository', name, { uid, resourceVersion })
   },
 
   // updateRepositoryConnection repoints an existing Repository at a different
