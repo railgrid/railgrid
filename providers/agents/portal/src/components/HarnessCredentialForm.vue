@@ -11,6 +11,7 @@
      spec: it goes to one key of one Secret, and the parent clears the input on
      unmount. -->
 <script setup lang="ts">
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { Check, Loader2 } from 'lucide-vue-next'
 import {
   HARNESS_SECRET_KEY_API_KEY,
@@ -210,10 +211,12 @@ function submit(): void {
         <p v-if="origin" class="k-model-form-hint">{{ origin }}</p>
       </section>
 
-      <p v-if="formError" class="k-inline-notification k-inline-notification--error" role="alert">{{ formError }}</p>
-      <p v-else class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite">
-        This login has no endpoint to test. After saving, we check its format. A successful first run confirms that the runner can use it.
-      </p>
+      <InlineNotification v-if="formError" tone="error" :message="formError" />
+      <InlineNotification
+        v-else
+        tone="info"
+        message="This login has no endpoint to test. After saving, we check its format. A successful first run confirms that the runner can use it."
+      />
     </div>
 
     <footer class="k-create-actions">

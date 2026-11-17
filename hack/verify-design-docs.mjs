@@ -100,6 +100,54 @@ const VERIFICATION_KEYS = new Set(['state', 'checks'])
 const CHECK_KEYS = new Set(['kind', 'ref', 'status', 'evidence'])
 const RELATED_KEYS = new Set(['id', 'relation', 'path'])
 const SUPPORT_DOCUMENTS = new Set(['README.md', 'schema.md', 'CONTRIBUTING.md'])
+const STYLE_VERSION_SOURCES = Object.freeze({
+  portalKit: {
+    constantPath: 'provider-sdk/portalkit/styles.ts',
+    stylesheetPath: 'provider-sdk/portalkit/railgrid-ui.css',
+    constantPattern: /\bRAILGRID_UI_CORE_VERSION\s*=\s*(\d+)\b/,
+    markerPattern: /--railgrid-ui-core-version\s*:\s*(\d+)\b/,
+  },
+  agentKit: {
+    constantPath: 'provider-sdk/agentkit/styles.ts',
+    stylesheetPath: 'provider-sdk/agentkit/agent-ui.css',
+    constantPattern: /\bAGENT_UI_VERSION\s*=\s*(\d+)\b/,
+    markerPattern: /--railgrid-agent-ui-version\s*:\s*(\d+)\b/,
+  },
+})
+const STYLE_VERSION_DOCS = Object.freeze([
+  'provider-sdk/portalkit/README.md',
+  'provider-sdk/agentkit/README.md',
+])
+const STYLE_VERSION_CLAIM_PATTERNS = Object.freeze([
+  {
+    kit: 'portalKit',
+    pattern: /(?:\bcore\s+PortalKit\s+version\b|\bPortalKit\s+core\s+version\b|\bPortalKit\s+(?:core\s+)?(?:style|stylesheet)\s+version\b|\bcore\s+(?:style|stylesheet)\s+version\b)\s*(?:is\s*)?(\d+)\b/gi,
+  },
+  {
+    kit: 'portalKit',
+    pattern: /\brequired\s+core\s+version\b[^.!?;]{0,60}?(?:\(\s*currently\s+|currently\s+)?(\d+)\b[^.!?;]{0,80}?(?:RAILGRID_UI_CORE_VERSION|--railgrid-ui-core-version)/gi,
+  },
+  {
+    kit: 'portalKit',
+    pattern: /\bversion\s+(\d+)\s+core\s+style\s+handoff\b/gi,
+  },
+  {
+    kit: 'portalKit',
+    pattern: /\bRAILGRID_UI_CORE_VERSION\s*(?:=|:|is)\s*(\d+)\b|--railgrid-ui-core-version\s*:\s*(\d+)\b/gi,
+  },
+  {
+    kit: 'agentKit',
+    pattern: /\bAgentKit\b[^.!?;]{0,80}?\b(?:presentation\s+)?style(?:sheet)?(?:\s*\/\s*runtime)?\b[^.!?;]{0,40}?\bversion\b\s*(?:is\s*)?(\d+)\b/gi,
+  },
+  {
+    kit: 'agentKit',
+    pattern: /\bAgentKit\b[^.!?;]{0,80}?\bmodel(?:\s+and\s+reasoning)?\s+recipes\s+use\s+independent\s+version\s+(\d+)\b/gi,
+  },
+  {
+    kit: 'agentKit',
+    pattern: /\bAGENT_UI_VERSION\s*(?:=|:|is)\s*(\d+)\b|--railgrid-agent-ui-version\s*:\s*(\d+)\b/gi,
+  },
+])
 
 const ID_RE = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/
 const OWNER_RE = /^[a-z][a-z0-9]*(?:[-./][a-z0-9]+)*$/
@@ -155,6 +203,117 @@ function lineColumnAt(text, offset) {
   const prefix = text.slice(0, bounded)
   const lines = prefix.split('\n')
   return { line: lines.length, column: lines.at(-1).length + 1 }
+}
+
+function readCanonicalStyleVersions(repoRoot, errors) {
+  const paths = Object.values(STYLE_VERSION_SOURCES).flatMap(({ constantPath, stylesheetPath }) => [
+    constantPath,
+    stylesheetPath,
+  ])
+  const existing = paths.filter((file) => fs.existsSync(path.resolve(repoRoot, file)))
+  // Small validator fixtures may exercise metadata without a provider-sdk tree.
+  // The version check activates when any canonical source is present.
+  if (existing.length === 0) return null
+
+  const versions = {}
+  for (const [kit, source] of Object.entries(STYLE_VERSION_SOURCES)) {
+    const constantAbsolute = path.resolve(repoRoot, source.constantPath)
+    const stylesheetAbsolute = path.resolve(repoRoot, source.stylesheetPath)
+    if (!fs.existsSync(constantAbsolute) || !fs.existsSync(stylesheetAbsolute)) {
+      for (const file of [source.constantPath, source.stylesheetPath]) {
+        if (!fs.existsSync(path.resolve(repoRoot, file))) {
+          errors.push(diagnostic(
+            'missing-style-version-source',
+            file,
+            `cannot verify current style documentation without ${file}`,
+          ))
+        }
+      }
+      continue
+    }
+
+    let constantText
+    let stylesheetText
+    try {
+      constantText = fs.readFileSync(constantAbsolute, 'utf8')
+      stylesheetText = fs.readFileSync(stylesheetAbsolute, 'utf8')
+    } catch (error) {
+      errors.push(diagnostic(
+        'unreadable-style-version-source',
+        source.constantPath,
+        `cannot read canonical ${kit} style-version sources: ${error.message}`,
+      ))
+      continue
+    }
+
+    const constantVersion = constantText.match(source.constantPattern)?.[1]
+    const markerVersion = stylesheetText.match(source.markerPattern)?.[1]
+    if (!constantVersion || !markerVersion) {
+      errors.push(diagnostic(
+        'invalid-style-version-source',
+        !constantVersion ? source.constantPath : source.stylesheetPath,
+        `cannot find the ${kit} runtime constant and CSS marker version`,
+      ))
+      continue
+    }
+    if (constantVersion !== markerVersion) {
+      errors.push(diagnostic(
+        'style-version-source-mismatch',
+        source.stylesheetPath,
+        `${kit} CSS marker ${markerVersion} does not match runtime constant ${constantVersion}`,
+      ))
+      continue
+    }
+    versions[kit] = constantVersion
+  }
+
+  return Object.keys(versions).length === Object.keys(STYLE_VERSION_SOURCES).length
+    ? versions
+    : null
+}
+
+function statementBounds(text, offset) {
+  const boundary = /[.;!?](?=\s|$)/g
+  let start = 0
+  let end = text.length
+  let match
+  while ((match = boundary.exec(text)) !== null) {
+    const next = match.index + match[0].length
+    if (next <= offset) start = next
+    else {
+      end = match.index
+      break
+    }
+  }
+  return { start, end }
+}
+
+function validateCurrentStyleVersionClaims({ documentPath, source, versions, errors }) {
+  const reported = new Set()
+  for (const { kit, pattern } of STYLE_VERSION_CLAIM_PATTERNS) {
+    for (const match of source.matchAll(pattern)) {
+      const value = match[1] ?? match[2]
+      const valueOffset = match.index + match[0].lastIndexOf(value)
+      const { start, end } = statementBounds(source, valueOffset)
+      const statement = source.slice(start, end)
+      if (/\b(?:historical(?:ly)?|formerly|previous(?:ly)?|prior|legacy)\b/i.test(statement)) continue
+      if (value === versions[kit]) continue
+
+      const key = `${kit}:${valueOffset}:${value}`
+      if (reported.has(key)) continue
+      reported.add(key)
+      const { line, column } = lineColumnAt(source, valueOffset)
+      const constantName = kit === 'portalKit' ? 'RAILGRID_UI_CORE_VERSION' : 'AGENT_UI_VERSION'
+      const markerName = kit === 'portalKit' ? '--railgrid-ui-core-version' : '--railgrid-agent-ui-version'
+      errors.push(diagnostic(
+        'stale-current-style-version',
+        documentPath,
+        `numeric ${kit === 'portalKit' ? 'PortalKit' : 'AgentKit'} style version ${value} is stale; point to ${constantName} and ${markerName} instead`,
+        line,
+        column,
+      ))
+    }
+  }
 }
 
 function parseJSONFrontMatter(text, documentPath) {
@@ -794,6 +953,7 @@ export function validateDesignDocs({ repoRoot = REPO_ROOT, designRoot = DESIGN_R
   const displayRoot = relativePath(resolvedRepoRoot, resolvedDesignRoot)
   const errors = []
   const documents = []
+  const sourceByPath = new Map()
 
   let designRootStat
   try {
@@ -819,6 +979,7 @@ export function validateDesignDocs({ repoRoot = REPO_ROOT, designRoot = DESIGN_R
         errors.push(diagnostic('unreadable-document', documentPath, `cannot read document: ${error.message}`))
         continue
       }
+      sourceByPath.set(documentPath, source)
       const parsed = parseJSONFrontMatter(source, documentPath)
       errors.push(...parsed.diagnostics)
       if (!parsed.metadata) continue
@@ -831,7 +992,8 @@ export function validateDesignDocs({ repoRoot = REPO_ROOT, designRoot = DESIGN_R
       documents.push(document)
     }
 
-    for (const documentPath of collectSupportDocumentFiles(resolvedDesignRoot, resolvedRepoRoot, [], errors, reportedTraversalFailures)) {
+    const supportFiles = collectSupportDocumentFiles(resolvedDesignRoot, resolvedRepoRoot, [], errors, reportedTraversalFailures)
+    for (const documentPath of supportFiles) {
       const absolute = path.resolve(resolvedRepoRoot, documentPath)
       let source
       try {
@@ -840,7 +1002,27 @@ export function validateDesignDocs({ repoRoot = REPO_ROOT, designRoot = DESIGN_R
         errors.push(diagnostic('unreadable-document', documentPath, `cannot read document: ${error.message}`))
         continue
       }
+      sourceByPath.set(documentPath, source)
       validateDocumentReferences({ path: documentPath, metadata: {}, body: source }, resolvedRepoRoot, errors)
+    }
+  }
+
+  const styleVersions = readCanonicalStyleVersions(resolvedRepoRoot, errors)
+  if (styleVersions) {
+    for (const [documentPath, source] of sourceByPath) {
+      validateCurrentStyleVersionClaims({ documentPath, source, versions: styleVersions, errors })
+    }
+    for (const documentPath of STYLE_VERSION_DOCS) {
+      const absolute = path.resolve(resolvedRepoRoot, documentPath)
+      if (!fs.existsSync(absolute)) continue
+      let source
+      try {
+        source = fs.readFileSync(absolute, 'utf8')
+      } catch (error) {
+        errors.push(diagnostic('unreadable-document', documentPath, `cannot read document: ${error.message}`))
+        continue
+      }
+      validateCurrentStyleVersionClaims({ documentPath, source, versions: styleVersions, errors })
     }
   }
 

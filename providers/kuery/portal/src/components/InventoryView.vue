@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ChevronDown } from 'lucide-vue-next'
 
@@ -139,10 +140,7 @@ onBeforeUnmount(() => controller?.abort())
       <button type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retrySync">{{ loading ? 'Checking…' : 'Check again' }}</button>
     </div>
     <template v-else>
-      <div v-if="notEngaged" class="kuery-warning" role="status">
-        <span>{{ currentSnapshot ? 'The last inventory result is still shown, but Kuery is not currently syncing an edge in this workspace.' : 'Kuery is not currently syncing an edge in this workspace. Results for this query are unavailable.' }}</span>
-        <button type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retrySync">{{ loading ? 'Checking…' : 'Check again' }}</button>
-      </div>
+      <InlineNotification v-if="notEngaged" tone="warning" action-label="Check again" action-busy-label="Checking…" :action-busy="loading" @action="retrySync" :message="currentSnapshot ? 'The last inventory result is still shown, but Kuery is not currently syncing an edge in this workspace.' : 'Kuery is not currently syncing an edge in this workspace. Results for this query are unavailable.'" />
       <form class="kuery-toolbar kuery-inventory-filters" aria-label="Filter fleet inventory" @submit.prevent="applyFacetFilters">
         <label>
           <span>Kind</span>
@@ -170,8 +168,8 @@ onBeforeUnmount(() => controller?.abort())
         <summary class="k-resource-technical__summary"><span class="k-resource-technical__summary-label">Technical details</span><ChevronDown class="k-resource-technical__chevron" :size="14" aria-hidden="true" /></summary>
         <div class="k-resource-technical__body"><div class="k-resource-technical__content">Inventory request returned HTTP {{ errorStatus }}.</div></div>
       </details>
-      <div v-if="currentSnapshot && pager.paginationGap" class="kuery-warning" role="alert">Kuery reports more matching objects, but did not provide a continuation cursor. Narrow the exact filters or retry this page.<span v-if="warnings.length"> {{ warnings.join(' ') }}</span></div>
-      <div v-else-if="currentSnapshot && warnings.length" class="kuery-warning" role="status">{{ warnings.join(' ') }}</div>
+      <InlineNotification v-if="currentSnapshot && pager.paginationGap" tone="warning" announce="assertive">Kuery reports more matching objects, but did not provide a continuation cursor. Narrow the exact filters or retry this page.{{ warnings.length ? ` ${warnings.join(' ')}` : '' }}</InlineNotification>
+      <InlineNotification v-else-if="currentSnapshot && warnings.length" tone="warning" :message="warnings.join(' ')" />
     </template>
   </section>
 </template>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { portalHref } from './portalkit/navigation'
 import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
-import { ArrowUpCircle, Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Globe2, Home, Laptop, Plug, Plus, RefreshCw, Server, TerminalSquare } from 'lucide-vue-next'
+import { Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Globe2, Home, Laptop, Plug, Plus, RefreshCw, Server, TerminalSquare } from 'lucide-vue-next'
 import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, deleteEdgeService, isContextChangedError } from './api'
 import { MACOS_MASKED_JOIN_TOKEN, macosJoinSnippet } from './macos'
 import { edgeStatusLabel } from './edge-status'
@@ -589,7 +589,7 @@ onUnmounted(() => {
               :aria-busy="detailRefreshing || undefined"
               @click="refreshDetail"
             >
-              <RefreshCw :size="14" :class="{ spin: detailRefreshing }" aria-hidden="true" />
+              <RefreshCw :size="14" :class="{ 'k-spin': detailRefreshing }" aria-hidden="true" />
               {{ detailRefreshing ? 'Refreshing…' : 'Refresh' }}
             </button>
             <ActionMenu
@@ -618,22 +618,21 @@ onUnmounted(() => {
               <div v-if="edge" class="edge-connectivity-content">
                 <!-- Upgrade available: agent behind the hub release (UpgradeAvailable condition). -->
                 <div v-if="upgradeAvailable" class="edge-upgrade">
-                  <div class="banner warn edge-upgrade__banner">
-                    <span class="row">
-                      <ArrowUpCircle :size="14" aria-hidden="true" />
-                      {{ upgradeCond?.message || 'A newer agent version is available.' }}
-                    </span>
-                    <button
-                      type="button"
-                      class="k-btn k-btn--ghost compact-control"
-                      :aria-expanded="showUpgrade"
-                      aria-controls="edges-upgrade-commands"
-                      @click="showUpgrade = !showUpgrade"
-                    >
-                      {{ showUpgrade ? 'Hide' : 'Show' }} commands
-                      <component :is="showUpgrade ? ChevronUp : ChevronDown" :size="14" aria-hidden="true" />
-                    </button>
-                  </div>
+                  <InlineNotification tone="warning" announce="off">
+                    <div class="edge-upgrade__notice-content">
+                      <span>{{ upgradeCond?.message || 'A newer agent version is available.' }}</span>
+                      <button
+                        type="button"
+                        class="k-btn k-btn--ghost compact-control"
+                        :aria-expanded="showUpgrade"
+                        aria-controls="edges-upgrade-commands"
+                        @click="showUpgrade = !showUpgrade"
+                      >
+                        {{ showUpgrade ? 'Hide' : 'Show' }} commands
+                        <component :is="showUpgrade ? ChevronUp : ChevronDown" :size="14" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </InlineNotification>
 
                   <div v-if="showUpgrade" id="edges-upgrade-commands" class="edge-upgrade__commands">
                     <template v-if="type === 'kubernetes'">

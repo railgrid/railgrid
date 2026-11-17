@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { REMOTE_REPOSITORY_PATTERN, REPOSITORY_NAME_PATTERN } from '../repositoryIdentity'
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
@@ -299,14 +300,8 @@ onUnmounted(() => {
     <div v-if="(repositoryLoading && !repositoryLoaded) || (connectionsLoading && !connectionsLoaded)" class="panel k-card" role="status" aria-live="polite">
       Loading repositories and connections…
     </div>
-    <div v-if="repositoryError" class="error read-error" role="alert" aria-live="assertive">
-      <span>{{ repositoryError }}</span>
-      <button class="k-btn k-btn--ghost" type="button" @click="loadRepositories(true)">Retry repositories</button>
-    </div>
-    <div v-if="connectionsError" class="error read-error" role="alert" aria-live="assertive">
-      <span>{{ connectionsLoaded ? 'Showing the last loaded connections. ' : '' }}{{ connectionsError }}</span>
-      <button class="k-btn k-btn--ghost" type="button" @click="loadConnections">Retry connections</button>
-    </div>
+    <InlineNotification v-if="repositoryError" tone="error" action-label="Retry repositories" action-busy-label="Retrying repositories…" :action-busy="repositoryLoading" @action="loadRepositories(true)" :message="repositoryError" />
+    <InlineNotification v-if="connectionsError" tone="error" action-label="Retry connections" action-busy-label="Retrying connections…" :action-busy="connectionsLoading" @action="loadConnections">{{ connectionsLoaded ? 'Showing the last loaded connections. ' : '' }}{{ connectionsError }}</InlineNotification>
     <div v-if="connectionsLoaded && !connectionChoices.length" class="panel k-card">
       <p class="empty">Add a GitHub connection before creating or importing a repository.</p>
       <button class="k-btn k-btn--ghost" type="button" @click="emit('create-connection')">Add connection</button>

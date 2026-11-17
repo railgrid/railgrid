@@ -132,7 +132,7 @@ async function dismissDeleteFailure(key: string) {
       </div>
       <div v-if="(props.loaded || props.error) && !showFirstRun" class="header-actions">
         <button ref="refreshButton" type="button" class="k-btn k-btn--ghost" aria-label="Refresh edges" :aria-disabled="headerRefreshBusy || undefined" :aria-busy="headerRefreshBusy || undefined" @click="refreshFromHeader">
-          <RefreshCw :size="14" :class="{ spin: headerRefreshBusy }" aria-hidden="true" /> {{ headerRefreshBusy ? 'Refreshing…' : 'Refresh' }}
+          <RefreshCw :size="14" :class="{ 'k-spin': headerRefreshBusy }" aria-hidden="true" /> {{ headerRefreshBusy ? 'Refreshing…' : 'Refresh' }}
         </button>
         <a class="k-btn k-btn--primary" :href="connectHref()" @click="followConnectLink">
           <Plus :size="14" aria-hidden="true" /> Connect edge

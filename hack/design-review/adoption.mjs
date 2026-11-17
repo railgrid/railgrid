@@ -170,7 +170,7 @@ export const adoption = {
     ['App Studio · model loading failure', 'providers/app-studio/portal/src/ModelsSettings.vue', 'v-if="loadError" data-model-recovery="models"'],
     ['App Studio · connection failure', 'providers/app-studio/portal/src/ModelsSettings.vue', 'v-if="connectionError" tone="error"'],
     ['Agents · partial usage', 'providers/agents/portal/src/views/AgentUsage.vue', 'v-if="normalizedUsage.unavailableAgents.length"'],
-    ['Edges · service deletion failure', 'providers/edges/portal/src/Services.vue', 'v-if="deleteFailure" class="services-delete-error"'],
+    ['Edges · service deletion failure', 'providers/edges/portal/src/Services.vue', 'class="services-delete-error"'],
   ],
   'components.resource-table': [
     ['Agents · toolsets', 'providers/agents/portal/src/views/Toolsets.vue', '<ResourceTable v-else'],

@@ -994,7 +994,10 @@ test('organization creation is a shell-free one-field flow with recoverable erro
   assert.match(organizationCreatePage, /if \(\s*route\.name === submittingRoute\.name &&\s*route\.fullPath === submittingRoute\.fullPath[\s\S]*?await router\.replace\(`\/\$\{created\.uuid\}\/workspaces\?preparing=1`\)/s)
   assert.doesNotMatch(organizationCreatePage, /router-link :to="backPath"/)
   assert.match(organizationCreatePage, />Cancel<\/router-link>/)
-  assert.match(organizationCreatePage, /Enter a name for your organization\./)
+  assert.match(organizationCreatePage, /<h1[^>]*class="k-create-title"/)
+  assert.match(organizationCreatePage, /<form class="k-create-surface"/)
+  assert.match(organizationCreatePage, /class="k-create-actions"/)
+  assert.match(organizationCreatePage, /<InlineNotification v-if="localError" id="organization-name-error"/)
   assert.match(organizationCreatePage, /await router\.replace\(`\/\$\{created\.uuid\}\/workspaces\?preparing=1`\)/)
 })
 

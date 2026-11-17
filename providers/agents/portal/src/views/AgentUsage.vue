@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { vFocusOnRecovery } from '../vue/noticeFocus'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, ref, watch } from 'vue'
 import ModelUsageSection from '../agentkit/ModelUsageSection.vue'
 import type { ApiClient } from '../api'
@@ -6,6 +8,11 @@ import type { AppStore } from '../store'
 import { fmtTokens, fmtUSD, type UsagePoint, type UsageResponse } from '../types'
 import { unpricedRunCount, usageCostLabel } from '../usage'
 import { useAuthorityGuard } from '../vue/runtime'
+
+const usageWindows = ref<HTMLElement | null>(null)
+function focusUsageWindow() {
+  usageWindows.value?.querySelector<HTMLElement>('[aria-pressed="true"]')?.focus({ preventScroll: true })
+}
 
 const props = defineProps<{ store: AppStore; api: ApiClient }>()
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
@@ -71,15 +78,42 @@ defineExpose({ loadUsage })
 
 <template>
       <ModelUsageSection provider="Agents" available>
-<template #controls><div class="agents-seg" role="group" aria-label="Usage window"><button v-for="days in [7, 30, 90]" :key="days" :class="['k-btn k-btn--ghost', { on: days === windowDays }]" :aria-pressed="days === windowDays" @click="windowDays = days">{{ days }}d</button></div></template>
-      <div v-if="usageError && !usageHasSnapshot" class="k-error" role="alert">Usage unavailable: {{ usageError }} <button class="k-btn k-btn--ghost" :disabled="usageLoading" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button></div>
+<template #controls><div ref="usageWindows" class="agents-seg" role="group" aria-label="Usage window"><button v-for="days in [7, 30, 90]" :key="days" :class="['k-btn k-btn--ghost', { on: days === windowDays }]" :aria-pressed="days === windowDays" @click="windowDays = days">{{ days }}d</button></div></template>
+      <InlineNotification
+        v-if="usageError && !usageHasSnapshot"
+        tone="error"
+        v-focus-on-recovery="focusUsageWindow"
+        action-label="Retry"
+        action-busy-label="Retrying…"
+        :action-busy="usageLoading"
+        @action="loadUsage"
+      >
+        Usage unavailable: {{ usageError }}
+      </InlineNotification>
       <div v-else-if="!usageHasSnapshot" class="agents-dash-loading k-loading-reveal muted" role="status">Loading usage…</div>
       <template v-else-if="normalizedUsage">
-        <div v-if="usageError" class="k-stale" role="status">Could not refresh usage. Showing usage from the last successful read. {{ usageError }} <button class="k-btn k-btn--ghost" :disabled="usageLoading" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button></div>
-        <div v-if="normalizedUsage.unavailableAgents.length" class="k-inline-notification k-inline-notification--warning" role="status" aria-live="polite" aria-atomic="true">
-          <span class="k-inline-notification__body"><span class="k-inline-notification__message">Usage could not be read for {{ normalizedUsage.unavailableAgents.length }} agent{{ normalizedUsage.unavailableAgents.length === 1 ? '' : 's' }}: {{ normalizedUsage.unavailableAgents.join(', ') }}. Totals cover only agents whose usage was available.</span></span>
-          <button class="k-inline-notification__action" type="button" :disabled="usageLoading" :aria-busy="usageLoading ? 'true' : undefined" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button>
-        </div>
+        <InlineNotification
+          v-if="usageError"
+          tone="warning"
+          v-focus-on-recovery="focusUsageWindow"
+          action-label="Retry"
+          action-busy-label="Retrying…"
+          :action-busy="usageLoading"
+          @action="loadUsage"
+        >
+          Could not refresh usage. Showing usage from the last successful read. {{ usageError }}
+        </InlineNotification>
+        <InlineNotification
+          v-if="normalizedUsage.unavailableAgents.length"
+          tone="warning"
+          v-focus-on-recovery="focusUsageWindow"
+          action-label="Retry"
+          action-busy-label="Retrying…"
+          :action-busy="usageLoading"
+          @action="loadUsage"
+        >
+          Usage could not be read for {{ normalizedUsage.unavailableAgents.length }} agent{{ normalizedUsage.unavailableAgents.length === 1 ? '' : 's' }}: {{ normalizedUsage.unavailableAgents.join(', ') }}. Totals cover only agents whose usage was available.
+        </InlineNotification>
         <p class="agents-hint">Estimates cover recorded, priced usage only. Unpriced runs have no recorded cost estimate and may be billed by the model provider or harness. Usage is calculated from each agent’s most recent 5,000 runs, then filtered to this window.</p>
         <div class="agents-dash">
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InlineNotification from './portalkit/InlineNotification.vue'
 import { ref, computed, nextTick, onUnmounted, watch } from 'vue'
 import { ArrowLeft, Boxes, Laptop, Server, ArrowRight, Copy, Check, Loader2, PartyPopper } from 'lucide-vue-next'
 import { createEdge, probeEdge } from './api'
@@ -237,7 +238,7 @@ function fmt(s: number) {
     </ol>
     <span class="wiz-sr-only" role="status" aria-live="polite" aria-atomic="true">{{ connectionAnnouncement }}</span>
 
-    <div v-if="error" class="banner error" role="alert" aria-live="assertive">{{ error }}</div>
+    <InlineNotification v-if="error" tone="error" :message="error" />
 
     <!-- Step 1 -->
     <form v-if="step === 1" class="k-create-surface k-create-surface--guided" :aria-busy="saving" @submit.prevent="canContinue && handleCreate()">
@@ -245,7 +246,7 @@ function fmt(s: number) {
         <div class="k-create-fields">
           <label for="edge-name" class="lbl">Edge name</label>
           <input id="edge-name" v-model="name" class="k-input" placeholder="e.g. prod-us-east-1" required maxlength="253" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? 'edge-name-error' : 'edge-name-help'" :disabled="saving" />
-          <p v-if="nameError" id="edge-name-error" class="banner error" role="alert">{{ nameError }}</p>
+          <p v-if="nameError" id="edge-name-error" class="field-error" role="alert">{{ nameError }}</p>
           <p v-else id="edge-name-help" class="muted">Use a unique name with lowercase letters, numbers, hyphens, or dots. Each part must start and end with a letter or number.</p>
 
           <fieldset class="types">
@@ -268,7 +269,7 @@ function fmt(s: number) {
           <label for="edge-labels" class="lbl">Labels <span class="muted">(optional)</span></label>
           <input id="edge-labels" v-model="labels" class="k-input" placeholder="env=prod, region=us-east" :aria-invalid="labelResult.error ? 'true' : undefined" :aria-describedby="labelResult.error ? 'edge-labels-help edge-labels-error' : 'edge-labels-help'" :disabled="saving" />
           <p id="edge-labels-help" class="muted">{{ edgeType === 'kubernetes' ? 'Use key=value pairs to target this edge with workloads.' : 'Use key=value pairs to label this edge. Workloads target Kubernetes edges only.' }}</p>
-          <p v-if="labelResult.error" id="edge-labels-error" class="banner error" role="alert">{{ labelResult.error }}</p>
+          <p v-if="labelResult.error" id="edge-labels-error" class="field-error" role="alert">{{ labelResult.error }}</p>
         </div>
         <CreateGuidance
           title="Before you create"
@@ -278,7 +279,7 @@ function fmt(s: number) {
       <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost" :disabled="saving" @click="leaveWizard('cancel')">Cancel</button>
         <button type="submit" class="k-btn k-btn--primary" :disabled="!canContinue">
-          <Loader2 v-if="saving" :size="14" class="spin" aria-hidden="true" />
+          <Loader2 v-if="saving" :size="14" class="k-spin" aria-hidden="true" />
           {{ saving ? 'Creating…' : 'Create & continue' }}
           <ArrowRight v-if="!saving" :size="14" aria-hidden="true" />
         </button>
@@ -292,8 +293,8 @@ function fmt(s: number) {
       <p class="muted">Run one of the commands below from the target. This updates automatically when
         <b>{{ trimmed }}</b> connects.</p>
 
-      <div v-if="tokenError" class="banner warn" role="alert" aria-live="assertive">{{ tokenError }}</div>
-      <div v-else-if="!joinToken" class="muted row"><Loader2 :size="14" class="spin" aria-hidden="true" /> Generating join token…</div>
+      <InlineNotification v-if="tokenError" tone="warning" announce="assertive" :message="tokenError" />
+      <div v-else-if="!joinToken" class="muted row"><Loader2 :size="14" class="k-spin" aria-hidden="true" /> Generating join token…</div>
 
       <template v-if="joinToken || tokenError">
         <div v-if="edgeType === 'kubernetes'" class="snippet">
@@ -328,13 +329,11 @@ function fmt(s: number) {
         </div>
       </template>
 
-      <div v-if="failedCopyField" class="banner warn" role="alert">
-        Clipboard access is unavailable. The one-time join token remains masked; retry the explicit copy action.
-      </div>
+      <InlineNotification v-if="failedCopyField" tone="warning" announce="assertive" message="Clipboard access is unavailable. The one-time join token remains masked; retry the explicit copy action." />
 
       <span class="wiz-sr-only" role="status" aria-live="polite">{{ copyFeedback }}</span>
 
-      <div class="waiting"><Loader2 :size="14" class="spin" aria-hidden="true" /> Waiting for <b>{{ trimmed }}</b> to connect… <span class="muted">({{ fmt(elapsed) }})</span></div>
+      <div class="waiting"><Loader2 :size="14" class="k-spin" aria-hidden="true" /> Waiting for <b>{{ trimmed }}</b> to connect… <span class="muted">({{ fmt(elapsed) }})</span></div>
       </div>
       <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost" @click="leaveWizard('cancel')">{{ props.cancelLabel }}</button>

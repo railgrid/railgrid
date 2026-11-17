@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { vFocusOnRecovery } from '../vue/noticeFocus'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { containModalTab } from '../portalkit/modal-focus'
 
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
@@ -46,6 +48,7 @@ import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 
 const REASONING_EFFORT_RE = /^[a-z][a-z0-9_-]{0,31}$/
 const NAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
+const executionHeading = ref<HTMLElement | null>(null)
 const props = withDefaults(defineProps<{
   store: AppStore
   api: ApiClient
@@ -787,22 +790,37 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
             </section>
 
             <section class="agents-create-section" aria-labelledby="agent-create-execution-heading">
-              <h2 id="agent-create-execution-heading">{{ selectedTemplate ? (isHarness ? 'Required connections' : 'Connections') : 'Execution' }}</h2>
+              <h2 id="agent-create-execution-heading" ref="executionHeading" tabindex="-1">{{ selectedTemplate ? (isHarness ? 'Required connections' : 'Connections') : 'Execution' }}</h2>
               <div v-if="!selectedTemplate" class="agents-create-backends" role="group" aria-label="Execution type">
                 <button class="k-btn k-btn--ghost" type="button" :aria-pressed="!isHarness" :disabled="busy" @click="chooseBackend(AGENT_BACKEND_MODEL)">Chat model</button>
                 <button class="k-btn k-btn--ghost" type="button" data-use-coding-harness :aria-pressed="isHarness" :disabled="busy" @click="chooseBackend(AGENT_BACKEND_HARNESS)">Coding harness</button>
               </div>
               <template v-if="isHarness">
-                <div v-if="edgeSlice.error && !edgeSlice.hasSnapshot" class="k-inline-notification k-inline-notification--error" role="alert">
-                  <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load machines. {{ edgeSlice.error }}</span></span>
-                  <button class="k-inline-notification__action" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">Retry</button>
-                </div>
+                <InlineNotification
+                  v-if="edgeSlice.error && !edgeSlice.hasSnapshot"
+                  tone="error"
+                  action-label="Retry"
+                  action-busy-label="Retrying…"
+                  :action-busy="edgeSlice.loading"
+                  v-focus-on-recovery="() => executionHeading?.focus({ preventScroll: true })"
+                  @action="store.load('edges')"
+                >
+                  Could not load machines. {{ edgeSlice.error }}
+                </InlineNotification>
                 <div v-else-if="!edgeSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status">Loading machines…</div>
                 <template v-else>
-                  <div v-if="edgeSlice.error" id="agent-create-edge-stale" class="k-inline-notification k-inline-notification--warning" role="status">
-                    <span class="k-inline-notification__body"><span class="k-inline-notification__message">Showing the last loaded machines. {{ edgeSlice.error }}</span></span>
-                    <button class="k-inline-notification__action" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Retrying…' : 'Retry' }}</button>
-                  </div>
+                  <InlineNotification
+                    v-if="edgeSlice.error"
+                    id="agent-create-edge-stale"
+                    tone="warning"
+                    action-label="Retry"
+                    action-busy-label="Retrying…"
+                    :action-busy="edgeSlice.loading"
+                    v-focus-on-recovery="() => executionHeading?.focus({ preventScroll: true })"
+                    @action="store.load('edges')"
+                  >
+                    Showing the last loaded machines. {{ edgeSlice.error }}
+                  </InlineNotification>
                   <div :class="selectedTemplate && 'agents-grid2'">
                     <div class="agents-template-parameter">
                       <label>
@@ -1037,9 +1055,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
           <CreateGuidance :title="guidance.title" :description="guidance.description" />
         </div>
 
-        <div v-if="errors.template" class="k-inline-notification k-inline-notification--error" role="alert">
-          <span class="k-inline-notification__body"><span class="k-inline-notification__message">{{ errors.template }}</span></span>
-        </div>
+        <InlineNotification v-if="errors.template" tone="error" :message="errors.template" />
         <div class="k-create-actions">
           <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">Cancel</button>
           <button class="k-btn k-btn--primary" type="submit" :disabled="busy || !canSubmit">

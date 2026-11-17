@@ -8,6 +8,7 @@ import SelfHostInstructions from '@/components/SelfHostInstructions.vue'
 import SelfHostWizard from '@/components/SelfHostWizard.vue'
 import { confirmDialog } from '@/portalkit/confirm'
 import { toast } from '@/portalkit/toast'
+import Tabs, { type PortalTabItem } from '@/portalkit/Tabs.vue'
 import StatusBadge from '@/portalkit/StatusBadge.vue'
 import InlineNotification from '@/portalkit/InlineNotification.vue'
 import { useProviderEnableFlow } from '@/composables/useProviderEnableFlow'
@@ -55,16 +56,20 @@ function retryInventoryRead() {
 // self-hosting hands you a credential and a deployment to run.
 type Tab = 'catalog' | 'self-hosting'
 const tab = computed<Tab>(() => route.query.tab === 'self-hosting' ? 'self-hosting' : 'catalog')
-const tabs: { key: Tab; label: string }[] = [
-  { key: 'catalog', label: 'Catalog' },
-  { key: 'self-hosting', label: 'Self-Hosting' },
-]
 
 // The provider whose install details are open, and what the hub returned for it.
 const activeRegistration = ref<OrgProviderRegistration | null>(null)
 const inventoryScope = ref<string | null>(null)
 const inventoryCurrent = computed(() => inventoryScope.value === currentTenantScope.value && orgProviders.loaded)
 const orgProvidersAvailable = computed(() => !inventoryCurrent.value || orgProviders.supported)
+const sectionTabs = computed<PortalTabItem[]>(() => [
+  { id: 'catalog', label: 'Catalog' },
+  {
+    id: 'self-hosting',
+    label: 'Self-Hosting',
+    count: inventoryCurrent.value && orgProviders.items.length > 0 ? orgProviders.items.length : undefined,
+  },
+])
 const requestedInstallName = computed(() => typeof route.query.install === 'string' ? route.query.install : null)
 const installProvider = computed(() => {
   const name = requestedInstallName.value
@@ -137,6 +142,10 @@ function patchProviderQuery(patch: QueryPatch, replace = false) {
 function setTab(next: Tab) {
   if (next === tab.value && !requestedInstallName.value && route.query.manage === undefined) return
   patchProviderQuery({ tab: next, install: null, manage: null, manual: null })
+}
+
+function selectProviderTab(id: string): void {
+  if (id === 'catalog' || id === 'self-hosting') setTab(id)
 }
 
 function validProviderName(name: string): boolean {
@@ -1025,23 +1034,14 @@ function dependencyNotice(p: ProviderDTO): string {
 
       <!-- Catalog vs Self-Hosting. Hidden entirely when the hub has no
            org-provider support, so the tab never leads to a dead surface. -->
-      <nav v-if="orgProvidersAvailable" class="k-tabs mb-5" aria-label="Provider sections">
-        <button
-          v-for="t in tabs"
-          :key="t.key"
-          type="button"
-          class="k-tab"
-          :class="{ 'k-tab--active': tab === t.key }"
-          :aria-current="tab === t.key ? 'page' : undefined"
-          @click="setTab(t.key)"
-        >
-          {{ t.label }}
-          <span
-            v-if="t.key === 'self-hosting' && inventoryCurrent && orgProviders.items.length"
-            class="k-tab__count"
-          >{{ orgProviders.items.length }}</span>
-        </button>
-      </nav>
+      <Tabs
+        v-if="orgProvidersAvailable"
+        class="mb-5"
+        :tabs="sectionTabs"
+        :active="tab"
+        aria-label="Provider sections"
+        @select="selectProviderTab"
+      />
 
       <div v-if="providers.loading && !providers.loaded && !providers.error" class="text-sm text-text-muted">
         Loading providers&hellip;

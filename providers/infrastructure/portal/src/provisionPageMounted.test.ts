@@ -71,7 +71,7 @@ describe('mounted Infrastructure provisioning workflow', () => {
     app.mount(host)
     await flush()
 
-    const retry = host.querySelector<HTMLButtonElement>('.read-error button')!
+    const retry = host.querySelector<HTMLButtonElement>('[role="alert"] button')!
     retry.focus()
     retry.click()
     retry.click()
@@ -88,7 +88,7 @@ describe('mounted Infrastructure provisioning workflow', () => {
     } })
     await flush()
     expect(document.activeElement).toBe(host.querySelector('h2'))
-    expect(host.querySelector('.read-error')).toBeNull()
+    expect(host.querySelector('[role="alert"]')).toBeNull()
   })
 
   it('keeps nested and boolean edits in the create-instance payload', async () => {

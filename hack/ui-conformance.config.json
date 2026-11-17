@@ -21,6 +21,7 @@
   ],
   "tokenAuthorityPaths": [
     "portal/src/assets/main.css",
+    "provider-sdk/portalkit/provider-fallback.css",
     "hack/dex/web/static/main.css",
     "portal/src/components/TerminalDock.vue",
     "providers/agents/portal/public/index.html",

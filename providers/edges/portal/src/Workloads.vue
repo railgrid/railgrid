@@ -456,7 +456,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       </div>
       <div v-if="(loaded || error) && !showFirstRun" class="header-actions">
         <button type="button" class="k-btn k-btn--ghost" aria-label="Refresh workloads" :aria-disabled="foregroundLoading || undefined" :aria-busy="foregroundLoading || undefined" @click="refreshFromHeader">
-          <RefreshCw :size="14" :class="{ spin: foregroundLoading }" aria-hidden="true" /> {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
+          <RefreshCw :size="14" :class="{ 'k-spin': foregroundLoading }" aria-hidden="true" /> {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
         </button>
         <a
           class="k-btn k-btn--primary"
@@ -468,10 +468,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       </div>
     </header>
 
-    <div v-if="props.result" class="banner success" role="status" aria-live="polite">
-      {{ props.result }}
-      <button type="button" class="k-btn k-btn--ghost compact-control" @click="emit('dismissResult')">Dismiss</button>
-    </div>
+    <InlineNotification v-if="props.result" tone="success" action-label="Dismiss" @action="emit('dismissResult')" :message="props.result" />
 
     <InlineNotification v-if="showFirstRun && error" tone="error" :announce="refreshMode === 'background' ? 'polite' : 'assertive'" title="Could not refresh workloads" :message="`Showing the last successful result. ${error}`" action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="retryFirstRun" />
     <FirstRunGuide

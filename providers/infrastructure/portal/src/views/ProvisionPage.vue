@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
 import DynamicForm from '../components/DynamicForm.vue'
@@ -29,7 +30,7 @@ const values = ref<Record<string, unknown>>({})
 const instanceName = ref('')
 const provisionForm = ref<HTMLFormElement | null>(null)
 const heading = ref<HTMLHeadingElement | null>(null)
-const retryButton = ref<HTMLButtonElement | null>(null)
+const retryNotice = ref<HTMLElement | null>(null)
 const dynamicForm = ref<DynamicFormHandle | null>(null)
 const loading = ref(true)
 const loaded = ref(false)
@@ -83,7 +84,7 @@ async function load() {
       }
     }
     loaded.value = true
-    const restoreFocus = document.activeElement === retryButton.value
+    const restoreFocus = retryNotice.value?.contains(document.activeElement)
     readError.value = null
     if (restoreFocus) {
       await nextTick()
@@ -191,20 +192,22 @@ async function submit() {
       <div class="shimmer page-loading-line page-loading-line-short" aria-hidden="true" />
       <div class="shimmer page-loading-panel" aria-hidden="true" />
     </div>
-    <div v-else-if="!template && readError" class="read-error" role="alert" aria-live="assertive">
-      <span>{{ readError }}</span>
+    <div v-else-if="!template && readError" ref="retryNotice">
+      <InlineNotification tone="error" action-label="Retry" action-busy-label="Retrying template…" :action-busy="loading" @action="retry">
+        {{ readError }}
+      </InlineNotification>
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Retrying template…</span>
-      <button ref="retryButton" type="button" class="k-btn k-btn--ghost" :aria-disabled="loading ? 'true' : undefined" @click="retry">Retry</button>
     </div>
     <template v-else-if="template">
       <header class="k-create-header">
         <h2 ref="heading" class="k-create-title" tabindex="-1">Provision {{ template.displayName }}</h2>
         <p class="k-create-description">{{ template.description }}</p>
       </header>
-      <div v-if="readError" class="stale-banner" role="alert" aria-live="assertive">
-        <span>Showing the last successful template. {{ readError }}</span>
+      <div v-if="readError" ref="retryNotice">
+        <InlineNotification tone="warning" announce="assertive" action-label="Retry" action-busy-label="Retrying template…" :action-busy="loading" @action="retry">
+          Showing the last successful template. {{ readError }}
+        </InlineNotification>
         <span v-if="loading" class="sr-only" role="status" aria-live="polite">Retrying template…</span>
-        <button ref="retryButton" type="button" class="k-btn k-btn--ghost" :aria-disabled="loading ? 'true' : undefined" @click="retry">Retry</button>
       </div>
       <span v-if="loading && !readError" class="sr-only" role="status" aria-live="polite">Rechecking template…</span>
       <form ref="provisionForm" class="k-create-surface k-create-surface--wide" :aria-busy="submitting || loading" novalidate @submit.prevent="submit">
@@ -235,7 +238,7 @@ async function submit() {
           <div class="provision-generated-fields">
             <DynamicForm ref="dynamicForm" :schema="inputSchema" v-model:values="values" />
           </div>
-          <div v-if="mutationError" id="infrastructure-provision-error" class="read-error" role="alert" aria-live="assertive">{{ mutationError }}</div>
+          <InlineNotification v-if="mutationError" tone="error" id="infrastructure-provision-error" :message="mutationError" />
           <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Provisioning instance…</span>
         </div>
         <div class="k-create-actions">

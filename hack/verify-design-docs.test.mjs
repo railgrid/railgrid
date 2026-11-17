@@ -67,6 +67,13 @@ function document(metadataValue, body = '# Test surface\n') {
   return `---\n${JSON.stringify(metadataValue, null, 2)}\n---\n\n${body}`
 }
 
+function writeStyleVersionSources(testFixture) {
+  testFixture.write('provider-sdk/portalkit/styles.ts', 'export const RAILGRID_UI_CORE_VERSION = 67\n')
+  testFixture.write('provider-sdk/portalkit/railgrid-ui.css', ':root { --railgrid-ui-core-version: 67; }\n')
+  testFixture.write('provider-sdk/agentkit/styles.ts', 'export const AGENT_UI_VERSION = 65\n')
+  testFixture.write('provider-sdk/agentkit/agent-ui.css', ':root { --railgrid-agent-ui-version: 65; }\n')
+}
+
 function componentBody(headings = COMPONENT_HEADINGS) {
   return `# Test component\n\n${headings.map((heading) => `## ${heading}\n\nGuidance.\n`).join('\n')}`
 }
@@ -495,6 +502,86 @@ test('recursively catalogs taxonomy entries while excluding nested templates', (
     assert.deepEqual(result.diagnostics, [])
     assert.deepEqual(result.files, ['docs/design/tokens/surface.md'])
     assert.deepEqual(result.catalog.documents.map((entry) => entry.id), ['design.test.tokens.surface'])
+  } finally {
+    testFixture.cleanup()
+  }
+})
+
+test('accepts canonical style-version pointers and explicitly historical version notes', () => {
+  const testFixture = fixture()
+  try {
+    writeStyleVersionSources(testFixture)
+    testFixture.write('docs/design/style-contract.md', document(metadata(), [
+      'PortalKit follows `RAILGRID_UI_CORE_VERSION` and `--railgrid-ui-core-version`.',
+      'AgentKit follows `AGENT_UI_VERSION` and `--railgrid-agent-ui-version`.',
+      'The current CSS markers are `--railgrid-ui-core-version: 67` and `--railgrid-agent-ui-version: 65`.',
+      'AgentKit API version 2 and PortalKit schema version 1 are unrelated contracts.',
+      'PortalKit core API version 3 is separate from its stylesheet contract.',
+      'Historical note: AgentKit stylesheet version 2 appeared in an earlier rendered fixture.',
+    ].join('\n\n')))
+
+    const result = scan({ repoRoot: testFixture.repoRoot })
+
+    assert.deepEqual(result.diagnostics, [])
+  } finally {
+    testFixture.cleanup()
+  }
+})
+
+test('rejects stale numeric CSS marker values while leaving labeled historical markers alone', () => {
+  const testFixture = fixture()
+  try {
+    writeStyleVersionSources(testFixture)
+    const body = [
+      'Copied markers: `--railgrid-ui-core-version: 66` and `--railgrid-agent-ui-version: 64`.',
+      'Historical note: `--railgrid-ui-core-version: 36` was an earlier handoff value.',
+    ].join('\n')
+    const source = document(metadata(), body)
+    const markerLine = source.slice(0, source.indexOf('Copied markers:')).split('\n').length
+    testFixture.write('docs/design/stale-style-markers.md', source)
+
+    const errors = scan({ repoRoot: testFixture.repoRoot }).diagnostics
+      .filter((error) => error.code === 'stale-current-style-version')
+
+    assert.equal(errors.length, 2)
+    assert.deepEqual(errors.map((error) => error.line), [markerLine, markerLine])
+    assert.ok(errors.some((error) => /PortalKit/.test(error.message)))
+    assert.ok(errors.some((error) => /AgentKit/.test(error.message)))
+  } finally {
+    testFixture.cleanup()
+  }
+})
+
+test('rejects stale current PortalKit and AgentKit numerals in design and SDK guidance', () => {
+  const testFixture = fixture()
+  try {
+    writeStyleVersionSources(testFixture)
+    testFixture.write('docs/design/stale-style-contract.md', document(metadata(), [
+      'The current core PortalKit version is 66.',
+      'AgentKit model and reasoning recipes use independent version 36.',
+    ].join('\n')))
+    testFixture.write('provider-sdk/portalkit/README.md', [
+      '# PortalKit',
+      '',
+      'The bundle accepts a required core version (currently 41, from RAILGRID_UI_CORE_VERSION).',
+    ].join('\n'))
+    testFixture.write('provider-sdk/agentkit/README.md', [
+      '# AgentKit',
+      '',
+      'Historical evidence used AgentKit stylesheet version 2; the current AgentKit stylesheet/runtime contract is version 64.',
+    ].join('\n'))
+
+    const errors = scan({ repoRoot: testFixture.repoRoot }).diagnostics
+      .filter((error) => error.code === 'stale-current-style-version')
+
+    assert.equal(errors.length, 4)
+    assert.deepEqual(errors.map((error) => error.path), [
+      'docs/design/stale-style-contract.md',
+      'docs/design/stale-style-contract.md',
+      'provider-sdk/agentkit/README.md',
+      'provider-sdk/portalkit/README.md',
+    ])
+    assert.ok(errors.every((error) => /RAILGRID_UI_CORE_VERSION|AGENT_UI_VERSION/.test(error.message)))
   } finally {
     testFixture.cleanup()
   }

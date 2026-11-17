@@ -51,7 +51,8 @@ guidance must not be reported as globally shipped.
 Every catalog entry has a stable `id`. The machine-readable contract is
 [schema.md](schema.md), and new entries start from the [general template](templates/design-document.md)
 or the [component template](templates/component-document.md). Run `make verify-design-docs`
-to validate frontmatter, source links, related IDs, and Markdown links; use
+to validate frontmatter, source links, related IDs, Markdown links, and stale
+numeric PortalKit or AgentKit style-version claims; use
 `node hack/verify-design-docs.mjs --catalog` to inspect the deterministic
 catalog. [docs/design-book.md](../design-book.md) remains a physical
 compatibility pointer for old links and is not a second source of rules.

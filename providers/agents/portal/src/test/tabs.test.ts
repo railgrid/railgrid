@@ -35,6 +35,43 @@ describe('PortalKit tabs contract', () => {
     expect(selections).toEqual(['activity'])
   })
 
+  it('uses native route links and leaves modified activations to the browser', async () => {
+    const selections: string[] = []
+    const mounted = await mountVue(Tabs, {
+      tabs: [
+        { id: 'models', label: 'Models', href: '#/models' },
+        { id: 'connections', label: 'Connections', href: '#/connections' },
+      ],
+      active: 'models',
+      ariaLabel: 'Setup sections',
+      onSelect: (id: string) => selections.push(id),
+    })
+    const nav = mounted.element.querySelector('nav')!
+    const links = [...nav.querySelectorAll<HTMLAnchorElement>('[data-k-tab-id]')]
+    expect(nav.getAttribute('aria-label')).toBe('Setup sections')
+    expect(links.map(link => link.getAttribute('href'))).toEqual(['#/models', '#/connections'])
+    expect(links[0].getAttribute('aria-current')).toBe('page')
+
+    const plainClick = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    links[1].dispatchEvent(plainClick)
+    await settleVue()
+    expect(plainClick.defaultPrevented).toBe(true)
+    expect(selections).toEqual(['connections'])
+
+    for (const options of [
+      { ctrlKey: true },
+      { metaKey: true },
+      { shiftKey: true },
+      { altKey: true },
+      { button: 1 },
+    ]) {
+      const modifiedClick = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ...options })
+      links[0].dispatchEvent(modifiedClick)
+      expect(modifiedClick.defaultPrevented).toBe(false)
+    }
+    expect(selections).toEqual(['connections'])
+  })
+
   it('keeps the canonical visual and narrow-layout invariants', () => {
     expect(tabStyles).toContain('flex-wrap: nowrap')
     expect(tabStyles).toContain('overflow-x: auto')

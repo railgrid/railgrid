@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InlineNotification from './portalkit/InlineNotification.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ArrowLeft, Loader2, Rocket, Server } from 'lucide-vue-next'
 import { createWorkload, deployMarketplaceApp, listEdges, type WorkloadDraft } from './api'
@@ -241,14 +242,14 @@ onUnmounted(() => {
       <p v-else class="k-create-description">Deploy a workload across matching Kubernetes edges.</p>
     </header>
 
-    <div v-if="error" class="banner error" role="alert">{{ error }}</div>
+    <InlineNotification v-if="error" tone="error" :message="error" />
     <div v-if="loading" class="waiting" role="status" aria-live="polite">
-      <Loader2 :size="14" class="spin" aria-hidden="true" /> Loading edges…
+      <Loader2 :size="14" class="k-spin" aria-hidden="true" /> Loading edges…
     </div>
 
     <div v-else-if="edgeLoadError" class="k-create-surface">
       <div class="k-create-body">
-        <div class="banner error" role="alert">{{ edgeLoadError }}</div>
+        <InlineNotification tone="error" :message="edgeLoadError" />
         <p class="muted">Railgrid could not verify that a KubernetesCluster edge is available, so workload creation is paused.</p>
       </div>
       <div class="k-create-actions">
@@ -259,7 +260,7 @@ onUnmounted(() => {
 
     <div v-else-if="props.mode === 'marketplace' && !app" class="k-create-surface">
       <div class="k-create-body">
-      <p class="banner error" role="alert">That marketplace app is not available.</p>
+      <InlineNotification tone="error" message="That marketplace app is not available." />
       </div>
       <div class="k-create-actions"><button class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">Back to workloads</button></div>
     </div>
@@ -317,7 +318,7 @@ onUnmounted(() => {
       <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">Cancel</button>
         <button type="submit" class="k-btn k-btn--primary" :disabled="!canSubmit">
-          <Loader2 v-if="busy" :size="14" class="spin" aria-hidden="true" />
+          <Loader2 v-if="busy" :size="14" class="k-spin" aria-hidden="true" />
           <Rocket v-else :size="14" aria-hidden="true" />
           {{ busy ? 'Deploying…' : 'Deploy' }}
         </button>
@@ -398,7 +399,7 @@ onUnmounted(() => {
       <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">Cancel</button>
         <button type="submit" class="k-btn k-btn--primary" :disabled="!canSubmit">
-          <Loader2 v-if="busy" :size="14" class="spin" aria-hidden="true" />
+          <Loader2 v-if="busy" :size="14" class="k-spin" aria-hidden="true" />
           {{ busy ? 'Creating…' : 'Create workload' }}
         </button>
       </div>

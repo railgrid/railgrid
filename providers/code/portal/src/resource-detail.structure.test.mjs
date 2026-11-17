@@ -80,7 +80,7 @@ describe('Code repository resource detail cards', () => {
     expect(detail).toMatch(/api\.deleteRepository\(current\)/)
     expect(detail).toMatch(/props\.deletions\.acknowledge\(repositoryScope, current\.name, current\.uid\)/)
     expect(detail).toMatch(/const repositoryDeleteInFlight = computed\(\(\) => operations\.phase\(operationKey\('repository', props\.name\)\) === 'deleting'\)/)
-    expect(detail).toMatch(/<p v-if="repositoryDeleting" class="repo-detail__deleting" role="status" aria-live="polite">[\s\S]*Deleting this repository\./)
+    expect(detail).toMatch(/<InlineNotification v-if="repositoryDeleting" tone="warning" message="Deleting this repository\./)
   })
 
   it('uses shared overflow action styling and a complete warning hint border', () => {

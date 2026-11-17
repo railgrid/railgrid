@@ -58,13 +58,15 @@ vi.mock('./portalkit/FirstRunGuide.vue', async () => {
 vi.mock('lucide-vue-next', async () => {
   const { h } = await import('vue')
   const icon = { setup: () => () => h('span', { 'aria-hidden': 'true' }) }
-  return { ChevronDown: icon, ArrowLeft: icon, ArrowRight: icon, Check: icon, CircleDot: icon, Info: icon, Link2: icon }
+  return { ChevronDown: icon, ArrowLeft: icon, ArrowRight: icon, Check: icon, CircleDot: icon, Info: icon, Link2: icon, TriangleAlert: icon, X: icon }
 })
 
 import ConnectionsView from './views/ConnectionsView.vue'
 import ConnectionCreateView from './views/ConnectionCreateView.vue'
 import CreateGuidance from './portalkit/CreateGuidance.vue'
 import createGuidanceSource from './portalkit/CreateGuidance.vue?raw'
+import InlineNotification from './portalkit/InlineNotification.vue'
+import inlineNotificationSource from './portalkit/InlineNotification.vue?raw'
 import FormSelect from './portalkit/FormSelect.vue'
 import formSelectSource from './portalkit/FormSelect.vue?raw'
 import RepositoryCreateView from './views/RepositoryCreateView.vue'
@@ -204,6 +206,7 @@ function compileClientRender(source: string, filename: string): (ctx: unknown, c
   return new Function('VueRuntime', `${code}\nreturn render`)(VueRuntime) as (ctx: unknown, cache: unknown) => unknown
 }
 
+;(InlineNotification as unknown as { render: unknown }).render = compileClientRender(inlineNotificationSource, 'InlineNotification.vue')
 ;(FormSelect as unknown as { render: unknown }).render = compileClientRender(formSelectSource, 'FormSelect.vue')
 ;(CreateGuidance as unknown as { render: unknown }).render = compileClientRender(createGuidanceSource, 'CreateGuidance.vue')
 ;(ConnectionsView as unknown as { render: unknown }).render = compileClientRender(connectionsSource, 'ConnectionsView.vue')
@@ -309,8 +312,9 @@ describe('OAuth configuration error states', () => {
 
   it('shows GitHub guidance only after a successful retry on the creation route', async () => {
     const configRequest = deferred<{ enabled: boolean }>()
+    const retryRequest = deferred<{ enabled: boolean; startURL: string }>()
     mocks.api.oauthConfig.mockReturnValueOnce(configRequest.promise)
-      .mockResolvedValueOnce({ enabled: true, startURL: '/oauth/github/start' })
+      .mockReturnValueOnce(retryRequest.promise)
     const { app, root } = mount(ConnectionCreateView, {
       method: 'github',
       deletions: createResourceDeletions(),
@@ -329,9 +333,16 @@ describe('OAuth configuration error states', () => {
     expect(textContent(root)).not.toContain('Continue with GitHub')
     const retry = findNode(root, node => node.type === 'button' && textContent(node) === 'Retry GitHub sign-in')
     expect(retry?.props.onClick).toBeTypeOf('function')
-    await (retry?.props.onClick as () => Promise<void>)()
+    const activate = retry?.props.onClick as () => void
+    activate()
+    activate()
     await settle()
+    expect(mocks.api.oauthConfig).toHaveBeenCalledTimes(2)
+    expect(retry?.props['aria-busy']).toBe('true')
+    expect(textContent(root)).toContain('oauth backend unavailable')
 
+    retryRequest.resolve({ enabled: true, startURL: '/oauth/github/start' })
+    await settle()
     expect(textContent(root)).toContain('GitHub opens in a new window.')
     expect(textContent(root)).toContain('Continue with GitHub')
     const guidance = findNode(root, node => node.type === 'aside')

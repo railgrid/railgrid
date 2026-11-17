@@ -15,6 +15,7 @@ import ResourceTable from '@/portalkit/ResourceTable.vue'
 import ResourcePage from '@/portalkit/ResourcePage.vue'
 import ResourceBackLink from '@/portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '@/portalkit/ResourceSectionCard.vue'
+import Tabs, { type PortalTabItem } from '@/portalkit/Tabs.vue'
 import type { ResourceRefreshMode } from '@/portalkit/page-state'
 import ResourceTableEditButton from '@/portalkit/ResourceTableEditButton.vue'
 import ResourceTableActionButton from '@/portalkit/ResourceTableActionButton.vue'
@@ -346,7 +347,14 @@ const router = useRouter()
 const orgs = ref<AdminOrg[]>([])
 type MeteringView = 'organizations' | 'plans' | 'diagnostics'
 const tab = computed<MeteringView>(() => route.query.view === 'plans' || route.query.view === 'diagnostics' ? route.query.view : 'organizations')
-function selectTab(view: MeteringView): void {
+const meteringTabs: PortalTabItem[] = [
+  { id: 'organizations', label: 'Organizations' },
+  { id: 'plans', label: 'Plans' },
+  { id: 'diagnostics', label: 'Diagnostics' },
+]
+function selectTab(id: string): void {
+  if (id !== 'organizations' && id !== 'plans' && id !== 'diagnostics') return
+  const view = id as MeteringView
   void router.push({ query: { ...route.query, view: view === 'organizations' ? undefined : view } })
 }
 const notice = ref('')
@@ -798,9 +806,7 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
         <p>Metering is not ready. Effective limits and usage may be out of date.</p>
         <details class="mt-2"><summary>Service details</summary><p class="mt-2 break-words font-mono text-xs">{{ status.reason }}</p></details>
       </div>
-      <nav class="k-tabs mb-5" aria-label="Metering views">
-        <button v-for="t in (['organizations', 'plans', 'diagnostics'] as const)" :key="t" type="button" class="k-tab capitalize" :class="{ 'k-tab--active': tab === t }" :aria-current="tab === t ? 'page' : undefined" @click="selectTab(t)">{{ t }}</button>
-      </nav>
+      <Tabs class="mb-5" :tabs="meteringTabs" :active="tab" aria-label="Metering views" @select="selectTab" />
       <p v-if="notice" class="metering-message metering-message--success mb-4" role="status" aria-live="polite">{{ notice }}</p>
       <div v-for="p in pendingAssignments" :key="p.name" class="metering-message mb-4" role="status" aria-live="polite">
         <p>{{ p.timedOut ? 'Plan assignment saved; application is not yet confirmed.' : 'Plan assignment saved. Waiting for metering to apply it…' }}</p>

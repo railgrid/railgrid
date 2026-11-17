@@ -1696,8 +1696,8 @@ describe('Automation.vue', () => {
     await settleVue()
 
     expect(existing.element.querySelector('form')).not.toBeNull()
-    expect(text(existing.element.querySelector('.k-stale'))).toContain('Showing the last loaded data')
-    expect(text(existing.element.querySelector('.k-stale'))).toContain('temporary refresh failure')
+    expect(text(existing.element.querySelector('.k-inline-notification--warning[role="status"]'))).toContain('Showing the last loaded data')
+    expect(text(existing.element.querySelector('.k-inline-notification--warning[role="status"]'))).toContain('temporary refresh failure')
 
     const missing = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout', editName: 'missing' })
     expect(missing.element.querySelector('form')).toBeNull()

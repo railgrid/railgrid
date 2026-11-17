@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "rule": "no-new-native-vue-feedback-recipe",
+  "scope": "Literal deprecated classes or hand-built error, warning and success InlineNotification anatomy on native Vue nodes. Dynamic multi-state feedback and loading spinners use the existing recipe.",
+  "occurrences": [],
+  "classTokens": [
+    "banner",
+    "read-error",
+    "stale-banner",
+    "mutation-error",
+    "connection-detail__deleting",
+    "repo-detail__deleting",
+    "kuery-inline-error",
+    "kuery-warning",
+    "k-error",
+    "k-stale"
+  ],
+  "reason": "All known native legacy feedback occurrences have been migrated. Keep this baseline empty and use shared InlineNotification or native field validation for new work."
+}

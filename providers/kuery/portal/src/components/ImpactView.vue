@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { portalHref } from '../portalkit/navigation'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ChevronDown } from 'lucide-vue-next'
@@ -167,12 +168,14 @@ onBeforeUnmount(() => { loadGeneration += 1; controller?.abort(); destroyGraph()
           </dl>
         </aside>
         <p id="impact-bounds" class="meta">Bounded analysis: transitive relations stop at depth 5, and Namespace membership returns at most 200 related objects. Graph and list views show declared results within those bounds; they are not a complete relation traversal.</p>
-        <p v-if="responseTruncated" class="kuery-warning" role="status">Kuery reported response-level truncation for this query. That status does not identify relation-level bounds.</p>
-        <p v-if="responseWarnings.length" class="kuery-warning" role="status">Kuery reported: {{ responseWarnings.join(' ') }} Relation-level bounds are listed above separately.</p>
-        <p v-if="namespaceRelationBounded" class="kuery-warning" role="status">Namespace membership reached its 200-object relation bound. Additional members may be omitted.</p>
+        <div class="kuery-query-notices">
+          <InlineNotification v-if="responseTruncated" tone="warning" message="Kuery reported response-level truncation for this query. That status does not identify relation-level bounds." />
+          <InlineNotification v-if="responseWarnings.length" tone="warning">Kuery reported: {{ responseWarnings.join(' ') }} Relation-level bounds are listed above separately.</InlineNotification>
+          <InlineNotification v-if="namespaceRelationBounded" tone="warning" message="Namespace membership reached its 200-object relation bound. Additional members may be omitted." />
+        </div>
         <p v-if="loaded && !relations.length" class="kuery-read-state" role="status">No declared relationships were found within these bounds.</p>
         <div v-if="representation === 'graph'">
-          <div v-if="graphError" class="kuery-inline-error" role="alert">{{ graphError }} <button type="button" class="k-btn k-btn--ghost" :aria-disabled="graphRetrying || undefined" :aria-busy="graphRetrying || undefined" @click="retryGraph">{{ graphRetrying ? 'Retrying graph…' : 'Retry graph' }}</button></div>
+          <InlineNotification v-if="graphError" tone="error" action-label="Retry graph" action-busy-label="Retrying graph…" :action-busy="graphRetrying" @action="retryGraph" :message="graphError" />
           <div class="kuery-graph-controls" role="group" aria-label="Graph zoom controls">
             <button type="button" class="k-btn k-btn--ghost" :disabled="!graphReady" @click="graph?.zoomBy(1.25)">Zoom in</button>
             <button type="button" class="k-btn k-btn--ghost" :disabled="!graphReady" @click="graph?.zoomBy(0.8)">Zoom out</button>

@@ -32,7 +32,7 @@ vi.mock('./portalkit/confirm', () => ({ confirmDialog: mocks.confirmDialog }))
 vi.mock('./portalkit/toast', () => ({ toast: mocks.toast }))
 vi.mock('./portalkit/InlineNotification.vue', async () => {
   const { h } = await import('vue')
-  return { default: { props: ['title', 'message', 'actionLabel', 'actionBusy', 'dismissible'], emits: ['action', 'dismiss'], setup: (props: { title: string; message: string; actionLabel: string; actionBusy: boolean; dismissible: boolean }, { emit }: { emit: (name: 'action' | 'dismiss') => void }) => () => h('div', [props.title, props.message, props.actionLabel ? h('button', { 'aria-busy': props.actionBusy ? 'true' : undefined, onClick: () => { if (!props.actionBusy) emit('action') } }, props.actionLabel) : null, props.dismissible ? h('button', { onClick: () => emit('dismiss') }, 'Dismiss') : null]) } }
+  return { default: { props: ['tone', 'title', 'message', 'actionLabel', 'actionBusy', 'dismissible'], emits: ['action', 'dismiss'], setup: (props: { tone: string; title: string; message: string; actionLabel: string; actionBusy: boolean; dismissible: boolean }, { emit }: { emit: (name: 'action' | 'dismiss') => void }) => () => h('div', { role: props.tone === 'error' ? 'alert' : 'status', 'aria-live': props.tone === 'error' ? 'assertive' : 'polite' }, [props.title, props.message, props.actionLabel ? h('button', { 'aria-busy': props.actionBusy ? 'true' : undefined, onClick: () => { if (!props.actionBusy) emit('action') } }, props.actionLabel) : null, props.dismissible ? h('button', { onClick: () => emit('dismiss') }, 'Dismiss') : null]) } }
 })
 vi.mock('./portalkit/ActionMenu.vue', async () => {
   const { h, ref } = await import('vue')

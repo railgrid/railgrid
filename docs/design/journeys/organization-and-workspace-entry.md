@@ -37,6 +37,12 @@ Tailwind sources showed no horizontal overflow at those widths in either theme,
 including an error and a long organization name. Live backend behavior remains
 unverified.
 
+Organization creation is a focused route before workspace entry. Keep its
+single name field in the centered standalone entry shell and use the shared
+create title, form surface, and right-aligned Cancel and Create actions inside
+it. The form stays in place after a failed request. Successful creation
+continues to workspace preparation for the new organization.
+
 ## Wait, choose, or recover
 
 The workspace chooser checks organization readiness before refreshing the

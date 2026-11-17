@@ -33,11 +33,11 @@ provider-specific content. Providers choose meaningful stat cards, sections,
 editors, tables, and actions. Secrets and credential values never render,
 including a credential reference or edit workflow.
 
-Current consumers are Code Repository and Connection; Edge and Edge Service;
-Databricks Connection, Warehouse, and Table; Infrastructure Application
-Template Instance; and MCP Access. These nine consumers inherit the canonical
-title hierarchy, but are adoption examples rather than a universal field
-schema.
+Examples of resource-read adoption include Code Repository and Connection;
+Edge and Edge Service; Databricks Connection, Warehouse, and Table;
+Infrastructure Application Template Instance; and MCP Access. These examples
+inherit the canonical title hierarchy. They are not a complete inventory of
+`ResourcePage` consumers or a universal field schema.
 
 ## Edge Services example
 
