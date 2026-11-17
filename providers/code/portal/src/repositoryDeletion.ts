@@ -7,10 +7,10 @@ export interface RepositoryDeletionPresentation {
   pendingLabel: string
 }
 
-type RepositoryDeletionSnapshot = Pick<Repository, 'name' | 'repo' | 'owner' | 'existingOnly'>
+type RepositoryDeletionSnapshot = Pick<Repository, 'name' | 'repo' | 'owner' | 'existingOnly' | 'retainsRemote'>
 
 export function repositoryDeletionPresentation(repository: RepositoryDeletionSnapshot): RepositoryDeletionPresentation {
-  if (repository.existingOnly === true) {
+  if (repository.retainsRemote === true) {
     const remoteName = repository.owner ? `${repository.owner}/${repository.repo}` : repository.repo || repository.name
     return {
       confirmation: {
@@ -27,7 +27,9 @@ export function repositoryDeletionPresentation(repository: RepositoryDeletionSna
   return {
     confirmation: {
       title: `Delete repository "${repository.repo}"?`,
-      message: 'This removes the repository on the git host. This cannot be undone.',
+      message: repository.existingOnly
+        ? 'Railgrid has not confirmed that the GitHub repository will be retained. This action may delete it permanently.'
+        : 'This removes the repository on the git host. This cannot be undone.',
       confirmLabel: 'Delete',
       danger: true,
     },

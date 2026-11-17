@@ -12,6 +12,7 @@ const importedRepository: Repository = {
   repo: 'orders',
   owner: 'railgrid',
   existingOnly: true,
+  retainsRemote: true,
   visibility: 'private',
   ready: true,
 }
@@ -30,8 +31,13 @@ describe('repository deletion presentation', () => {
     })
   })
 
+  it('does not promise retention from a legacy import annotation alone', () => {
+    expect(repositoryDeletionPresentation({ ...importedRepository, retainsRemote: false }).confirmation.message)
+      .toContain('may delete it permanently')
+  })
+
   it.each([false, undefined])('preserves the irreversible GitHub deletion warning when existing-only is %s', existingOnly => {
-    expect(repositoryDeletionPresentation({ ...importedRepository, existingOnly })).toEqual({
+    expect(repositoryDeletionPresentation({ ...importedRepository, existingOnly, retainsRemote: false })).toEqual({
       confirmation: {
         title: 'Delete repository "orders"?',
         message: 'This removes the repository on the git host. This cannot be undone.',
@@ -44,7 +50,7 @@ describe('repository deletion presentation', () => {
   })
 
   it('keeps list and detail deletes behind the shared presentation confirmation', () => {
-    expect(collectionSource).toMatch(/const ok = await confirmDialog\(repositoryDeletionPresentation\(repository\)\.confirmation\)[\s\S]*?if \(!ok \|\| !mounted\) return[\s\S]*?await api\.deleteRepository\(repository\.name\)/)
-    expect(detailSource).toMatch(/const ok = await confirmDialog\(repositoryDeletionPresentation\(current\)\.confirmation\)[\s\S]*?if \(!ok \|\| !mounted\) return[\s\S]*?await api\.deleteRepository\(current\.name\)/)
+    expect(collectionSource).toMatch(/const ok = await confirmDialog\(repositoryDeletionPresentation\(repository\)\.confirmation\)[\s\S]*?if \(!ok \|\| !mounted\) return[\s\S]*?await api\.deleteRepository\(repository\)/)
+    expect(detailSource).toMatch(/const ok = await confirmDialog\(repositoryDeletionPresentation\(current\)\.confirmation\)[\s\S]*?if \(!ok \|\| !mounted\) return[\s\S]*?await api\.deleteRepository\(current\)/)
   })
 })

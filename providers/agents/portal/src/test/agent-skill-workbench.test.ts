@@ -228,6 +228,81 @@ describe('Workspace skills library', () => {
     view.unmount()
   })
 
+  it('keeps the last detail visible but prevents editing after a same-skill refresh fails', async () => {
+    const skill = { id: 'workspace:review', name: 'Review', description: '', scope: 'workspace', packageName: 'review', enabled: true, editable: true }
+    const getSkillLibraryDetail = vi.fn()
+      .mockResolvedValueOnce({ ...skill, instructions: 'Previous instructions.', version: '7', sourceUID: 'review-uid' })
+      .mockRejectedValueOnce(new Error('Read failed'))
+      .mockResolvedValueOnce({ ...skill, instructions: 'New instructions.', version: '8', sourceUID: 'review-uid' })
+    const api = stubApi({ getSkillLibrary: async () => ({ skills: [skill] }), getSkillLibraryDetail })
+    const view = await mountVue(SkillsLibrary, { store: makeStore(api), api })
+    try {
+      const row = view.element.querySelector<HTMLButtonElement>('button[aria-label*="Review"]')!
+      const edit = () => [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(el => text(el) === 'Edit')!
+      row.click()
+      await settleVue(8)
+      expect(edit().disabled).toBe(false)
+      row.click()
+      await settleVue(8)
+      expect(text(view.element)).toContain('Previous instructions.')
+      expect(text(view.element)).toContain('Showing the last loaded details')
+      expect(edit().disabled).toBe(true)
+      view.element.querySelector<HTMLButtonElement>('[aria-label="Retry"]')!.click()
+      await settleVue(8)
+      expect(text(view.element)).toContain('New instructions.')
+      expect(edit().disabled).toBe(false)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it.each([
+    { uid: 'review-uid', resourceVersion: '8', changesDuringSave: false },
+    { uid: 'replacement-uid', resourceVersion: '7', changesDuringSave: false },
+    { uid: 'review-uid', resourceVersion: '7', changesDuringSave: true },
+  ])('keeps the draft when the source changes before or during save (%j)', async ({ changesDuringSave, ...metadata }) => {
+    const document = '---\nname: Review\ndescription: Review evidence.\n---\nOriginal instructions.'
+    const draft = document.replace('Original', 'Draft')
+    const skill = { id: 'workspace:review', name: 'Review', description: 'Review evidence.', scope: 'workspace', packageName: 'review', enabled: true, editable: true }
+    const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT' && changesDuringSave) {
+        return Response.json({ kind: 'Status', status: 'Failure', reason: 'Conflict', code: 409 }, { status: 409 })
+      }
+      return Response.json({
+        apiVersion: 'agents.railgrid.ai/v1alpha1',
+        kind: 'Skill',
+        metadata: { name: 'review', ...metadata },
+        spec: { document: document.replace('Original', 'Other editor’s') },
+      })
+    })
+    const api = stubApi({
+      context: () => ({ tenant: 'workspace-cluster', fetch }),
+      getSkillLibrary: async () => ({ skills: [skill] }),
+      getSkillLibraryDetail: async () => ({ ...skill, document, instructions: 'Original instructions.', version: '7', sourceUID: 'review-uid' }),
+    })
+    const view = await mountVue(SkillsLibrary, { store: makeStore(api), api })
+    try {
+      const button = (label: string) => [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(el => text(el) === label)!
+      view.element.querySelector<HTMLButtonElement>('button[aria-label*="Review"]')!.click()
+      await settleVue(8)
+      button('Edit').click()
+      await settleVue()
+      const editor = view.element.querySelector<HTMLTextAreaElement>('.agents-skill-workbench__document-editor')!
+      editor.value = draft
+      editor.dispatchEvent(new Event('input', { bubbles: true }))
+      button('Save skill').click()
+      await settleVue(8)
+      expect(fetch.mock.calls.map(([, init]) => init?.method)).toEqual(changesDuringSave ? ['GET', 'PUT'] : ['GET'])
+      if (changesDuringSave) {
+        expect(JSON.parse(String(fetch.mock.calls[1][1]?.body))).toMatchObject({ metadata: { uid: 'review-uid', resourceVersion: '7' } })
+      }
+      expect(text(view.element)).toContain('This skill changed since you opened it.')
+      expect(editor.value).toBe(draft)
+    } finally {
+      view.unmount()
+    }
+  })
+
   it('preserves the original YAML document when exporting and saving an unchanged edit', async () => {
     const sourceDocument = [
       '---',
@@ -257,6 +332,8 @@ describe('Workspace skills library', () => {
       ...skill,
       instructions: 'Fallback text must not replace the source document.',
       document: sourceDocument,
+      version: '7',
+      sourceUID: 'review-uid',
       resources: [],
     }
     let savedDocument = ''
@@ -265,7 +342,7 @@ describe('Workspace skills library', () => {
         return new Response(JSON.stringify({
           apiVersion: 'agents.railgrid.ai/v1alpha1',
           kind: 'Skill',
-          metadata: { name: 'release-review', resourceVersion: '7' },
+          metadata: { name: 'release-review', uid: 'review-uid', resourceVersion: '7' },
           spec: { document: sourceDocument, resources: [] },
         }))
       }

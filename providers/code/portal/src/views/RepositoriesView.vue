@@ -318,11 +318,11 @@ async function remove(row: Record<string, unknown>) {
   const lock = operationKey('repository', repository.name)
   if (!operations.acquire(lock, 'deleting')) return
   try {
-    await api.deleteRepository(repository.name)
+    await api.deleteRepository(repository)
     if (!mounted) return
     clearMutationError(`${repository.name}:${repository.uid || ""}`)
     props.deletions.acknowledge(deletionScope, repository.name, repository.uid)
-    toast('info', repository.existingOnly === true
+    toast('info', repository.retainsRemote === true
       ? `Repository registration removal requested for ${repository.name}.`
       : `Repository deletion requested for ${repository.name}.`)
     loadRepositories()

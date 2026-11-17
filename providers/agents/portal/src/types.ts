@@ -1214,6 +1214,8 @@ export interface AgentInputCapabilities {
 
 export interface AgentSkillDetail extends AgentSkill {
   instructions: string
+  /** Kubernetes identity of the workspace record that supplied this detail. */
+  sourceUID?: string
   /** Original library source retained for lossless workspace editing/export. */
   document?: string
   resources?: Array<AgentSkillResource & { content?: string }>

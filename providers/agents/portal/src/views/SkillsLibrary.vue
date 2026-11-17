@@ -7,7 +7,7 @@ import type { AgentSkill, AgentSkillDetail } from '../types'
 import type { AgentKitSkill } from '../agentkit/composer'
 import { confirmDialog } from '../portalkit/confirm'
 import { providerFetch } from '../portalkit/tenant'
-import { createKubeClient, type KubeObject, type KubeResourceRef } from '../portalkit/kube'
+import { createKubeClient, isKubeConflict, type KubeObject, type KubeResourceRef } from '../portalkit/kube'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import InlineNotification from '../portalkit/InlineNotification.vue'
@@ -50,6 +50,7 @@ const detailNotice = ref<HTMLElement | null>(null)
 const detailSection = ref<HTMLElement | null>(null)
 const search = ref('')
 const mode = ref<'detail' | 'create' | 'edit'>('detail')
+const editSource = ref<{ uid: string; resourceVersion: string } | null>(null)
 const packageName = ref('')
 const skillDocument = ref('')
 const resources = ref<SkillResourceWrite[]>([])
@@ -72,6 +73,8 @@ const selectedSkillUnverified = computed(() => Boolean(
   selectedSkill.value && catalogIncomplete.value && !catalog.value.some((skill) => skill.id === selectedSkill.value?.id),
 ))
 const workbenchLocked = computed(() => saving.value || deleting.value || importing.value)
+const canEditDetail = computed(() => !detailLoading.value && !detailError.value && !workbenchLocked.value &&
+  !selectedSkillUnverified.value && !!detail.value?.version && !!detail.value.sourceUID)
 
 function isCurrent(serial: number, api: ApiClient): boolean {
   return serial === requestSerial && props.api === api
@@ -192,10 +195,11 @@ function startCreate(): void {
 }
 
 function startEdit(): void {
-  if (workbenchLocked.value || selectedSkillUnverified.value) return
+  if (!canEditDetail.value) return
   const selected = selectedSkill.value
   const current = detail.value
-  if (!selected || !current || !selected.editable || selected.scope !== 'workspace') return
+  if (!selected || !current?.version || !current.sourceUID || !selected.editable || selected.scope !== 'workspace') return
+  editSource.value = { uid: current.sourceUID, resourceVersion: current.version }
   mode.value = 'edit'
   packageName.value = selected.packageName || ''
   skillDocument.value = current.document ?? createSkillDocument(current.name, current.description, current.instructions || '')
@@ -232,11 +236,14 @@ function kubeClient(api: ApiClient) {
   return createKubeClient({ fetch: providerFetch(context), cluster })
 }
 
+const editConflictMessage = 'This skill changed since you opened it. Copy your draft before reopening the skill to review the latest version.'
+
 async function save(): Promise<void> {
-  if (workbenchLocked.value || (mode.value === 'edit' && selectedSkillUnverified.value)) return
+  const operation = mode.value
+  const source = editSource.value
+  if (operation === 'detail' || workbenchLocked.value || (operation === 'edit' && (!source || selectedSkillUnverified.value))) return
   const value = validateEditor()
   if (!value) return
-  const operation = mode.value
   const savedPackageName = packageName.value
   const authority = captureAuthority()
   const api = authority.api
@@ -252,10 +259,14 @@ async function save(): Promise<void> {
         metadata: { name: savedPackageName },
         spec: { document: value.document, resources: value.resources },
       })
-    } else {
+    } else if (operation === 'edit' && source) {
       const currentName = savedPackageName
       const current = await client.get<WorkspaceSkillCR>(SKILLS_REF, currentName)
       if (!isCurrent(serial, api) || !authorityIsCurrent(authority)) return
+      if (current.metadata.uid !== source.uid || current.metadata.resourceVersion !== source.resourceVersion) {
+        saveError.value = editConflictMessage
+        return
+      }
       await client.update<WorkspaceSkillCR>(SKILLS_REF, {
         ...current,
         apiVersion: 'agents.railgrid.ai/v1alpha1',
@@ -268,7 +279,9 @@ async function save(): Promise<void> {
     mode.value = 'detail'
     await loadCatalog(`workspace:${savedPackageName}`)
   } catch (error) {
-    if (isCurrent(serial, api) && authorityIsCurrent(authority)) saveError.value = (error as Error).message
+    if (isCurrent(serial, api) && authorityIsCurrent(authority)) {
+      saveError.value = operation === 'edit' && isKubeConflict(error) ? editConflictMessage : (error as Error).message
+    }
   } finally {
     if (serial === requestSerial) saving.value = false
   }
@@ -471,7 +484,7 @@ watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], ()
             <div class="agents-skill-workbench__detail-heading min-w-0"><p class="text-[10px] uppercase tracking-wide text-text-muted">{{ selectedSkill.scope }}{{ selectedSkill.editable ? ' · editable' : ' · read-only' }}</p><h3 class="mt-1 break-words text-[18px] font-semibold text-text-primary">{{ selectedSkill.name }}</h3><p class="mt-1 text-[12px] text-text-secondary">{{ selectedSkill.description }}</p><code class="mt-1 block break-all text-[10px] text-text-muted" :title="selectedSkill.id">{{ selectedSkill.packageName || selectedSkill.packagePath }}</code></div>
             <div v-if="selectedSkill.editable" class="agents-skill-workbench__detail-actions flex shrink-0 gap-1">
               <button type="button" class="k-btn k-btn--ghost secondary" :disabled="detailLoading || workbenchLocked || selectedSkillUnverified" @click="exportSkill"><Download class="agents-skill-workbench__button-icon" aria-hidden="true" /> Export</button>
-              <button type="button" class="k-btn k-btn--ghost secondary" :disabled="detailLoading || workbenchLocked || selectedSkillUnverified" @click="startEdit"><Save class="agents-skill-workbench__button-icon" aria-hidden="true" /> Edit</button>
+              <button type="button" class="k-btn k-btn--ghost secondary" :disabled="!canEditDetail" @click="startEdit"><Save class="agents-skill-workbench__button-icon" aria-hidden="true" /> Edit</button>
               <button type="button" class="k-icon-action agents-iconbtn-danger" :disabled="workbenchLocked || selectedSkillUnverified" aria-label="Delete workspace skill" title="Delete workspace skill" @click="removeSkill"><Trash2 class="agents-skill-workbench__button-icon" aria-hidden="true" /></button>
             </div>
           </div>

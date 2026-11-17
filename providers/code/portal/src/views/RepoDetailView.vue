@@ -425,11 +425,11 @@ async function deleteRepository() {
   const lock = operationKey('repository', current.name)
   if (!operations.acquire(lock, 'deleting')) return
   try {
-    await api.deleteRepository(current.name)
+    await api.deleteRepository(current)
     if (!mounted || repo.value?.name !== current.name || repo.value?.uid !== current.uid) return
     repositoryMutationError.value = null
     props.deletions.acknowledge(repositoryScope, current.name, current.uid)
-    toast('info', current.existingOnly === true
+    toast('info', current.retainsRemote === true
       ? `Repository registration removal requested for ${current.name}.`
       : `Repository deletion requested for ${current.name}.`)
     loadRepository()
