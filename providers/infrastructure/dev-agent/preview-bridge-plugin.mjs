@@ -794,13 +794,22 @@ const previewBridgeClient = String.raw`(() => {
     keyboardHelp.setAttribute("tabindex", "-1");
     keyboardHelp.setAttribute("role", "region");
     keyboardHelp.setAttribute("aria-label", "Annotation picker. Use up and down arrows to move through page elements, left and right arrows for parent and child. Press Enter or Space to select, or Escape to cancel.");
-    Object.assign(keyboardHelp.style, { position: "fixed", left: "12px", bottom: "12px", zIndex: "2147483647", padding: "8px 12px", background: "#241c3c", color: "white", borderRadius: "4px", font: "14px sans-serif" });
-    const instructions = document.createElement("div");
-    instructions.textContent = "Arrow keys: choose an element · Enter or Space: select · Esc: cancel";
+    // Keep the focus target and announcements available to assistive technology.
+    // The selection outline already shows sighted users which element is active.
+    Object.assign(keyboardHelp.style, {
+      position: "fixed",
+      top: "0",
+      left: "0",
+      width: "1px",
+      height: "1px",
+      overflow: "hidden",
+      clipPath: "inset(50%)",
+      pointerEvents: "none",
+    });
     annotationKeyboardStatus = document.createElement("div");
     annotationKeyboardStatus.setAttribute("role", "status");
     annotationKeyboardStatus.setAttribute("aria-live", "polite");
-    keyboardHelp.append(instructions, annotationKeyboardStatus);
+    keyboardHelp.append(annotationKeyboardStatus);
     document.documentElement?.append(keyboardHelp);
     annotationPointerMove = (event) => {
       if (!annotationMode) return;

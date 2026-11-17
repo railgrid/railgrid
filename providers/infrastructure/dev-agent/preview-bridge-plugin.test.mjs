@@ -498,6 +498,7 @@ test("connected annotation mode captures bounded targets without activating the 
   const keyboardHelp = document.documentElement.children.find((child) => child.getAttribute("data-railgrid-annotation-keyboard") === "true");
   assert.equal(document.activeElement, keyboardHelp);
   assert.match(keyboardHelp.getAttribute("aria-label"), /Arrow|arrow/);
+  const keyboardStatus = keyboardHelp.children.find((child) => child.getAttribute("role") === "status");
   assert.ok(cursorStyle);
   assert.match(cursorStyle.textContent, /data:image\/svg\+xml/);
   assert.match(cursorStyle.textContent, /crosshair !important/);
@@ -667,11 +668,11 @@ test("connected annotation mode captures bounded targets without activating the 
   const hoverTarget = new FakeElement("p", "Pointer target");
   document.body.append(hoverTarget);
   documentListeners.get("pointermove")({ target: hoverTarget });
-  assert.match(keyboardHelp.children[1].textContent, /Pointer target/);
+  assert.match(keyboardStatus.textContent, /Pointer target/);
   assert.equal(hoverTarget.scrolled, undefined, "pointer hover must not scroll the page");
   hoverTarget.remove();
   documentListeners.get("pointermove")({ target });
-  assert.match(keyboardHelp.children[1].textContent, /Open account settings/);
+  assert.match(keyboardStatus.textContent, /Open account settings/);
   const overlay = document.body.children.find((child) => child.getAttribute("data-railgrid-annotation-overlay") === "true");
   assert.equal(overlay.hidden, false);
   assert.equal(overlay.style.left, "12px");
@@ -746,12 +747,12 @@ test("connected annotation mode captures bounded targets without activating the 
     const down = keyEvent("ArrowDown");
     windowListeners.get("keydown")(down);
     assert.equal(down.prevented && down.immediateStopped, true);
-    assert.doesNotMatch(keyboardHelp.children[1].textContent, /Transparent content|Clipped content/);
-    if (keyboardHelp.children[1].textContent.includes("Scrollable content")) sawScrollable = true;
+    assert.doesNotMatch(keyboardStatus.textContent, /Transparent content|Clipped content/);
+    if (keyboardStatus.textContent.includes("Scrollable content")) sawScrollable = true;
   }
   assert.equal(sawScrollable, true, "offscreen scrollable content remains reachable");
   assert.equal(staticText.scrolled, true);
-  assert.match(keyboardHelp.children[1].textContent, /Static content/);
+  assert.match(keyboardStatus.textContent, /Static content/);
   const enter = keyEvent("Enter");
   windowListeners.get("keydown")(enter);
   assert.equal(enter.prevented && enter.immediateStopped, true);
@@ -775,7 +776,7 @@ test("connected annotation mode captures bounded targets without activating the 
   document.body.append(invisibleParent);
   const visibleDown = keyEvent("ArrowDown");
   windowListeners.get("keydown")(visibleDown);
-  assert.match(keyboardHelp.children[1].textContent, /Visible child/);
+  assert.match(keyboardStatus.textContent, /Visible child/);
   invisibleParent.remove();
 
   const editor = new FakeElement("div", "typed secret that must not cross the bridge");
