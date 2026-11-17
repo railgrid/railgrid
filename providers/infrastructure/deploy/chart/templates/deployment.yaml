@@ -185,7 +185,7 @@ spec:
             - name: RAILGRID_APP_BASE_DOMAIN
               value: {{ . | quote }}
             {{- end }}
-            {{- with .Values.publishing.accessProxyImage }}
+            {{- with include "infrastructure.accessProxyImage" (dict "ctx" . "publishing" .Values.publishing) }}
             - name: RAILGRID_ACCESS_PROXY_IMAGE
               value: {{ . | quote }}
             {{- end }}

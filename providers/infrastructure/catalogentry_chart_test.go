@@ -98,11 +98,10 @@ var chartOverrides = []chartOverride{{
 	},
 	want: 1,
 }, {
-	// Carried from THIS platform's own configuration, not a literal: the gate
-	// speaks the hub's app-access protocol, so a self-hosted copy running a
-	// different build can fail against this hub.
+	// Use the platform's configured or release-matched gate so self-hosted
+	// copies speak the same hub protocol. Unreleased charts advertise :latest.
 	match:   `          value: ghcr.io/railgrid/railgrid-access-proxy:latest`,
-	replace: []string{`          value: {{ .Values.publishing.accessProxyImage | quote }}`},
+	replace: []string{`          value: {{ include "infrastructure.accessProxyImage" (dict "ctx" . "publishing" .Values.publishing) | default (printf "%s:latest" (default "ghcr.io/railgrid/railgrid-access-proxy" (default (dict) .Values.publishing).accessProxyImageRepository)) | quote }}`},
 	want:    1,
 }}
 

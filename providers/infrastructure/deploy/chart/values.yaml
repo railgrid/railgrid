@@ -84,7 +84,14 @@ publishing:
   # *.<baseDomain> edge cert (ACM / Total TLS) or new URLs fail TLS for
   # minutes. See docs/application-template-architecture.md.
   baseDomain: ""
-  accessProxyImage: ghcr.io/railgrid/railgrid-access-proxy:latest
+  # Access gate image. Empty: a released chart defaults to
+  # <accessProxyImageRepository>:vX.Y.Z, the gate published by the same
+  # provider release, so it moves with the chart; an unreleased chart leaves
+  # it to the binary (:latest). Set a full reference (a digest in production)
+  # to pin it.
+  accessProxyImage: ""
+  # Repository for the release default above (override for mirrors).
+  accessProxyImageRepository: ghcr.io/railgrid/railgrid-access-proxy
   # Internal hub address used for the app-access protocol. Empty falls back to
   # hub.url. In production, use a trusted cluster CA and keep insecure=false.
   hubURL: ""
@@ -400,7 +407,9 @@ operator:
     # App host zone (wins over operator.application.baseDomain). TLS: below the
     # Cloudflare zone apex, add a *.<baseDomain> edge cert (ACM / Total TLS).
     baseDomain: ""
-    accessProxyImage: ghcr.io/railgrid/railgrid-access-proxy:latest
+    # See publishing.accessProxyImage / accessProxyImageRepository above.
+    accessProxyImage: ""
+    accessProxyImageRepository: ghcr.io/railgrid/railgrid-access-proxy
     hubURL: ""
     hubPublicURL: ""
     insecure: false

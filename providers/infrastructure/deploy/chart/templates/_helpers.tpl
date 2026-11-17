@@ -108,6 +108,37 @@ release predating development.agentImageRepository.
 {{- end -}}
 {{- end -}}
 
+{{/*
+accessProxyImage resolves the access gate image (${railgrid.accessProxyImage})
+rendered in front of every published app. It takes a dict of the chart context
+("ctx") and the publishing block to read ("publishing"): the legacy serve
+Deployment passes .Values.publishing, the operator-managed
+InfrastructureProvider CR passes .Values.operator.publishing.
+
+  1. accessProxyImage, when set, always wins (a digest in production).
+  2. Otherwise, when the chart is a release package (appVersion vX.Y.Z[-pre],
+     stamped by provider-release.yaml via `helm package --app-version`), the
+     gate published by the SAME release:
+     <accessProxyImageRepository>:<appVersion>. A chart that follows a version
+     range therefore moves the gate with the provider instead of leaving it on
+     whatever tag was pinned when the release was first installed.
+  3. Otherwise (the in-repo chart, or a main build whose appVersion is
+     sha-<commit>: neither publishes a gate image) empty, and the binary falls
+     back to its own default (:latest).
+
+`default (dict)` keeps the lookup nil-safe for --reuse-values upgrades from a
+release predating accessProxyImageRepository.
+*/}}
+{{- define "infrastructure.accessProxyImage" -}}
+{{- $publishing := default (dict) .publishing -}}
+{{- $appVersion := toString .ctx.Chart.AppVersion -}}
+{{- if $publishing.accessProxyImage -}}
+{{- $publishing.accessProxyImage -}}
+{{- else if and (regexMatch `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$` $appVersion) (not (hasSuffix "-dirty" $appVersion)) -}}
+{{- printf "%s:%s" (default "ghcr.io/railgrid/railgrid-access-proxy" $publishing.accessProxyImageRepository) $appVersion -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "infrastructure.centralKroSecretKey" -}}
 {{- default "kubeconfig" .Values.centralKro.kubeconfigSecretRef.key -}}
 {{- end -}}
