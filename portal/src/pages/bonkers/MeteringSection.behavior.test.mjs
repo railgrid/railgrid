@@ -25,7 +25,7 @@ function navigationFixture(query = {}) {
     .find(node => node.name.getText(parsed) === 'resourceListLocation')
   const initialization = ts.transpileModule(`const ${declaration.getText(parsed)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   context.resourceListLocation = runInNewContext(`${initialization}\nresourceListLocation`, context)
-  for (const name of ['openResource', 'closeResource', 'selectTab', 'selectDiagnostic', 'planOrganizationLocation', 'rememberOrganizationTrigger', 'openPlanOrganization', 'closeOrganization']) {
+  for (const name of ['openOrganization', 'organizationLocation', 'openResource', 'resourceLocation', 'rememberResourceTrigger', 'closeResource', 'selectTab', 'selectDiagnostic', 'planOrganizationLocation', 'rememberOrganizationTrigger', 'openPlanOrganization', 'closeOrganization']) {
     const declaration = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
     const code = ts.transpileModule(declaration.getText(parsed), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
     context[name] = runInNewContext(`${code}\n${name}`, context)
@@ -48,6 +48,73 @@ test('plan navigation retains unrelated context and returns to Plans', () => {
   assert.equal(s.route.query.collection, undefined)
   assert.equal(s.route.query.view, 'plans')
   assert.equal(s.route.query.review, 'kept')
+})
+
+test('organization row and identity link share the list-to-detail query target', () => {
+  const s = navigationFixture({ view: 'plans', collection: 'plans', resource: 'team', diagnostic: 'accounts', review: 'kept' })
+  const target = s.organizationLocation({ name: 'org-a' })
+  assert.equal(target.query.organization, 'org-a')
+  assert.equal(target.query.view, undefined)
+  assert.equal(target.query.collection, undefined)
+  assert.equal(target.query.resource, undefined)
+  assert.equal(target.query.diagnostic, 'accounts')
+  assert.equal(target.query.review, 'kept')
+  s.openOrganization({ name: 'org-a' })
+  assert.deepEqual(s.route.query, target.query, 'row activation and the anchor use the same location')
+})
+
+test('plan and diagnostic resource links keep the existing query contract', () => {
+  const s = navigationFixture({ organization: 'old-org', advanced: 'false', diagnostic: 'accounts', review: 'kept' })
+  const plan = s.resourceLocation('plans', { name: 'team' })
+  assert.equal(plan.query.view, 'plans')
+  assert.equal(plan.query.organization, undefined)
+  assert.equal(plan.query.advanced, 'false')
+  assert.equal(plan.query.diagnostic, 'accounts')
+  assert.equal(plan.query.collection, 'plans')
+  assert.equal(plan.query.resource, 'team')
+  assert.equal(plan.query.review, 'kept')
+
+  const diagnostic = s.resourceLocation('meteringconfigs', { name: 'config-a' })
+  assert.equal(diagnostic.query.view, 'diagnostics')
+  assert.equal(diagnostic.query.organization, undefined)
+  assert.equal(diagnostic.query.advanced, 'true')
+  assert.equal(diagnostic.query.diagnostic, 'meteringconfigs')
+  assert.equal(diagnostic.query.collection, 'meteringconfigs')
+  assert.equal(diagnostic.query.resource, 'config-a')
+  assert.equal(diagnostic.query.review, 'kept')
+
+  s.openResource('plans', { name: 'team' })
+  assert.deepEqual(s.route.query, plan.query, 'row activation and the anchor use the same location')
+})
+
+test('resource identity anchors remember their exact focus target', () => {
+  const s = navigationFixture()
+  const organizationLink = new s.HTMLElement()
+  s.rememberOrganizationTrigger({ currentTarget: organizationLink })
+  assert.equal(s.organizationTrigger, organizationLink)
+
+  const resourceLink = new s.HTMLElement()
+  s.rememberResourceTrigger({ currentTarget: resourceLink })
+  assert.equal(s.resourceTrigger, resourceLink)
+})
+
+test('four resource identity slots use row-isolated RouterLinks and preserve row activation', () => {
+  const organizationSlot = source.match(/<template #displayName="\{ value, row \}">([\s\S]*?)<\/template>/)[1]
+  const planSlot = source.match(/<template #displayName="\{ row \}">([\s\S]*?)<\/template>/)[1]
+  const diagnosticSlot = source.match(/<template v-if="c\.key !== 'meteringconfigs'" #displayName="\{ value, row \}">([\s\S]*?)<\/template>/)[1]
+  const configSlot = source.match(/<template v-if="c\.key === 'meteringconfigs'" #name="\{ value, row \}">([\s\S]*?)<\/template>/)[1]
+  for (const slot of [organizationSlot, planSlot, diagnosticSlot, configSlot]) {
+    assert.match(slot, /<RouterLink\b/)
+    assert.match(slot, /@click\.stop=/, 'identity click must not also activate its row')
+    assert.doesNotMatch(slot, /<button\b/)
+  }
+  assert.match(organizationSlot, /:to="organizationLocation\(row\)"/)
+  assert.match(planSlot, /:to="resourceLocation\('plans', row\)"/)
+  assert.match(diagnosticSlot, /:to="resourceLocation\(c\.key, row\)"/)
+  assert.match(configSlot, /:to="resourceLocation\(c\.key, row\)"/)
+  assert.match(source, /@row-click="openOrganization"/)
+  assert.match(source, /@row-click="\(row: Row\) => openResource\('plans', row\)"/)
+  assert.match(source, /@row-click="\(row: Row\) => openResource\(c\.key, row\)"/)
 })
 
 test('each diagnostic collection returns to Diagnostics after a cold deep link', () => {

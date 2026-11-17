@@ -287,6 +287,54 @@ describe('getRepository health snapshot', () => {
   })
 })
 
+describe('repository existing-only projection', () => {
+  const reads = [
+    ['list', async () => (await api.listRepositoriesPage()).items[0]],
+    ['detail', () => api.getRepository('orders')],
+  ] as const
+
+  it.each(reads)('%s reads map the exact existing-only annotation', async (readKind, readRepository) => {
+    setAPIContext({ tenant: `repository-existing-only-${readKind}`, token: 'repository-existing-only-token' })
+    const metadata: Record<string, unknown> = { name: 'orders', uid: 'orders-uid' }
+    metadata.annotations = { 'code.railgrid.ai/existing-only': 'true' }
+    stubFetch(() => readKind === 'list'
+      ? kubeList([{ metadata, spec: { connectionRef: 'github', name: 'orders', owner: 'railgrid' } }])
+      : response({ metadata, spec: { connectionRef: 'github', name: 'orders', owner: 'railgrid' } }))
+
+    await expect(readRepository()).resolves.toMatchObject({ existingOnly: true })
+  })
+
+  it.each(reads)('%s reads preserve false for a missing existing-only marker', async (readKind, readRepository) => {
+    setAPIContext({ tenant: `repository-existing-only-absent-${readKind}`, token: 'repository-existing-only-token' })
+    stubFetch(() => {
+      const item = {
+        metadata: { name: 'orders', uid: 'orders-uid' },
+        spec: { connectionRef: 'github', name: 'orders', owner: 'railgrid' },
+      }
+      return readKind === 'list' ? kubeList([item]) : response(item)
+    })
+
+    await expect(readRepository()).resolves.toMatchObject({ existingOnly: false })
+  })
+
+  it.each(reads)('%s reads do not treat a false annotation value as existing-only', async (readKind, readRepository) => {
+    setAPIContext({ tenant: `repository-existing-only-false-${readKind}`, token: 'repository-existing-only-token' })
+    stubFetch(() => {
+      const item = {
+        metadata: {
+          name: 'orders',
+          uid: 'orders-uid',
+          annotations: { 'code.railgrid.ai/existing-only': 'false' },
+        },
+        spec: { connectionRef: 'github', name: 'orders', owner: 'railgrid' },
+      }
+      return readKind === 'list' ? kubeList([item]) : response(item)
+    })
+
+    await expect(readRepository()).resolves.toMatchObject({ existingOnly: false })
+  })
+})
+
 describe('Kubernetes deletion state', () => {
   const deletionTimestamp = '2026-08-17T12:34:56Z'
   const resources = [

@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
     deleteRepository: vi.fn(),
     deleteDeployKey: vi.fn(),
     deleteCollaborator: vi.fn(),
+    createCollaborator: vi.fn(),
     getConnection: vi.fn(),
     deleteConnection: vi.fn(),
   },
@@ -167,9 +168,12 @@ interface TreeNode {
   children: TreeNode[]
   parent: TreeNode | null
   text?: string
+  focus?(): void
   setAttribute(name: string, value: string): void
   removeAttribute(name: string): void
 }
+
+let focusedNode: TreeNode | null = null
 
 function createTreeElement(type: string): TreeNode {
   const node: TreeNode = {
@@ -179,6 +183,9 @@ function createTreeElement(type: string): TreeNode {
     parent: null,
     setAttribute(name, value) {
       this.props[name] = value
+    },
+    focus() {
+      focusedNode = node
     },
     removeAttribute(name) {
       delete this.props[name]
@@ -245,7 +252,7 @@ function compileClientRender(source: string, filename: string): (ctx: unknown, c
       return `const { ${bindings} } = VueRuntime\n`
     })
     .replace('export function render', 'function render')
-  return new Function('VueRuntime', `${code}\nreturn render`)({ ...VueRuntime, vModelSelect: {} }) as (ctx: unknown, cache: unknown) => unknown
+  return new Function('VueRuntime', `${code}\nreturn render`)({ ...VueRuntime, vModelSelect: {}, vModelText: {}, vModelCheckbox: {} }) as (ctx: unknown, cache: unknown) => unknown
 }
 
 ;(RepoDetailView as unknown as { render: unknown }).render = compileClientRender(repoSource, 'RepoDetailView.vue')
@@ -295,6 +302,15 @@ const repository: RepositoryDetail = {
   conditions: [],
 }
 
+const createdCollaborator: Collaborator = {
+  name: 'orders-alice',
+  repositoryRef: repository.name,
+  username: 'alice',
+  permission: 'push',
+  invitationPending: true,
+  ready: false,
+}
+
 const connection: ConnectionDetail = {
   name: 'github',
   uid: 'github-uid',
@@ -309,9 +325,22 @@ const connection: ConnectionDetail = {
 
 const noPackages: Package[] = []
 
+async function mountCollaboratorAccess() {
+  mocks.api.listConnections.mockResolvedValue([])
+  mocks.api.listDeployKeys.mockResolvedValue([])
+  mocks.api.listCollaborators.mockResolvedValue([])
+  mocks.api.listPackagesPage.mockResolvedValue({ items: [], continue: '', resourceVersion: '' })
+  const mounted = mount(RepoDetailView, { name: repository.name, deletions: createResourceDeletions() })
+  await settle()
+  click(findNode(mounted.root, node => node.type === 'button' && textContent(node).includes('Manage access'))!)
+  await settle()
+  return mounted
+}
+
 let previousWindow: unknown
 
 beforeEach(() => {
+  focusedNode = null
   previousWindow = (globalThis as typeof globalThis & { window?: unknown }).window
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
@@ -325,6 +354,7 @@ beforeEach(() => {
   mocks.api.getConnection.mockResolvedValue(connection)
   mocks.api.deleteRepository.mockResolvedValue(undefined)
   mocks.api.deleteConnection.mockResolvedValue(undefined)
+  mocks.api.createCollaborator.mockResolvedValue(createdCollaborator)
   mocks.api.listPackages.mockResolvedValue(noPackages)
 })
 
@@ -335,6 +365,118 @@ afterEach(() => {
   } else {
     Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow })
   }
+})
+
+describe('repository collaborator validation', () => {
+  it.each(['', '   ', '\t\n'])('blocks an empty or whitespace-only username (%j) with a focused, associated field error', async username => {
+    const { app, root, instance } = await mountCollaboratorAccess()
+    try {
+      instance.setupState.collabUser = username
+      focusedNode = null
+      await instance.setupState.addCollab()
+      await settle()
+
+      const input = findNode(root, node => node.type === 'input' && node.props.id === 'code-repository-collaborator-username')!
+      const error = findNode(root, node => node.props.id === 'code-repository-collaborator-username-error')!
+      expect(mocks.api.createCollaborator).not.toHaveBeenCalled()
+      expect(instance.setupState.collabUser).toBe(username)
+      expect(input.props['aria-invalid']).toBe('true')
+      expect(input.props['aria-describedby']).toBe('code-repository-collaborator-username-error')
+      expect(error.props.role).toBe('alert')
+      expect(textContent(error)).toBe('Enter a GitHub username.')
+      expect(focusedNode).toBe(input)
+    } finally { app.unmount() }
+  })
+
+  it('keeps operation errors through correction and pending retry, then clears them on success', async () => {
+    mocks.api.createCollaborator.mockRejectedValueOnce({ reason: 'HTTPError', message: 'first write failed' })
+    const pending = deferred<Collaborator>()
+    const { app, root, instance } = await mountCollaboratorAccess()
+    try {
+      instance.setupState.collabUser = 'alice'
+      await instance.setupState.addCollab()
+      await settle()
+
+      const previousError = 'HTTPError: first write failed'
+      expect(instance.setupState.collabError).toBe(previousError)
+      instance.setupState.collabUser = '   '
+      await instance.setupState.addCollab()
+      await settle()
+      expect(instance.setupState.collabFieldError).toBe('Enter a GitHub username.')
+      expect(instance.setupState.collabError).toBe(previousError)
+
+      instance.setupState.collabUser = 'alice'
+      const input = findNode(root, node => node.type === 'input' && node.props.id === 'code-repository-collaborator-username')!
+      const inputHandlers = Array.isArray(input.props.onInput) ? input.props.onInput : [input.props.onInput]
+      for (const handler of inputHandlers) {
+        if (typeof handler === 'function') handler({ target: { value: 'alice' } })
+      }
+      await settle()
+      expect(instance.setupState.collabFieldError).toBeNull()
+      expect(input.props['aria-invalid']).toBeUndefined()
+      expect(input.props['aria-describedby']).toBeUndefined()
+      expect(findNode(root, node => node.props.id === 'code-repository-collaborator-username-error')).toBeUndefined()
+      expect(instance.setupState.collabError).toBe(previousError)
+
+      mocks.api.createCollaborator.mockReturnValueOnce(pending.promise)
+      const retry = instance.setupState.addCollab() as Promise<void>
+      await settle()
+      expect(instance.setupState.collabSubmitting).toBe(true)
+      expect(instance.setupState.collabError).toBe(previousError)
+      pending.resolve(createdCollaborator)
+      await retry
+      await settle()
+      expect(instance.setupState.collabSubmitting).toBe(false)
+      expect(instance.setupState.collabError).toBeNull()
+    } finally { app.unmount() }
+  })
+
+  it('trims the username and sends the selected permission', async () => {
+    const { app, instance } = await mountCollaboratorAccess()
+    try {
+      instance.setupState.collabUser = '  alice  '
+      instance.setupState.collabPerm = 'admin'
+      await instance.setupState.addCollab()
+
+      expect(mocks.api.createCollaborator).toHaveBeenCalledWith({
+        repositoryRef: repository.name,
+        username: 'alice',
+        permission: 'admin',
+      })
+      expect(instance.setupState.collabUser).toBe('')
+    } finally { app.unmount() }
+  })
+
+  it('ignores a duplicate submit while a collaborator request is pending', async () => {
+    const pending = deferred<Collaborator>()
+    mocks.api.createCollaborator.mockReturnValueOnce(pending.promise)
+    const { app, instance } = await mountCollaboratorAccess()
+    try {
+      instance.setupState.collabUser = 'alice'
+      const firstSubmit = instance.setupState.addCollab() as Promise<void>
+      await settle()
+      await instance.setupState.addCollab()
+
+      expect(mocks.api.createCollaborator).toHaveBeenCalledTimes(1)
+      expect(instance.setupState.collabSubmitting).toBe(true)
+      pending.resolve(createdCollaborator)
+      await firstSubmit
+      await settle()
+      expect(instance.setupState.collabSubmitting).toBe(false)
+    } finally { app.unmount() }
+  })
+
+  it('keeps the username draft when collaborator creation fails', async () => {
+    mocks.api.createCollaborator.mockRejectedValueOnce({ reason: 'HTTPError', message: 'write unavailable' })
+    const { app, instance } = await mountCollaboratorAccess()
+    try {
+      instance.setupState.collabUser = '  alice  '
+      await instance.setupState.addCollab()
+
+      expect(instance.setupState.collabUser).toBe('  alice  ')
+      expect(instance.setupState.collabError).toBe('HTTPError: write unavailable')
+    } finally { app.unmount() }
+  })
 })
 
 describe('mounted resource deletion state', () => {

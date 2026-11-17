@@ -144,6 +144,7 @@ export function setAPIContext(context: APIReadContext): void {
 interface KCPMetadata {
   name: string
   uid: string
+  annotations?: Record<string, unknown> | null
   generation?: number | null
   creationTimestamp?: string | null
   deletionTimestamp?: string | null
@@ -477,6 +478,7 @@ function repoFromCR(cr: RawCR): Repository {
   const spec = cr.spec ?? {}
   const status = cr.status ?? {}
   const reconciliation = reconciliationState(cr)
+  const annotations = isRecord(cr.metadata.annotations) ? cr.metadata.annotations : undefined
   return {
     name: cr.metadata.name,
     uid: cr.metadata.uid,
@@ -485,6 +487,7 @@ function repoFromCR(cr: RawCR): Repository {
     observedGeneration: reconciliation.observedGeneration,
     connectionRef: String(spec.connectionRef ?? ''),
     repo: String(spec.name ?? ''),
+    existingOnly: annotations?.['code.railgrid.ai/existing-only'] === 'true',
     owner: spec.owner ? String(spec.owner) : undefined,
     visibility: String(spec.visibility ?? 'private'),
     description: spec.description ? String(spec.description) : undefined,

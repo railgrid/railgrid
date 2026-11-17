@@ -411,9 +411,12 @@ const organizationRows = computed<Row[]>(() => orgs.value.map(org => {
 }))
 const selectedOrgId = computed(() => typeof route.query.organization === 'string' ? route.query.organization : '')
 const selectedOrg = computed(() => orgs.value.find(o => o.name === selectedOrgId.value))
+function organizationLocation(row: Row) {
+  return { query: { ...route.query, view: undefined, collection: undefined, resource: undefined, organization: String(row.name) } }
+}
 function openOrganization(row: Row): void {
   organizationTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
-  void router.push({ query: { ...route.query, view: undefined, collection: undefined, resource: undefined, organization: String(row.name) } })
+  void router.push(organizationLocation(row))
 }
 const organizationListLocation = computed(() => {
   const origin = organizationReturn(route.query, selectedOrgId.value)
@@ -425,7 +428,10 @@ const organizationListLocation = computed(() => {
 const organizationListHref = computed(() => router.resolve(organizationListLocation.value).href)
 const organizationBackLabel = computed(() => organizationReturn(route.query, selectedOrgId.value) ? 'Organization' : route.query.collection === 'plans' && typeof route.query.resource === 'string' ? `${planLabel(route.query.resource)} plan` : route.query.view === 'diagnostics' ? 'Diagnostics' : 'Organizations')
 function planOrganizationLocation(row: Row) { return { path: route.path, query: { ...route.query, organization: String(row.name) } } }
-function rememberOrganizationTrigger(): void { organizationTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null }
+function rememberOrganizationTrigger(event?: Event): void {
+  const currentTarget = event?.currentTarget
+  organizationTrigger = currentTarget instanceof HTMLElement ? currentTarget : document.activeElement instanceof HTMLElement ? document.activeElement : null
+}
 function openPlanOrganization(row: Row): void {
   rememberOrganizationTrigger()
   void router.push(planOrganizationLocation(row))
@@ -464,6 +470,13 @@ const selectedResourceRow = computed(() => (tableRows.value[selectedCollectionKe
 const resourceTitle = computed(() => String(selectedResourceRow.value?.displayName || selectedResource.value?.metadata.name || selectedCollection.value?.noun || 'Metering resource'))
 const resourceDetail = ref<HTMLElement | null>(null)
 let resourceTrigger: HTMLElement | null = null
+function resourceLocation(collection: string, row: Row) {
+  return { query: { ...route.query, view: collection === 'plans' ? 'plans' : 'diagnostics', organization: undefined, advanced: collection === 'plans' ? route.query.advanced : 'true', diagnostic: collection === 'plans' ? route.query.diagnostic : collection, collection, resource: String(row.name) } }
+}
+function rememberResourceTrigger(event?: Event): void {
+  const currentTarget = event?.currentTarget
+  resourceTrigger = currentTarget instanceof HTMLElement ? currentTarget : document.activeElement instanceof HTMLElement ? document.activeElement : null
+}
 const resourceListLocation = computed(() => {
   const query = { ...route.query }
   delete query.collection
@@ -476,8 +489,8 @@ const resourceListLocation = computed(() => {
 const resourceListHref = computed(() => router.resolve(resourceListLocation.value).href)
 const resourceListLabel = computed(() => selectedCollectionKey.value === 'plans' ? 'Plans' : 'Diagnostics')
 function openResource(collection: string, row: Row): void {
-  resourceTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
-  void router.push({ query: { ...route.query, view: collection === 'plans' ? 'plans' : 'diagnostics', organization: undefined, advanced: collection === 'plans' ? route.query.advanced : 'true', diagnostic: collection === 'plans' ? route.query.diagnostic : collection, collection, resource: String(row.name) } })
+  rememberResourceTrigger()
+  void router.push(resourceLocation(collection, row))
 }
 function closeResource(): void { void router.push(resourceListLocation.value) }
 watch([selectedResourceId, selectedCollectionKey, loaded], async ([name]) => {
@@ -805,7 +818,7 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
             :interactive="true" :row-aria-label="(row: Row) => `View metering for ${row.displayName}`"
             empty-text="No organizations found." @row-click="openOrganization"
           >
-            <template #displayName="{ value, row }"><button type="button" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open metering for ${value}`" @click.stop="openOrganization(row)" @keydown.space.prevent.stop="openOrganization(row)">{{ value }}</button></template>
+            <template #displayName="{ value, row }"><RouterLink :to="organizationLocation(row)" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open metering for ${value}`" @click.stop="rememberOrganizationTrigger">{{ value }}</RouterLink></template>
             <template #planName="{ value }"><span class="k-badge k-badge--muted k-badge--label">{{ value }}</span></template>
             <template #stateText="{ row }"><StatusBadge :status="stateOf(row).status" :tone="stateOf(row).tone" :title="stateOf(row).title" /></template>
             <template #limits="{ row }"><MeteringUsageList variant="summary" :limits="limitsOf(row)" :usage="usageOf(row)" :window="windowOf(row)" /></template>
@@ -820,7 +833,7 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
           <button v-if="writable" type="button" class="k-btn k-btn--primary" :disabled="!!busy || foregroundLoading || !!error" @click="editPlan('')"><Plus class="h-4 w-4" />New plan</button>
         </div>
         <ResourceTable :columns="collections[0]!.columns" :rows="tableRows.plans ?? []" aria-label="Plans" row-key="name" searchable search-placeholder="Search plans…" :search-keys="collections[0]!.searchKeys" :filters="planFilters" paginated :loaded="loaded" :loading="loading" :refresh-mode="refreshMode" empty-text="No plans yet. Create a plan to assign organization limits." :interactive="true" :row-aria-label="(row: Row) => `View Plan ${row.displayName}`" :default-sort="{ key: 'displayName', direction: 'asc' }" @row-click="(row: Row) => openResource('plans', row)">
-          <template #displayName="{ row }"><button type="button" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open plan ${row.displayName}`" @click.stop="openResource('plans', row)" @keydown.space.prevent.stop="openResource('plans', row)">{{ row.displayName }}</button><span v-if="row.name === status.defaultPlan" class="ml-2 text-xs text-text-muted">default</span><StatusBadge v-if="row.lifecycle === 'archived'" class="ml-2" status="Archived" tone="muted" /></template>
+          <template #displayName="{ row }"><RouterLink :to="resourceLocation('plans', row)" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open plan ${row.displayName}`" @click.stop="rememberResourceTrigger">{{ row.displayName }}</RouterLink><span v-if="row.name === status.defaultPlan" class="ml-2 text-xs text-text-muted">default</span><StatusBadge v-if="row.lifecycle === 'archived'" class="ml-2" status="Archived" tone="muted" /></template>
           <template #limits="{ row }"><MeteringUsageList variant="summary" :limits="limitsOf(row)" /></template>
           <template #actions="{ row }">
             <div v-if="writable" class="flex items-center justify-end gap-2">
@@ -871,8 +884,8 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
         <div v-for="c in diagnosticCollections" v-show="selectedDiagnostic === c.key" :key="c.key" class="mt-4">
           <h3 class="mb-2 text-sm font-semibold">{{ c.label }}</h3>
           <ResourceTable :columns="c.columns" :rows="tableRows[c.key] ?? []" :aria-label="c.label" row-key="name" :interactive="true" :row-aria-label="(row: Row) => `View ${rowLabel(c, row)}`" searchable :search-placeholder="c.searchPlaceholder" :search-keys="c.searchKeys" paginated :loaded="loaded" :loading="loading" :refresh-mode="refreshMode" :empty-text="`No ${c.label.toLowerCase()}.`" @row-click="(row: Row) => openResource(c.key, row)">
-            <template v-if="c.key !== 'meteringconfigs'" #displayName="{ value, row }"><button type="button" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open ${rowLabel(c, row)}`" @click.stop="openResource(c.key, row)" @keydown.space.prevent.stop="openResource(c.key, row)">{{ value }}</button></template>
-            <template v-if="c.key === 'meteringconfigs'" #name="{ value, row }"><button type="button" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open ${rowLabel(c, row)}`" @click.stop="openResource(c.key, row)" @keydown.space.prevent.stop="openResource(c.key, row)">{{ value }}</button></template>
+            <template v-if="c.key !== 'meteringconfigs'" #displayName="{ value, row }"><RouterLink :to="resourceLocation(c.key, row)" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open ${rowLabel(c, row)}`" @click.stop="rememberResourceTrigger">{{ value }}</RouterLink></template>
+            <template v-if="c.key === 'meteringconfigs'" #name="{ value, row }"><RouterLink :to="resourceLocation(c.key, row)" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open ${rowLabel(c, row)}`" @click.stop="rememberResourceTrigger">{{ value }}</RouterLink></template>
             <template v-if="c.key === 'entitlements'" #plan="{ value }"><span class="k-badge k-badge--muted k-badge--label">{{ value }}</span></template>
             <template v-if="c.key === 'entitlements'" #limits="{ row }"><MeteringUsageList variant="summary" :limits="limitsOf(row)" :usage="usageOf(row)" :window="windowOf(row)" /></template>
             <template v-if="c.key === 'entitlements'" #state="{ row }"><StatusBadge :status="stateOf(row).status" :tone="stateOf(row).tone" :title="stateOf(row).title" /></template>

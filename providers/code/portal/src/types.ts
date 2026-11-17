@@ -86,6 +86,8 @@ export interface ConnectionDetail extends Connection {
 export interface Repository {
   name: string
   uid?: string
+  /** True when the controller will retain the existing GitHub repository on removal. */
+  existingOnly?: boolean
   deletionTimestamp?: string
   generation?: number
   observedGeneration?: number
