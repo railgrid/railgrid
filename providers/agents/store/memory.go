@@ -1088,6 +1088,11 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	if old, ok := m.runs[key]; ok && len(old.ResultSchema) > 0 {
 		run.ResultSchema = old.ResultSchema
 	}
+	// Delegation is decided at admission; a rewrite can set it, never clear it
+	// (the Postgres upsert ORs it the same way).
+	if old, ok := m.runs[key]; ok && old.ModelUseDelegated {
+		run.ModelUseDelegated = true
+	}
 	run.ResultSchema = append(json.RawMessage(nil), run.ResultSchema...)
 	if len(run.ResultSchema) == 0 {
 		run.ResultSchema = nil

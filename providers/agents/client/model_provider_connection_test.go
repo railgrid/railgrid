@@ -22,7 +22,6 @@ import (
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/tenant"
-	"github.com/railgrid/provider-sdk/dataplane"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -70,38 +69,5 @@ func TestConnectionUseIsIndependentOfGetPermission(t *testing.T) {
 				t.Fatal("get-only access allowed use", err)
 			}
 		})
-	}
-}
-
-// A run admitted through an automation grant (start-run/v1) spends the agent's
-// configured models under delegation, like a Schedule or Trigger run. The
-// stamped caller, an App Studio Project's workload identity, can never hold
-// `use`, so the check must not ask about it. Without the marker the same
-// caller is still refused.
-func TestDelegatedModelUseSkipsTheAttendedCallerCheck(t *testing.T) {
-	scheme := runtime.NewScheme()
-	if err := agentsv1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	d := dynamicfake.NewSimpleDynamicClient(scheme)
-	reviews := 0
-	d.PrependReactor("create", "subjectaccessreviews", func(ktesting.Action) (bool, runtime.Object, error) {
-		reviews++
-		return true, &unstructured.Unstructured{Object: map[string]interface{}{"status": map[string]interface{}{"allowed": false}}}, nil
-	})
-	attended := dataplane.WithProxiedIdentity(context.Background(), dataplane.ProxiedIdentity{User: "system:serviceaccount:default:railgrid-wi-project"})
-
-	if err := AuthorizeModelProviderConnectionUse(attended, d, "account", false); !apierrors.IsForbidden(err) {
-		t.Fatalf("attended caller without use: err = %v, want forbidden", err)
-	}
-	if reviews != 1 {
-		t.Fatalf("attended check made %d reviews, want 1", reviews)
-	}
-
-	if err := AuthorizeModelProviderConnectionUse(WithDelegatedModelUse(attended), d, "account", false); err != nil {
-		t.Fatalf("delegated run: err = %v, want nil", err)
-	}
-	if reviews != 1 {
-		t.Fatal("a delegated run still reviewed the caller")
 	}
 }

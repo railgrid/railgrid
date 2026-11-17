@@ -236,7 +236,12 @@ type Run struct {
 	// to match. It is part of the request: written at admission and never
 	// rewritten, so a resumed or recovered run checks against the same schema.
 	// A repository run carries its schema on Repository instead.
-	ResultSchema         json.RawMessage       `json:"resultSchema,omitempty"`
+	ResultSchema json.RawMessage `json:"resultSchema,omitempty"`
+	// ModelUseDelegated records that the run was admitted under an
+	// automation grant (the start-run/v1 action): its turns spend the agent's
+	// configured models as a Schedule or Trigger run does, without asking
+	// whoever's request resumes it. Set at admission and never cleared.
+	ModelUseDelegated    bool                  `json:"modelUseDelegated,omitempty"`
 	Message              string                `json:"message,omitempty"`
 	Checkpoint           json.RawMessage       `json:"checkpoint,omitempty"`
 	RunnerCleanupBinding *RunnerCleanupBinding `json:"-"`

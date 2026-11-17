@@ -296,9 +296,11 @@ Two catalogued actions on `agents/{name}` let an App Studio application be
 budget, so the app polls `get-run`. Bind the agent as a `providerReference`
 integration on the Project with both actions. Both ask for consent: each run
 spends the agent's model budget, and its answer can carry anything the
-agent's tools returned. Accepting that consent is the delegation: the run uses
-the agent's configured models as a Schedule run does, and the Project needs
-no `use` on the agent's `ModelProviderConnection`.
+agent's tools returned. A `start-run` run uses the agent's configured models
+as a Schedule run does: its caller, a Project or anyone else with RBAC on
+`agents/start-run`, needs no `use` on the agent's `ModelProviderConnection`.
+The delegation is recorded on the run, so an approval or recovery that resumes
+it does not ask whoever resumes it either. The `run` verb still asks its caller.
 
 `start-run` uses the `run` verb's own admission (idempotency, the
 agent-identity fence), with a narrower input: `task`, a required

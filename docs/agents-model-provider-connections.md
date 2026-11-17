@@ -85,12 +85,20 @@ of its direct ModelCredential. A connection reference does not grant the
 attended caller access to the underlying Secret.
 
 A run admitted through the `start-run/v1` action is under the same delegation.
-The action is an automation grant: it requires consent, and an App Studio
-Project calls it as its own workload identity, which the hub never grants `use`
-on a provider connection. The caller is still authorized for `agents/start-run`
-and gated on `get` for the agent; only the connection `use` check stops asking
-about the caller. The `run` verb is unchanged and still requires `use` from the
-stamped caller.
+`start-run` is an automation permission: whoever holds RBAC on
+`agents/start-run` and `get` on the Agent can spend the Agent's configured
+models without `use` on their connections, as whoever can create a Schedule
+for it can. Grant `agents/start-run` with the same care as Schedule and Trigger
+writes. The Agents provider does not check consent itself. App Studio adds one
+when a Project is granted the action, and the Project's workload identity holds
+no `use` of its own, which is why the delegation is needed.
+
+The decision is recorded on the run at admission (`model_use_delegated`), not
+taken from the request that happens to carry a turn. An approval resume, a
+crash recovery and a background pickup of the run therefore all execute with no
+attending caller, and so do the sub-agents named in the Agent's `delegates`,
+since configuring those is the same trusted delegation. The `run` verb is
+unchanged and still requires `use` from the stamped caller.
 
 ## Credential writes
 
