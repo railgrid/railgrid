@@ -99,11 +99,6 @@ const showFirstRun = computed(() => loaded.value && currentSnapshot.value && ser
   pageInfo: tablePageInfo.value,
 }) && !hasActiveTableFilters(tableQuery.value, filterValues.value))
 const hasEdges = computed(() => edges.value.length > 0)
-const serviceJourney = [
-  { label: 'Edge', description: 'Connect the cluster or server that can reach the service.' },
-  { label: 'Service endpoint', description: 'Choose its type, address, protocol, and port.' },
-  { label: 'Credentials and Ready', description: 'Add credentials when required and let the controller verify it.' },
-]
 
 function handleFirstRunPrimary(): void {
   if (hasEdges.value) emit('create')
@@ -559,9 +554,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
         ? 'Declare an app reachable from an edge, then add credentials when its service type requires them.'
         : 'A Service must run beside an edge before Railgrid can expose its endpoint and tools.'"
       :primary-label="hasEdges ? 'Create service' : 'Connect edge'"
-      :steps="hasEdges ? [] : serviceJourney"
-      :current-step="hasEdges ? 1 : 0"
-      journey-label="Service setup path"
+      :steps="[]"
     >
       <template #icon><component :is="hasEdges ? Plug : Server" aria-hidden="true" /></template>
       <template #actions><a class="k-btn k-btn--primary" :href="firstRunHref" @click="followFirstRunLink">{{ hasEdges ? 'Create service' : 'Connect edge' }} <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>

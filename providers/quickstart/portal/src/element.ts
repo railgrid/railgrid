@@ -338,16 +338,12 @@ export class QuickstartElement extends HTMLElement {
     if (!this._ctx?.tenant) return `<p class="quickstart-empty">Select a workspace to see its greetings.</p>`
     if (!this._loaded) return `<p class="quickstart-empty" role="status">${this._readError ? 'Greetings could not be loaded. Retry the inventory read.' : 'Loading greetings…'}</p>`
     if (this._items.length === 0) return `
-      <section class="k-first-run" aria-labelledby="quickstart-first-run-title">
+      <section class="k-first-run k-first-run--simple" aria-labelledby="quickstart-first-run-title">
         <div class="k-first-run__lead">
           <span class="k-first-run__icon" aria-hidden="true">${ic('message')}</span>
           <div class="k-first-run__copy"><h3 id="quickstart-first-run-title">Create your first greeting</h3><p>Give your greeting a name and message, then send it to see a response.</p></div>
           <div class="k-first-run__actions"><button class="k-btn k-btn--primary" type="button" data-create>${ic('plus')} New greeting</button></div>
         </div>
-        <ol class="k-first-run__journey" aria-label="Greeting setup">
-          <li class="k-first-run__step is-current" aria-current="step"><span class="k-first-run__marker" aria-hidden="true">${ic('circle')}</span><span class="k-first-run__step-copy"><span class="k-first-run__step-status">Current step:</span><strong>Create a greeting</strong><small>Choose its name and message for this workspace.</small></span></li>
-          <li class="k-first-run__step"><span class="k-first-run__marker" aria-hidden="true">2</span><span class="k-first-run__step-copy"><span class="k-first-run__step-status">Upcoming step:</span><strong>Send your greeting</strong><small>Select Greet from the list to see its response.</small></span></li>
-        </ol>
       </section>`
     return `<ul class="quickstart-list">${this._items.map(item => this._renderRow(item)).join('')}</ul>`
   }

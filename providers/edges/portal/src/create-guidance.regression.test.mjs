@@ -14,10 +14,8 @@ describe('Edges create guidance', () => {
     for (const source of [edgeCollection, services, workloads]) {
       expect(source).toMatch(/import FirstRunGuide from '\.\/portalkit\/FirstRunGuide\.vue'/)
       expect(source).toMatch(/<FirstRunGuide/)
+      expect(source).toMatch(/:steps="\[\]"/)
     }
-    expect(edgeCollection).toMatch(/journey-label=/)
-    expect(services).toMatch(/journey-label=/)
-    expect(workloads).toMatch(/:steps="\[\]"/)
     expect(services).toMatch(/hasEdges \? 'Create service' : 'Connect edge'/)
     expect(services).toMatch(/if \(hasEdges\.value\) emit\('create'\)[\s\S]*else emit\('connectEdge'\)/)
     expect(services).toMatch(/services\.value\.length === 0 && isCompleteFirstCursorPage\(/)

@@ -3,7 +3,7 @@ import ActionMenu from '../portalkit/ActionMenu.vue'
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import { ArrowRight, ExternalLink, GitBranch, Link2 } from 'lucide-vue-next'
 import { api } from '../api'
-import { CODE_JOURNEY_STEPS, codeFirstRunModel, type CodeJourneyAction } from '../journey'
+import { codeFirstRunModel, type CodeJourneyAction } from '../journey'
 import type { Connection, ErrorResponse, Repository } from '../types'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import InlineNotification from '../portalkit/InlineNotification.vue'
@@ -473,12 +473,10 @@ onUnmounted(() => {
       :description="firstRun.description"
       :primary-label="firstRun.primary.label"
       :secondary-label="availableConnections.length ? 'Import repository' : undefined"
-      :steps="CODE_JOURNEY_STEPS"
-      :current-step="firstRun.currentStep"
-      journey-label="Code setup path"
+      :steps="[]"
     >
       <template #icon>
-        <Link2 v-if="firstRun.currentStep === 0" :stroke-width="1.5" />
+        <Link2 v-if="firstRun.primary.action === 'create-connection'" :stroke-width="1.5" />
         <GitBranch v-else :stroke-width="1.5" />
       </template>
       <template #actions>

@@ -339,8 +339,7 @@ function cancelCreate(): void {
           :description="hasToolConnections ? 'Group available tool connections so the same capability bundle can be attached to multiple agents.' : connectionSlice.hasSnapshot ? 'Start with core and edge capabilities now. External tool connections are optional and can be added whenever the bundle needs them.' : 'Start with core and edge capabilities now. Available external tool connections will appear after they finish loading.'"
           primary-label="Create toolset"
           :secondary-label="connectionSlice.hasSnapshot && !hasToolConnections ? 'Create connection' : ''"
-          :steps="hasToolConnections ? [{ label: 'Connection', description: 'Callable external tools are available' }, { label: 'Toolset', description: 'Bundle the tools for reuse' }, { label: 'Agent', description: 'Attach the bundle from Config' }] : [{ label: 'Toolset', description: 'Begin with core and edge capabilities' }, { label: 'Agent', description: 'Attach the bundle from Config' }, { label: 'Expand', description: 'Add external connections when needed' }]"
-          :current-step="hasToolConnections ? 1 : 0" journey-label="Toolset setup path"
+          :steps="[]"
           @primary="emit('navigate', { kind: 'create', resource: 'toolset' })"
           @secondary="emit('navigate', { kind: 'create', resource: 'connection' })"
         ><template #icon><Package :stroke-width="1.75" aria-hidden="true" /></template></FirstRunGuide>

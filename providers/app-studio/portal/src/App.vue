@@ -10938,7 +10938,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           :loading="loading"
           :row-interactive="(row) => !row.deleting"
           :row-aria-label="(row) => `Open project ${String(row.displayName || row.name)}`"
-          :empty-text="!projectsLoaded || loading ? 'Loading projects…' : error ? 'Projects are unavailable.' : 'No projects match this search.'"
+          :inline-empty="!!error || !!projectQuery.trim()"
+          :empty-text="!projectsLoaded || loading ? 'Loading projects…' : error ? 'Projects are unavailable.' : projectQuery.trim() ? 'No projects match this search.' : 'No projects yet.'"
           @row-click="enterProjectTableRow"
         >
           <template #name="{ row }">

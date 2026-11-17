@@ -8,9 +8,8 @@
 
 For an authoritative first-use empty collection, use `FirstRunGuide.vue` or
 matching `k-first-run*` semantic markup in a vanilla portal. It explains the
-value, offers the immediate primary action, and shows the shortest meaningful
-resource journey. Missing prerequisites change the current step and action;
-they do not leave a user at an inert empty table.
+value and offers the immediate primary action when one is available. If the
+collection has a prerequisite, name it and make it the next action.
 
 ## Use when
 
@@ -19,9 +18,8 @@ or matching `k-first-run*` semantic markup in a vanilla portal.
 
 ## Avoid when
 
-Do not leave a first-use collection at an inert empty table. Missing
-prerequisites change the current step and action rather than removing the next
-meaningful step.
+Use the collection's next action when the user can create a resource or fulfill
+a prerequisite. Read-only collections can show just the empty message.
 
 ## Anatomy and variants
 
@@ -34,12 +32,14 @@ meaningful step.
 
 The supported implementations are `FirstRunGuide.vue` and matching vanilla
 `k-first-run*` semantic markup.
-For a single obvious next step, pass an empty steps list to use the centered
-invitation without a progress journey. A small contextual icon may accompany
-the concise title, explanation, and primary action. Use it only after a successful,
-authoritative empty read; filtered results and failed reads use their own states.
-The design-book fixture compares these cases with a prerequisite journey using
-the shared `FirstRunGuide` and `ResourceTable` components. Its sample actions
+For resource table empty states, pass `:steps="[]"` to use the centered
+invitation, including when the primary action opens a multi-step flow. A small
+contextual icon may accompany the concise title, explanation, and primary
+action. `ResourceTable` uses the same centered component for its default empty
+message. Use the invitation after a successful, authoritative empty read.
+Filtered results and failed reads use their own states.
+The design-book fixture compares these cases using the shared
+`FirstRunGuide` and `ResourceTable` components. Its sample actions
 and reads are illustrative; the Models and Edge Services fixtures show the
 patterns in page context.
 
@@ -49,9 +49,8 @@ the current task heading.
 
 ## Behavior
 
-Missing prerequisites change the current step and action. The guide continues
-to offer a meaningful next step rather than leaving the user at an inert empty
-table.
+In an empty collection, a missing prerequisite changes the explanation and
+the primary action. Creation flows can show their own progress.
 
 When the next step is a route, use the `actions` slot for a real link with the
 shared primary style. Preserve its destination and native modified-click
@@ -67,8 +66,7 @@ is the immediate next step.
 ## Layout and responsive behavior
 
 The empty state is an invitation: use a concise title, an explanation, and one
-focused primary action. Add a journey only when it helps explain prerequisites.
-The primary action is
+focused primary action when available. The primary action is
 the only solid accent action in the view and follows the shared glow rule.
 
 ## Accessibility

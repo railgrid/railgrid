@@ -500,7 +500,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           <p class="k-resource-page__subtitle">{{ setupNavigation ? 'Manage the models and provider access your agents use.' : 'Connect and manage models for your agents.' }}</p>
         </div>
         <div v-if="setupNavigation" class="k-resource-page__actions">
-          <ActionMenu label="Create" primary-menu :items="createActions" @select="selectCreateAction" />
+          <ActionMenu label="Create" show-label :primary-menu="!showFirstRun && !showFirstModel" :items="createActions" @select="selectCreateAction" />
         </div>
       </header>
       <nav v-if="!setupNavigation" class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
@@ -518,9 +518,10 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           </div>
         </div>
       </header>
-      <FirstRunGuide v-if="modelView && showFirstRun" title="Connect a provider to add models" description="Bring an API key to connect a provider once, then reuse it across models for your agents." :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path">
+      <FirstRunGuide v-if="modelView && showFirstRun" title="Connect a provider to add models" description="Bring an API key to connect a provider once, then reuse it across models for your agents." :steps="[]">
+        <template #icon><Cpu :stroke-width="1.75" aria-hidden="true" /></template>
         <template #actions>
-          <button type="button" class="k-btn" :class="setupNavigation ? 'k-btn--ghost' : 'k-btn--primary'" @click="openProvider">
+          <button type="button" class="k-btn k-btn--primary" @click="openProvider">
             Connect provider <ArrowRight :stroke-width="1.75" aria-hidden="true" />
           </button>
         </template>
@@ -591,12 +592,17 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
       <FirstRunGuide v-if="modelView && showFirstModel" title="Add a model" description="Use a saved provider connection to add a model your agents can use." :steps="[]">
         <template #icon><Cpu :stroke-width="1.75" /></template>
         <template #actions>
-          <button type="button" class="k-btn" :class="setupNavigation ? 'k-btn--ghost' : 'k-btn--primary'" @click="beginModel">
+          <button type="button" class="k-btn k-btn--primary" @click="beginModel">
             Add model <ArrowRight :stroke-width="1.75" aria-hidden="true" />
           </button>
         </template>
       </FirstRunGuide>
-      <div v-else-if="modelView && credentials.hasSnapshot && !showFirstRun && !modelRows.length" class="k-card agents-models-empty"><h3>No models configured</h3><p>Connect a provider to add a model your agents can use.</p></div>
+      <template v-else-if="modelView && credentials.hasSnapshot && !showFirstRun && !modelRows.length">
+        <div v-if="setupNavigation" class="k-card agents-models-empty"><h3>No models configured</h3><p>Connect a provider to add a model your agents can use.</p></div>
+        <FirstRunGuide v-else title="No models configured" description="Connect a provider to add a model your agents can use." primary-label="Connect provider" :steps="[]" @primary="openProvider">
+          <template #icon><Cpu :stroke-width="1.75" aria-hidden="true" /></template>
+        </FirstRunGuide>
+      </template>
       <section v-if="connectionView" class="k-resource-page k-resource-page--collection" :class="{ 'agents-model-providers': setupNavigation }" aria-labelledby="provider-connections-title">
         <header class="k-resource-page__header">
           <div class="k-resource-page__heading">
@@ -611,7 +617,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           </div>
         </header>
         <div v-if="!setupNavigation && showProviderFirstRun && credentials.error" ref="credentialsWarning"><InlineNotification tone="warning" :message="`Showing the last successful results. ${credentials.error}`" action-label="Retry" action-busy-label="Retrying…" :action-busy="credentials.loading" @action="store.load('credentials')" /></div>
-        <FirstRunGuide v-if="!setupNavigation && showProviderFirstRun" title="Add provider access or a harness identity" description="Connect an API provider to add chat models, or add a Claude Code or Codex login for an agent running on an edge machine." primary-label="Connect provider" :actions-visible="false" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" />
+        <FirstRunGuide v-if="!setupNavigation && showProviderFirstRun" title="Add provider access or a harness identity" description="Connect an API provider to add chat models, or add a Claude Code or Codex login for an agent running on an edge machine." primary-label="Connect provider" :actions-visible="false" :steps="[]" />
         <ResourceTable
           v-else-if="!setupNavigation || !credentials.error || credentials.hasSnapshot"
           :columns="[{ key: 'name', label: 'Name', primary: true, sortable: true }, { key: 'type', label: 'Type', sortable: true }, ...(setupNavigation ? [] : [{ key: 'endpoint', label: 'Endpoint / machine', sortable: true }]), { key: 'modelCount', label: 'Models', sortable: true, sortValue: connectionModelCountSortValue }, { key: 'status', label: 'Readiness', sortable: true }, { key: 'actions', label: '', ariaLabel: 'Actions', align: 'end' }]"
@@ -623,6 +629,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           :error="setupNavigation ? null : credentials.error"
           :stale="!setupNavigation && credentials.hasSnapshot && !!credentials.error"
           :retryable="!setupNavigation"
+          :inline-empty="setupNavigation && !!credentials.error"
           searchable
           search-placeholder="Search provider access and identities…"
           :search-keys="['name', 'type', 'endpoint']"

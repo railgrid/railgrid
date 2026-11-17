@@ -39,11 +39,6 @@ let requestID = 0
 
 const edgeStatus = computed(() => `${edges.value.length} connected Kubernetes edge${edges.value.length === 1 ? '' : 's'}`)
 
-const firstRunSteps = [
-  { label: 'Connect a Kubernetes edge', description: 'Connect a cluster from the Edges provider in this workspace.' },
-  { label: 'Kuery starts syncing', description: 'Kuery makes the connected cluster available for queries.' },
-  { label: 'Explore your fleet', description: 'Browse resources in Inventory and relationships in Topology.' },
-] as const
 
 const tabs = [
   { id: 'topology', label: 'Topology', icon: Network },
@@ -177,8 +172,7 @@ onBeforeUnmount(() => { requestID += 1 })
         title="Connect your first Kubernetes edge"
         description="Kuery builds a searchable inventory and topology from Kubernetes resources in this workspace."
         primary-label="Connect edge"
-        :steps="firstRunSteps"
-        journey-label="Kuery setup"
+        :steps="[]"
       >
         <template #icon><Inbox :size="24" :stroke-width="1.5" aria-hidden="true" /></template>
         <template #actions><button class="k-btn k-btn--primary" type="button" @click="openEdgeConnection">Connect edge <ArrowRight :stroke-width="1.75" aria-hidden="true" /></button><button class="k-btn k-btn--ghost" type="button" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Checking…' : 'Check again' }}</button></template>

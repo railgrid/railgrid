@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CODE_JOURNEY_STEPS,
   clearCodeReturnIntent,
   codeFirstRunModel,
   codeJourneyStorage,
@@ -22,13 +21,10 @@ describe('Code first-run journey', () => {
 
   it('keeps repository onboarding on the connection prerequisite until one exists', () => {
     const blocked = codeFirstRunModel('repository', false)
-    expect(blocked.currentStep).toBe(0)
     expect(blocked.primary.action).toBe('create-connection')
 
     const ready = codeFirstRunModel('repository', true)
-    expect(ready.currentStep).toBe(1)
     expect(ready.primary.action).toBe('create-repository')
-    expect(CODE_JOURNEY_STEPS.map(step => step.label)).toEqual(['Connection', 'Repository', 'Manage'])
   })
 
   it('restores only a validated, tenant-scoped repository return intent', () => {

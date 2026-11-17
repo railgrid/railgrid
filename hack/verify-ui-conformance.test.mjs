@@ -359,7 +359,8 @@ test('keeps resource-table controls and wide-table scrolling in the canonical re
   const table = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceTable.vue', import.meta.url), 'utf8')
   const sync = fs.readFileSync(new URL('./sync-portalkit.sh', import.meta.url), 'utf8')
 
-  assert.match(table, /class="k-table k-table--resource"/)
+  assert.match(table, /class="k-table--resource"/)
+  assert.match(table, /'k-table': !showEmptyGuide/)
   assert.match(table, /class="k-table__controls"/)
   assert.match(table, /ariaLabel\?: string/)
   const scrollRegion = table.match(/<div\s+ref="tableScrollRegion"[\s\S]*?>/)?.[0] || ''
