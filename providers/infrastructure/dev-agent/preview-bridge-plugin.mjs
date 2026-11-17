@@ -1064,14 +1064,25 @@ const previewBridgeClient = String.raw`(() => {
           failPort();
         }
       };
-      port.postMessage({
-        type: CONNECTED,
-        version: VERSION,
-        sessionID,
-        generation,
-        documentID,
-        path: path(),
-      });
+      const reportConnected = () => {
+        if (port !== nextPort) return;
+        try {
+          nextPort.postMessage({
+            type: CONNECTED,
+            version: VERSION,
+            sessionID: nextSessionID,
+            generation: documentID,
+            documentID,
+            path: path(),
+          });
+        } catch {
+          failPort();
+        }
+      };
+      // Bootstrap runs in the document head. Wait for the page's resources so
+      // the workbench can reveal this document after its styles have loaded.
+      if (document.readyState === "complete") reportConnected();
+      else window.addEventListener("load", reportConnected, { once: true });
     } catch {
       failPort();
       return;

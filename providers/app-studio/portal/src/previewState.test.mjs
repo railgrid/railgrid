@@ -119,9 +119,19 @@ test('keeps a rendered preview visible when only its evidence bridge is unavaila
 		previewURL: 'https://preview.example.com/',
 		authorizationError: '',
 		documentState: 'unavailable',
-		frameLoaded: true,
+		frameVisible: true,
 		recoveryExhausted: true,
 	}), 'Loaded unverified')
+})
+
+test('an unverified document stays loading until the frame is revealed or recovery is offered', () => {
+  const state = {
+    previewURL: 'https://preview.example.com/',
+    authorizationError: '',
+    documentState: 'unavailable',
+  }
+  assert.equal(developmentPreviewDisplayPhase(state), 'Loading')
+  assert.equal(developmentPreviewDisplayPhase({ ...state, recoveryExhausted: true }), 'Error')
 })
 
 test('escalates failed bridge recovery once before using slow background probes', () => {
@@ -208,7 +218,7 @@ test('current document handshake is wired to bounded preview recovery', () => {
 	assert.match(appSource, /developmentPreviewRecoveryAction\(attempt, developmentPreviewRecoveryReloadAttempted\.value\)/)
 	assert.match(appSource, /if \(action\.kind === 'reload'\)[\s\S]*?recoverDevelopmentPreviewDocument\(projectName\)/)
 	assert.match(appSource, /if \(action\.kind === 'background'\)[\s\S]*?recoverDevelopmentPreviewDocument\(projectName\)/)
-	assert.match(appSource, /v-if="developmentPreviewRecoveryError && !developmentPreviewFrameLoaded"[\s\S]*?Retry preview/)
+	assert.match(appSource, /v-if="!developmentPreviewFrameVisible && \(developmentPreviewFrameWaitExceeded \|\| developmentPreviewRecoveryError\)"[\s\S]*?Retry preview/)
 })
 
 test('an unavailable iframe is replaced when the browser tab wakes', () => {

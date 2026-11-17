@@ -143,6 +143,7 @@ test("bridge answers only the configured portal origin", async () => {
     WeakSet,
     queueMicrotask,
     MessageChannel: FakeMessageChannel,
+    document: { readyState: "complete" },
     window,
   });
   vm.runInContext(source, context);
@@ -397,6 +398,7 @@ test("connected annotation mode captures bounded targets without activating the 
   }
 
   const document = new FakeDocument();
+  document.readyState = "complete";
   const fakeConsole = Object.fromEntries(
     ["debug", "log", "info", "warn", "error"].map((level) => [level, () => {}]),
   );
@@ -943,6 +945,7 @@ function loadBridge(bridgeConfiguration, parent = { messages: [] }) {
     URL, Error, Element: FakeNode, Node: FakeNode, TextDecoder, TextEncoder, Uint8Array, atob,
     crypto: { subtle: webcrypto.subtle, getRandomValues: webcrypto.getRandomValues.bind(webcrypto) },
     location: { href: "https://preview.test/", origin: "https://preview.test", pathname: "/", search: "", hash: "" },
+    document: { readyState: "complete" },
     Promise, Date, JSON, Object, Array, String, Number, Boolean, Math, WeakSet, queueMicrotask,
     MessageChannel: FakeMessageChannel,
     window,

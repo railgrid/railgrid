@@ -12,7 +12,7 @@ export interface DevelopmentPreviewDisplayPhaseState {
   previewURL: string
   authorizationError: string
 	documentState: DevelopmentPreviewDocumentState
-	frameLoaded?: boolean
+	frameVisible?: boolean
 	recoveryExhausted?: boolean
 	starting?: boolean
 }
@@ -36,12 +36,10 @@ export function developmentPreviewDisplayPhase(state: DevelopmentPreviewDisplayP
 		return state.starting ? 'Starting' : 'Pending'
 	}
 	if (state.documentState === 'connected') return 'Loaded'
-	// Once the iframe has loaded, a console/annotation bridge failure must not
-	// misrepresent the application itself as unavailable. The bridge is
-	// advisory evidence; the rendered document remains useful without it.
-	if (state.frameLoaded) return 'Loaded unverified'
+	// The browser can load an intermediate sign-in or error document. Only
+	// report an unverified preview once the frame has actually been revealed.
+	if (state.frameVisible) return 'Loaded unverified'
 	if (state.authorizationError || state.recoveryExhausted) return 'Error'
-	if (state.documentState === 'disabled') return 'Loaded unverified'
 	return 'Loading'
 }
 
