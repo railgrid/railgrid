@@ -287,6 +287,30 @@ It needs `hub.publicURL` set on the chart and a runner that advertises
 `remote-mcp-v1`. A change held back for approval is a `change` item in the
 inbox; approving it applies it.
 
+## Starting a run from an application
+
+Two catalogued actions on `agents/{name}` let an App Studio application be
+*granted* an agent rather than hold RBAC or a ServiceAccount token:
+`start-run/v1` admits an unattended run and returns its `runId` at once, and
+`get-run/v1` reads where it got to. A run outlives the integration call
+budget, so the app polls `get-run`. Bind the agent as a `providerReference`
+integration on the Project with both actions. Both ask for consent: each run
+spends the agent's model budget, and its answer can carry anything the
+agent's tools returned.
+
+`start-run` uses the `run` verb's own admission (idempotency, the
+agent-identity fence), with a narrower input: `task`, a required
+`idempotencyKey`, and optionally `expectedAgentUID`, `resultSchema` and
+`runLimits`. With `resultSchema` (on the action or the verb), the agent's
+final answer must be one JSON document matching it. It is checked when the
+turn completes, stored as the `structured-result.json` artifact and returned
+by `get-run` as `structuredResult.value`; a non-conforming answer fails the
+run, which still reports what the agent said. `get-run` reads only the API
+runs of the agent it addresses, never its chat, scheduled or triggered runs,
+nor those of an earlier agent with the same name. The contract, limits and
+error codes are in
+[docs/provider-actions.md](../../docs/provider-actions.md#agents-starting-and-reading-a-run).
+
 ## Dependencies
 
 The only hard dependencies are the **hub** and **Postgres**. That is deliberate:

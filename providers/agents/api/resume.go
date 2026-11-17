@@ -255,6 +255,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		// A repository run's coordinates come back off the record; the clone
 		// source does not, and a re-join does not need it.
 		Repository:      repositoryAttemptFromStored(run.Repository),
+		ResultSchema:    run.ResultSchema,
 		HarnessSettings: run.HarnessSettings,
 		ModelSettings:   run.ModelSettings,
 		ExecutionOwner:  claimed.ExecutionOwner,

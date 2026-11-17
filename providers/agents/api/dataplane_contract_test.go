@@ -127,6 +127,7 @@ func gatedHandler(t *testing.T, s *Server) http.Handler {
 		Name:         "agents",
 		Readiness:    http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }),
 		DataPlane:    s.DataPlane(),
+		Actions:      s.Actions(),
 		Subresources: routes,
 	})
 	if err != nil {
@@ -737,6 +738,10 @@ func parseExportBlock(block string) map[string]verbFacts {
 		}
 		verb, facts = "", verbFacts{}
 	}
+	// Verbs and catalogued actions sit at the same depth under a resource;
+	// only the verbs list is verbs. Actions are checked against the action
+	// table by TestAgentActionsMatchManifest.
+	inVerbs := false
 	for line := range strings.SplitSeq(block, "\n") {
 		trimmed := strings.TrimSpace(line)
 		indent := len(line) - len(strings.TrimLeft(line, " "))
@@ -744,6 +749,11 @@ func parseExportBlock(block string) map[string]verbFacts {
 		case indent == 6 && strings.HasPrefix(trimmed, "- name:"):
 			flush()
 			resource = strings.TrimSpace(strings.TrimPrefix(trimmed, "- name:"))
+			inVerbs = false
+		case indent == 8 && strings.HasSuffix(trimmed, ":") && !strings.Contains(trimmed, " "):
+			flush()
+			inVerbs = trimmed == "verbs:"
+		case !inVerbs:
 		case indent == 10 && strings.HasPrefix(trimmed, "- name:"):
 			flush()
 			verb = strings.TrimSpace(strings.TrimPrefix(trimmed, "- name:"))

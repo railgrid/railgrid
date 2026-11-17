@@ -600,7 +600,11 @@ type taskRun struct {
 	// commit, no history, no harness session, a Git result on completion. The
 	// clone source it carries is dispatch data — held here for the turn and
 	// never persisted; a run rebuilt from its record carries none.
-	Repository      *repositoryAttempt
+	Repository *repositoryAttempt
+	// ResultSchema asks a non-repository run's final answer to be one JSON
+	// document matching this schema (a repository run carries its schema on
+	// Repository). Validated at admission; checked when the turn completes.
+	ResultSchema    json.RawMessage
 	ModelSettings   *store.ModelSettings
 	HarnessSettings *store.HarnessSettings
 	// generateSessionTitle is set only by the live chat transport, so internal
@@ -1165,6 +1169,10 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	// failedResult keeps a verified, stored Git result on a run that fails
 	// for a reason after it, so the work is still retrievable.
 	var failedResult *store.RunResult
+	// failedOutput keeps the answer on a run that fails because the answer
+	// did not match its result schema: the caller that asked for the schema
+	// can then see what the agent actually said, without the transcript.
+	var failedOutput string
 	var structuredResult *store.StructuredResult
 	finishFailedTurn := func(cause error) (runResult, error) {
 		phase := store.RunPhaseFailed
@@ -1193,7 +1201,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			Phase: phase, Message: cause.Error(), Usage: out.Usage.Total.Tokens,
 			CostMicros: out.Usage.Total.CostMicros, UsageCompleteness: string(out.Usage.Completeness), CostBasis: string(out.Usage.CostBasis),
 			WorkedDurationMS: tracker.workedDurationMS(), Harness: harnessT, StructuredResult: structuredResult,
-			Result: failedResult,
+			Result: failedResult, Output: failedOutput,
 		}, end)
 		s.recordAgentRun(persistCtx, run.CR, agent, end, &window)
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
@@ -1271,24 +1279,9 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			})
 		}
 		if len(run.Repository.ResultSchema) > 0 {
-			data, rerr := structuredJSON(finalContent)
-			if rerr == nil {
-				rerr = validateStructuredResult(run.Repository.ResultSchema, data)
-			}
-			state, digest := "valid", ""
+			artifact, verdict, rerr := checkStructuredResult(run.Repository.ResultSchema, finalContent)
 			if rerr != nil {
-				if errors.Is(rerr, errStructuredResultMissing) {
-					structuredFailureState = "missing"
-				} else {
-					structuredFailureState = "invalid"
-				}
-				state = structuredFailureState
-			} else {
-				sum := sha256.Sum256(data)
-				digest = hex.EncodeToString(sum[:])
-				out.Artifacts = append(out.Artifacts, backend.Artifact{Name: StructuredResultArtifactName, MediaType: "application/json", Data: data, Size: int64(len(data)), Digest: digest})
-			}
-			if rerr != nil {
+				structuredFailureState, failedOutput = verdict.State, out.Output
 				// The run fails, but the Git result is verified and stays
 				// retrievable: store its artifacts and keep it on the run.
 				if serr := s.storeRunArtifacts(ctx, scope, runID, out.Artifacts, end); serr == nil {
@@ -1296,11 +1289,28 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 				}
 				return finishFailedTurn(fmt.Errorf("structured result invalid: %w", rerr))
 			}
-			structuredResult = &store.StructuredResult{State: state, Digest: digest, Size: int64(len(data))}
+			out.Artifacts = append(out.Artifacts, artifact)
+			structuredResult = verdict
 		}
 		if serr := s.storeRunArtifacts(ctx, scope, runID, out.Artifacts, end); serr != nil {
 			return finishFailedTurn(fmt.Errorf("git result unusable: storing its artifacts: %w", serr))
 		}
+	}
+	// A non-repository run asked for a structured answer is held to it the
+	// same way a repository run is: the final answer must be one JSON document
+	// matching the caller's schema, stored as the structured-result artifact.
+	// A run that answers in prose, or with JSON that does not match, failed —
+	// the caller asked for something it can store, not something to parse.
+	if run.Repository == nil && len(run.ResultSchema) > 0 {
+		artifact, verdict, rerr := checkStructuredResult(run.ResultSchema, finalContent)
+		if rerr != nil {
+			structuredFailureState, failedOutput = verdict.State, out.Output
+			return finishFailedTurn(fmt.Errorf("structured result invalid: %w", rerr))
+		}
+		if serr := s.storeRunArtifacts(ctx, scope, runID, []backend.Artifact{artifact}, end); serr != nil {
+			return finishFailedTurn(fmt.Errorf("structured result unusable: storing it: %w", serr))
+		}
+		structuredResult = verdict
 	}
 	// The answer goes on the run record too, so a programmatic reader (the parent
 	// of a spawned worker, GET /api/runs/{id}) finds the result where it found the
@@ -1550,6 +1560,7 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 		// so it is on the first record: the Run object is projected from this
 		// write, and its spec is never rewritten afterwards.
 		Repository:      tr.Repository.persisted(),
+		ResultSchema:    tr.ResultSchema,
 		HarnessSettings: tr.HarnessSettings,
 		ModelSettings:   tr.ModelSettings,
 		Phase:           store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,

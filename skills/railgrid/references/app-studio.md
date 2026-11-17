@@ -579,8 +579,19 @@ catalog (409 on drift), then calls the serving provider's own
 `<resource>/<name>/<action>` subresource on the hub as the **Project's
 identity** (not yours) with a two-minute budget and a 4 MiB response cap;
 `Idempotency-Key`, `X-Request-ID`, `X-Railgrid-Action-Deadline-Ms` are
-forwarded. Only shipped action today: Databricks `query_table/v1` (sync,
-read-only, `columns` ≤ 64, `limit` 1..100).
+forwarded. Shipped actions include Databricks `query_table/v1` (sync,
+read-only, `columns` ≤ 64, `limit` 1..100), the code provider's repository
+and connection actions, and Agents `start-run/v1` + `get-run/v1` on
+`agents/<name>`.
+
+To have an app ask an agent for something, bind the agent
+(`resourceRef {apiVersion: agents.railgrid.ai/v1alpha1, kind: Agent, resource: agents, name: <agent>}`)
+with both actions (both need `consentAccepted: true`). Then
+`start-run/v1` with `{task, idempotencyKey, resultSchema?}` returns
+`{runId}` at once, and `get-run/v1` with `{runId}` reports the phase, until a
+terminal one returns `structuredResult.value` (the validated JSON) or
+`finalResponse`. Poll `get-run`: a run outlives the two-minute call budget.
+Contract details are in [agents.md](agents.md) section 4.
 
 Use `"@railgrid/actions-node": "0.2.2"` in the server component's
 `package.json` and import from `@railgrid/actions-node`. Existing apps update

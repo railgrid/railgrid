@@ -59,7 +59,11 @@ spec:
   # Toolsets are an ordinary CR kind with no verbs and no actions, so they need
   # no entry: the APIExport serves them from the schema the chart ships.
   #
-  # This provider declares no actions — every call below is an unversioned verb.
+  # Two calls are also catalogued ACTIONS (versioned, schema'd, grantable to an
+  # App Studio Project — docs/provider-actions.md): start-run and get-run on
+  # agents. They are the run verb and a run read with a narrower contract, so
+  # a generated application can be granted "start this agent and read what it
+  # returned" without holding RBAC of its own. Every other call is a verb.
   export:
     name: "agents.railgrid.ai"
     resources:
@@ -106,6 +110,154 @@ spec:
             readOnly: true
           - name: artifacts
             description: "List or delete caller-owned immutable tool-result captures; source-free details can be read here, while capture and source-backed reads require caller-attended MCP."
+        actions:
+          - name: start-run
+            version: v1
+            displayName: Start an agent run
+            description: Start an unattended run of this agent on a task and return its id at once;
+              read the outcome with get-run. The run acts as the agent's own identity and spends
+              its model budget. A resultSchema makes the final answer one validated JSON document.
+            inputSchema:
+              type: object
+              required:
+              - task
+              - idempotencyKey
+              properties:
+                task:
+                  type: string
+                  minLength: 1
+                  maxLength: 65536
+                idempotencyKey:
+                  type: string
+                  minLength: 1
+                  maxLength: 1024
+                  description: Retrying with the same key and input returns the run already started.
+                expectedAgentUID:
+                  type: string
+                  maxLength: 128
+                resultSchema:
+                  type: object
+                  description: JSON Schema the final answer must match (at most 16 KiB, no $ref).
+                runLimits:
+                  type: object
+                  required:
+                  - maxOutputTokens
+                  properties:
+                    maxOutputTokens:
+                      type: integer
+                      minimum: 1
+                      maximum: 10000000
+                  additionalProperties: false
+              additionalProperties: false
+            outputSchema:
+              type: object
+              required:
+              - runId
+              - phase
+              - reused
+              properties:
+                runId:
+                  type: string
+                phase:
+                  type: string
+                reused:
+                  type: boolean
+              additionalProperties: false
+            schemaDigest: sha256:e1c5c34febbc5ba3a17782f3b2c71f7f4a6badf5f1550d2a0e5fe9f48737eb20
+            executionMode: async
+            readOnly: false
+            risk: medium
+            idempotency: keyed
+            limits:
+              timeoutSeconds: 60
+              maxInputBytes: 1048576
+              maxOutputBytes: 4096
+              maxResultItems: 1
+            consent:
+              required: true
+              prompt: Allow this application to start runs of this agent. Each run acts as the
+                agent and spends its model budget.
+              scope: resource
+          - name: get-run
+            version: v1
+            displayName: Read an agent run
+            description: Read one of this agent's runs - its phase, usage, final answer and, when a
+              resultSchema was given, the validated structured result.
+            inputSchema:
+              type: object
+              required:
+              - runId
+              properties:
+                runId:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+              additionalProperties: false
+            outputSchema:
+              type: object
+              required:
+              - runId
+              - phase
+              - createdAt
+              - usage
+              properties:
+                runId:
+                  type: string
+                phase:
+                  type: string
+                message:
+                  type: string
+                createdAt:
+                  type: string
+                startedAt:
+                  type: string
+                finishedAt:
+                  type: string
+                finalResponse:
+                  type: string
+                truncated:
+                  type: boolean
+                structuredResult:
+                  type: object
+                  required:
+                  - state
+                  properties:
+                    state:
+                      type: string
+                      enum:
+                      - valid
+                      - invalid
+                      - missing
+                    value: {}
+                usage:
+                  type: object
+                  required:
+                  - inputTokens
+                  - outputTokens
+                  - usdMicros
+                  properties:
+                    inputTokens:
+                      type: integer
+                    outputTokens:
+                      type: integer
+                    usdMicros:
+                      type: integer
+              additionalProperties: false
+            schemaDigest: sha256:50a841e28b2cf20fe39be08f1fdd87cf09ad5ef692c7739c7cde42f832e8a8e9
+            executionMode: sync
+            readOnly: true
+            risk: low
+            idempotency: inherent
+            limits:
+              timeoutSeconds: 15
+              maxInputBytes: 1024
+              maxOutputBytes: 524288
+              maxResultItems: 1
+            consent:
+              required: true
+              prompt: Allow this application to read this agent's runs, including their final
+                answers, which can contain anything the agent's tools returned.
+              scope: resource
       # A model credential is an object, so its probes are verbs on IT rather
       # than on some agent that happens to use it. That is what makes first-run
       # work: a workspace with no agent yet can still save a credential and ask

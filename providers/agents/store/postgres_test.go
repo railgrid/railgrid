@@ -294,6 +294,66 @@ func TestPostgres_MessagesRoundTripAndPagination(t *testing.T) {
 	}
 }
 
+// The result schema is part of the request: it round-trips, and a later
+// rewrite of the row that does not carry it — the running record, a finish —
+// leaves it in place, so a resumed run checks against the schema it was
+// admitted with.
+func TestPostgres_RunResultSchemaIsWrittenOnceAndKept(t *testing.T) {
+	stores := map[string]Store{"memory": NewMemoryStore()}
+	if os.Getenv("AGENTS_TEST_POSTGRES_DSN") != "" {
+		stores["postgres"] = openTestPostgres(t)
+	}
+	for name, s := range stores {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			sc := Scope{OrgUUID: "org-" + name, WorkspaceUUID: "ws-" + uuid.NewString(), AgentName: "scout"}
+			now := time.Now().UTC().Truncate(time.Millisecond)
+			schema := json.RawMessage(`{"type":"object"}`)
+			runID := uuid.NewString()
+			if err := s.SaveRun(ctx, sc, Run{
+				ID: runID, AgentName: sc.AgentName, Trigger: "api", Phase: RunPhasePending,
+				ResultSchema: schema, Input: "task", CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatalf("save: %v", err)
+			}
+			got, err := s.GetRun(ctx, sc, runID)
+			if err != nil || !sameJSON(got.ResultSchema, schema) {
+				t.Fatalf("read back resultSchema = %s, %v", got.ResultSchema, err)
+			}
+			if err := s.SaveRun(ctx, sc, Run{
+				ID: runID, AgentName: sc.AgentName, Trigger: "api", Phase: RunPhaseRunning,
+				Input: "task", CreatedAt: now, UpdatedAt: now.Add(time.Second),
+			}); err != nil {
+				t.Fatalf("rewrite: %v", err)
+			}
+			got, err = s.GetRun(ctx, sc, runID)
+			if err != nil || !sameJSON(got.ResultSchema, schema) || got.Phase != RunPhaseRunning {
+				t.Fatalf("after a rewrite without it: resultSchema = %s phase = %s, %v", got.ResultSchema, got.Phase, err)
+			}
+			// A run admitted without one reads back as none, not as "null".
+			bare := uuid.NewString()
+			if err := s.SaveRun(ctx, sc, Run{ID: bare, AgentName: sc.AgentName, Trigger: "api", Phase: RunPhasePending, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := s.GetRun(ctx, sc, bare); err != nil || got.ResultSchema != nil {
+				t.Fatalf("a run with no schema reads back %q, %v", got.ResultSchema, err)
+			}
+		})
+	}
+}
+
+// sameJSON compares two documents by value: JSONB re-spaces what it stores,
+// and the schema's meaning, not its bytes, is what a run is checked against.
+func sameJSON(a, b json.RawMessage) bool {
+	var x, y any
+	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
+		return false
+	}
+	ja, _ := json.Marshal(x)
+	jb, _ := json.Marshal(y)
+	return string(ja) == string(jb)
+}
+
 func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	ps := openTestPostgres(t)
 	ctx := context.Background()

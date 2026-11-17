@@ -249,11 +249,16 @@ func (s *Server) requireClient(w http.ResponseWriter, r *http.Request) (*agentsc
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "a workspace is required — cluster "+id.clusterID+" is an organization workspace; select a workspace first")
 		return nil, identity{}, false
 	}
-	// The client is THE PROVIDER's, through its APIExport virtual workspace,
-	// scoped to the path's cluster: the gate already settled that the caller
-	// may see the addressed object, and there is no caller credential to act
-	// with. Anything a handler reads or writes from here on is what the
-	// provider's export and claims let it see — its own kinds, and Secrets
-	// carrying the railgrid.ai/owner: agents label.
-	return agentsclient.NewFromScope(tenant.NewScopeFromDynamic(id.clusterID, gate.provider)), id, true
+	return gate.providerClient(), id, true
+}
+
+// providerClient is the client a gated handler acts through. It is THE
+// PROVIDER's, through its APIExport virtual workspace, scoped to the path's
+// cluster: the gate already settled that the caller may see the addressed
+// object, and there is no caller credential to act with. Anything a handler
+// reads or writes through it is what the provider's export and claims let it
+// see — its own kinds, and Secrets carrying the railgrid.ai/owner: agents
+// label. Verbs (requireClient) and actions both build it here.
+func (g *gateInfo) providerClient() *agentsclient.Client {
+	return agentsclient.NewFromScope(tenant.NewScopeFromDynamic(g.identity.clusterID, g.provider))
 }

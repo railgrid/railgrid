@@ -595,8 +595,21 @@ func safeTruncate(s string, n int) string {
 	if cut <= 0 {
 		cut, marker = n, ""
 	}
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
+	return runePrefix(s, cut) + marker
+}
+
+// runePrefix is the longest prefix of s that is at most n bytes and does not
+// split a UTF-8 rune. safeTruncate builds on it; a caller that reports the cut
+// some other way than an inline marker uses it directly.
+func runePrefix(s string, n int) string {
+	if n >= len(s) {
+		return s
 	}
-	return s[:cut] + marker
+	if n <= 0 {
+		return ""
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

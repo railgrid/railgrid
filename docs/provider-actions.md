@@ -10,8 +10,10 @@ checks the saved grant and then invokes the provider's own
 `{resource}/{action}` custom subresource through kcp. There is no separate hub
 action proxy. Callers with their own workspace RBAC may invoke a provider
 subresource directly, but generated apps use the saved Project integration.
-The public contract is generic, but the only shipped action is Databricks
-`query-table/v1`.
+The public contract is generic. Shipped actions include Databricks
+`query-table/v1`, the code provider's repository and connection actions, and
+Agents `start-run/v1` and `get-run/v1` (see "Agents: starting and reading a
+run" below).
 
 The action route grammar is the kube path of the custom subresource:
 
@@ -48,7 +50,7 @@ credential model:
 | `executionMode` | `sync` (the result is the effect) or `async` (the call records intent and a controller applies it later, e.g. code's `commit/v1` creates a `RepositoryCommit` the controller then pushes). The transport is the same for both; the mode tells the caller whether to poll the bound object for the outcome. |
 | `readOnly` | Provider declaration that the action does not mutate the bound resource. |
 | `risk` | `low`, `medium`, or `high`, used by consent and UI policy. |
-| `idempotency` | `inherent`, `keyed`, or `none`; keyed idempotency returns `501` until durable deduplication exists. |
+| `idempotency` | `inherent`, `keyed`, or `none`. A `keyed` action carries its key in the input (code's `commit/v1` `requestID`, Agents' `start-run/v1` `idempotencyKey`) and the provider deduplicates on it durably: a retry with the same key and input returns the original outcome. |
 | `limits` | Timeout, input bytes, output bytes, and result-item bounds. |
 | `consent` | Whether explicit approval is required, including its prompt and scope. |
 | `deprecation` | Optional deprecation message, replacement action ID, and sunset timestamp. Deprecated actions cannot receive new grants. |
@@ -143,6 +145,60 @@ Keyed commits keep their staged bundle under the request's logical-cluster ID
 so a retry can replay the same immutable handle. The Code provider relies on
 kcp returning the new `RepositoryCommit` with the matching `kcp.io/cluster`
 annotation and rejects a response that names another scope.
+
+### Agents: starting and reading a run
+
+The agents provider publishes two actions on `agents/{name}`
+(`apiVersion: agents.railgrid.ai/v1alpha1`, `kind: Agent`), so an application
+can be granted "run this agent and read what it returned" without a
+credential of its own:
+
+| Action | Mode | Input | Result |
+|---|---|---|---|
+| `start-run/v1` | `async`, `risk: medium`, `idempotency: keyed`, consent required | `task`, `idempotencyKey`, optional `expectedAgentUID`, `resultSchema`, `runLimits.maxOutputTokens` | `{runId, phase, reused}` |
+| `get-run/v1` | `sync`, `readOnly`, `risk: low`, `idempotency: inherent`, consent required | `runId` | `{runId, phase, message?, createdAt, startedAt?, finishedAt?, finalResponse?, truncated?, structuredResult? {state, value?}, usage}` |
+
+There are two because a run outlives the call budget. `start-run` admits the
+run and returns immediately; the caller polls `get-run` until the phase is
+terminal (`Succeeded`, `Failed`, `Aborted`) or `PendingApproval`.
+
+- **Same admission as the `run` verb.** `start-run` is served by the
+  verb's own admission path, with a narrower input: no session continuation,
+  repository attempt, callback URL or model override. The run executes as
+  the agent's own identity, as every unattended run does, so the grant
+  authorizes starting it and lends the agent nothing of the caller's.
+- **`resultSchema`** makes the final answer one JSON document. The contract
+  is appended to the task (so the transcript shows what was asked), a single
+  outer Markdown code fence is tolerated, and the answer is validated when
+  the turn completes. A valid answer is stored as the `structured-result.json`
+  run artifact and returned by `get-run` as `structuredResult.value`.
+  Otherwise the run fails with `structuredResult.state` `invalid` or
+  `missing`, and `finalResponse` still carries what the agent said. A
+  repository run's `repository.resultSchema` is judged by the same rule.
+- **`task` is bounded in characters** (65,536), as the schema's `maxLength`
+  says. The declared input limit is the catalog's 1 MiB ceiling, so any task
+  the schema accepts fits.
+- **Both require consent.** That keeps them out of App Studio's automatic
+  integration path, which materializes consent-free actions on every
+  assistant turn. `start-run` spends the agent's model budget, and a run's
+  answer can carry anything the agent's tools returned, so neither is granted
+  without someone accepting it.
+- **`get-run` is bound to the agent.** It returns only API runs (those
+  `start-run` or the `run` verb started) of this incarnation of the addressed
+  agent. Another agent's run, a chat turn, a scheduled or triggered run, and
+  a run of an earlier agent with the same name are all `run_not_found`.
+  `finalResponse` is at most 256 KiB raw, and is cut further when needed to
+  keep the *encoded* envelope within the 512 KiB output limit, since JSON
+  escaping can more than double an answer (`truncated` says when). A
+  `valid` structured result whose document cannot be read is
+  `action_unavailable`, never `valid` with no value. `runs/{id}/trace`
+  remains the full transcript for a caller with RBAC on it.
+- **Typed failures:** `invalid_action_input` (400), `agent_not_found` (404),
+  `agent_not_ready` (424: the agent exists but something it is configured
+  with, such as its model credential, does not), `run_not_found` (404),
+  `invocation_conflict` (409: the key was used with different input, or the
+  agent was recreated), `action_unavailable` (503, retryable: includes a gate
+  that could not complete its access check), `backend_failure` (502).
 
 ## Project grants and audit
 

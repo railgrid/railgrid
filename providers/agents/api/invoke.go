@@ -22,10 +22,12 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 
@@ -92,6 +94,13 @@ type invokeRunRequest struct {
 	// session, exporting a Git result the `artifact` verb then serves. See
 	// api/repository.go. Refused on a model-backed agent.
 	Repository *invokeRepository `json:"repository,omitempty"`
+	// ResultSchema asks the run's final answer to be one JSON document
+	// matching this JSON Schema. The agent is told so, the answer is checked
+	// when the turn completes, and a run that does not comply fails with
+	// status.structuredResult saying why ("missing" or "invalid"). A valid
+	// answer is kept as the structured-result.json artifact. Refused on a
+	// repository run, which declares it as repository.resultSchema.
+	ResultSchema json.RawMessage `json:"resultSchema,omitempty"`
 	// Limits requests hard per-run allowances. Only maxOutputTokens is
 	// enforceable by the in-process model backend; maxUSD is rejected explicitly.
 	Limits *invokeRunLimits `json:"runLimits,omitempty"`
@@ -123,6 +132,9 @@ func invocationFingerprint(agentUID string, req *invokeRunRequest) string {
 		}
 		copy.Repository = &repository
 	}
+	if len(copy.ResultSchema) > 0 {
+		copy.ResultSchema = canonicalJSON(copy.ResultSchema)
+	}
 	data, _ := json.Marshal(struct {
 		AgentUID string           `json:"agentUID"`
 		Request  invokeRunRequest `json:"request"`
@@ -144,6 +156,14 @@ func canonicalJSON(raw json.RawMessage) json.RawMessage {
 	}
 	return data
 }
+
+// agentMissingError marks the one NotFound from invokeRun that means the
+// addressed agent does not exist. It reads and classifies exactly like the
+// error it wraps, so the run verb's response is unchanged; an action uses it
+// to tell a missing agent from a missing dependency of one.
+type agentMissingError struct{ error }
+
+func (e agentMissingError) Unwrap() error { return e.error }
 
 type invokeRunResponse struct {
 	RunID string `json:"runId"`
@@ -180,114 +200,125 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := r.PathValue("name")
-
 	var req invokeRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
 	}
-	req.Task = strings.TrimSpace(req.Task)
-	if req.Task == "" && !req.PreventStart {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "task is required")
-		return
-	}
-	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
-	if err := validateIdempotencyKey(req.IdempotencyKey); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-		return
-	}
-	if len(req.ExpectedAgentUID) > 128 {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "expectedAgentUID is too long")
-		return
-	}
-	if err := req.Callback.validate(); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-		return
-	}
-	repository, err := req.Repository.validate()
-	if err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-		return
-	}
-	limits, err := req.Limits.validate()
-	if err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-		return
-	}
-	if repository != nil && strings.TrimSpace(req.SessionID) != "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "a repository run is a fresh checkout and cannot continue a session")
-		return
-	}
-	if req.PreventStart && req.IdempotencyKey == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "preventStart requires idempotencyKey")
-		return
-	}
-
-	agent, err := c.Agents().Get(r.Context(), name, metav1.GetOptions{})
+	status, resp, err := s.invokeRun(r, c, id, r.PathValue("name"), req)
 	if err != nil {
 		writeResourceError(w, err)
 		return
 	}
+	writeJSON(w, status, resp)
+}
+
+// invokeRun is the whole of starting an unattended run, for the `run` verb
+// and the catalogued `start-run` action alike: validation, the idempotency
+// fence, admission and the optional inline wait. It writes no response, so
+// the two transports cannot drift in what they admit. A refusal is a
+// *requestError (or a tenant API error) carrying its own HTTP class; success
+// is the status the verb answers with — 202 while the run is going, 200 once
+// it has settled or a key matched a run already started.
+func (s *Server) invokeRun(r *http.Request, c *agentsclient.Client, id identity, name string, req invokeRunRequest) (int, invokeRunResponse, error) {
+	unavailable := func(msg string) error {
+		return &requestError{http.StatusServiceUnavailable, "ServiceUnavailable", msg}
+	}
+	req.Task = strings.TrimSpace(req.Task)
+	if req.Task == "" && !req.PreventStart {
+		return 0, invokeRunResponse{}, errBadRequest("task is required")
+	}
+	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	if err := validateIdempotencyKey(req.IdempotencyKey); err != nil {
+		return 0, invokeRunResponse{}, errBadRequest(err.Error())
+	}
+	if len(req.ExpectedAgentUID) > 128 {
+		return 0, invokeRunResponse{}, errBadRequest("expectedAgentUID is too long")
+	}
+	if err := req.Callback.validate(); err != nil {
+		return 0, invokeRunResponse{}, errBadRequest(err.Error())
+	}
+	repository, err := req.Repository.validate()
+	if err != nil {
+		return 0, invokeRunResponse{}, errBadRequest(err.Error())
+	}
+	limits, err := req.Limits.validate()
+	if err != nil {
+		return 0, invokeRunResponse{}, errBadRequest(err.Error())
+	}
+	if len(req.ResultSchema) > 0 {
+		if repository != nil {
+			return 0, invokeRunResponse{}, errBadRequest("a repository run declares its schema as repository.resultSchema")
+		}
+		if err := validateResultSchema(req.ResultSchema); err != nil {
+			return 0, invokeRunResponse{}, errBadRequest("resultSchema " + err.Error())
+		}
+	}
+	if repository != nil && strings.TrimSpace(req.SessionID) != "" {
+		return 0, invokeRunResponse{}, errBadRequest("a repository run is a fresh checkout and cannot continue a session")
+	}
+	if req.PreventStart && req.IdempotencyKey == "" {
+		return 0, invokeRunResponse{}, errBadRequest("preventStart requires idempotencyKey")
+	}
+
+	agent, err := c.Agents().Get(r.Context(), name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// Marked, because other reads below 404 too (the agent's model
+			// credential), and only this one means the agent itself is gone.
+			err = agentMissingError{err}
+		}
+		return 0, invokeRunResponse{}, err
+	}
 	if limits != nil && (repository != nil || agent.Spec.Harness() != nil) {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "maxOutputTokens is not supported by harness-backed runs")
-		return
+		return 0, invokeRunResponse{}, errBadRequest("maxOutputTokens is not supported by harness-backed runs")
 	}
 	if req.ExpectedAgentUID != "" && req.ExpectedAgentUID != string(agent.UID) {
-		writeStatus(w, http.StatusConflict, "Conflict", "Agent identity changed since the invocation was prepared")
-		return
+		return 0, invokeRunResponse{}, errConflict("Agent identity changed since the invocation was prepared")
 	}
 	if repository != nil && !agent.Spec.HarnessBacked() {
 		// Only a coding harness on an edge can clone a repository and export a
-		// Git result; an in-process model turn has no checkout to run in.
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "this agent cannot run against a repository")
-		return
+		// result; an in-process model turn has no checkout to run in.
+		return 0, invokeRunResponse{}, errBadRequest("this agent cannot run against a repository")
 	}
 	scope := id.scope(name)
 	fingerprint := invocationFingerprint(string(agent.UID), &req)
 	if req.PreventStart {
 		existing, admitted, err := s.store.PreventStartRun(r.Context(), scope, req.IdempotencyKey, string(agent.UID), fingerprint, time.Now().UTC())
 		if errors.Is(err, store.ErrInvocationAgentChanged) {
-			writeStatus(w, http.StatusConflict, "Conflict", "idempotencyKey belongs to a different Agent identity")
-			return
+			return 0, invokeRunResponse{}, errConflict("idempotencyKey belongs to a different Agent identity")
 		}
 		if err != nil {
-			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "the invocation could not be fenced; retry or check the run")
-			return
+			return 0, invokeRunResponse{}, unavailable("the invocation could not be fenced; retry or check the run")
 		}
 		if !admitted {
 			s.projectRun(r.Context(), scope, existing)
 		}
 		resp, ownerErr := reusedInvocationResponse(existing, string(agent.UID))
 		if ownerErr != nil {
-			writeStatus(w, http.StatusConflict, "Conflict", ownerErr.Error())
-			return
+			return 0, invokeRunResponse{}, errConflict(ownerErr.Error())
 		}
 		resp.Reused = admitted
 		if detail, derr := s.runDetailFor(r.Context(), scope, existing.ID); derr == nil {
 			resp.Run = &detail
 		}
-		writeJSON(w, http.StatusOK, resp)
-		return
+		return http.StatusOK, resp, nil
 	}
 
 	// A retried delivery must not start the work again.
 	if req.IdempotencyKey != "" {
 		existing, found, lookupErr := s.store.FindRunByIdempotencyKey(r.Context(), scope, req.IdempotencyKey)
 		if lookupErr != nil {
-			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "the previous run could not be checked; retry later")
-			return
+			return 0, invokeRunResponse{}, unavailable("the previous run could not be checked; retry later")
 		}
 		if found {
-			s.writeReusedInvocation(w, r, scope, existing, string(agent.UID), fingerprint)
-			return
+			return s.reusedInvocation(r.Context(), scope, existing, string(agent.UID), fingerprint)
 		}
 	}
 
 	settings, err := invokeHarnessSettings(agent, req.Model, req.ReasoningEffort)
 	if err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-		return
+		return 0, invokeRunResponse{}, errBadRequest(err.Error())
 	}
 	if settings != nil && settings.ReasoningEffort != "" {
 		// Read only credential metadata as the provider, just as execution
@@ -295,29 +326,27 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		// the runner still checks model-specific support at dispatch time.
 		cred, err := c.GetModelCredential(r.Context(), strings.TrimSpace(agent.Spec.Harness().CredentialRef))
 		if err != nil {
-			writeResourceError(w, err)
-			return
+			return 0, invokeRunResponse{}, err
 		}
 		cred, err = llm.ResolveModelCredentialForRuntime(r.Context(), c, cred)
 		if err != nil {
-			writeResourceError(w, err)
-			return
+			return 0, invokeRunResponse{}, err
 		}
 		if err := runnerharness.ValidateReasoningEffort(llm.HarnessAdvertisedName(cred.Spec.Provider), settings.ReasoningEffort); err != nil {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-			return
+			return 0, invokeRunResponse{}, errBadRequest(err.Error())
 		}
 	}
 	tr := taskRun{
 		HarnessSettings: settings,
 		Limits:          limits,
-		SessionID:       strings.TrimSpace(req.SessionID), Task: req.Task,
+		SessionID:       strings.TrimSpace(req.SessionID), Task: taskWithResultSchema(req.Task, req.ResultSchema),
 		Trigger:               agentsv1alpha1.RunTriggerAPI,
 		IdempotencyKey:        req.IdempotencyKey,
 		InvocationFingerprint: fingerprint,
 		InvocationAgentUID:    string(agent.UID),
 		Callback:              req.Callback,
 		Repository:            repository,
+		ResultSchema:          canonicalResultSchema(req.ResultSchema),
 		// SourceName attributes the run to its caller in the activity view. The
 		// caller's name comes from the hub's verified header when there is one
 		// and is omitted otherwise — it is a label, never a trust root; the
@@ -342,20 +371,17 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "the run could not be recorded; retry later")
-		return
+		return 0, invokeRunResponse{}, unavailable("the run could not be recorded; retry later")
 	}
 	if admission.Reused && req.IdempotencyKey != "" {
 		existing, found, lookupErr := s.store.FindRunByIdempotencyKey(r.Context(), scope, req.IdempotencyKey)
 		if lookupErr != nil {
-			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "the previous run could not be checked; retry later")
-			return
+			return 0, invokeRunResponse{}, unavailable("the previous run could not be checked; retry later")
 		}
 		if found {
 			// Another request admitted this key first: answer exactly as a
 			// retry that found it up front would.
-			s.writeReusedInvocation(w, r, scope, existing, string(agent.UID), fingerprint)
-			return
+			return s.reusedInvocation(r.Context(), scope, existing, string(agent.UID), fingerprint)
 		}
 	}
 	runID := admission.ID
@@ -371,34 +397,30 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 			if detail, derr := s.runDetailFor(r.Context(), scope, runID); derr == nil {
 				resp.Run = &detail
 			}
-			writeJSON(w, http.StatusOK, resp)
-			return
+			return http.StatusOK, resp, nil
 		}
 		// Out of time, not out of luck: the run continues and the caller polls.
-		writeJSON(w, http.StatusAccepted, invokeRunResponse{RunID: runID, Phase: string(store.RunPhaseRunning), Reused: admission.Reused})
-		return
+		return http.StatusAccepted, invokeRunResponse{RunID: runID, Phase: string(store.RunPhaseRunning), Reused: admission.Reused}, nil
 	}
-	writeJSON(w, http.StatusAccepted, invokeRunResponse{RunID: runID, Phase: string(admission.Phase), Reused: admission.Reused})
+	return http.StatusAccepted, invokeRunResponse{RunID: runID, Phase: string(admission.Phase), Reused: admission.Reused}, nil
 }
 
-// writeReusedInvocation answers a request whose idempotency key already names
-// a run: 200 with the run's detail, or 409 when the key belongs to another
+// reusedInvocation answers a request whose idempotency key already names a
+// run: 200 with the run's detail, or a 409 when the key belongs to another
 // Agent or was used with different input. A prevented key matches any input.
-func (s *Server) writeReusedInvocation(w http.ResponseWriter, r *http.Request, scope store.Scope, existing store.Run, agentUID, fingerprint string) {
+func (s *Server) reusedInvocation(ctx context.Context, scope store.Scope, existing store.Run, agentUID, fingerprint string) (int, invokeRunResponse, error) {
 	resp, ownerErr := reusedInvocationResponse(existing, agentUID)
 	if ownerErr != nil {
-		writeStatus(w, http.StatusConflict, "Conflict", ownerErr.Error())
-		return
+		return 0, invokeRunResponse{}, errConflict(ownerErr.Error())
 	}
 	if !existing.InvocationPrevented && existing.InvocationFingerprint != "" && existing.InvocationFingerprint != fingerprint {
-		writeStatus(w, http.StatusConflict, "Conflict", "idempotencyKey was already used with different invocation input")
-		return
+		return 0, invokeRunResponse{}, errConflict("idempotencyKey was already used with different invocation input")
 	}
 	resp.Reused = true
-	if detail, derr := s.runDetailFor(r.Context(), scope, existing.ID); derr == nil {
+	if detail, derr := s.runDetailFor(ctx, scope, existing.ID); derr == nil {
 		resp.Run = &detail
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return http.StatusOK, resp, nil
 }
 
 func reusedInvocationResponse(run store.Run, agentUID string) (invokeRunResponse, error) {
@@ -521,4 +543,23 @@ func (s *Server) backgroundScoped(ctx context.Context, clusterID string) (dynami
 		return nil, fmt.Errorf("no provider kubeconfig: the virtual workspace is unavailable")
 	}
 	return s.bg.scoped(ctx, clusterID)
+}
+
+// canonicalResultSchema is the schema as the run stores it: re-encoded once,
+// so the stored bytes do not carry the caller's whitespace. Nil stays nil.
+func canonicalResultSchema(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	return canonicalJSON(raw)
+}
+
+// taskWithResultSchema appends the answer contract to the task the agent is
+// given. It is part of the visible task on purpose: whoever reads the
+// transcript sees exactly what the agent was asked to return.
+func taskWithResultSchema(task string, schema json.RawMessage) string {
+	if len(schema) == 0 {
+		return task
+	}
+	return task + "\n\n---\nYour final answer must be exactly one JSON document, with no other text, that validates against this JSON Schema:\n\n" + string(canonicalJSON(schema))
 }

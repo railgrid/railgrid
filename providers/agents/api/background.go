@@ -41,6 +41,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -933,6 +934,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	// recovery sweep) while it sat in the queue; starting it now would
 	// resurrect a run the user already saw end.
 	var repository *repositoryAttempt
+	var resultSchema json.RawMessage
 	var modelSettings *store.ModelSettings
 	var harnessSettings *store.HarnessSettings
 	var storedRun *store.Run
@@ -955,6 +957,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		// dispatch of one fails with the retry message rather than
 		// starting a workspace turn in its place.
 		repository = repositoryAttemptFromStored(stored.Repository)
+		resultSchema = stored.ResultSchema
 		harnessSettings = stored.HarnessSettings
 		modelSettings = stored.ModelSettings
 		// A run picked up for the second time carries how many times it
@@ -976,6 +979,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		ReplyTarget:     job.ReplyTarget,
 		DeliveryKind:    string(job.Kind),
 		Repository:      repository,
+		ResultSchema:    resultSchema,
 		Limits:          runLimits,
 		HarnessSettings: harnessSettings,
 		ModelSettings:   modelSettings,
