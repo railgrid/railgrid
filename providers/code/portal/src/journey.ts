@@ -17,24 +17,12 @@ interface StoredCodeReturnIntent {
 
 type StoredCodeReturnIntents = Record<string, StoredCodeReturnIntent>
 
-export interface CodeJourneyStep {
-  label: string
-  description: string
-}
-
 export interface CodeFirstRunModel {
   title: string
   description: string
-  currentStep: 0 | 1
   primary: { label: string; action: CodeJourneyAction }
   secondary?: { label: string; action: CodeJourneyAction }
 }
-
-export const CODE_JOURNEY_STEPS: readonly CodeJourneyStep[] = [
-  { label: 'Connection', description: 'Git identity and credential' },
-  { label: 'Repository', description: 'Remote repository and access' },
-  { label: 'Manage', description: 'Deploy keys and collaborators' },
-]
 
 export function codeJourneyTenantKey(tenant?: string | null, caller?: string | null): string {
   return JSON.stringify([tenant || '', caller || ''])
@@ -145,7 +133,6 @@ export function codeFirstRunModel(
     return {
       title: 'Connect a GitHub account',
       description: 'Connect once so Railgrid can create and manage repositories for this workspace.',
-      currentStep: 0,
       primary: oauthEnabled
         ? { label: 'Connect with GitHub', action: 'create-connection' }
         : { label: 'Add token manually', action: 'create-connection' },
@@ -159,7 +146,6 @@ export function codeFirstRunModel(
     return {
       title: 'Connect a GitHub account first',
       description: 'Repositories belong to a connection. Add one, then return here to create the repository.',
-      currentStep: 0,
       primary: { label: 'Create connection', action: 'create-connection' },
     }
   }
@@ -167,7 +153,6 @@ export function codeFirstRunModel(
   return {
     title: 'Create your first repository',
     description: 'Choose a connected GitHub owner, repository name, visibility, and initial content.',
-    currentStep: 1,
     primary: { label: 'Create repository', action: 'create-repository' },
   }
 }

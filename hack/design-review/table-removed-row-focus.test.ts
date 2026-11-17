@@ -20,7 +20,9 @@ for (const count of [1, 2]) {
       action.focus()
       action.click()
       await nextTick()
-      expect(document.activeElement).toBe(root.querySelector('[role="region"][aria-label="Services scroll area"]'))
+      const focusSelector = count === 1 ? '[data-resource-table]' : '[role="region"][aria-label="Services scroll area"]'
+      expect(document.activeElement).toBe(root.querySelector(focusSelector))
+      expect(root.querySelector('.k-first-run--simple') !== null).toBe(count === 1)
       expect(root.textContent).toContain(count === 1 ? 'No data' : 'service-1')
     } finally { app.unmount(); root.remove() }
   })
@@ -68,6 +70,6 @@ it('returns focus when a confirmation immediately removes its row', async () => 
     document.querySelector<HTMLButtonElement>('.k-modal-btn--confirm')!.click()
     for (let i = 0; i < 5; i++) await nextTick()
     expect(root.textContent).toContain('No data')
-    expect(document.activeElement).toBe(root.querySelector('[role="region"][aria-label="Services scroll area"]'))
+    expect(document.activeElement).toBe(root.querySelector('[data-resource-table]'))
   } finally { app.unmount(); root.remove() }
 })

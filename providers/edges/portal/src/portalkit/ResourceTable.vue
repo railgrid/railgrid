@@ -26,6 +26,7 @@ import {
   type TableSortDirection,
   type TableSortValue,
 } from './table'
+import FirstRunGuide from './FirstRunGuide.vue'
 import ResourceTableFilter from './ResourceTableFilter.vue'
 import { useDelayedLoading } from './useDelayedLoading'
 
@@ -60,18 +61,19 @@ type ResourceTableColumn = {
 
 const CLIENT_FILTER_DEBOUNCE_MS = 100
 const tableElement = ref<HTMLElement | null>(null)
-let focusedRowBeforeUpdate: Element | null = null
+let focusAnchorBeforeUpdate: Element | null = null
 onBeforeUpdate(() => {
   const focused = document.activeElement
   const row = focused?.matches('.k-table-action, .k-action-menu__trigger') ? focused.closest('tr') : null
-  focusedRowBeforeUpdate = row && tableElement.value?.contains(row) ? row : null
+  const anchor = showEmptyGuide.value ? focused : row
+  focusAnchorBeforeUpdate = anchor && tableElement.value?.contains(anchor) ? anchor : null
 })
 onUpdated(() => {
-  if (focusedRowBeforeUpdate && !focusedRowBeforeUpdate.isConnected && document.activeElement === document.body && tableElement.value?.isConnected) {
+  if (focusAnchorBeforeUpdate && !focusAnchorBeforeUpdate.isConnected && document.activeElement === document.body && tableElement.value?.isConnected) {
     const focusTarget = tableScrollRegion.value ?? tableElement.value
     focusTarget.focus({ preventScroll: true })
   }
-  focusedRowBeforeUpdate = null
+  focusAnchorBeforeUpdate = null
 })
 const MAX_SKELETON_COLUMNS = 6
 const PRIMARY_TOOLTIP_GAP = 6
@@ -100,6 +102,8 @@ const props = withDefaults(defineProps<{
   /** Shows the built-in Retry action. Callers must handle the retry event. */
   retryable?: boolean
   emptyText?: string
+  /** Keep an in-table message for caller-managed filters or a table inside a creation flow. */
+  inlineEmpty?: boolean
   filterEmptyText?: string
   searchEmptyText?: string
   combinedFilterEmptyText?: string
@@ -386,6 +390,18 @@ const staleMessageLive = computed(() => props.refreshMode === 'background' ? 'po
 const showPendingBody = computed(() =>
   (filterPending.value || (props.refreshMode === 'foreground' && !!props.loading)) && visibleRows.value.length === 0,
 )
+const showEmptyGuide = computed(() => !props.inlineEmpty
+  && props.loaded !== false
+  && !initialReadPending.value
+  && props.rows.length === 0
+  && !activeFilters.value
+  && !props.error
+  && !props.stale
+  && !showPendingBody.value
+  && selectedCount.value === 0
+  && (!isServerPagination.value || (
+    currentPage.value === 1 && !props.cursor && !serverHasNext.value && !emptyServerPage.value
+  )))
 const pendingBodyText = computed(() => filterPending.value
   ? (activeFilters.value ? 'Searching resources' : 'Updating results')
   : activeFilters.value ? 'Searching resources' : 'Loading resources')
@@ -1129,12 +1145,12 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
 <template>
   <div
     ref="tableElement"
-    class="k-table k-table--resource"
+    class="k-table--resource"
     role="group"
     :aria-label="tableAriaLabel"
     tabindex="-1"
     data-resource-table
-    :class="[`k-table--${variant}`, { 'k-table--workbench': appearance === 'workbench', 'k-table--selecting': selectionSurfaceVisible && selectedCount > 0 }]"
+    :class="[`k-table--${variant}`, { 'k-table': !showEmptyGuide, 'k-table--workbench': appearance === 'workbench', 'k-table--selecting': selectionSurfaceVisible && selectedCount > 0 }]"
     :aria-busy="ariaBusy"
   >
     <!-- Keep the live region outside layout so background reads cannot move the table. -->
@@ -1146,7 +1162,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         aria-atomic="true"
         style="block-size: 1px; clip: rect(0 0 0 0); clip-path: inset(50%); inline-size: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap;"
       >
-        {{ showInitialLoading && initialReadPending ? `Loading ${tableAriaLabel.toLocaleLowerCase()}` : refreshAnnouncement }}
+        {{ showInitialLoading && initialReadPending ? `Loading ${tableAriaLabel.toLocaleLowerCase()}` : refreshAnnouncement || (showEmptyGuide ? emptyText : '') }}
       </span>
     </Teleport>
     <div v-if="showInitialError" class="k-table__error" role="alert" aria-live="assertive">
@@ -1193,6 +1209,10 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         />
       </div>
     </div>
+
+    <FirstRunGuide v-else-if="showEmptyGuide" :title="emptyText" :steps="[]" :actions-visible="false">
+      <template #icon><Inbox :stroke-width="1.75" aria-hidden="true" /></template>
+    </FirstRunGuide>
 
     <template v-else>
       <div v-if="explicitReadState && error" class="k-table__stale" :role="staleMessageRole" :aria-live="staleMessageLive">

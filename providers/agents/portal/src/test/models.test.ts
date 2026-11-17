@@ -66,15 +66,17 @@ function loadedStore(api: ApiClient, credentials: Credential[]): AppStore {
 }
 
 describe('combined Models page', () => {
-  it.each(harnessActionCredentialStates)('uses the primary Create menu with $label', async ({ credentials }) => {
+  it.each(harnessActionCredentialStates)('keeps one primary action with $label', async ({ credentials }) => {
     const api = stubApi({ catalog: async () => [] })
     const store = loadedStore(api, credentials)
     const { element } = await mountVue(Models, { store, api, setupNavigation: true })
     await settleVue()
 
     const create = element.querySelector('button[aria-label="Create"][aria-haspopup="menu"]')
-    expect(create?.classList.contains('k-btn--primary')).toBe(true)
-    expect(element.querySelector('.k-first-run__actions .k-btn--primary')).toBeNull()
+    const hasModel = credentials.some(credential => Boolean(credential.model))
+    expect(create?.classList.contains('k-btn--primary')).toBe(hasModel)
+    expect(element.querySelectorAll('.k-first-run__actions .k-btn--primary')).toHaveLength(hasModel ? 0 : 1)
+    expect(element.querySelector('.k-first-run__journey')).toBeNull()
   })
 
   it('keeps model assignments, capabilities and pricing in expandable row details', async () => {

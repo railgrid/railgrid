@@ -228,6 +228,7 @@ function followInstancesLink(event: MouseEvent): void {
         :error="error"
         :stale="loaded && !!error"
         retryable
+        :inline-empty="!!category || !!cloud"
         :empty-text="templates.length === 0 ? 'No infrastructure templates are available in this workspace.' : 'No templates match the current filters.'"
         interactive
         :row-aria-label="(row) => `Provision template ${String(row.identity)}`"

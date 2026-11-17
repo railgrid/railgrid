@@ -165,12 +165,12 @@ these failed removal targets available through an explicit retry action,
 independent of table selection, until cleanup succeeds or the scope changes.
 Retry must confirm the targets again and revalidate the current authority.
 
-A successfully loaded empty inventory with no selection omits column headers,
-the selection column, and any otherwise empty toolbar space. Its message wraps
-within the available width. Keep search and filter controls
-when they are needed to recover from zero matching results. An empty server
-page must retain the selection toolbar when resources on another page remain
-selected.
+A successfully loaded empty inventory with no selection uses the centered
+[FirstRunGuide](first-run-guide.md) with the table's `emptyText`. A collection
+can supply its own guide for a resource-specific next action. Keep the table's
+search and filter controls when they are needed to recover from zero matching
+results. An empty server page must retain the selection toolbar when resources
+on another page remain selected.
 
 ## Content
 

@@ -70,14 +70,13 @@ it('primary create forms expose native constraints, field errors, focus recovery
   expect(repositoryCreate).toContain('code-repository-connection-error')
 })
 
-it('authoritative empty collections use the shared first-run journey', () => {
+it('authoritative empty collections use the centered first-run guide', () => {
   for (const source of [connectionCollection, repositoryCollection]) {
     expect(source).toMatch(/import FirstRunGuide from '\.\.\/portalkit\/FirstRunGuide\.vue'/)
     expect(source).toMatch(/const showFirstRun = computed\(\(\) => loaded\.value/)
     expect(source).toMatch(/<FirstRunGuide[\s\S]*v-if="showFirstRun"/)
     expect(source).toMatch(/<ResourceTable[\s\S]*v-else/)
-    expect(source).toContain('CODE_JOURNEY_STEPS')
-    expect(source).toContain('journey-label="Code setup path"')
+    expect(source).toContain(':steps="[]"')
   }
   expect(connectionCollection).toMatch(/oauthLoaded\.value[^\n]*connections\.value\.length === 0/)
   expect(connectionCollection).not.toMatch(/showFirstRun = computed\([^\n]*oauthError/)

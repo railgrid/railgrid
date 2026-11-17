@@ -73,11 +73,6 @@ watch(showFirstRun, visible => {
     if (focused && !focused.isConnected && document.activeElement === document.body) heading.value?.focus()
   })
 })
-const edgeJourney = [
-  { label: 'Configure edge', description: 'Choose its workspace name, type, and scheduling labels.' },
-  { label: 'Install agent', description: 'Run the generated Helm or CLI command with a one-time join token.' },
-  { label: 'Connected', description: 'The agent opens its outbound tunnel and reports its version.' },
-]
 
 function edgeRowAriaLabel(row: Record<string, unknown>): string {
   const type = String(row.typeLabel)
@@ -155,8 +150,7 @@ async function dismissDeleteFailure(key: string) {
       title="Connect your first edge"
       description="Connect a Kubernetes cluster or a Linux or MacOS host. The Railgrid agent dials out, so the target needs no inbound firewall rule, VPN, or public IP."
       primary-label="Connect edge"
-      :steps="edgeJourney"
-      journey-label="Edge connection path"
+      :steps="[]"
     >
       <template #icon><Server aria-hidden="true" /></template>
       <template #actions><a class="k-btn k-btn--primary" :href="connectHref()" @click="followConnectLink">Connect edge <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>

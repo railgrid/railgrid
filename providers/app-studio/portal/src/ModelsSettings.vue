@@ -824,19 +824,19 @@ watch(
           <p class="k-resource-page__subtitle">Use models in projects. Each model shows its provider connection or direct credential.</p>
         </div>
         <div v-if="!showFirstRun" class="k-resource-page__actions">
-          <ActionMenu label="Create" primary-menu :items="createActions" :disabled="saving || connectionsLoading" @select="selectCreateAction" />
+          <ActionMenu label="Create" show-label :primary-menu="onboarding || !showFirstModel" :items="createActions" :disabled="saving || connectionsLoading" @select="selectCreateAction" />
         </div>
       </header>
 
-      <FirstRunGuide v-if="showFirstRun" title="Connect a provider to add models" description="Connect a provider once, then reuse it across models in App Studio." primary-label="Connect provider" :steps="[
+      <FirstRunGuide v-if="showFirstRun" title="Connect a provider to add models" description="Connect a provider once, then reuse it across models in App Studio." primary-label="Connect provider" :steps="onboarding ? [
         { label: 'Connect a provider', description: 'Save a workspace credential.' },
         { label: 'Add a model', description: 'Choose a model on the saved connection.' },
         { label: 'Use it in projects', description: 'Select a model when creating or chatting.' },
-      ]" @primary="openConnectionEditor()"><template #icon><Cpu :stroke-width="1.75" /></template></FirstRunGuide>
+      ] : []" @primary="openConnectionEditor()"><template #icon><Cpu :stroke-width="1.75" /></template></FirstRunGuide>
       <FirstRunGuide v-else-if="showFirstModel" title="Add a model" description="Choose a model from a connected provider to create projects and chat in App Studio." :steps="[]">
         <template #icon><Cpu :stroke-width="1.75" /></template>
         <template #actions>
-          <button type="button" class="k-btn k-btn--ghost" :disabled="saving || modelLimitReached" @click="emit('openEditor')">
+          <button type="button" class="k-btn" :class="onboarding ? 'k-btn--ghost' : 'k-btn--primary'" :disabled="saving || modelLimitReached" @click="emit('openEditor')">
             Add model <ArrowRight :stroke-width="1.75" aria-hidden="true" />
           </button>
         </template>
@@ -882,7 +882,12 @@ watch(
             <ResourceTableDeleteButton :label="`Delete ${saved.name}`" :disabled="saving" @click="emit('delete', saved.id)" />
           </template>
         </ModelCollection>
-        <p v-else-if="settings && !loadError && !loading && !showFirstRun && !showFirstModel" class="text-[13px] text-text-muted">No models configured</p>
+        <template v-else-if="settings && !loadError && !loading && !showFirstRun && !showFirstModel">
+          <p v-if="onboarding" class="text-[13px] text-text-muted">No models configured</p>
+          <FirstRunGuide v-else title="No models configured" :steps="[]" :actions-visible="false">
+            <template #icon><Cpu :stroke-width="1.75" aria-hidden="true" /></template>
+          </FirstRunGuide>
+        </template>
       </div>
 
       <section class="k-resource-page k-resource-page--collection app-studio-provider-connections k-table-stack-actions" aria-labelledby="app-studio-provider-connections-title">
@@ -910,7 +915,12 @@ watch(
             <ResourceTableDeleteButton :label="`Delete provider connection ${row.name}`" :disabled="saving || connectionBusy || connectionBindingCount(row) > 0 || connectionFromTableRow(row).deleting" @click="emit('deleteConnection', connectionFromTableRow(row))" />
           </template>
         </ResourceTable>
-        <p v-else-if="connectionsLoaded && !connectionsError && !showFirstRun" class="text-[13px] text-text-muted">No provider connections</p>
+        <template v-else-if="connectionsLoaded && !connectionsError && !showFirstRun">
+          <p v-if="onboarding" class="text-[13px] text-text-muted">No provider connections</p>
+          <FirstRunGuide v-else title="No provider connections" description="Save a workspace credential to add models from a provider." primary-label="Connect provider" :steps="[]" @primary="openConnectionEditor()">
+            <template #icon><Cpu :stroke-width="1.75" aria-hidden="true" /></template>
+          </FirstRunGuide>
+        </template>
       </section>
     </template>
 

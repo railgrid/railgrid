@@ -4,6 +4,43 @@ import ResourcePage from '../../provider-sdk/portalkit-vue/ResourcePage.vue'
 import ResourceTable from '../../provider-sdk/portalkit-vue/ResourceTable.vue'
 import { DEFAULT_LOADING_INDICATOR_DELAY_MS } from '../../provider-sdk/portalkit-vue/useDelayedLoading'
 
+it('uses the centered guide only for an empty collection', async () => {
+  const root = document.createElement('div')
+  document.body.append(root)
+  const state = reactive({ loaded: false, loading: true, error: null as string | null, query: '', page: 1 })
+  const app = createApp({ render: () => h(ResourceTable, {
+    ...state, ariaLabel: 'Services', columns: [{ key: 'name', label: 'Service' }], rows: [],
+    paginationMode: 'server', pageInfo: { hasNext: false }, searchable: true,
+    emptyText: 'No services yet.',
+  }) })
+  try {
+    app.mount(root)
+    const guide = () => root.querySelector('.k-first-run--simple')
+    expect(guide()).toBeNull()
+
+    Object.assign(state, { loading: false, error: 'Services unavailable.' })
+    await nextTick()
+    expect(guide()).toBeNull()
+    expect(root.querySelector('[role="alert"]')?.textContent).toContain(state.error)
+
+    Object.assign(state, { loaded: true, error: null })
+    await nextTick()
+    expect(guide()?.textContent).toContain('No services yet.')
+    expect(root.querySelector('table')).toBeNull()
+
+    state.query = 'api'
+    await nextTick()
+    expect(guide()).toBeNull()
+    expect(root.querySelector('input[type="search"]')).not.toBeNull()
+    expect(root.querySelector('.k-table__empty-label')?.textContent).toContain('No resources match your search.')
+
+    Object.assign(state, { query: '', page: 2 })
+    await nextTick()
+    expect(guide()).toBeNull()
+    expect(root.querySelector('.k-table__empty-label')?.textContent).toContain('No results on this page.')
+  } finally { app.unmount(); root.remove() }
+})
+
 for (const surface of ['page', 'table']) {
   it(`delays ${surface} loading feedback and retains data on refresh`, async () => {
     const dialog = document.createElement('dialog')

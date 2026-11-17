@@ -533,9 +533,7 @@ function cancel(): void {
       title="Create your first webhook"
       description="A webhook is the URL a sender posts events to. Create one, paste its URL into GitHub (or any sender), then add triggers that route from it."
       primary-label="Create webhook"
-      :steps="[{ label: 'Webhook', description: 'Get an inbound URL' }, { label: 'Sender', description: 'Paste the URL into GitHub or your service' }, { label: 'Trigger', description: 'Route deliveries to an agent with a filter' }]"
-      :current-step="0"
-      journey-label="Webhook setup path"
+      :steps="[]"
       @primary="openCreate"
     ><template #icon><WebhookIcon :stroke-width="1.75" aria-hidden="true" /></template></FirstRunGuide>
     <ResourceTable
