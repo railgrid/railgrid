@@ -225,6 +225,14 @@ func (s *Server) startRunAction(r *http.Request, c *agentsclient.Client, id iden
 	if utf8.RuneCountInString(in.Task) > maxActionTaskChars {
 		return nil, invalidInput("task exceeds 65536 characters")
 	}
+	// start-run is an automation grant, not attended use: an App Studio
+	// Project calls it as its own workload identity, which can never hold
+	// `use` on a ModelProviderConnection. The run spends the agent's
+	// configured models under the delegation Schedules and Triggers already
+	// have (docs/agents-model-provider-connections.md, "Access"). The caller
+	// was still authorized for agents/start-run and gated on `get` for the
+	// agent; only the provider-account check is delegated.
+	r = r.WithContext(agentsclient.WithDelegatedModelUse(r.Context()))
 	_, resp, err := s.invokeRun(r, c, id, agent, invokeRunRequest{
 		Task: in.Task, IdempotencyKey: in.IdempotencyKey, ExpectedAgentUID: in.ExpectedAgentUID,
 		ResultSchema: in.ResultSchema, Limits: in.RunLimits,

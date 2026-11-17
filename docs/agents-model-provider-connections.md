@@ -84,6 +84,14 @@ of provider-account use, just as configuring an Agent previously delegated use
 of its direct ModelCredential. A connection reference does not grant the
 attended caller access to the underlying Secret.
 
+A run admitted through the `start-run/v1` action is under the same delegation.
+The action is an automation grant: it requires consent, and an App Studio
+Project calls it as its own workload identity, which the hub never grants `use`
+on a provider connection. The caller is still authorized for `agents/start-run`
+and gated on `get` for the agent; only the connection `use` check stops asking
+about the caller. The `run` verb is unchanged and still requires `use` from the
+stamped caller.
+
 ## Credential writes
 
 New provider connections and direct credentials are persisted with their

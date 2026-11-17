@@ -167,6 +167,11 @@ terminal (`Succeeded`, `Failed`, `Aborted`) or `PendingApproval`.
   repository attempt, callback URL or model override. The run executes as
   the agent's own identity, as every unattended run does, so the grant
   authorizes starting it and lends the agent nothing of the caller's.
+- **The agent's models are delegated, not the caller's.** The run uses the
+  models configured on the agent, under the same delegation as a Schedule or
+  Trigger run. The caller needs no `use` on the agent's
+  `ModelProviderConnection`, and a Project's workload identity can never hold
+  it. The `run` verb, by contrast, still asks its caller for `use`.
 - **`resultSchema`** makes the final answer one JSON document. The contract
   is appended to the task (so the transcript shows what was asked), a single
   outer Markdown code fence is tolerated, and the answer is validated when

@@ -31,11 +31,33 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
+type delegatedModelUseKey struct{}
+
+// WithDelegatedModelUse marks ctx as a run admitted through an automation
+// grant (the start-run/v1 action). Such a run uses the agent's configured
+// models under the same delegation as a Schedule, Trigger or Webhook run:
+// whoever configured the Agent delegated use of its provider account, and the
+// caller was authorized for the consent-gated action, not for the account. The
+// caller's identity stays on ctx for attribution and every other check; only
+// the use check below stops asking about it.
+func WithDelegatedModelUse(ctx context.Context) context.Context {
+	return context.WithValue(ctx, delegatedModelUseKey{}, true)
+}
+
+func delegatedModelUse(ctx context.Context) bool {
+	delegated, _ := ctx.Value(delegatedModelUseKey{}).(bool)
+	return delegated
+}
+
 // AuthorizeModelProviderConnectionUse separates visibility from use of a paid
 // provider account. Attended verbs check the stamped caller; caller-scoped MCP
 // uses SelfSubjectAccessReview. Unattended controllers run configured Agents as
-// the provider and have no caller to impersonate.
+// the provider and have no caller to impersonate, and a run admitted through an
+// automation grant (WithDelegatedModelUse) is treated the same way.
 func AuthorizeModelProviderConnectionUse(ctx context.Context, d dynamic.Interface, name string, callerScoped bool) error {
+	if delegatedModelUse(ctx) {
+		return nil
+	}
 	var allowed bool
 	var err error
 	if identity, ok := dataplane.ProxiedIdentityFrom(ctx); ok {
