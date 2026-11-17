@@ -4,6 +4,7 @@ import { computed, nextTick, onActivated, onMounted, onUnmounted, ref } from 'vu
 import { ArrowRight, ExternalLink, GitBranch, Link2 } from 'lucide-vue-next'
 import { api } from '../api'
 import { CODE_JOURNEY_STEPS, codeFirstRunModel, type CodeJourneyAction } from '../journey'
+import { repositoryDeletionPresentation } from '../repositoryDeletion'
 import type { Connection, ErrorResponse, Repository } from '../types'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import InlineNotification from '../portalkit/InlineNotification.vue'
@@ -78,7 +79,17 @@ const columns = [
 const rows = computed<Array<Record<string, unknown>>>(() => repos.value
   .map(repository => {
     const deleting = isDeleting(repository)
-    return { ...repository, deleting, url: repository.htmlURL || '', status: deleting ? 'Deleting' : repositoryStatus(repository), actions: '' }
+    const deletion = repositoryDeletionPresentation(repository)
+    const repositoryLabel = repository.owner ? `${repository.owner}/${repository.repo}` : repository.repo || repository.name
+    return {
+      ...repository,
+      deleting,
+      url: repository.htmlURL || '',
+      status: deleting ? 'Deleting' : repositoryStatus(repository),
+      deleteLabel: `${deletion.actionLabel} ${repositoryLabel}`,
+      deleteBusyLabel: `${deletion.pendingLabel} ${repositoryLabel}…`,
+      actions: '',
+    }
   }))
 const availableConnections = computed(() => connections.value.filter(connection => (
   !connection.deletionTimestamp && !props.deletions.has('connection', connection.name, connection.uid)
@@ -302,21 +313,18 @@ async function dismissMutationError(name: string) {
 async function remove(row: Record<string, unknown>) {
   const repository = row as unknown as Repository
   if (isDeleting(repository)) return
-  const ok = await confirmDialog({
-    title: `Delete repository "${repository.repo}"?`,
-    message: 'This removes the repository on the git host. This cannot be undone.',
-    confirmLabel: 'Delete',
-    danger: true,
-  })
+  const ok = await confirmDialog(repositoryDeletionPresentation(repository).confirmation)
   if (!ok || !mounted) return
   const lock = operationKey('repository', repository.name)
   if (!operations.acquire(lock, 'deleting')) return
   try {
-    await api.deleteRepository(repository.name)
+    await api.deleteRepository(repository)
     if (!mounted) return
     clearMutationError(`${repository.name}:${repository.uid || ""}`)
     props.deletions.acknowledge(deletionScope, repository.name, repository.uid)
-    toast('info', `Repository deletion requested for ${repository.name}.`)
+    toast('info', repository.retainsRemote === true
+      ? `Repository registration removal requested for ${repository.name}.`
+      : `Repository deletion requested for ${repository.name}.`)
     loadRepositories()
   } catch (e) {
     if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged') mutationErrors.value = { ...mutationErrors.value, [`${repository.name}:${repository.uid || ""}`]: { name: repository.name, message: errMessage(e) } }
@@ -524,8 +532,8 @@ onUnmounted(() => {
       <template #actions="{ row }">
         <div class="code-row-actions">
           <ResourceTableDeleteButton
-            :label="`Delete repository ${String(row.repo || row.name)}`"
-            :busy-label="`Deleting repository ${String(row.repo || row.name)}…`"
+            :label="String(row.deleteLabel)"
+            :busy-label="String(row.deleteBusyLabel)"
             :busy="Boolean(row.deleting) || operations.phase(operationKey('repository', String(row.name))) === 'deleting'"
             :disabled="Boolean(row.deleting) || operations.isLocked(operationKey('repository', String(row.name)))"
             @click="remove(row)"

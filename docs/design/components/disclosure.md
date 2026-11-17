@@ -57,8 +57,10 @@ independent interactive controls inside the summary.
 The [shared recipe](../../../provider-sdk/portalkit/railgrid-ui.css) provides
 both variants. The [disclosure specimen](http://127.0.0.1:5197/?entry=design.components.disclosure)
 compares them; the [Agent run fixture](http://127.0.0.1:5200/) shows disclosures
-in context with sample data. Product-wide adoption and assistive-technology
-review remain pending.
+in context with sample data. The [Edges detail view](../../../providers/edges/portal/src/Detail.vue)
+uses the contextual recipe for its agent-join, kubectl, and SSH access instructions.
+This route-level example does not establish product-wide adoption; the broader
+adoption and assistive-technology reviews remain pending.
 
 ## Related guidance
 

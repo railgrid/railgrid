@@ -397,55 +397,8 @@ railgrid-provider-edges .edge-upgrade__banner {
 railgrid-provider-edges .edge-upgrade__banner .row { gap: 6px; min-width: 0; }
 railgrid-provider-edges .edge-upgrade__commands { display: flex; min-width: 0; flex-direction: column; gap: 12px; }
 railgrid-provider-edges .edge-upgrade__commands > p { margin: 0; font-size: 11px; }
-railgrid-provider-edges .edge-disclosure {
-  min-width: 0;
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  border-radius: 6px;
-  background: var(--color-surface-raised, #111320);
-}
-railgrid-provider-edges .edge-disclosure summary {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  cursor: pointer;
-  list-style: none;
-  padding: 12px 14px;
-  color: var(--color-text-primary, #e9e9f2);
-  font-size: 13px;
-  font-weight: 600;
-}
-railgrid-provider-edges .edge-disclosure summary::-webkit-details-marker,
-railgrid-provider-edges .edge-disclosure summary::marker { display: none; }
-railgrid-provider-edges .edge-disclosure summary::before {
-  content: '›';
-  flex: none;
-  color: var(--color-text-muted, #5d5f78);
-  font-size: 18px;
-  line-height: 1;
-  transform: rotate(0deg);
-  transition: transform .15s ease;
-}
-railgrid-provider-edges .edge-disclosure[open] summary::before { transform: rotate(90deg); }
-railgrid-provider-edges .edge-disclosure summary:focus-visible {
-  outline: 2px solid var(--color-accent, #8b6bff);
-  outline-offset: -2px;
-}
-railgrid-provider-edges .edge-disclosure__hint {
-  min-width: 0;
-  color: var(--color-text-muted, #5d5f78);
-  font-size: 11px;
-  font-weight: 400;
-  overflow-wrap: anywhere;
-  text-align: right;
-}
 railgrid-provider-edges .edge-disclosure__body {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
   gap: 10px;
-  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   padding: 14px;
 }
 railgrid-provider-edges .edge-disclosure__body > p { margin: 0; font-size: 12px; }
@@ -491,7 +444,6 @@ railgrid-provider-edges .edge-technical pre { overflow: auto; }
   railgrid-provider-edges .edge-detail__provider-mark { width: 32px; height: 32px; }
   railgrid-provider-edges .edge-detail__resource > section > header { padding-inline-start: 44px; }
   railgrid-provider-edges .edge-detail__actions { width: 100%; justify-content: flex-start; }
-  railgrid-provider-edges .edge-disclosure summary { align-items: flex-start; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -634,7 +586,6 @@ railgrid-provider-edges .service-detail__credential-row {
 railgrid-provider-edges .service-detail__credential-row .fld { flex: 1 1 180px; min-width: 0; }
 railgrid-provider-edges .service-detail__status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 railgrid-provider-edges .service-detail__url { display: block; margin-top: 12px; overflow-wrap: anywhere; font-size: 12px; }
-railgrid-provider-edges .service-detail__mutation-error { margin-bottom: 0; }
 
 @media (max-width: 720px) {
   railgrid-provider-edges .types,

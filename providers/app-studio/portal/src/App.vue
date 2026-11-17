@@ -995,7 +995,9 @@ const importRepositories = ref<ImportRepository[]>([])
 const importSelectedRepository = ref('')
 const importBusy = ref(false)
 const importRepositoriesLoading = ref(false)
+const importRepositoriesHasSnapshot = ref(false)
 const importRepositoriesError = ref<string | null>(null)
+const importRepositoriesErrorNotice = ref<HTMLElement | null>(null)
 let importRepositoriesLoadSerial = 0
 const importError = ref<string | null>(null)
 const developmentTemplates = ref<DevelopmentTemplate[]>([])
@@ -1784,6 +1786,7 @@ function invalidateProjectContextState() {
   publishingMembersLoaded.value = false
   shareMode.value = 'restricted'
   importRepositories.value = []
+  importRepositoriesHasSnapshot.value = false
   importRepositoriesError.value = null
   importSelectedRepository.value = ''
   developmentTemplates.value = []
@@ -4087,19 +4090,35 @@ async function retryLLMSettings(waitForConfiguredModel = false) {
 }
 
 async function loadImportRepositories() {
+  if (importRepositoriesLoading.value) return
   const serial = ++importRepositoriesLoadSerial
   if (!props.ctx?.token) {
     importRepositoriesLoading.value = false
     importRepositories.value = []
+    importRepositoriesHasSnapshot.value = false
     importRepositoriesError.value = null
     return
   }
   importRepositoriesLoading.value = true
-  importRepositoriesError.value = null
   try {
     const repositories = await api.listImportRepositories(props.ctx)
     if (serial !== importRepositoriesLoadSerial) return
+    const restoreFocus = importRepositoriesErrorNotice.value?.contains(document.activeElement)
     importRepositories.value = repositories
+    importRepositoriesHasSnapshot.value = true
+    importRepositoriesError.value = null
+    if (!repositories.some(repository => repository.ref === importSelectedRepository.value)) {
+      importSelectedRepository.value = ''
+    }
+    if (restoreFocus) {
+      importRepositoriesLoading.value = false
+      await nextTick()
+      if (serial === importRepositoriesLoadSerial && landingImportOpen.value &&
+        (!document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected)) {
+        const target = landingImportDialogRef.value?.querySelector<HTMLElement>('#landing-import-repository, [data-import-refresh]')
+        ;(target || landingImportDialogRef.value)?.focus({ preventScroll: true })
+      }
+    }
   } catch (e) {
     if (serial !== importRepositoriesLoadSerial) return
     importRepositoriesError.value = e instanceof Error ? e.message : String(e)
@@ -11073,26 +11092,36 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       <div class="text-[13px] font-semibold">
                         Import repository
                       </div>
-                      <div v-if="importRepositoriesLoading && importRepositories.length === 0" class="grid gap-2" role="status" aria-busy="true">
+                      <div v-if="importRepositoriesLoading && !importRepositoriesHasSnapshot && !importRepositoriesError" class="grid gap-2" role="status" aria-busy="true">
                         <div class="shimmer h-8 w-full rounded-md bg-surface" />
                         <div class="text-[12px] text-text-secondary">Loading repositories…</div>
                       </div>
-                      <div v-else-if="importRepositoriesError && importRepositories.length === 0" class="grid gap-2 text-[12px] text-danger" role="alert">
-                        <span>{{ importRepositoriesError }}</span>
-                        <button type="button" class="app-studio-touch-target w-fit font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
+                      <div v-if="importRepositoriesError" ref="importRepositoriesErrorNotice">
+                        <InlineNotification
+                          :tone="importRepositoriesHasSnapshot ? 'warning' : 'error'"
+                          :title="importRepositoriesHasSnapshot ? 'Repositories may be out of date' : 'Could not load repositories'"
+                          :message="importRepositoriesError"
+                          action-label="Retry"
+                          action-busy-label="Retrying repositories…"
+                          :action-busy="importRepositoriesLoading"
+                          @action="loadImportRepositories"
+                        />
                       </div>
-                      <div v-else-if="importRepositories.length === 0" class="grid gap-2 text-[12px] text-text-secondary" role="status">
-                        <span>No unclaimed repositories available.</span>
-                        <button type="button" class="app-studio-touch-target w-fit font-medium text-accent underline underline-offset-2" @click="loadImportRepositories">Refresh</button>
+                      <div v-if="importRepositoriesHasSnapshot && importRepositories.length === 0" class="grid gap-2 text-[12px] text-text-secondary">
+                        <p role="status">{{ importRepositoriesError ? 'No repositories were listed in the last successful read.' : 'No repositories are available to import.' }}</p>
+                        <p>Import a repository into Code, or create one there, then refresh this list. Repositories already linked to a project are excluded.</p>
+                        <a
+                          :href="portalHref('/providers/code/repositories', props.ctx)"
+                          class="app-studio-touch-target w-fit font-medium text-accent underline underline-offset-2"
+                          target="_blank"
+                          rel="noopener"
+                        >Open Code repositories (new tab)</a>
+                        <button v-if="!importRepositoriesError" type="button" class="k-btn k-btn--ghost w-fit" data-import-refresh :aria-disabled="importRepositoriesLoading ? 'true' : undefined" :aria-busy="importRepositoriesLoading ? 'true' : undefined" @click="loadImportRepositories">{{ importRepositoriesLoading ? 'Refreshing…' : 'Refresh' }}</button>
                       </div>
-                      <div v-else class="grid gap-2">
+                      <div v-else-if="importRepositories.length" class="grid gap-2">
                         <div v-if="importRepositoriesLoading" class="flex items-center gap-2 text-[11px] text-text-secondary" role="status" aria-busy="true">
                           <Loader2 class="h-3.5 w-3.5 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
                           Updating repositories…
-                        </div>
-                        <div v-if="importRepositoriesError" class="flex flex-wrap items-center gap-2 text-[12px] text-danger" role="alert">
-                          <span>{{ importRepositoriesError }}</span>
-                          <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
                         </div>
                         <label for="landing-import-repository" class="text-[11px] font-medium text-text-secondary">Choose a repository</label>
                         <select
@@ -11116,9 +11145,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                           Import project
                         </button>
                       </div>
-                      <div v-if="importError" class="rounded-lg border border-danger/30 bg-danger-subtle p-2 text-[12px] text-danger" role="alert">
-                        {{ importError }}
-                      </div>
+                      <InlineNotification v-if="importError" tone="error" title="Could not import repository" :message="importError" />
                     </div>
                   </div>
                 </header>

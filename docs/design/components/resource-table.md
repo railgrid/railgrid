@@ -201,6 +201,11 @@ value sits in `.k-table__cell-value`, which ellipsizes at
 therefore fits its card at desktop widths however long a name, message or
 identifier is.
 
+Text-only `.k-table-resource-link` anchors inside either value wrapper remain
+inline, so the wrapper ellipsizes the label and its overflow measurement can
+trigger the full-value disclosure. Structured link content keeps its own
+layout.
+
 Horizontal scrolling is the fallback for when the capped columns alone no
 longer fit, typically many columns on a phone. Then only the table canvas
 scrolls; controls and footer remain pinned to the card width, and a visible
@@ -224,7 +229,9 @@ the disclosure through its truncated cells with the Left and Right arrow keys
 (the keys keep their default behaviour when nothing is truncated), so a long
 table gains no stops and a click or Enter on a cell still opens the row. A
 control focused inside a secondary cell discloses the cell and keeps its
-focus ring unclipped. Any column
+focus ring unclipped. A keyboard-focused text-only primary resource link places
+the accent outline on its value cell so overflow clipping cannot hide focus;
+the cell remains clipped and the shared overlay discloses the full name. Any column
 may set `maxWidth` (a CSS length) to move its cap: tighter than the remaining
 width for the primary column, or wider or narrower than 32ch for a secondary
 one whose values deserve it. Shared icon-only action buttons

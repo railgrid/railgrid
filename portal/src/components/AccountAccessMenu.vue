@@ -41,6 +41,8 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { useTenantStore } from '@/stores/tenant'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
+import InlineNotification from '@/portalkit/InlineNotification.vue'
+import { useClipboardFeedback } from '@/portalkit/useClipboardFeedback'
 
 const { scopePath, routePath } = useScopedNavigation()
 
@@ -126,21 +128,29 @@ const identityLabel = computed(() => {
   if (auth.memberId) return 'Member ID'
   return 'Account'
 })
-const copiedMemberId = ref(false)
-const copyMemberIdFailed = ref(false)
-let copyResetTimer: ReturnType<typeof setTimeout> | undefined
+const memberCopyScope = computed(() => [isOpen.value, auth.memberId] as const)
+const memberCopyFeedback = useClipboardFeedback(memberCopyScope)
+const copiedMemberId = computed(() => memberCopyFeedback.copiedField.value === 'memberId')
+const copyMemberIdPending = computed(() => memberCopyFeedback.pendingField.value === 'memberId')
+const copyMemberIdError = computed(() => memberCopyFeedback.errors.value.memberId)
+const memberCopyButtonRef = ref<HTMLButtonElement | null>(null)
+const memberCopyErrorRegion = ref<HTMLElement | null>(null)
+
+watch(copyMemberIdError, (error, previous) => {
+  if (
+    previous && !error && isOpen.value && !disposed &&
+    typeof document !== 'undefined' &&
+    memberCopyErrorRegion.value?.contains(document.activeElement)
+  ) memberCopyButtonRef.value?.focus()
+}, { flush: 'sync' })
 
 async function copyMemberId() {
-  copyMemberIdFailed.value = false
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
-    await navigator.clipboard.writeText(auth.memberId)
-    copiedMemberId.value = true
-    if (copyResetTimer !== undefined) clearTimeout(copyResetTimer)
-    copyResetTimer = setTimeout(() => { copiedMemberId.value = false }, 2000)
-  } catch {
-    copyMemberIdFailed.value = true
-  }
+  if (!isOpen.value || disposed || !auth.memberId) return false
+  return memberCopyFeedback.copy(
+    auth.memberId,
+    'memberId',
+    'Copy failed. Retry, or select the visible value and copy it manually.',
+  )
 }
 
 watch(() => auth.token, () => { void auth.fetchSelf() }, { immediate: true })
@@ -422,7 +432,6 @@ onBeforeUnmount(() => {
     window.cancelAnimationFrame(positionFrame)
   }
   if (deferredTabClose !== undefined) clearTimeout(deferredTabClose)
-  if (copyResetTimer !== undefined) clearTimeout(copyResetTimer)
   resizeObserver?.disconnect()
   resizeObserver = null
   document.removeEventListener('pointerdown', onDocumentPointerdown, true)
@@ -488,22 +497,37 @@ onBeforeUnmount(() => {
         </span>
         <span class="min-w-0 flex-1">
           <span class="block truncate font-mono text-[11px] text-text-primary" :title="auth.memberId || undefined">{{ email }}</span>
-          <span class="mt-0.5 block text-[10px] text-text-secondary">
-            {{ copyMemberIdFailed ? 'Copy failed. Select the ID and copy it manually.' : identityLabel }}
-          </span>
+          <span class="mt-0.5 block text-[10px] text-text-secondary">{{ identityLabel }}</span>
         </span>
         <button
           v-if="auth.memberId"
+          ref="memberCopyButtonRef"
           type="button"
           class="account-menu-item k-btn k-btn--ghost flex shrink-0 items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-muted transition-colors hover:text-accent"
-          :aria-label="copiedMemberId ? 'Copied' : `Copy ${hasEmail ? 'email' : 'member ID'}`"
+          :aria-label="copyMemberIdPending ? `Copying ${hasEmail ? 'email' : 'member ID'}` : copiedMemberId ? `Copied ${hasEmail ? 'email' : 'member ID'}` : `Copy ${hasEmail ? 'email' : 'member ID'}`"
           :title="`Copy ${hasEmail ? 'email' : 'member ID'}`"
+          :aria-disabled="copyMemberIdPending || undefined"
+          :aria-busy="copyMemberIdPending || undefined"
           @click="copyMemberId"
         >
           <component :is="copiedMemberId ? Check : Copy" class="h-3 w-3" :stroke-width="2" aria-hidden="true" />
-          {{ copiedMemberId ? 'Copied' : 'Copy' }}
+          {{ copyMemberIdPending ? 'Copying…' : copiedMemberId ? 'Copied' : 'Copy' }}
         </button>
       </div>
+
+      <div v-if="copyMemberIdError" ref="memberCopyErrorRegion" class="px-2 pb-2">
+        <InlineNotification
+          tone="error"
+          :message="copyMemberIdError"
+          action-label="Retry copy"
+          action-busy-label="Retrying…"
+          :action-busy="copyMemberIdPending"
+          @action="copyMemberId"
+        />
+      </div>
+      <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {{ copiedMemberId ? `Copied ${identityLabel.toLowerCase()} to clipboard.` : '' }}
+      </span>
 
       <router-link
         :to="organizationDestination"

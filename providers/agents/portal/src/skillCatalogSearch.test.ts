@@ -1,5 +1,5 @@
 import { createApp, h, nextTick, ref } from 'vue'
-import { expect, it, onTestFinished } from 'vitest'
+import { expect, it, onTestFinished, vi } from 'vitest'
 import AISkillCatalogList from './agentkit/AISkillCatalogList.vue'
 
 it('explains no search results and returns focus to search when cleared', async () => {
@@ -30,4 +30,43 @@ it('explains no search results and returns focus to search when cleared', async 
   query.value = '   '
   await nextTick()
   expect(host.querySelector('li')?.textContent).toContain('Review')
+})
+
+it('labels partial results as listed and keeps partial empty and no-match states non-authoritative', async () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const query = ref('')
+  const incomplete = ref(true)
+  const skills = ref([{ id: 'review', name: 'Review', description: 'Review the rollout.', scope: 'workspace' }])
+  const selected = vi.fn()
+  const app = createApp({ render: () => h(AISkillCatalogList, {
+    skills: skills.value,
+    query: query.value,
+    incomplete: incomplete.value,
+    'onUpdate:query': (value: string) => { query.value = value },
+    onSelect: selected,
+  }) })
+  app.mount(host)
+  onTestFinished(() => { app.unmount(); host.remove() })
+
+  expect(host.textContent).toContain('1 listed')
+  expect(host.querySelector('button[aria-label^="Review"]')).not.toBeNull()
+  host.querySelector<HTMLButtonElement>('button[aria-label^="Review"]')!.click()
+  expect(selected).toHaveBeenCalledOnce()
+
+  query.value = 'absent'
+  await nextTick()
+  expect(host.textContent).toContain('No listed skills match “absent”.')
+  expect(host.textContent).not.toContain('No skills match “absent”.')
+
+  query.value = ''
+  skills.value = []
+  await nextTick()
+  expect(host.textContent).toContain('0 listed')
+  expect(host.textContent).toContain('No skills were listed in this response. Review the warnings or retry.')
+
+  incomplete.value = false
+  await nextTick()
+  expect(host.textContent).toContain('0 skills')
+  expect(host.textContent).toContain('No skills are available yet.')
 })

@@ -56,7 +56,10 @@ export async function loadSkillLibrary(context: RailgridContext | null): Promise
 export async function loadSkillLibraryDetail(context: RailgridContext | null, id: string): Promise<AgentSkillDetail> {
   if (id.startsWith('workspace:')) {
     const item = await client(context).get<SkillObject>(WORKSPACE_SKILLS, id.slice('workspace:'.length))
-    return librarySkill('workspace', item.metadata.name, item.spec?.document || '', item.spec?.resources || [], item.metadata.resourceVersion)
+    return {
+      ...librarySkill('workspace', item.metadata.name, item.spec?.document || '', item.spec?.resources || [], item.metadata.resourceVersion),
+      sourceUID: item.metadata.uid,
+    }
   }
   const catalog = await loadSkillLibrary(context)
   const skill = catalog.skills.find(item => item.id === id)

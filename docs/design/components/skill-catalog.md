@@ -24,6 +24,16 @@ Both variants contain a labeled search, a collection heading and count, and rows
 
 Search filters the provided skills; clearing search restores the full collection and returns focus to search. Initial loading, refreshing existing results, an empty collection, and no search matches are distinct. No matches identify the trimmed query and point to the existing clear control; long queries are shortened in the message while the search value remains unchanged. Selecting a row emits the skill to the caller, which owns any inline detail or dialog and the result of subsequent actions. Failure and retry are caller-owned and must not be presented as an empty collection.
 
+A successful response may still carry catalog warnings. Keep the returned rows
+visible and usable, label their count as listed or shown rather than a total,
+and keep the warning details and a retry available. The empty state says that
+no skills were listed in this response; a filtered state says that no listed
+skills match. Do not merge older rows into the current list to make a partial
+response look complete. If a configured skill reference is absent while
+warnings remain, describe it as unverified or not listed in this response.
+Only a warning-free successful response can establish that the reference is
+missing. Warnings do not by themselves disable actions on returned skills.
+
 ## Content
 
 Use descriptive skill names and short explanations. Scope and package identify where the skill comes from. An absent description says so rather than implying a capability. Enabled and disabled labels describe the caller's activation state, not selection for the current turn.

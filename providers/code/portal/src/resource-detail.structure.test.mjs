@@ -77,7 +77,7 @@ describe('Code repository resource detail cards', () => {
     expect(detail).toMatch(/@retry="loadRepository"/)
     expect(detail).toMatch(/async function deleteRepository\(\)/)
     expect(detail).toMatch(/confirmDialog\(\{[\s\S]*danger: true/)
-    expect(detail).toMatch(/api\.deleteRepository\(current\.name\)/)
+    expect(detail).toMatch(/api\.deleteRepository\(current\)/)
     expect(detail).toMatch(/props\.deletions\.acknowledge\(repositoryScope, current\.name, current\.uid\)/)
     expect(detail).toMatch(/const repositoryDeleteInFlight = computed\(\(\) => operations\.phase\(operationKey\('repository', props\.name\)\) === 'deleting'\)/)
     expect(detail).toMatch(/<p v-if="repositoryDeleting" class="repo-detail__deleting" role="status" aria-live="polite">[\s\S]*Deleting this repository\./)

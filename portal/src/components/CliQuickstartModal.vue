@@ -2,7 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useEscapeKey } from '@/composables/useEscapeKey'
-import { Terminal, X, Copy, Check, ExternalLink, Download, Package, Code2 } from 'lucide-vue-next'
+import { useClipboardFeedback } from '@/portalkit/useClipboardFeedback'
+import InlineNotification from '@/portalkit/InlineNotification.vue'
+import { Terminal, X, Copy, Check, Loader2, ExternalLink, Download, Package, Code2 } from 'lucide-vue-next'
 
 const emit = defineEmits<{ close: [] }>()
 
@@ -11,9 +13,6 @@ useEscapeKey(() => emit('close'))
 const dialogRef = ref<HTMLElement | null>(null)
 const closeButton = ref<HTMLButtonElement | null>(null)
 let previousFocus: HTMLElement | null = null
-const copiedField = ref<string | null>(null)
-const copyError = ref<string | null>(null)
-let copyResetTimer: ReturnType<typeof setTimeout> | null = null
 
 function onKeydown(event: KeyboardEvent) {
   if (event.key !== 'Tab') return
@@ -40,7 +39,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
-  if (copyResetTimer) clearTimeout(copyResetTimer)
   const target = previousFocus
   previousFocus = null
   nextTick(() => target?.isConnected && target.focus())
@@ -92,19 +90,11 @@ const verifySnippet = computed(
   () => `${cliBinary.value} edge list`,
 )
 
-async function copy(text: string, field: string) {
-  copyError.value = null
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
-    await navigator.clipboard.writeText(text)
-    copiedField.value = field
-    if (copyResetTimer) clearTimeout(copyResetTimer)
-    copyResetTimer = setTimeout(() => {
-      if (copiedField.value === field) copiedField.value = null
-    }, 2000)
-  } catch {
-    copyError.value = 'Copy failed. Select the command and copy it manually.'
-  }
+const { copiedField, pendingField, errors: copyErrors, copy: copyValue } = useClipboardFeedback(() => method.value)
+const copyLabels: Record<string, string> = { install: 'Installation command', login: 'Login command', verify: 'Verification command' }
+const copyStatus = computed(() => copiedField.value ? `${copyLabels[copiedField.value]} copied.` : '')
+function copy(text: string, field: string) {
+  return copyValue(text, field, `Could not copy the ${copyLabels[field].toLowerCase()}. Select the command and copy it manually, or try again.`)
 }
 
 const releasesURL = 'https://github.com/railgrid/railgrid/releases/latest'
@@ -150,14 +140,7 @@ const releasesURL = 'https://github.com/railgrid/railgrid/releases/latest'
               <span class="font-mono text-text-secondary">{{ hubURL }}</span>.
               Once installed, log in once and your kubeconfig will be updated automatically.
             </p>
-            <p
-              v-if="copyError"
-              class="mt-3 rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2 text-[11px] text-warning"
-              role="status"
-              aria-live="polite"
-            >
-              {{ copyError }}
-            </p>
+            <p class="sr-only" role="status" aria-live="polite">{{ copyStatus }}</p>
           </div>
 
           <!-- Step 1: install method tabs -->
@@ -171,11 +154,12 @@ const releasesURL = 'https://github.com/railgrid/railgrid/releases/latest'
               </span>
             </div>
 
-            <div class="mb-2 flex gap-1.5">
+            <div class="mb-2 flex gap-1.5" role="group" aria-label="Installation method">
               <button
                 v-for="m in methods"
                 :key="m.id"
                 type="button"
+                :aria-pressed="method === m.id"
                 class="k-btn k-btn--ghost flex flex-1 items-center gap-1.5 rounded-md border px-2.5 py-2 text-left transition-all"
                 :class="
                   method === m.id
@@ -197,14 +181,18 @@ const releasesURL = 'https://github.com/railgrid/railgrid/releases/latest'
                 <span class="font-mono text-[9px] uppercase tracking-[0.2em] text-text-muted/70">$ shell</span>
                 <button
                   type="button"
+                  aria-label="Copy installation command"
+                  :aria-disabled="pendingField !== null"
+                  :aria-busy="pendingField === 'install'"
                   class="k-btn k-btn--ghost flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-muted transition-all hover:text-accent"
                   @click="copy(installSnippet, 'install')"
                 >
-                  <component :is="copiedField === 'install' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
-                  {{ copiedField === 'install' ? 'Copied' : 'Copy' }}
+                  <component :is="pendingField === 'install' ? Loader2 : copiedField === 'install' ? Check : Copy" class="h-3 w-3" :class="{ 'k-spin': pendingField === 'install' }" :stroke-width="2" aria-hidden="true" />
+                  {{ pendingField === 'install' ? 'Copying…' : copiedField === 'install' ? 'Copied' : 'Copy' }}
                 </button>
               </div>
               <pre class="overflow-x-auto rounded-lg bg-surface/80 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ installSnippet }}</pre>
+              <InlineNotification v-if="copyErrors.install" tone="error" :message="copyErrors.install" class="mt-2" />
             </div>
 
             <a
@@ -235,14 +223,18 @@ const releasesURL = 'https://github.com/railgrid/railgrid/releases/latest'
                 <span class="font-mono text-[9px] uppercase tracking-[0.2em] text-text-muted/70">$ shell</span>
                 <button
                   type="button"
+                  aria-label="Copy login command"
+                  :aria-disabled="pendingField !== null"
+                  :aria-busy="pendingField === 'login'"
                   class="k-btn k-btn--ghost flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-muted transition-all hover:text-accent"
                   @click="copy(loginSnippet, 'login')"
                 >
-                  <component :is="copiedField === 'login' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
-                  {{ copiedField === 'login' ? 'Copied' : 'Copy' }}
+                  <component :is="pendingField === 'login' ? Loader2 : copiedField === 'login' ? Check : Copy" class="h-3 w-3" :class="{ 'k-spin': pendingField === 'login' }" :stroke-width="2" aria-hidden="true" />
+                  {{ pendingField === 'login' ? 'Copying…' : copiedField === 'login' ? 'Copied' : 'Copy' }}
                 </button>
               </div>
               <pre class="overflow-x-auto rounded-lg bg-surface/80 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ loginSnippet }}</pre>
+              <InlineNotification v-if="copyErrors.login" tone="error" :message="copyErrors.login" class="mt-2" />
             </div>
 
             <p class="mt-2 text-[11px] text-text-muted">
@@ -268,14 +260,18 @@ const releasesURL = 'https://github.com/railgrid/railgrid/releases/latest'
                 <span class="font-mono text-[9px] uppercase tracking-[0.2em] text-text-muted/70">$ shell</span>
                 <button
                   type="button"
+                  aria-label="Copy verification command"
+                  :aria-disabled="pendingField !== null"
+                  :aria-busy="pendingField === 'verify'"
                   class="k-btn k-btn--ghost flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-muted transition-all hover:text-accent"
                   @click="copy(verifySnippet, 'verify')"
                 >
-                  <component :is="copiedField === 'verify' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
-                  {{ copiedField === 'verify' ? 'Copied' : 'Copy' }}
+                  <component :is="pendingField === 'verify' ? Loader2 : copiedField === 'verify' ? Check : Copy" class="h-3 w-3" :class="{ 'k-spin': pendingField === 'verify' }" :stroke-width="2" aria-hidden="true" />
+                  {{ pendingField === 'verify' ? 'Copying…' : copiedField === 'verify' ? 'Copied' : 'Copy' }}
                 </button>
               </div>
               <pre class="overflow-x-auto rounded-lg bg-surface/80 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ verifySnippet }}</pre>
+              <InlineNotification v-if="copyErrors.verify" tone="error" :message="copyErrors.verify" class="mt-2" />
             </div>
           </div>
 

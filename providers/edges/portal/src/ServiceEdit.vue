@@ -13,6 +13,7 @@ import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard, type ResourceStatTone } from './portalkit/ResourceStatCards.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
+import InlineNotification from './portalkit/InlineNotification.vue'
 import { toast } from './portalkit/toast'
 import { parseServiceHost, servicePortError } from './serviceValidation'
 import { serviceTarget } from './serviceTarget'
@@ -32,13 +33,28 @@ const service = ref<EdgeService | null>(props.service)
 const readLoading = ref(true)
 const readLoaded = ref(false)
 const readError = ref<string | null>(null)
-const mutationError = ref<string | null>(null)
-const busy = ref(false)
+const configurationError = ref<string | null>(null)
+const credentialsError = ref<string | null>(null)
+const deleteError = ref<string | null>(null)
+const credInputs = ref<Record<string, string>>({})
+type MutationKind = 'configuration' | 'credentials' | 'delete'
+interface MutationRequest {
+  id: number
+  scope: number
+  name: string
+  kind: MutationKind
+}
+const mutationBusy = ref<MutationRequest | null>(null)
+const busy = computed(() => mutationBusy.value !== null)
+const configurationSaving = computed(() => mutationBusy.value?.kind === 'configuration')
+const credentialsSaving = computed(() => mutationBusy.value?.kind === 'credentials')
 // Delete has a distinct lifecycle from ordinary save/connect mutations. Keep
 // this state after the actions menu closes so the resource status and the
 // announcement remain truthful until the parent navigates away on success.
 const deleting = ref(false)
 let selectionGeneration = 0
+let scopeGeneration = 0
+let mutationID = 0
 let selectedName = ''
 let active = true
 
@@ -51,6 +67,21 @@ const actionItems = computed<ActionMenuItem[]>(() => [{
   disabled: !service.value || busy.value || readLoading.value || deleting.value,
   busy: deleting.value,
 }])
+
+function beginMutation(name: string, kind: MutationKind): MutationRequest {
+  const request = { id: ++mutationID, scope: scopeGeneration, name, kind }
+  mutationBusy.value = request
+  return request
+}
+
+function isCurrentMutation(request: MutationRequest): boolean {
+  return active && request.id === mutationID && request.scope === scopeGeneration &&
+    request.name === currentName.value && mutationBusy.value?.id === request.id
+}
+
+function finishMutation(request: MutationRequest): void {
+  if (isCurrentMutation(request)) mutationBusy.value = null
+}
 
 function selectAction(action: string): void {
   if (action === 'delete') void onDelete()
@@ -194,8 +225,13 @@ watch(
     seedForm(service.value)
     readLoaded.value = false
     readError.value = null
-    mutationError.value = null
-    busy.value = false
+    configurationError.value = null
+    credentialsError.value = null
+    deleteError.value = null
+    credInputs.value = {}
+    scopeGeneration += 1
+    mutationID += 1
+    mutationBusy.value = null
     deleting.value = false
     void load()
   },
@@ -294,7 +330,7 @@ async function refreshDetail(): Promise<void> {
 
 async function onSaveConfig(): Promise<void> {
   const name = currentName.value
-  if (!name || !service.value || busy.value || readLoading.value) return
+  if (!name || !service.value || busy.value || readLoading.value || deleting.value) return
   if (targetMode.value === 'host' && !hostInputError.value) applyHostUrl()
   portError.value = servicePortError(form.value.port)
   if (portError.value) {
@@ -318,9 +354,8 @@ async function onSaveConfig(): Promise<void> {
     return
   }
   hostError.value = null
-  const generation = selectionGeneration
-  busy.value = true
-  mutationError.value = null
+  configurationError.value = null
+  const request = beginMutation(name, 'configuration')
   try {
     const byHost = targetMode.value === 'host'
     await updateEdgeService(name, {
@@ -333,21 +368,21 @@ async function onSaveConfig(): Promise<void> {
       instructions: instructions.value,
       targetMode: targetMode.value,
     })
-    if (!active || generation !== selectionGeneration || currentName.value !== name) return
+    if (!isCurrentMutation(request)) return
     toast('ok', `Service configuration saved for ${name}.`)
     await load(true)
+    if (!isCurrentMutation(request)) return
     emit('saved')
   } catch (error) {
-    mutationError.value = errorMessage(error, 'Save failed')
+    if (isCurrentMutation(request)) configurationError.value = errorMessage(error, 'Save failed')
   } finally {
-    busy.value = false
+    finishMutation(request)
   }
 }
 
 // Credential inputs are packed into the single token Secret by the API. The
 // existing Secret value is never read or rendered; only hasCredentials and the
 // catalog's field labels/hints are exposed here.
-const credInputs = ref<Record<string, string>>({})
 const credFields = computed<CatalogCredentialField[]>(() =>
   entry.value?.credential.fields ?? [{ key: 'token', label: 'Credential', secret: true }],
 )
@@ -370,54 +405,58 @@ const credFilled = computed(() => {
 async function onSaveCreds(): Promise<void> {
   const name = currentName.value
   const token = packedCredential()
-  if (!credentialsSupported.value || !name || !service.value || !token) return
-  const generation = selectionGeneration
-  busy.value = true
-  mutationError.value = null
+  if (!credentialsSupported.value || !name || !service.value || !token || busy.value || readLoading.value || deleting.value) return
+  credentialsError.value = null
+  const request = beginMutation(name, 'credentials')
   try {
     await connectEdgeService(name, token)
-    if (!active || generation !== selectionGeneration || currentName.value !== name) return
+    if (!isCurrentMutation(request)) return
     credInputs.value = {}
     toast('ok', `Service credentials saved for ${name}.`)
     await load()
+    if (!isCurrentMutation(request)) return
     emit('saved')
   } catch (error) {
-    mutationError.value = errorMessage(error, 'Connect failed')
+    if (isCurrentMutation(request)) credentialsError.value = errorMessage(error, 'Connect failed')
   } finally {
-    busy.value = false
+    finishMutation(request)
   }
 }
 
 async function onDelete(): Promise<void> {
   const name = currentName.value
   if (!name || !service.value || busy.value || deleting.value) return
-  const generation = selectionGeneration
+  const generation = scopeGeneration
   if (!(await confirmDialog({
     title: `Delete service "${name}"?`,
     message: 'Its MCP tools stop being exposed.',
     danger: true,
     confirmLabel: 'Delete',
   }))) return
-  if (!active || generation !== selectionGeneration || currentName.value !== name || busy.value || deleting.value) return
+  if (!active || generation !== scopeGeneration || currentName.value !== name || busy.value || deleting.value) return
+  deleteError.value = null
   deleting.value = true
-  busy.value = true
-  mutationError.value = null
+  const request = beginMutation(name, 'delete')
   try {
     await deleteEdgeService(name)
-    if (!active || generation !== selectionGeneration || currentName.value !== name) return
+    if (!isCurrentMutation(request)) return
     toast('info', `Service deletion requested for ${name}.`)
     emit('deleted')
   } catch (error) {
-    mutationError.value = errorMessage(error, 'Delete failed')
-    deleting.value = false
+    if (isCurrentMutation(request)) {
+      deleteError.value = errorMessage(error, 'Delete failed')
+      deleting.value = false
+    }
   } finally {
-    busy.value = false
+    finishMutation(request)
   }
 }
 
 onUnmounted(() => {
   active = false
   selectionGeneration += 1
+  scopeGeneration += 1
+  mutationID += 1
 })
 </script>
 
@@ -467,7 +506,7 @@ onUnmounted(() => {
         </template>
 
         <template #body>
-          <p v-if="mutationError" class="banner error service-detail__mutation-error" role="alert" aria-live="assertive">{{ mutationError }}</p>
+          <InlineNotification v-if="deleteError" tone="error" title="Could not delete service" :message="deleteError" />
           <p v-if="deleting" class="waiting" role="status" aria-live="polite">Deleting this service. The last successful snapshot remains visible until the hub confirms removal.</p>
           <div class="service-detail__sections">
             <ResourceSectionCard class="service-detail__card" id="service-provider" eyebrow="Provider" title="Provider info" description="The catalog definition determines authentication, reachability, and exposed AI tools.">
@@ -516,7 +555,8 @@ onUnmounted(() => {
                 <label class="fld"><span class="lbl">Target service name</span><input v-model="form.targetName" class="k-input" :disabled="busy || !service" placeholder="home-assistant" /></label>
               </div>
               <label class="fld"><span class="lbl">AI instructions (optional)</span><textarea v-model="instructions" class="k-input" rows="3" :disabled="busy || !service" placeholder="Describe this service's entities/rooms so the AI knows your setup."></textarea></label>
-              <div class="service-detail__form-actions"><button class="k-btn k-btn--primary" type="button" :disabled="busy || readLoading || !service" @click="onSaveConfig"><Save :size="14" aria-hidden="true" /> Save configuration</button></div>
+              <div class="service-detail__form-actions"><button class="k-btn k-btn--primary" type="button" :disabled="!busy && (readLoading || !service)" :aria-disabled="busy ? 'true' : undefined" :aria-busy="configurationSaving || undefined" @click="onSaveConfig"><Save :size="14" aria-hidden="true" /> {{ configurationSaving ? 'Saving configuration…' : 'Save configuration' }}</button></div>
+              <InlineNotification v-if="configurationError" tone="error" title="Could not save configuration" :message="configurationError" />
             </ResourceSectionCard>
 
             <ResourceSectionCard class="service-detail__card" id="service-credentials" eyebrow="Access" title="Credentials" :description="credentialDescription">
@@ -524,8 +564,9 @@ onUnmounted(() => {
                 <p class="muted service-detail__credential-hint">{{ entry?.credential.hint || 'Credential' }}{{ credentialsOptional ? ' (optional)' : '' }} — makes the service Ready when authentication is required.</p>
                 <div class="service-detail__credential-row">
                   <label v-for="field in credFields" :key="field.key" class="fld"><span :id="`service-edit-credential-${field.key}-label`" class="lbl">{{ field.label }}</span><input v-model="credInputs[field.key]" :type="field.secret ? 'password' : 'text'" class="k-input" :disabled="busy || !service" :aria-labelledby="`service-edit-credential-${field.key}-label`" :aria-describedby="field.help ? `service-edit-credential-${field.key}-help` : undefined" :placeholder="field.label" autocomplete="new-password" /><span v-if="field.help" :id="`service-edit-credential-${field.key}-help`" class="field-help service-detail__field-help">{{ field.help }}</span></label>
-                  <button class="k-btn k-btn--ghost" type="button" :disabled="busy || !service || !credFilled" @click="onSaveCreds"><KeyRound :size="14" aria-hidden="true" /> {{ service?.hasCredentials ? 'Update' : 'Set' }} credentials</button>
+                  <button class="k-btn k-btn--ghost" type="button" :disabled="!busy && (readLoading || !service || !credFilled)" :aria-disabled="busy ? 'true' : undefined" :aria-busy="credentialsSaving || undefined" @click="onSaveCreds"><KeyRound :size="14" aria-hidden="true" /> {{ credentialsSaving ? 'Saving credentials…' : service?.hasCredentials ? 'Update credentials' : 'Set credentials' }}</button>
                 </div>
+                <InlineNotification v-if="credentialsError" tone="error" title="Could not save credentials" :message="credentialsError" />
               </template>
               <p v-else class="muted service-detail__credential-none">No credentials required for this service.</p>
             </ResourceSectionCard>

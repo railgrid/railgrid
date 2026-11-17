@@ -3,6 +3,7 @@ import { portalHref } from '../portalkit/navigation'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { AlertTriangle, ArrowLeftRight, ExternalLink, Eye, GitBranch, Github, Package as PackageIcon, PackageOpen, Plug, RefreshCw, User, Users, X } from 'lucide-vue-next'
 import { api } from '../api'
+import { repositoryDeletionPresentation } from '../repositoryDeletion'
 import type { Collaborator, Connection, DeployKey, ErrorResponse, Package, RepositoryDetail } from '../types'
 import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
@@ -88,6 +89,8 @@ const collabUser = ref('')
 const collabPerm = ref('push')
 const collabSubmitting = ref(false)
 const collabError = ref<string | null>(null)
+const collabFieldError = ref<string | null>(null)
+const collabUserInput = ref<HTMLInputElement | null>(null)
 const collabDeleteErrors = ref<Record<string, string>>({})
 
 const packages = ref<Package[]>([])
@@ -148,9 +151,12 @@ const commandsWebhookURL = computed(() => repo.value?.commandsWebhookPath ? `${w
 const repositoryForegroundRefreshing = computed(() => repoLoading.value && repositoryRefreshMode.value === 'foreground')
 const repositoryActionUnavailable = computed(() => repositoryDeleting.value || operations.isLocked(operationKey('repository', props.name)))
 const repositoryActionBusy = computed(() => repositoryForegroundRefreshing.value || repositoryActionUnavailable.value)
+const repositoryDeletionCopy = computed(() => repo.value ? repositoryDeletionPresentation(repo.value) : undefined)
 const actionItems = computed<ActionMenuItem[]>(() => [{
   id: 'delete',
-  label: repositoryDeleting.value ? 'Deleting repository…' : 'Delete repository',
+  label: repositoryDeleting.value
+    ? `${repositoryDeletionCopy.value?.pendingLabel ?? 'Deleting repository'}…`
+    : repositoryDeletionCopy.value?.actionLabel ?? 'Delete repository',
   tone: 'danger',
   disabled: !repo.value || repositoryActionBusy.value,
   busy: repositoryDeleting.value,
@@ -414,21 +420,18 @@ async function dismissDeleteError(kind: 'key' | 'collaborator', name: string) {
 async function deleteRepository() {
   const current = repo.value
   if (!current || repositoryDeleting.value) return
-  const ok = await confirmDialog({
-    title: `Delete repository "${current.repo}"?`,
-    message: 'This removes the repository on the git host. This cannot be undone.',
-    confirmLabel: 'Delete',
-    danger: true,
-  })
+  const ok = await confirmDialog(repositoryDeletionPresentation(current).confirmation)
   if (!ok || !mounted) return
   const lock = operationKey('repository', current.name)
   if (!operations.acquire(lock, 'deleting')) return
   try {
-    await api.deleteRepository(current.name)
+    await api.deleteRepository(current)
     if (!mounted || repo.value?.name !== current.name || repo.value?.uid !== current.uid) return
     repositoryMutationError.value = null
     props.deletions.acknowledge(repositoryScope, current.name, current.uid)
-    toast('info', `Repository deletion requested for ${current.name}.`)
+    toast('info', current.retainsRemote === true
+      ? `Repository registration removal requested for ${current.name}.`
+      : `Repository deletion requested for ${current.name}.`)
     loadRepository()
   } catch (e) {
     if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged' && repo.value?.name === current.name && repo.value?.uid === current.uid) repositoryMutationError.value = errMessage(e)
@@ -627,22 +630,33 @@ async function removeKey(row: Record<string, unknown>) {
   }
 }
 
+function clearCollabUserError(): void {
+  collabFieldError.value = null
+}
+
+function focusCollabUser(): void {
+  void nextTick(() => collabUserInput.value?.focus())
+}
+
 async function addCollab() {
-  collabError.value = null
-  if (repositoryDeleting.value) return
+  if (repositoryDeleting.value || collabSubmitting.value) return
+  collabFieldError.value = null
   if (!collabsLoaded.value) {
-    collabError.value = 'Collaborators are still loading. Retry the read before adding one.'
+    collabError.value ??= 'Collaborators are still loading. Retry the read before adding one.'
     return
   }
-  if (!collabUser.value) {
-    collabError.value = 'username is required'
+  const username = collabUser.value.trim()
+  if (!username) {
+    collabFieldError.value = 'Enter a GitHub username.'
+    focusCollabUser()
     return
   }
   collabSubmitting.value = true
   const repositoryName = props.name
   try {
-    const created = await api.createCollaborator({ repositoryRef: repositoryName, username: collabUser.value, permission: collabPerm.value })
+    const created = await api.createCollaborator({ repositoryRef: repositoryName, username, permission: collabPerm.value })
     if (!mounted || props.name !== repositoryName) return
+    collabError.value = null
     collabs.value = [...collabs.value.filter(item => item.name !== created.name), created]
     collabsLoaded.value = true
     collabUser.value = ''
@@ -994,8 +1008,8 @@ onUnmounted(() => {
           </div>
           <div v-if="repo" class="repo-domain-block">
             <div class="panel-head"><h3 class="panel-title">Collaborators</h3><span v-if="collabsLoaded" class="muted">{{ collabRows.length }}</span></div>
-            <form class="form" :aria-busy="collabSubmitting" @submit.prevent="addCollab">
-              <label class="field"><span class="field-label">Username</span><input v-model="collabUser" class="k-input" :disabled="repositoryDeleting" placeholder="octocat" autocomplete="off" /></label>
+            <form class="form" novalidate :aria-busy="collabSubmitting" @submit.prevent="addCollab">
+              <label class="field" for="code-repository-collaborator-username"><span class="field-label">Username</span><input id="code-repository-collaborator-username" ref="collabUserInput" v-model="collabUser" class="k-input" :disabled="repositoryDeleting" placeholder="octocat" autocomplete="off" required aria-required="true" :aria-invalid="collabFieldError ? 'true' : undefined" :aria-describedby="collabFieldError ? 'code-repository-collaborator-username-error' : undefined" @input="clearCollabUserError" /><span v-if="collabFieldError" id="code-repository-collaborator-username-error" class="error" role="alert">{{ collabFieldError }}</span></label>
               <label class="field"><span class="field-label">Permission</span><select v-model="collabPerm" class="k-input" :disabled="repositoryDeleting"><option value="pull">pull</option><option value="push">push</option><option value="admin">admin</option></select></label>
               <div class="code-form-actions"><button class="k-btn k-btn--ghost" type="submit" :disabled="repositoryDeleting || collabSubmitting || !collabsLoaded">{{ collabSubmitting ? 'Adding…' : 'Add collaborator' }}</button><span v-if="collabError" class="error" role="alert">{{ collabError }}</span></div>
             </form>
