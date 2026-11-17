@@ -291,12 +291,13 @@ describe('Workspace skills library', () => {
       editor.value = draft
       editor.dispatchEvent(new Event('input', { bubbles: true }))
       button('Save skill').click()
-      await settleVue(8)
+      await vi.waitFor(() => {
+        expect(text(view.element)).toContain('This skill changed since you opened it.')
+      })
       expect(fetch.mock.calls.map(([, init]) => init?.method)).toEqual(changesDuringSave ? ['GET', 'PUT'] : ['GET'])
       if (changesDuringSave) {
         expect(JSON.parse(String(fetch.mock.calls[1][1]?.body))).toMatchObject({ metadata: { uid: 'review-uid', resourceVersion: '7' } })
       }
-      expect(text(view.element)).toContain('This skill changed since you opened it.')
       expect(editor.value).toBe(draft)
     } finally {
       view.unmount()

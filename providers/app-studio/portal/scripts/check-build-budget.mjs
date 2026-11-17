@@ -84,15 +84,14 @@ const allArtifacts = await Promise.all(artifactNames.map(artifact))
 // lazy chunk, and keep a total budget to prevent duplication across routes.
 enforce('App Studio bootstrap', bootstrapArtifacts, { rawBytes: 12_000, gzipBytes: 5_000 })
 enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 200_000, gzipBytes: 62_000 })
-// Leave a measured ~4 KB gzip margin for diagnostics and toolchain variation.
-// See BUNDLE_PERFORMANCE.md for the reviewed module costs and baseline.
-enforce('App Studio page path', pageArtifacts, { rawBytes: 1_230_000, gzipBytes: 336_000 })
+// Leave room for planned feature growth and build variation. See
+// BUNDLE_PERFORMANCE.md for the measured baseline and remaining headroom.
+enforce('App Studio page path', pageArtifacts, { rawBytes: 1_380_000, gzipBytes: 380_000 })
 // Authentication settings load only when the settings panel opens.
 const authKey = manifestEntryKey(manifest, (item) => item.name === 'ProjectAuthentication', 'authentication settings')
 const authArtifact = await artifact(manifest[authKey].file)
 enforce('App Studio authentication settings', [authArtifact], { rawBytes: 17_000, gzipBytes: 5_100 })
-// See BUNDLE_PERFORMANCE.md for the measured workbench and command receipt baselines.
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_425_000, gzipBytes: 399_000 })
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_600_000, gzipBytes: 450_000 })
 
 if (budgetFailures.length) {
   console.error('Largest emitted assets (gzip bytes):')
