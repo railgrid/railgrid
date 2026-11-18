@@ -21,9 +21,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -366,7 +368,7 @@ func (s *hubSession) doWithHeaders(ctx context.Context, method, url string, in a
 		return fmt.Errorf("reading response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return decodeAPIError(method, req.URL.Path, resp.StatusCode, body)
+		return withRetryAfter(decodeAPIError(method, req.URL.Path, resp.StatusCode, body), resp.Header, time.Now())
 	}
 	if out == nil || len(bytes.TrimSpace(body)) == 0 {
 		return nil
@@ -453,6 +455,31 @@ type hubAPIError struct {
 	Code    int
 	Reason  string
 	Message string
+	// RetryAfter is the server's Retry-After, or zero when it sent none.
+	RetryAfter time.Duration
+}
+
+// withRetryAfter records a Retry-After header (delay-seconds or an HTTP date)
+// on a hubAPIError. An absent or unparsable header leaves it zero.
+func withRetryAfter(err error, header http.Header, now time.Time) error {
+	var apiErr *hubAPIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	value := strings.TrimSpace(header.Get("Retry-After"))
+	if value == "" {
+		return err
+	}
+	if seconds, parseErr := strconv.Atoi(value); parseErr == nil {
+		if seconds > 0 {
+			apiErr.RetryAfter = time.Duration(seconds) * time.Second
+		}
+		return err
+	}
+	if at, parseErr := http.ParseTime(value); parseErr == nil && at.After(now) {
+		apiErr.RetryAfter = at.Sub(now)
+	}
+	return err
 }
 
 func (e *hubAPIError) Error() string {

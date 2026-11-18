@@ -898,13 +898,82 @@ func runAppSync(ctx context.Context, out, errOut io.Writer, target hubTarget, na
 		return fmt.Errorf("hydrating the workspace: %w\n  (to see a local tree in %s-dev without git, run 'railgrid app sync %s --from <dir>')", err, name, name)
 	}
 	_, _ = fmt.Fprintf(errOut, "railgrid app: syncing %s's workspace to its development instance…\n", name)
-	if err := s.do(ctx, http.MethodPost, projectVerbURL(s, name, "sync-development"), map[string]any{}, &res.Sync); err != nil {
+	if err := syncDevelopmentRetryingBusy(ctx, s, errOut, name, &res.Sync); err != nil {
 		return fmt.Errorf("syncing the development instance: %w", err)
 	}
 	if output == "json" {
 		return printJSON(out, res)
 	}
 	return printAppSync(out, res)
+}
+
+const (
+	// appSyncBusyRetryBudget bounds the total time `app sync` waits out a
+	// busy workspace before reporting the conflict.
+	appSyncBusyRetryBudget = 60 * time.Second
+	// appSyncBusyDefaultDelay is the wait when the hub sent no Retry-After.
+	appSyncBusyDefaultDelay = 3 * time.Second
+	// appSyncBusyMaxDelay caps a Retry-After so one answer cannot spend the
+	// whole budget in a single wait.
+	appSyncBusyMaxDelay = 15 * time.Second
+)
+
+// appSyncSleep waits between busy retries; tests replace it.
+var appSyncSleep = func(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// workspaceBusyConflict reports whether err is App Studio's transient "another
+// workspace operation is in progress" 409, and how long to wait before trying
+// again. A conflict a retry cannot fix, such as an active assistant run or a
+// project being deleted, is not busy.
+func workspaceBusyConflict(err error) (time.Duration, bool) {
+	var apiErr *hubAPIError
+	if !errors.As(err, &apiErr) || apiErr.Code != http.StatusConflict {
+		return 0, false
+	}
+	if apiErr.RetryAfter > 0 {
+		return apiErr.RetryAfter, true
+	}
+	// Hubs that predate the Retry-After answer worded the same lost
+	// reservation "wait for or stop the active assistant run". A run that is
+	// really active answers "resolve or stop the active assistant run", which
+	// stays a hard failure.
+	if strings.Contains(apiErr.Message, "wait for or stop the active assistant run") {
+		return appSyncBusyDefaultDelay, true
+	}
+	return 0, false
+}
+
+// syncDevelopmentRetryingBusy runs sync-development, waiting out a workspace
+// that another operation briefly holds. The hydrate before it schedules its
+// own background sync, so the explicit request regularly arrives while that
+// one still owns the workspace; it finishes in seconds.
+func syncDevelopmentRetryingBusy(ctx context.Context, s *hubSession, errOut io.Writer, name string, out *json.RawMessage) error {
+	var waited time.Duration
+	for {
+		err := s.do(ctx, http.MethodPost, projectVerbURL(s, name, "sync-development"), map[string]any{}, out)
+		delay, busy := workspaceBusyConflict(err)
+		if !busy {
+			return err
+		}
+		delay = min(delay, appSyncBusyMaxDelay)
+		if waited+delay > appSyncBusyRetryBudget {
+			return err
+		}
+		waited += delay
+		_, _ = fmt.Fprintf(errOut, "railgrid app: another workspace operation (usually the sync the hydrate started) is still running; retrying in %s…\n", delay)
+		if err := appSyncSleep(ctx, delay); err != nil {
+			return err
+		}
+	}
 }
 
 // printAppSync renders the hydrate and per-component sync summary.
