@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -229,6 +230,11 @@ const projectMessageMetadataAssistantInterrupt = "assistantInterrupt"
 const projectMessageStatusPendingPermission = "pending_permission"
 const projectMessageStatusPendingInput = "pending_input"
 const projectMessagePersistTimeout = 5 * time.Second
+
+// projectWorkspaceBusyRetryAfterSeconds is the Retry-After a project-wide
+// operation answers when another owner briefly holds the workspace. The usual
+// holder, a background development sync, takes a few seconds.
+const projectWorkspaceBusyRetryAfterSeconds = 5
 
 var errProjectAssistantMessageNotFound = errors.New("project assistant message not found")
 
@@ -752,7 +758,15 @@ func (s *Server) reserveProjectExternalOperation(
 	release, err := s.projectAssistantSupervisor().ReserveWorkspace(ctx, scope)
 	if err != nil {
 		if errors.Is(err, store.ErrAssistantRunConflict) {
-			writeStatus(w, http.StatusConflict, "Conflict", "wait for or stop the active assistant run before "+action)
+			// The check above found no assistant run, so another owner holds
+			// the workspace: most often the development sync that a hydrate,
+			// file write or assistant edit schedules in the background, which
+			// finishes in seconds (a turn starting in between is the rare
+			// case). Say so, and tell clients to retry rather than to go
+			// looking for an assistant run.
+			w.Header().Set("Retry-After", strconv.Itoa(projectWorkspaceBusyRetryAfterSeconds))
+			writeStatus(w, http.StatusConflict, "Conflict",
+				"another workspace operation, such as a development sync, is in progress; retry "+action+" in a few seconds")
 			return nil, false
 		}
 		writeProjectError(w, err)
