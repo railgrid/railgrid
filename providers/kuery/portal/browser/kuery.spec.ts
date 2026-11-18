@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { fileURLToPath } from 'node:url'
+import type { SavedView } from '../src/savedviews'
 
 const portalRoot = fileURLToPath(new URL('..', import.meta.url))
 const asset = (name: string): string => `${portalRoot}/dist/${name}`
@@ -40,23 +41,32 @@ const savedViewList = {
   apiVersion: 'kuery.providers.railgrid.ai/v1alpha1',
   kind: 'SavedViewList',
   metadata: {},
-  items: [],
 }
 
-async function mountKuery(page: Page, theme: 'dark' | 'light'): Promise<void> {
+async function mountKuery(page: Page, theme: 'dark' | 'light', topologyResult = topology): Promise<void> {
+  const savedViews = new Map<string, SavedView>()
   await page.route('**/*', async route => {
     const path = new URL(route.request().url()).pathname
     if (path.endsWith('/kubernetesclusters')) return route.fulfill({ json: edgeList })
-    if (path.endsWith('/savedviews')) return route.fulfill({ json: savedViewList })
-    // The scratch view: absent, then created by the shell.
+    if (path.endsWith('/savedviews')) {
+      if (route.request().method() === 'POST') {
+        const view = route.request().postDataJSON() as SavedView
+        savedViews.set(view.metadata.name, view)
+        return route.fulfill({ status: 201, json: view })
+      }
+      return route.fulfill({ json: { ...savedViewList, items: [...savedViews.values()] } })
+    }
     if (/\/savedviews\/playground-[0-9a-f]+$/.test(path)) {
-      return route.fulfill({ status: 404, json: { kind: 'Status', status: 'Failure', reason: 'NotFound', code: 404 } })
+      const view = savedViews.get(path.slice(path.lastIndexOf('/') + 1))
+      return view ? route.fulfill({ json: view }) : route.fulfill({
+        status: 404, json: { kind: 'Status', status: 'Failure', reason: 'NotFound', code: 404 },
+      })
     }
     if (path.endsWith('/query-schema.json')) return route.fulfill({ json: { properties: { root: {}, objects: {}, filter: {} } } })
     if (path.endsWith('/run')) {
       const body = route.request().postDataJSON() as { input?: { query?: { root?: string; count?: boolean } } }
       const query = body.input?.query ?? {}
-      return route.fulfill({ json: { requestID: 'r-1', result: query.root === 'clusters' ? topology : inventory } })
+      return route.fulfill({ json: { requestID: 'r-1', result: query.root === 'clusters' ? topologyResult : inventory } })
     }
     for (const name of ['codemirror.bundle.js', 'codemirror.bundle.css']) {
       if (path.endsWith(`/${name}`)) return route.fulfill({ path: asset(name) })
@@ -64,7 +74,8 @@ async function mountKuery(page: Page, theme: 'dark' | 'light'): Promise<void> {
     return route.abort()
   })
 
-  await page.setContent(`<!doctype html><html class="${theme}"><head><base href="https://kuery.test/"><style>
+  // Give the per-user scratch view hash a secure context without a live server.
+  await page.route('https://kuery.test/', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html class="${theme}"><head><base href="https://kuery.test/"><style>
     :root {
       --color-surface: ${theme === 'dark' ? '#0a0b12' : '#f1f1f6'};
       --color-surface-raised: ${theme === 'dark' ? '#111320' : '#ffffff'};
@@ -85,17 +96,22 @@ async function mountKuery(page: Page, theme: 'dark' | 'light'): Promise<void> {
     * { box-sizing: border-box; }
     html, body { margin: 0; min-height: 100%; background: var(--color-surface); color: var(--color-text-primary); font-family: sans-serif; }
     body { padding: 32px; }
-  </style></head><body><railgrid-provider-kuery id="kuery"></railgrid-provider-kuery></body></html>`)
+  </style></head><body><railgrid-provider-kuery id="kuery"></railgrid-provider-kuery></body></html>` }))
+  await page.goto('https://kuery.test/')
   await page.addScriptTag({ path: asset('main.js') })
-  await page.locator('#kuery').evaluate((element, resolvedTheme) => {
+  await page.locator('#kuery').evaluate((element, { resolvedTheme, cluster }) => {
     ;(element as HTMLElement & { railgridContext: unknown }).railgridContext = {
-      basePath: '/ui/providers/kuery/', token: 'test-token', tenant: testCluster,
+      basePath: '/ui/providers/kuery/', token: 'test-token', tenant: cluster,
       user: { email: 'tester@railgrid.test' },
       orgUUID: 'org', workspaceUUID: 'workspace', theme: resolvedTheme,
     }
-  }, theme)
+  }, { resolvedTheme: theme, cluster: testCluster })
   await expect(page.getByRole('heading', { name: 'Fleet topology', exact: true })).toBeVisible()
-  await expect(page.getByText('1 edge connected')).toBeVisible()
+  await expect(page.getByText('1 connected Kubernetes edge', { exact: true })).toBeVisible()
+  expect([...savedViews.values()]).toMatchObject([{
+    kind: 'SavedView', metadata: { name: expect.stringMatching(/^playground-[0-9a-f]{12}$/) },
+    spec: { displayName: 'Query playground — tester@railgrid.test' },
+  }])
 }
 
 test('4K topology and playground use the available vertical workspace', async ({ page }, testInfo) => {
@@ -158,12 +174,29 @@ for (const viewport of [
   }
 }
 
+test('bounded topology keeps graph and warning visible in both themes', async ({ page }, testInfo) => {
+  const warning = 'Some objects could not be included in this response.'
+  const bounded = { ...topology, incomplete: true, warnings: [warning] }
+  for (const { theme, width } of [{ theme: 'light', width: 390 }, { theme: 'dark', width: 1440 }] as const) {
+    await page.setViewportSize({ width, height: 900 })
+    await mountKuery(page, theme, bounded)
+    const notice = page.getByRole('status').filter({ hasText: 'Kuery reported response-level truncation' })
+    await expect(notice).toContainText(`still apply. ${warning}`)
+    await expect(notice).toHaveClass(/k-inline-notification--warning/)
+    await expect(page.getByRole('region', { name: 'Fleet topology visualization' })).toBeVisible()
+    const box = await notice.boundingBox()
+    expect(box!.x + box!.width).toBeLessThanOrEqual(width)
+    await page.screenshot({ path: testInfo.outputPath(`bounded-topology-${theme}.png`), fullPage: true })
+    await page.unrouteAll()
+  }
+})
+
 test('dashboard tile uses shared semantics while preserving escaping and navigation', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   // The tile lists SavedViews, so the escaping case lives on a view's display
   // name rather than an edge name.
-  await page.route('**/kubernetesclusters', route => route.fulfill({ json: edgeList }))
-  await page.route('**/savedviews', route => route.fulfill({
+  await page.route(url => url.pathname.endsWith('/kubernetesclusters'), route => route.fulfill({ json: edgeList }))
+  await page.route(url => url.pathname.endsWith('/savedviews'), route => route.fulfill({
     json: {
       apiVersion: 'kuery.providers.railgrid.ai/v1alpha1',
       kind: 'SavedViewList',
@@ -176,9 +209,11 @@ test('dashboard tile uses shared semantics while preserving escaping and navigat
       }],
     },
   }))
-  await page.setContent(`<!doctype html><html class="light"><head><base href="https://kuery.test/"></head><body>
-    <railgrid-dashboard-tile-kuery id="tile"></railgrid-dashboard-tile-kuery>
-  </body></html>`)
+  await page.route('https://kuery.test/', route => route.fulfill({
+    contentType: 'text/html',
+    body: '<!doctype html><html class="light"><body><railgrid-dashboard-tile-kuery id="tile"></railgrid-dashboard-tile-kuery></body></html>',
+  }))
+  await page.goto('https://kuery.test/')
   await page.addScriptTag({ path: asset('main.js') })
   await page.locator('#tile').evaluate(element => {
     const target = element as HTMLElement & { railgridContext: unknown }
@@ -232,7 +267,10 @@ test.describe('playground technical access on a narrow coarse canvas', () => {
       await expect(page.locator('.CodeMirror')).toBeVisible()
       const details = page.locator('.pg-docs')
       await expect(details).not.toHaveAttribute('open', '')
-      await page.getByText('API and access', { exact: true }).click()
+      const summary = details.locator('summary')
+      await summary.focus()
+      await page.keyboard.press('Enter')
+      await expect(summary).toBeFocused()
       const path = details.locator('pre')
       await expect(path).toBeVisible()
       expect(await path.innerText()).toContain('/savedviews/<name>/run')

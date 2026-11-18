@@ -234,10 +234,9 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <p v-if="oauthError" ref="oauthWarning" class="error read-error" role="alert">
-      <span>GitHub sign-in configuration could not be loaded: {{ oauthError }}</span>
-      <button class="k-btn k-btn--ghost" type="button" :aria-disabled="oauthLoading" @click="loadOAuthConfig">{{ oauthLoading ? 'Retrying GitHub sign-in…' : 'Retry GitHub sign-in' }}</button>
-    </p>
+    <div v-if="oauthError" ref="oauthWarning">
+      <InlineNotification tone="error" action-label="Retry GitHub sign-in" action-busy-label="Retrying GitHub sign-in…" :action-busy="oauthLoading" @action="loadOAuthConfig">GitHub sign-in configuration could not be loaded: {{ oauthError }}</InlineNotification>
+    </div>
     <p v-else-if="oauthLoaded && !oauthEnabled" class="muted">
       Tip: a platform admin can enable one-click “Connect with GitHub” by configuring the provider’s GitHub OAuth app.
     </p>

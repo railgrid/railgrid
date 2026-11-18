@@ -198,10 +198,15 @@ describe('models view on an empty workspace', () => {
     expect(el.querySelectorAll('.agents-stat')[2]?.textContent).toContain('3')
 
     const retryButton = notice.querySelector<HTMLButtonElement>('button')!
+    retryButton.focus()
     retryButton.click()
     await settleVue()
     expect(usage).toHaveBeenCalledTimes(2)
-    expect(retryButton.disabled).toBe(true)
+    expect(retryButton.disabled).toBe(false)
+    expect(retryButton.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(retryButton)
+    retryButton.click()
+    expect(usage).toHaveBeenCalledTimes(2)
     expect(retryButton.getAttribute('aria-busy')).toBe('true')
     expect(retryButton.textContent).toContain('Retrying…')
 
@@ -209,6 +214,7 @@ describe('models view on an empty workspace', () => {
     await settleVue()
     expect(el.querySelector('.k-inline-notification--warning')).toBeNull()
     expect(el.querySelectorAll('.agents-stat')[2]?.textContent).toContain('5')
+    expect(document.activeElement).toBe(el.querySelector('[aria-label="Usage window"] [aria-pressed="true"]'))
   })
 
   it('discloses when the usage breakdown omits rows beyond six', async () => {

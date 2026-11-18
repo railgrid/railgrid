@@ -18,13 +18,13 @@ limitations under the License.
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  AlertCircle,
   ArrowLeft,
   Hexagon,
   Loader2,
   Plus,
 } from 'lucide-vue-next'
 import { useTenantStore } from '@/stores/tenant'
+import InlineNotification from '@/portalkit/InlineNotification.vue'
 
 const tenant = useTenantStore()
 const route = useRoute()
@@ -124,48 +124,45 @@ async function createOrganization() {
     </header>
 
     <main class="relative z-10 flex flex-1 items-start justify-center px-4 py-8 sm:px-6 sm:py-12">
-      <section class="w-full max-w-md" aria-labelledby="organization-create-title">
-        <div class="mb-5">
-          <p class="k-eyebrow">New organization</p>
-          <h1 id="organization-create-title" class="font-sans mt-2 text-[24px] font-semibold tracking-tight text-text-primary">
+      <section class="k-create-page max-w-md" aria-labelledby="organization-create-title">
+        <header class="k-create-header">
+          <h1 id="organization-create-title" class="k-create-title">
             Create an organization
           </h1>
-          <p class="mt-2 text-[12px] text-text-muted">Enter a name for your organization.</p>
-        </div>
+          <p class="k-create-description">An organization groups your workspaces and members.</p>
+        </header>
 
-        <form class="k-card space-y-5 p-5 sm:p-6" @submit.prevent="createOrganization">
-          <div>
-            <label for="organization-name" class="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">
-              Organization name
+        <form class="k-create-surface" :aria-busy="creating" @submit.prevent="createOrganization">
+          <div class="k-create-body">
+            <label for="organization-name" class="flex flex-col gap-1.5">
+              <span class="text-xs font-semibold">
+                Organization name
+              </span>
+              <input
+                id="organization-name"
+                v-model="organizationName"
+                type="text"
+                class="k-input w-full"
+                placeholder="e.g. Acme"
+                autocomplete="organization"
+                autofocus
+                :disabled="creating"
+                :aria-describedby="localError ? 'organization-name-error' : undefined"
+                @input="clearError"
+              />
             </label>
-            <input
-              id="organization-name"
-              v-model="organizationName"
-              type="text"
-              class="k-input text-[12px]"
-              placeholder="e.g. Acme"
-              autocomplete="organization"
-              autofocus
-              :disabled="creating"
-              :aria-invalid="localError ? 'true' : undefined"
-              :aria-describedby="localError ? 'organization-name-error' : undefined"
-              @input="clearError"
-            />
-            <div v-if="localError" id="organization-name-error" role="alert" class="mt-3 flex items-start gap-2 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[11px] text-danger">
-              <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-              <span>{{ localError }}</span>
-            </div>
+            <InlineNotification v-if="localError" id="organization-name-error" tone="error" :message="localError" />
           </div>
 
-          <div class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-4">
-            <router-link v-if="!creating" :to="chooserPath" class="k-btn k-btn--text text-[11px]">Cancel</router-link>
-            <button v-else type="button" class="k-btn k-btn--text text-[11px]" disabled aria-disabled="true">Cancel</button>
+          <div class="k-create-actions">
+            <router-link v-if="!creating" :to="chooserPath" class="k-btn k-btn--ghost">Cancel</router-link>
+            <button v-else type="button" class="k-btn k-btn--ghost" disabled aria-disabled="true">Cancel</button>
             <button
               type="submit"
-              class="k-btn k-btn--primary text-[11px]"
+              class="k-btn k-btn--primary"
               :disabled="creating || !organizationName.trim()"
             >
-              <Loader2 v-if="creating" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+              <Loader2 v-if="creating" class="h-3.5 w-3.5 k-spin" :stroke-width="1.75" aria-hidden="true" />
               <Plus v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
               {{ creating ? 'Creating…' : 'Create organization' }}
             </button>

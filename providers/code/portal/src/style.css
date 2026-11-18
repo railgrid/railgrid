@@ -438,26 +438,6 @@ railgrid-provider-code .connection-detail__hint p {
   font-size: 12px;
   line-height: 1.5;
 }
-railgrid-provider-code .connection-detail__deleting {
-  margin: 0;
-  border: 1px solid var(--color-warning-subtle);
-  border-radius: 6px;
-  background: var(--color-warning-subtle);
-  color: var(--color-text-secondary, #8a8ca6);
-  font-size: 12px;
-  line-height: 1.45;
-  padding: 8px 10px;
-}
-railgrid-provider-code .repo-detail__deleting {
-  margin: 0;
-  border: 1px solid var(--color-warning-subtle);
-  border-radius: 6px;
-  background: var(--color-warning-subtle);
-  color: var(--color-text-secondary, #8a8ca6);
-  font-size: 12px;
-  line-height: 1.45;
-  padding: 8px 10px;
-}
 railgrid-provider-code .connection-detail__health-facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -603,28 +583,6 @@ railgrid-provider-code .error {
   color: var(--color-danger, #ff5d5d);
   font-size: 12px;
 }
-railgrid-provider-code .read-error {
-  align-items: center;
-  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
-  border-radius: 6px;
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-  margin: 0 0 12px;
-  padding: 8px 10px;
-}
-railgrid-provider-code .read-error > span {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  line-height: 1.45;
-}
-railgrid-provider-code .mutation-error {
-  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
-  border-radius: 6px;
-  margin: 0 0 12px;
-  padding: 8px 10px;
-}
 railgrid-provider-code .detail-loading {
   background: var(--color-surface-raised, #111320);
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
@@ -668,7 +626,6 @@ railgrid-provider-code code {
 @media (max-width: 640px) {
   railgrid-provider-code .page-head { flex-direction: column; align-items: stretch; }
   railgrid-provider-code .page-head > button { align-self: flex-start; }
-  railgrid-provider-code .read-error { align-items: flex-start; flex-direction: column; }
   railgrid-provider-code .conn-edit { align-items: stretch; flex-direction: column; }
   railgrid-provider-code .conn-edit > button { align-self: flex-start; }
 }

@@ -21,7 +21,7 @@ it('GitHub OAuth configuration failures settle and expose retry actions', () => 
     expect(source).toMatch(/async function loadOAuthConfig\(\): Promise<void>/)
     expect(source).toMatch(/catch \(e\)/)
     expect(source).toMatch(/oauthLoaded\.value = true/)
-    expect(source).toMatch(/@click="loadOAuthConfig"/)
+    expect(source).toMatch(/@action="loadOAuthConfig"/)
     expect(source).toMatch(/Retry GitHub sign-in/)
   }
 })

@@ -403,7 +403,7 @@ defineExpose({ cancel, locked })
         <input id="provider-connection-name" v-model="connectionLabel" class="k-input" :placeholder="suggestedName" :disabled="locked" maxlength="100" aria-label="Connection name (optional)" aria-describedby="provider-connection-name-help">
         <span id="provider-connection-name-help" class="k-model-form-hint">This label identifies the saved provider credential.</span>
       </label>
-      <p v-if="fieldError" id="provider-connection-error" class="k-inline-notification k-inline-notification--error" role="alert">{{ fieldError }}</p>
+      <InlineNotification v-if="fieldError" id="provider-connection-error" tone="error" :message="fieldError" />
       <section v-if="modelStage" class="k-model-form-section" aria-labelledby="provider-model-heading">
         <div class="k-model-form-row">
           <h2 id="provider-model-heading" class="k-model-form-heading">{{ editingProviderConnection || standaloneConnection ? 'Verify provider access' : 'Choose a model' }}</h2>
@@ -427,18 +427,20 @@ defineExpose({ cancel, locked })
           <InlineNotification tone="warning" :message="`${refreshFailure.error} You can still enter a model ID manually.`" />
           <TechnicalDetails compact :diagnostic="refreshFailure.technicalDiagnostic" />
         </template>
-        <p v-if="discoveryError" class="k-inline-notification k-inline-notification--warning" role="status">{{ discoveryError }}{{ standaloneConnection ? '' : ' You can still enter a model ID manually.' }}</p>
+        <InlineNotification v-if="discoveryError" tone="warning">
+          {{ discoveryError }}{{ standaloneConnection ? '' : ' You can still enter a model ID manually.' }}
+        </InlineNotification>
         <label v-if="editingModelCredential" for="model-display-name" class="k-model-form-field">Display name
           <input id="model-display-name" :value="modelLabel" class="k-input" name="modelLabel" :disabled="locked" maxlength="253" :aria-invalid="Boolean(modelLabelError)" :aria-describedby="modelLabelError ? 'model-label-error' : 'model-label-help'" @input="updateModelLabel(($event.target as HTMLInputElement).value)">
           <span v-if="modelLabelError" id="model-label-error" class="k-model-form-hint text-danger" role="alert">{{ modelLabelError }}</span>
           <span v-else id="model-label-help" class="k-model-form-hint">Shown in model lists.</span>
         </label>
         <p v-if="alreadyConfigured" class="k-model-form-hint" role="status">This model is already configured for this connection. Choose another model to add.</p>
-        <p v-if="testError" class="k-inline-notification k-inline-notification--error" role="alert">{{ testError }}</p>
+        <InlineNotification v-if="testError" tone="error" :message="testError" />
         <p v-if="verifiedFingerprint" class="k-model-form-hint" role="status"><Check :size="14" class="inline" /> {{ standaloneConnection ? 'Provider access verified. Save the connection without adding a model.' : editingProviderConnection ? 'Provider access verified. Save the connection changes.' : 'Model verified. Finish connecting to save your changes.' }}</p>
       </section>
       <p v-if="operationNotice" class="k-model-form-hint" role="status">{{ operationNotice }}</p>
-      <p v-if="error" class="k-inline-notification k-inline-notification--error" role="alert">{{ error }}</p>
+      <InlineNotification v-if="error" tone="error" :message="error" />
     </div>
     <footer class="k-create-actions agents-provider-connect__actions">
       <p v-if="standaloneConnection && !modelStage" id="provider-verify-help" class="k-model-form-hint agents-provider-connect__charge">Provider discovery checks access without sending a model request. No model will be added.</p>

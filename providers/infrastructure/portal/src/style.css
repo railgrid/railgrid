@@ -391,23 +391,6 @@ railgrid-provider-infrastructure .catalog-loading-card {
   padding: 16px;
 }
 
-railgrid-provider-infrastructure .read-error,
-railgrid-provider-infrastructure .mutation-error,
-railgrid-provider-infrastructure .stale-banner {
-  align-items: center;
-  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
-  border: 1px solid color-mix(in srgb, var(--color-danger, #ff5d5d) 35%, transparent);
-  border-radius: 6px;
-  color: var(--color-danger, #ff5d5d);
-  display: flex;
-  font-size: 12px;
-  gap: 10px;
-  justify-content: space-between;
-  padding: 10px 12px;
-  flex-wrap: wrap;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
 
 railgrid-provider-infrastructure .empty-state,
 railgrid-provider-infrastructure .empty-followup,
@@ -474,14 +457,6 @@ railgrid-provider-infrastructure .instance-detail__attention p {
 
 railgrid-provider-infrastructure .instance-detail__sections .detail-field {
   padding-inline: 0;
-}
-
-railgrid-provider-infrastructure .instance-detail .spin {
-  animation: infrastructure-instance-spin .8s linear infinite;
-}
-
-@keyframes infrastructure-instance-spin {
-  to { transform: rotate(360deg); }
 }
 
 railgrid-provider-infrastructure .instance-list-actions,
@@ -570,6 +545,5 @@ railgrid-provider-infrastructure .detail-empty { padding: 24px 16px; text-align:
 }
 
 @media (prefers-reduced-motion: reduce) {
-  railgrid-provider-infrastructure .instance-detail .spin { animation: none; }
   railgrid-provider-infrastructure .template-card { transition: none; }
 }

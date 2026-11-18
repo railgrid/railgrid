@@ -113,6 +113,10 @@ const setupTabs = [
   { id: 'webhooks', label: 'Webhooks' },
   { id: 'skills', label: 'Skills library' },
 ] as const
+const setupNavigationTabs = computed<PortalTabItem[]>(() => setupTabs.map(tab => ({
+  ...tab,
+  href: hashFor({ kind: 'menu', menu: tab.id }),
+})))
 const setupActive = computed(() => setupTabs.some(tab => tab.id === active.value))
 // Initial hydration and authority rotations call loadAll. Subsequent route
 // entries must also revalidate cached collections, including empty snapshots.
@@ -565,12 +569,6 @@ function selectMenu(id: string): void {
   if ((MENUS as string[]).includes(menu)) go({ kind: 'menu', menu: menu as MenuKey })
 }
 
-function selectSetupTab(event: MouseEvent, menu: MenuKey): void {
-  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return
-  event.preventDefault()
-  go({ kind: 'menu', menu })
-}
-
 // The host's sidebar sub-nav (CatalogEntry ui.children) navigates by pushing a
 // subPath rather than a hash, so a click on "Connections" out there has to
 // become a route in here. Only a change that actually moves the user is acted
@@ -636,16 +634,13 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
             <p class="k-resource-page__subtitle">Manage the models, connections, webhooks, and reusable skills your agents use.</p>
           </div>
         </header>
-        <nav class="k-tabs k-tabs--compact agents-setup-tabs" aria-label="Setup sections">
-          <a
-            v-for="tab in setupTabs"
-            :key="tab.id"
-            class="k-tab agents-models-tab"
-            :href="hashFor({ kind: 'menu', menu: tab.id })"
-            :aria-current="active === tab.id ? 'page' : undefined"
-            @click="selectSetupTab($event, tab.id)"
-          >{{ tab.label }}</a>
-        </nav>
+        <Tabs
+          class="k-tabs--compact agents-setup-tabs"
+          :tabs="setupNavigationTabs"
+          :active="active"
+          aria-label="Setup sections"
+          @select="selectMenu"
+        />
       </section>
       <template v-if="route.kind === 'menu' && route.menu === 'agents' && route.assistantSettings">
         <ResourceBackLink href="#/agents" @back="go(DEFAULT_ROUTE)">Back to Agents</ResourceBackLink>

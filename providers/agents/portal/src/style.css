@@ -321,6 +321,7 @@ railgrid-provider-agents .agents-resource-fields .agents-field-label,
 railgrid-provider-agents .agents-resource-fields .agents-resource-fieldset > legend { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); }
 railgrid-provider-agents form.agents-resource-edit-form { gap: 0; padding: 0; }
 
+:where(railgrid-provider-agents) .agents-form-field,
 :where(railgrid-provider-agents) label:not(:where(.agents-model-create label, [data-resource-table] label)) { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
 railgrid-provider-agents .agents-grid2 {
   display: grid;
@@ -328,7 +329,7 @@ railgrid-provider-agents .agents-grid2 {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, max(20rem, calc((100% - 12px) / 2))), 1fr));
   align-items: start; gap: 12px;
 }
-railgrid-provider-agents .agents-check { flex-direction: row !important; align-items: center; gap: 8px !important; font-size: 13px; }
+railgrid-provider-agents .agents-check { flex-direction: row; align-items: center; gap: 8px; font-size: 13px; }
 railgrid-provider-agents .agents-check input { width: auto; }
 railgrid-provider-agents .agents-check-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 railgrid-provider-agents .agents-check:has(.agents-check-copy) { align-items: flex-start; }
@@ -385,7 +386,7 @@ railgrid-provider-agents .agents-chip-x:hover { background: var(--color-danger-s
 /* autonomy: radio cards, because the choice now has real consequences */
 railgrid-provider-agents .agents-radiocards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
 railgrid-provider-agents .agents-radiocard {
-  display: grid !important; grid-template-columns: auto 1fr; grid-template-areas: "r t" ". b"; gap: 2px 8px;
+  display: grid; grid-template-columns: auto 1fr; grid-template-areas: "r t" ". b"; gap: 2px 8px;
   padding: 11px 13px; border-radius: 6px; cursor: pointer; font-size: 13px;
   background: var(--color-surface, #0a0b12); border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
 }
@@ -670,11 +671,6 @@ railgrid-provider-agents .agents-chat-read-notice {
   margin: 8px auto 0;
   border-color: var(--color-border-default);
 }
-  box-sizing: border-box; width: calc(100% - 32px); max-width: var(--k-ai-conversation-content-width); max-height: 240px; flex: none; margin: 8px auto 4px; overflow: auto;
-  border: 1px solid var(--color-border-default); background: var(--color-surface-raised); color: var(--color-text-primary);
-}
-  display: flex; min-height: 40px; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; padding: 8px 10px; border-bottom: 1px solid var(--color-border-subtle);
-}
 railgrid-provider-agents .agents-chat-workspace--inspection .agents-conversation-column { flex: 1 1 56%; }
 railgrid-provider-agents .agents-artifact-panel {
   display: flex; min-width: 360px; min-height: 0; flex: 0 1 44%; flex-direction: column; gap: 12px; overflow: auto;
@@ -690,7 +686,7 @@ railgrid-provider-agents .agents-artifact-panel__data,
 railgrid-provider-agents .agents-artifact-panel__evidence { min-width: 0; color: var(--color-text-secondary, #8a8ca6); font-size: 12px; }
 railgrid-provider-agents .agents-artifact-panel__data summary,
 railgrid-provider-agents .agents-artifact-panel__evidence summary { min-height: 30px; cursor: pointer; color: var(--color-text-secondary, #8a8ca6); }
-railgrid-provider-agents .agents-artifact-panel__data pre { max-height: 360px; overflow: auto; padding: 10px; border: 1px solid var(--color-border-subtle); border-radius: 5px; background: var(--color-surface-raised, #111320); color: var(--color-text-primary, inherit); white-space: pre-wrap; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-artifact-panel__data pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 railgrid-provider-agents .agents-artifact-panel__evidence p { margin: 4px 0; }
 railgrid-provider-agents .agents-artifact-panel__evidence ul { margin: 4px 0; padding-left: 18px; overflow-wrap: anywhere; }
 railgrid-provider-agents .agents-inline-app {
@@ -867,7 +863,7 @@ railgrid-provider-agents .agents-chan-editor { display: flex; flex-direction: co
 railgrid-provider-agents .agents-chan-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 railgrid-provider-agents .agents-chan-row .agents-chan-name { flex: 0 0 140px; }
 railgrid-provider-agents .agents-chan-row .agents-chan-conn { flex: 1 1 200px; min-width: 160px; }
-railgrid-provider-agents .agents-chan-primary { flex-direction: row !important; align-items: center; gap: 5px !important; white-space: nowrap; font-size: 13px; }
+railgrid-provider-agents .agents-chan-primary { flex-direction: row; align-items: center; gap: 5px; white-space: nowrap; font-size: 13px; }
 railgrid-provider-agents .agents-chan-primary input { width: auto; }
 railgrid-provider-agents .agents-chan-inbound { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); }
 railgrid-provider-agents .agents-inbound-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -1418,7 +1414,6 @@ railgrid-provider-agents .agents-connection-review code { font-family: var(--fon
 /* Route-backed navigation within Setup and Models. */
 railgrid-provider-agents .agents-setup-tabs { flex-wrap: wrap; }
 .agents-models-tabs { margin-bottom: 20px; }
-.agents-models-tab { text-decoration: none; }
 .agents-models-empty { padding: 24px; }
 .agents-models-empty h3 { margin: 0 0 8px; }
 .agents-models-empty p { margin: 0; color: var(--color-text-secondary); }

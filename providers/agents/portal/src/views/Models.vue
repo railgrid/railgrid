@@ -15,6 +15,7 @@ import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vu
 import ResourceTableExpandButton from '../portalkit/ResourceTableExpandButton.vue'
 import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
+import Tabs, { type PortalTabItem } from '../portalkit/Tabs.vue'
 import ModelCollection from '../agentkit/ModelCollection.vue'
 import ModelConnectionCard from '../agentkit/ModelConnectionCard.vue'
 import WorkspaceAssistantCard from './WorkspaceAssistantCard.vue'
@@ -45,14 +46,17 @@ watch(() => props.modelsTab, tab => { localTab.value = tab })
 function tabRoute(tab: ModelsTab): Route {
   return { kind: 'menu', menu: 'models', ...(tab === 'models' ? {} : { modelsTab: tab }) }
 }
-function navigateTab(event: MouseEvent, tab: ModelsTab): void {
-  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return
-  event.preventDefault()
-  openModelTab(tab)
-}
+const modelTabs = computed<PortalTabItem[]>(() => MODELS_TABS.map(tab => ({
+  ...tab,
+  href: hashFor(tabRoute(tab.id)),
+})))
 function openModelTab(tab: ModelsTab): void {
   localTab.value = tab
   emit('navigate', tabRoute(tab))
+}
+function selectModelTab(id: string): void {
+  const selected = MODELS_TABS.find(tab => tab.id === id)
+  if (selected) openModelTab(selected.id)
 }
 const connectionView = computed(() => props.setupNavigation || activeTab.value === 'provider-connections')
 const modelView = computed(() => props.setupNavigation || activeTab.value === 'models')
@@ -503,9 +507,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           <ActionMenu label="Create" show-label :primary-menu="!showFirstRun && !showFirstModel" :items="createActions" @select="selectCreateAction" />
         </div>
       </header>
-      <nav v-if="!setupNavigation" class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
-        <a v-for="tab in MODELS_TABS" :key="tab.id" class="k-tab agents-models-tab" :href="hashFor(tabRoute(tab.id))" :aria-current="activeTab === tab.id ? 'page' : undefined" @click="navigateTab($event, tab.id)">{{ tab.label }}</a>
-      </nav>
+      <Tabs v-if="!setupNavigation" class="k-tabs--compact agents-models-tabs" :tabs="modelTabs" :active="activeTab" aria-label="Model management" @select="selectModelTab" />
       <template v-if="credentialView">
       <template v-if="modelView">
       <div v-if="modelView && catalogError" ref="catalogWarning" data-catalog-warning><InlineNotification :tone="catalogHasSnapshot ? 'warning' : 'error'" :message="catalogHasSnapshot ? `Could not refresh the model catalog. Showing the last loaded catalog. ${catalogError}` : `Model catalog unavailable: ${catalogError}`" action-label="Retry" action-busy-label="Retrying catalog…" :action-busy="catalogLoading" @action="loadCatalog" /></div>
@@ -557,15 +559,27 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
             :primary-agents="primaryOf(credential)"
             :fallback-agents="fallbackOf(credential)"
           />
-          <p v-if="tested.get(credentialStateKey(credential.name))?.error" class="k-error" role="alert">{{ tested.get(credentialStateKey(credential.name))?.error }}</p>
-          <p v-else-if="credential.ready === false && credential.statusMessage" class="k-error" role="alert">The model connection needs attention. Edit it to review the endpoint and credential.</p>
+          <InlineNotification
+            v-if="tested.get(credentialStateKey(credential.name))?.error"
+            tone="error"
+            :message="tested.get(credentialStateKey(credential.name))?.error"
+          />
+          <InlineNotification
+            v-else-if="credential.ready === false && credential.statusMessage"
+            tone="error"
+            message="The model connection needs attention. Edit it to review the endpoint and credential."
+          />
           <TechnicalDetails :diagnostic="tested.get(credentialStateKey(credential.name))?.technicalDiagnostic || (credential.ready === false ? credential.statusMessage : '')" />
           <p v-if="credential.discovered?.length" class="agents-hint">{{ credential.discovered.length }} chat model{{ credential.discovered.length === 1 ? '' : 's' }} available from this endpoint</p>
           <template #actions><button class="k-btn k-btn--ghost" :disabled="credentialIsBusy(credential.name)" @click="toggleEdit(credential)">Edit</button><button v-if="credential.model?.trim()" class="k-btn k-btn--ghost" :disabled="testing.has(credentialStateKey(credential.name)) || credentialIsBusy(credential.name)" @click="testCredential(credential.name)">Test connection</button><button data-model-delete class="k-icon-action" :class="{ 'k-table-action--busy': credentialAction(credential.name) === 'deleting' }" :disabled="credentialIsBusy(credential.name) && credentialAction(credential.name) !== 'deleting'" :aria-disabled="credentialAction(credential.name) === 'deleting' ? 'true' : undefined" :aria-busy="credentialAction(credential.name) === 'deleting' || undefined" :title="credentialAction(credential.name) === 'deleting' ? `Deleting ${credentialLabel(credential)}…` : `Delete ${credentialLabel(credential)}`" :aria-label="credentialAction(credential.name) === 'deleting' ? `Deleting ${credentialLabel(credential)}…` : `Delete ${credentialLabel(credential)}`" @click="!credentialIsBusy(credential.name) && remove(credential.name)"><Loader2 v-if="credentialAction(credential.name) === 'deleting'" class="k-spin" :stroke-width="1.75" aria-hidden="true" /><Trash2 v-else :stroke-width="1.75" aria-hidden="true" /></button></template>
         </ModelConnectionCard>
         </template>
         <template #details="{ row: { credential } }">
-          <p v-if="tested.get(credentialStateKey(credential.name))?.error" class="k-error" role="alert">{{ tested.get(credentialStateKey(credential.name))?.error }}</p>
+          <InlineNotification
+            v-if="tested.get(credentialStateKey(credential.name))?.error"
+            tone="error"
+            :message="tested.get(credentialStateKey(credential.name))?.error"
+          />
           <TechnicalDetails :diagnostic="tested.get(credentialStateKey(credential.name))?.technicalDiagnostic || (credential.ready === false ? credential.statusMessage : '')" />
         </template>
         <template #actions="{ row: { credential } }">

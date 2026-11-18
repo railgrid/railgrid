@@ -7,6 +7,7 @@
      specific controls such as Google credential mode/JSON and recommendations.
  -->
 <script setup lang="ts">
+import InlineNotification from '../portalkit-vue/InlineNotification.vue'
 import { Check, Loader2, RefreshCw } from 'lucide-vue-next'
 import ModelIDSelector from './ModelIDSelector.vue'
 import type { DiscoveredModel } from './modelIDSelection'
@@ -233,7 +234,9 @@ function isLocked(): boolean {
           <span v-else id="model-id-hint" class="k-model-form-hint">{{ modelHint }} Find models to load the full catalog, then search or enter an ID.</span>
         </label>
         <slot name="model-extra" />
-        <p v-if="discoveryError" class="k-inline-notification k-inline-notification--error" role="alert">{{ discoveryError }} You can still enter a model ID manually.</p>
+        <InlineNotification v-if="discoveryError" tone="error">
+          {{ discoveryError }} You can still enter a model ID manually.
+        </InlineNotification>
         <p v-else-if="discoveryStatus" class="k-model-form-hint" role="status" aria-live="polite">{{ discoveryStatus }}</p>
       </section>
 
@@ -250,16 +253,18 @@ function isLocked(): boolean {
             {{ testing ? 'Testing…' : connectionTested ? 'Connection verified' : 'Test connection' }}
           </button>
         </div>
-        <div v-show="testError || connectionTested || testNotice" id="model-test-status" aria-live="polite" aria-atomic="true">
-          <p v-if="testError" class="k-inline-notification k-inline-notification--error" role="alert">{{ testError }}</p>
-          <p v-else-if="connectionTested" class="k-inline-notification k-inline-notification--success" role="status">
-            <Check :size="14" :stroke-width="2" />Connection verified. The model responded successfully.
-          </p>
+        <div v-show="testError || connectionTested || testNotice" id="model-test-status">
+          <InlineNotification v-if="testError" tone="error" :message="testError" />
+          <InlineNotification
+            v-else-if="connectionTested"
+            tone="success"
+            message="Connection verified. The model responded successfully."
+          />
           <p v-else-if="testNotice" class="k-model-form-hint" role="status">{{ testNotice }}</p>
         </div>
         <slot name="probe-details" />
       </section>
-      <p v-if="formError" class="k-inline-notification k-inline-notification--error" role="alert">{{ formError }}</p>
+      <InlineNotification v-if="formError" tone="error" :message="formError" />
     </div>
 
     <footer class="k-create-actions">

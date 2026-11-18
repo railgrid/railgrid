@@ -329,9 +329,7 @@ onUnmounted(() => {
         <template #body>
           <template v-if="conn">
             <InlineNotification v-if="mutationError" tone="error" :title="`Could not delete connection ${name}`" :message="`${mutationError} Try again using the connection delete action.`" dismissible @dismiss="dismissMutationError" />
-            <p v-if="deleting" class="connection-detail__deleting" role="status" aria-live="polite">
-              Deleting this connection. The last successful snapshot remains visible until the hub confirms removal.
-            </p>
+            <InlineNotification v-if="deleting" tone="warning" message="Deleting this connection. The last successful snapshot remains visible until the hub confirms removal." />
 
             <div class="connection-detail__sections">
               <ResourceSectionCard id="connection-overview" eyebrow="Configuration" title="Overview" description="Connection identity and the provider account it represents.">

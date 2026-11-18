@@ -28,6 +28,8 @@ export const RULES = Object.freeze({
   RAW_COLOR: 'raw-color',
   PILL_RADIUS: 'pill-radius',
   COMMON_WIDGET_SELECTOR: 'common-widget-selector',
+  CSS_BLOCK_BALANCE: 'css-block-balance',
+  SHARED_TABS: 'shared-tabs',
   EXCEPTION_REGISTRY: 'exception-registry',
 })
 
@@ -138,6 +140,7 @@ const COMMON_WIDGET_NAMES = new Set([
   'modal',
   'panel',
   'skeleton',
+  'spin',
   'spinner',
   'table',
   'tab',
@@ -564,8 +567,8 @@ function cssRegions(source, masked) {
   if (extension !== '.vue' && !['.css', '.less', '.sass', '.scss'].includes(extension)) return []
   if (extension !== '.vue') return [{ text: masked, offset: 0 }]
   const regions = []
-  const styleRe = /<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi
-  for (const match of masked.matchAll(styleRe)) regions.push({ text: match[1], offset: match.index + match[0].indexOf(match[1]) })
+  const styleRe = /<style\b([^>]*)>([\s\S]*?)<\/style\s*>/gi
+  for (const match of masked.matchAll(styleRe)) regions.push({ text: match[2], offset: match.index + match[0].indexOf('>') + 1, language: match[1].match(/\blang\s*=\s*["']([^"']+)["']/i)?.[1] })
   return regions
 }
 
@@ -598,6 +601,7 @@ function hasCanonicalWidgetStyling(block, className) {
   // card/button recipe that repeats surface, border, radius, or typography.
   const declarations = block.replace(/[^{}]*\{[^{}]*\}/g, ' ')
   const properties = [...declarations.matchAll(/(?:^|[;\n])\s*([A-Za-z-]+)\s*:/g)].map((match) => match[1].toLowerCase())
+  if (['spin', 'spinner'].includes(className) && properties.some((property) => /^animation(?:-|$)/.test(property))) return true
   if (properties.length < 2) return false
 
   const visual = new Set([
@@ -626,6 +630,57 @@ function hasCanonicalWidgetStyling(block, className) {
     return properties.length >= 3
   }
   return false
+}
+
+function scanCssBlockBalance(diagnostics, source, starts) {
+  // Read original CSS, not the JS-aware comment mask: unquoted URLs can contain
+  // `//`. Strings, comments, escapes, and URL/function payloads own their braces.
+  // This deliberately checks block balance, not the complete CSS grammar.
+  if (!['.css', '.vue'].includes(path.extname(source.path))) return
+  for (const region of cssRegions(source, source.content.replace(/<!--[\s\S]*?-->/g, (comment) => comment.replace(/[^\r\n]/g, ' ')))) {
+    if (region.language && region.language !== 'css') continue
+    const stack = []
+    let quote = null
+    let comment = false
+    let parentheses = 0
+    for (let index = 0; index < region.text.length; index += 1) {
+      const char = region.text[index]
+      const next = region.text[index + 1]
+      if (comment) {
+        if (char === '*' && next === '/') { comment = false; index += 1 }
+        continue
+      }
+      if (char === '\\') { index += 1; continue }
+      if (quote) { if (char === quote) quote = null; continue }
+      if (char === '/' && next === '*') { comment = true; index += 1; continue }
+      if (char === '"' || char === "'") { quote = char; continue }
+      if (char === '(') { parentheses += 1; continue }
+      if (char === ')') { parentheses = Math.max(0, parentheses - 1); continue }
+      if (parentheses) continue
+      if (char === '{') stack.push(index)
+      if (char === '}') {
+        if (stack.length) stack.pop()
+        else addMatch(diagnostics, source, starts, RULES.CSS_BLOCK_BALANCE, region.offset + index, char, 'unmatched CSS closing brace; injected styles must contain balanced rule blocks')
+      }
+    }
+    for (const index of stack) addMatch(diagnostics, source, starts, RULES.CSS_BLOCK_BALANCE, region.offset + index, '{', 'unclosed CSS rule block')
+  }
+}
+
+function scanSharedTabs(diagnostics, source, masked, starts) {
+  if (!isProviderSource(source) || path.extname(source.path) !== '.vue') return
+  const template = masked.match(/<template\b[^>]*>([\s\S]*)<\/template\s*>/i)
+  if (!template) return
+  const offset = template.index + template[0].indexOf('>') + 1
+  for (const tag of template[1].matchAll(/<nav(?=[\s/>])(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
+    // Consume other quoted attributes as a unit so their text cannot be
+    // mistaken for the native class attribute.
+    const attributes = tag[0].matchAll(/\sclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))|"[^"]*"|'[^']*'/gi)
+    const hasTabsClass = Array.from(attributes).some(([, double, single, bare]) =>
+      (double ?? single ?? bare ?? '').split(/\s+/).includes('k-tabs'))
+    if (!hasTabsClass) continue
+    addMatch(diagnostics, source, starts, RULES.SHARED_TABS, offset + tag.index, tag[0], 'Vue section navigation must use PortalKit Tabs.vue; preserve href, active, count, and caller-owned selection')
+  }
 }
 
 function scanCssSelectors(diagnostics, source, masked, starts) {
@@ -919,6 +974,8 @@ function scanFile(source) {
   scanGlyphs(diagnostics, source, masked, starts)
   scanColors(diagnostics, source, masked, starts)
   scanRadii(diagnostics, source, masked, starts)
+  scanCssBlockBalance(diagnostics, source, starts)
+  scanSharedTabs(diagnostics, source, masked, starts)
   scanCssSelectors(diagnostics, source, masked, starts)
   return diagnostics
 }

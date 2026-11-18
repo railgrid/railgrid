@@ -515,6 +515,39 @@ describe('collection mutation feedback ownership', () => {
 })
 
 describe('service creation read recovery', () => {
+  it('keeps the retry label idle while service creation is pending', async () => {
+    api.fetchServiceCatalog.mockRejectedValueOnce(new Error('Catalog is unavailable'))
+    api.listEdges.mockResolvedValueOnce([{ ...edge, type: 'server' }])
+    const pending = deferred<void>()
+    api.createKubeEdgeService.mockReturnValueOnce(pending.promise)
+    const source = ServiceCreate as unknown as {
+      setup: (props: Record<string, unknown>, context: Record<string, unknown>) => Record<string, any>
+      ssrRender: (...args: any[]) => unknown
+    }
+    let create: Promise<void> | undefined
+    const Wrapper = {
+      async setup(props: Record<string, unknown>, context: Record<string, unknown>) {
+        const state = source.setup(props, context)
+        await state.loadInputs()
+        state.draft.value.name = 'living-room-service'
+        create = state.onCreate()
+        return state
+      },
+      ssrRender: source.ssrRender,
+    }
+    try {
+      const markup = await renderToString(createSSRApp(Wrapper))
+      expect(api.createKubeEdgeService).toHaveBeenCalledOnce()
+      expect(markup).toContain('Catalog is unavailable')
+      const retry = markup.match(/<button([^>]*)>\s*Retry service types and edges\s*<\/button>/)
+      expect(retry?.[1]).toContain('aria-disabled="true"')
+      expect(retry?.[1]).not.toContain('aria-busy')
+    } finally {
+      pending.resolve()
+      await create
+    }
+  })
+
   it('retries failed prerequisites without replacing the creation draft', async () => {
     api.listEdges.mockRejectedValueOnce(new Error('Hub is unavailable'))
     const mounted = await mount(ServiceCreate)

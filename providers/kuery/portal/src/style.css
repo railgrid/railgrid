@@ -24,6 +24,7 @@ railgrid-provider-kuery .kuery-shell {
 
 railgrid-provider-kuery .kuery-collection-surfaces {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   width: 100%;
   min-width: 0;
@@ -143,8 +144,12 @@ railgrid-provider-kuery .kuery-example {
   text-transform: uppercase;
 }
 
-railgrid-provider-kuery .kuery-inline-error,
-railgrid-provider-kuery .kuery-warning,
+railgrid-provider-kuery .kuery-query-notices:not(:empty) {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
 railgrid-provider-kuery .kuery-read-state {
   display: flex;
   align-items: center;
@@ -161,22 +166,11 @@ railgrid-provider-kuery .kuery-read-state {
   font-size: 12px;
 }
 
-railgrid-provider-kuery .kuery-inline-error {
-  border-color: color-mix(in srgb, var(--color-danger) 40%, transparent);
-  color: var(--color-danger);
-}
-
 railgrid-provider-kuery .kuery-error-copy {
   display: grid;
   flex: 1 1 auto;
   gap: 8px;
   min-width: 0;
-}
-
-railgrid-provider-kuery .kuery-warning {
-  margin-top: 10px;
-  border-color: color-mix(in srgb, var(--color-warning) 40%, transparent);
-  color: var(--color-warning);
 }
 
 /* ── inventory table ───────────────────────────────────────────────── */
@@ -408,18 +402,6 @@ railgrid-provider-kuery .pg-split > section {
   min-width: 0;
 }
 
-@media (min-width: 821px) {
-  railgrid-provider-kuery .pg-split {
-    height: clamp(360px, calc(100vh - 380px), 1440px);
-  }
-
-  railgrid-provider-kuery .pg-editor,
-  railgrid-provider-kuery .pg-fallback,
-  railgrid-provider-kuery .pg-result {
-    min-height: 0;
-  }
-}
-
 @media (max-width: 820px) {
   railgrid-provider-kuery .pg-split {
     grid-template-columns: 1fr;
@@ -511,6 +493,13 @@ railgrid-provider-kuery .pg-fallback {
   box-sizing: border-box;
 }
 
+railgrid-provider-kuery .pg-result-pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
 railgrid-provider-kuery .pg-result {
   flex: 1 1 360px;
   box-sizing: border-box;
@@ -525,6 +514,20 @@ railgrid-provider-kuery .pg-result {
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+@media (min-width: 821px) {
+  railgrid-provider-kuery .pg-split {
+    height: clamp(360px, calc(100vh - 380px), 1440px);
+  }
+
+  railgrid-provider-kuery .pg-split > section,
+  railgrid-provider-kuery .pg-editor,
+  railgrid-provider-kuery .pg-editor .CodeMirror,
+  railgrid-provider-kuery .pg-fallback,
+  railgrid-provider-kuery .pg-result {
+    min-height: 0;
+  }
 }
 
 railgrid-provider-kuery .pg-result.error {

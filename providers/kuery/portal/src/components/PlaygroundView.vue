@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ChevronDown, Play } from 'lucide-vue-next'
 
@@ -119,12 +120,12 @@ onBeforeUnmount(() => { controller?.abort(); controller = null; schemaController
     <div class="kuery-panel-head"><div><h2 id="playground-title" class="kuery-panel-title">Query playground</h2><p class="meta">Write a Kuery QuerySpec against your workspace. Autocomplete uses the live schema; press Ctrl/Cmd-Space for suggestions.</p></div></div>
     <div class="kuery-toolbar"><label class="kuery-example"><span id="playground-example-label">Example</span><FormSelect :model-value="example" :options="exampleOptions" labelledby="playground-example-label" @update:model-value="chooseExample" /></label><button ref="runButton" type="button" class="k-btn k-btn--primary" :aria-disabled="running || undefined" :aria-busy="running || undefined" @click="run"><Play :size="14" :stroke-width="1.75" aria-hidden="true" />{{ running ? 'Running…' : 'Run query' }}</button></div>
     <div class="pg-split">
-      <section aria-labelledby="query-editor-label"><h3 id="query-editor-label" class="kuery-workbench-title">QuerySpec editor</h3><div v-if="editorError" class="kuery-inline-error" role="status">{{ editorError }}</div><textarea v-if="fallback" v-model="documentText" class="k-input pg-fallback" aria-labelledby="query-editor-label" spellcheck="false" /><div v-else ref="editorHost" class="pg-editor" role="group" aria-labelledby="query-editor-label" /></section>
+      <section aria-labelledby="query-editor-label"><h3 id="query-editor-label" class="kuery-workbench-title">QuerySpec editor</h3><InlineNotification v-if="editorError" tone="error" announce="polite" :message="editorError" /><textarea v-if="fallback" v-model="documentText" class="k-input pg-fallback" aria-labelledby="query-editor-label" spellcheck="false" /><div v-else ref="editorHost" class="pg-editor" role="group" aria-labelledby="query-editor-label" /></section>
       <section aria-labelledby="query-results-label">
         <h3 id="query-results-label" class="kuery-workbench-title">Query results</h3>
         <p v-if="draftChanged" class="meta" role="status">The query has changed since it was run. Run it again to see results for the current query.</p>
         <p class="kuery-sr-only" role="status" aria-live="polite">{{ resultStatus }}</p>
-        <div :aria-busy="running">
+        <div class="pg-result-pane" :aria-busy="running">
           <div v-if="notEngaged" class="kuery-read-state" role="status">
             <span>Kuery has not started syncing an edge in this workspace yet. Check again in a moment.</span>
             <button type="button" class="k-btn k-btn--ghost" :aria-disabled="running || undefined" :aria-busy="running || undefined" @click="run">{{ running ? 'Checking…' : 'Check again' }}</button>

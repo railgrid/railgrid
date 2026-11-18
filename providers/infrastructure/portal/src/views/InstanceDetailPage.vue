@@ -350,7 +350,7 @@ onUnmounted(() => {
             :aria-busy="foregroundLoading || undefined"
             @click="refreshFromHeader"
           >
-            <RefreshCw :size="14" :class="{ spin: foregroundLoading }" aria-hidden="true" />
+            <RefreshCw :size="14" :class="{ 'k-spin': foregroundLoading }" aria-hidden="true" />
             {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
           </button>
           <ActionMenu

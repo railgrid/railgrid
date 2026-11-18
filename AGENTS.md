@@ -866,6 +866,13 @@ distribution outputs, not new authorities. A new primitive or shared recipe is
 added canonical-first, then propagated with `make sync-portalkit`; never invent
 a provider-local variant or edit a vendored copy directly.
 
+Use `Tabs.vue` for Vue route/section navigation and `k-spin` for busy-icon
+motion. Check provider styles imported as raw strings as well as compiled CSS;
+a successful Vite build does not validate an injected stylesheet. When an audit
+finds a recurring mechanical violation, add focused positive/negative guard
+fixtures. Keep unresolved legacy occurrences in an explicit shrinking backlog,
+not the registry of legitimate design exceptions.
+
 Treat each entry's `status`, `authority`, `implementation.state`, and
 `verification` metadata as part of the contract. Draft/proposed entries and
 planned, partial, or retired implementation states do not prove a shipped

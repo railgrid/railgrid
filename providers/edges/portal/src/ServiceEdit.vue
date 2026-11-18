@@ -489,7 +489,7 @@ onUnmounted(() => {
         <template #actions>
           <div class="service-detail__actions" role="group" aria-label="Service actions">
             <button class="k-btn k-btn--ghost" type="button" aria-label="Refresh service" :disabled="busy" :aria-disabled="readLoading || undefined" :aria-busy="readLoading || undefined" @click="refreshDetail">
-              <RefreshCw :size="14" :class="{ spin: readLoading }" aria-hidden="true" />
+              <RefreshCw :size="14" :class="{ 'k-spin': readLoading }" aria-hidden="true" />
               {{ readLoading ? 'Refreshing…' : 'Refresh' }}
             </button>
             <ActionMenu

@@ -37,6 +37,23 @@ such as `header`, `form`, `field`, and `list` are not enough, while a focused
 primitive name with a visibly restated widget recipe is actionable. Output is
 sorted by repository-relative path, line, column, and rule.
 
+The `shared-tabs` rule flags a literal `k-tabs` class on a native Vue `nav`.
+Review dynamically bound classes when checking section navigation. Use
+`Tabs.vue` so hrefs, selection, counts, and accessibility stay shared.
+Vanilla markup and the canonical component remain valid. Local `.spin` or
+`.spinner` animation recipes use `k-spin`, including its reduced-motion policy.
+The `css-block-balance` rule checks authored CSS and CSS SFC style blocks even
+when the bundle imports them as raw strings. It ignores comments, quoted and
+escaped braces, and URL payloads. This is a block-balance guard, not a complete
+CSS parser or a preprocessor validator.
+
+The feedback check in the same target rejects retired native Vue notification
+classes, including `k-error` and `k-stale`, and hand-built error, warning or
+success notifications with a literal `k-inline-notification` recipe. Use
+PortalKit `InlineNotification` for those outcomes. Loading spinners, the
+multi-state configuration save indicator, and field-specific validation keep
+their existing contracts. The audited legacy backlog is empty.
+
 The only suppression mechanism is the structured
 [`hack/ui-conformance-exceptions.json`](../../../hack/ui-conformance-exceptions.json)
 registry. Each exact exception references `design.quality.exceptions`; the

@@ -147,17 +147,19 @@ when the provider stage has completed. Use the
 `.k-model-form-*` recipes for identical section geometry and responsive columns
 across both providers; keep field help inside the form surface. Fields top-align
 their grid contents so adjacent controls stay aligned when only one has help text.
-The canonical PortalKit stylesheet version 43 also owns the host font-feature settings
-and the `.k-create-title:focus-visible` title-focus recipe.
+The canonical PortalKit stylesheet also owns the host font-feature settings and the
+`.k-create-title:focus-visible` title-focus recipe.
 
 Agents places **Usage & cost** in Activity, alongside Run history and Inbox.
 `ModelUsageSection` is one bordered,
 raised section card with 20px padding and a 6px radius; its title, time controls,
 metrics, and expandable detail content stay inside that boundary. App Studio's
 usage-unavailable message remains inside the same card without a nested box.
-PortalKit recipes ship through `make sync-portalkit` at core stylesheet version
-43; optional AgentKit model and reasoning recipes use independent version 36.
-Both keep compatibility fallbacks for older host stylesheets.
+PortalKit recipes ship through `make sync-portalkit`; their core contract follows
+`RAILGRID_UI_CORE_VERSION` and `--railgrid-ui-core-version`. Optional AgentKit
+model and reasoning recipes have independent versioning through `AGENT_UI_VERSION`
+and `--railgrid-agent-ui-version`. Both keep compatibility fallbacks for older
+host stylesheets.
 
 ## Accessibility
 

@@ -3700,7 +3700,7 @@ defineExpose({
               <p v-else-if="artifactViewerFailed" class="agents-artifact-panel__status" role="status">The provider app could not be opened. You can inspect the captured data below.</p>
               <details v-if="!selectedSavedCapture?.selection" class="agents-artifact-panel__data">
                 <summary>View captured data</summary>
-                <pre>{{ selectedArtifact.data }}</pre>
+                <pre class="k-resource-technical__pre">{{ selectedArtifact.data }}</pre>
               </details>
               <details class="agents-artifact-panel__evidence">
                 <summary>Access evidence</summary>

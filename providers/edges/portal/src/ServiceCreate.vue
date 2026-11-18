@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InlineNotification from './portalkit/InlineNotification.vue'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ArrowLeft, Globe2, Loader2, Plus, Server } from 'lucide-vue-next'
 import { createKubeEdgeService, fetchServiceCatalog, listEdges } from './api'
@@ -253,13 +254,23 @@ onUnmounted(() => {
       <p class="k-create-description">Declare a service on an edge and expose its tools through the Edges MCP endpoint.</p>
     </header>
 
-    <div v-if="error" class="banner error" role="alert">{{ error }}</div>
-    <div v-if="readError" class="banner error service-create-read-error" role="alert">
-      <span>{{ readError }}</span>
-      <button type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || busy || undefined" :aria-busy="loading || undefined" @click="loadInputs">{{ loading ? 'Retrying service types and edges…' : 'Retry service types and edges' }}</button>
-    </div>
+    <InlineNotification v-if="error" tone="error" :message="error" />
+    <InlineNotification v-if="readError" tone="error">
+      <div class="service-create-recovery">
+        <span>{{ readError }}</span>
+        <button
+          type="button"
+          class="k-btn k-btn--ghost"
+          :aria-disabled="loading || busy || undefined"
+          :aria-busy="loading || undefined"
+          @click="loadInputs"
+        >
+          {{ loading ? 'Retrying service types and edges…' : 'Retry service types and edges' }}
+        </button>
+      </div>
+    </InlineNotification>
     <div v-if="loading" class="waiting" role="status" aria-live="polite">
-      <Loader2 :size="14" class="spin" aria-hidden="true" /> Loading service types and edges…
+      <Loader2 :size="14" class="k-spin" aria-hidden="true" /> Loading service types and edges…
     </div>
 
     <FirstRunGuide
@@ -370,7 +381,7 @@ onUnmounted(() => {
       <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">Cancel</button>
         <button type="submit" class="k-btn k-btn--primary" :disabled="busy || !canCreate">
-          <Loader2 v-if="busy" :size="14" class="spin" aria-hidden="true" />
+          <Loader2 v-if="busy" :size="14" class="k-spin" aria-hidden="true" />
           <Plus v-else :size="14" aria-hidden="true" />
           {{ busy ? 'Creating…' : 'Create service' }}
         </button>

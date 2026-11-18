@@ -931,9 +931,7 @@ onUnmounted(() => {
 
     <template #body>
       <InlineNotification v-if="repositoryMutationError" tone="error" :title="`Could not delete repository ${repo?.repo || name}`" :message="`${repositoryMutationError} Try again using the repository delete action.`" dismissible @dismiss="dismissRepositoryError" />
-      <p v-if="repositoryDeleting" class="repo-detail__deleting" role="status" aria-live="polite">
-        Deleting this repository. The last successful snapshot remains visible until the hub confirms removal.
-      </p>
+      <InlineNotification v-if="repositoryDeleting" tone="warning" message="Deleting this repository. The last successful snapshot remains visible until the hub confirms removal." />
       <div class="repo-detail__sections">
         <ResourceSectionCard
           id="repository-integration"

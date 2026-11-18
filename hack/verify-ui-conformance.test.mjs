@@ -989,3 +989,61 @@ test('checks canonical AgentKit while excluding its verifier-owned distribution 
   assert.ok(result.diagnostics.some(d => d.path === 'provider-sdk/agentkit/agent-ui.css'))
   assert.ok(result.diagnostics.some(d => d.path === 'providers/fixture/portal/src/feature.css' && d.rule === RULES.PROVIDER_K_SELECTOR))
 })
+
+test('rejects unbalanced raw CSS and SFC style blocks with exact source positions', () => {
+  const fixture = fixtureRepo({
+    'providers/fixture/portal/src/raw.css': '.valid { display: flex; }\n  color: inherit;\n}\n.open { display: grid;\n',
+    'providers/fixture/portal/src/View.vue': '<template><div /></template>\n<style>\n.good { display: flex; }\n}\n</style>',
+  })
+  const errors = fixture.run().diagnostics.filter(d => d.rule === RULES.CSS_BLOCK_BALANCE)
+  assert.deepEqual(errors.map(d => [d.path.split('/').at(-1), d.line, d.column]), [
+    ['View.vue', 4, 1], ['raw.css', 3, 1], ['raw.css', 4, 7],
+  ])
+})
+
+test('CSS balance accepts nested rules, strings, comments, escaped braces, and URL payloads', () => {
+  const fixture = fixtureRepo({
+    'providers/fixture/portal/src/raw.css': String.raw`/* } */
+@media (min-width: 800px) { .content::after { content: "}\\\"{"; } }
+.escaped\{name { background-image: url(https://example.test/image{opaque); }
+.svg { background-image: url('data:image/svg+xml,<svg>{</svg>'); }
+`,
+    'providers/fixture/portal/src/View.vue': '<template><div>{{ { value: 1 } }}</div></template><script>const sample = "}"</script><style>.ok { content: "}"; }</style><style scoped>.also-ok { display: grid; }</style>',
+    'providers/fixture/portal/src/Indented.vue': '<template><div /></template><style lang="sass">.ok\n  content: "}"\n</style>',
+  })
+  assert.deepEqual(fixture.run().diagnostics.filter(d => d.rule === RULES.CSS_BLOCK_BALANCE), [])
+})
+
+test('Vue section navigation uses shared Tabs while native non-section and vanilla patterns remain valid', () => {
+  const fixture = fixtureRepo({
+    'providers/fixture/portal/src/Bad.vue': '<template>\n<nav class="compact k-tabs"><button class="k-tab">Models</button></nav>\n</template>',
+    'providers/fixture/portal/src/Conditional.vue': '<template><nav v-if="tabs.length > 1" class="k-tabs" /></template>',
+    'providers/fixture/portal/src/AttributeText.vue': `<template><nav title='example class="k-tabs"' class="breadcrumbs" /></template>`,
+    'providers/fixture/portal/src/Good.vue': `<template><Tabs :tabs="tabs" :active="active" /><nav class="breadcrumbs" /></template><script>const example = '<nav class="k-tabs">'</script>`,
+    'provider-sdk/portalkit/Tabs.vue': '<template><nav class="k-tabs"><slot /></nav></template>',
+    'providers/fixture/portal/src/vanilla.ts': 'const html = `<nav class="k-tabs"></nav>`',
+  })
+  const errors = fixture.run().diagnostics.filter(d => d.rule === RULES.SHARED_TABS)
+  assert.equal(errors.length, 2)
+  assert.equal(errors[0].line, 2)
+  assert.ok(errors[0].path.endsWith('/Bad.vue'))
+  assert.ok(errors[1].path.endsWith('/Conditional.vue'))
+})
+
+test('local spin animation recipes reuse k-spin without restricting unrelated motion or layout', () => {
+  const fixture = fixtureRepo({
+    'providers/fixture/portal/src/motion.css': '.spin { animation: local-spin 1s linear infinite; }\n.spinner { animation-name: local-spin; }\n.chart-pulse { animation: chart-pulse 2s ease; }\n.spinner { width: 12px; }\n',
+    'providers/fixture/portal/src/Busy.vue': '<template><button class="k-btn"><i class="k-spin" />Loading</button></template>',
+  })
+  const errors = fixture.run().diagnostics.filter(d => d.rule === RULES.COMMON_WIDGET_SELECTOR)
+  assert.deepEqual(errors.map(d => d.match), ['.spin', '.spinner'])
+})
+
+test('shared Tabs guard also covers host consumers through configured application roots', () => {
+  const fixture = fixtureRepo({
+    'portal/src/pages/Catalog.vue': '<template><nav class="k-tabs" aria-label="Catalog"><button class="k-tab">All</button></nav></template>',
+  }, { providerRoots: ['portal'] })
+  const errors = fixture.run().diagnostics.filter(d => d.rule === RULES.SHARED_TABS)
+  assert.equal(errors.length, 1)
+  assert.equal(errors[0].path, 'portal/src/pages/Catalog.vue')
+})

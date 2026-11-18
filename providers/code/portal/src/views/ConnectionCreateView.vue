@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
 import { api, normalizeResourceName } from '../api'
@@ -41,8 +42,11 @@ const contextGeneration = inject(contextGenerationKey, ref(0))
 // confirmation so an OAuth credential can never be lost during navigation.
 const oauthEnabled = ref(false)
 const oauthLoaded = ref(false)
+const oauthLoading = ref(false)
 const oauthStartURL = ref('')
 const oauthConfigError = ref<string | null>(null)
+const oauthWarning = ref<HTMLElement | null>(null)
+const heading = ref<HTMLElement | null>(null)
 const oauthBusy = ref(false)
 const oauthAuthorized = ref(false)
 const oauthLogin = ref('')
@@ -280,11 +284,17 @@ async function submit(): Promise<void> {
 async function loadOAuthConfig(): Promise<void> {
   const generation = ++oauthGeneration
   const expectedContext = contextGeneration.value
-  oauthConfigError.value = null
-  oauthLoaded.value = false
+  oauthLoading.value = true
   try {
     const config = await api.oauthConfig()
     if (!isCurrentOAuthRead(generation, expectedContext)) return
+    const retryHadFocus = typeof document !== 'undefined' && oauthWarning.value?.contains(document.activeElement)
+    oauthConfigError.value = null
+    if (retryHadFocus) void nextTick(() => {
+      if (isCurrentOAuthRead(generation, expectedContext) && document.activeElement === document.body) {
+        heading.value?.focus({ preventScroll: true })
+      }
+    })
     oauthEnabled.value = config.enabled
     oauthStartURL.value = config.startURL || ''
   } catch (e) {
@@ -293,7 +303,10 @@ async function loadOAuthConfig(): Promise<void> {
     oauthStartURL.value = ''
     oauthConfigError.value = errMessage(e)
   } finally {
-    if (isCurrentOAuthRead(generation, expectedContext)) oauthLoaded.value = true
+    if (isCurrentOAuthRead(generation, expectedContext)) {
+      oauthLoaded.value = true
+      oauthLoading.value = false
+    }
   }
 }
 
@@ -317,6 +330,8 @@ onMounted(() => window.addEventListener('message', onMessage))
 
 watch(contextGeneration, () => {
   if (!mounted) return
+  oauthLoaded.value = false
+  oauthConfigError.value = null
   void loadConnections()
   if (isGitHub.value) void loadOAuthConfig()
 })
@@ -328,23 +343,27 @@ watch(contextGeneration, () => {
       <ArrowLeft :size="14" aria-hidden="true" /> Connections
     </button>
     <header class="k-create-header">
-      <h2 class="k-create-title">{{ pageTitle }}</h2>
+      <h2 ref="heading" class="k-create-title" tabindex="-1">{{ pageTitle }}</h2>
       <p class="k-create-description">Manage GitHub repositories from this workspace.</p>
     </header>
 
     <div v-if="loading && !loaded" class="panel k-card" role="status" aria-live="polite">Loading connections…</div>
-    <div v-if="readError" class="error read-error" role="alert" aria-live="assertive">
-      <span>{{ readError }}</span>
-      <button class="k-btn k-btn--ghost" type="button" @click="loadConnections">Retry connections</button>
-    </div>
+    <InlineNotification v-if="readError" tone="error" action-label="Retry connections" action-busy-label="Retrying connections…" :action-busy="loading" @action="loadConnections" :message="readError" />
 
     <div v-if="isGitHub && !oauthAuthorized" class="k-create-surface k-create-surface--guided">
       <div class="k-create-body k-create-body--guided code-create-body">
         <div class="k-create-fields code-create-fields">
           <span v-if="!oauthLoaded" class="muted" role="status" aria-live="polite">Checking GitHub sign-in…</span>
-          <div v-else-if="oauthConfigError" class="error read-error" role="alert" aria-live="assertive">
-            <span>GitHub sign-in configuration could not be loaded: {{ oauthConfigError }}</span>
-            <button class="k-btn k-btn--ghost" type="button" @click="loadOAuthConfig">Retry GitHub sign-in</button>
+          <div v-else-if="oauthConfigError" ref="oauthWarning">
+            <InlineNotification
+              tone="error"
+              action-label="Retry GitHub sign-in"
+              action-busy-label="Retrying GitHub sign-in…"
+              :action-busy="oauthLoading"
+              @action="loadOAuthConfig"
+            >
+              GitHub sign-in configuration could not be loaded: {{ oauthConfigError }}
+            </InlineNotification>
           </div>
           <p v-else-if="!oauthEnabled" class="muted">GitHub sign-in is unavailable. Go back to add a token manually.</p>
           <p v-else class="muted">GitHub opens in a new window. Authorize Railgrid there.</p>

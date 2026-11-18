@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { vFocusOnRecovery } from '../vue/noticeFocus'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue'
 import {
   Check,
@@ -119,6 +121,7 @@ interface SaveRegionState {
   submitted: unknown | null
 }
 
+const executionSummary = ref<HTMLElement | null>(null)
 const props = withDefaults(defineProps<{
   store: AppStore
   api: ApiClient
@@ -1157,7 +1160,11 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
 
 
     <AgentsWorkbenchSection v-if="modelBacked" class="agents-config-sec" :heading-id="domID('agent-model-heading')" title="Default model" description="Conversations can override this model.">
-      <div v-if="credentialSlice.errorStatus === 403" class="k-inline-notification k-inline-notification--warning" role="status">Model access is restricted. Ask a workspace administrator to restore access.</div>
+      <InlineNotification
+        v-if="credentialSlice.errorStatus === 403"
+        tone="warning"
+        message="Model access is restricted. Ask a workspace administrator to restore access."
+      />
       <div v-else-if="credentialSlice.error && !credentialSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>Could not load model credentials. {{ credentialSlice.error }}</span>
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
@@ -1168,9 +1175,14 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
       <template v-if="credentialSlice.hasSnapshot && credentialSlice.errorStatus !== 403">
-        <div v-if="missingModel || !credentials.length" :id="domID('agent-model-unavailable')" class="k-inline-notification k-inline-notification--warning" role="status">
-          <span class="k-inline-notification__body"><strong>{{ credentialSlice.error ? 'Model availability could not be refreshed' : missingModel ? 'Selected model is unavailable' : 'Connect a model to continue' }}</strong><span class="k-inline-notification__message"><template v-if="credentialSlice.error">The configured model or fallback was not in the last loaded models. Retry loading models to check its current availability.</template><template v-else><template v-if="missingModel">The configured model <code>{{ modelCredential }}</code> is not available in this workspace. </template>{{ credentials.length ? 'Choose a replacement below to restore this agent.' : 'Connect a model to restore this agent.' }}</template></span></span>
-        </div>
+        <InlineNotification
+          v-if="missingModel || !credentials.length"
+          :id="domID('agent-model-unavailable')"
+          tone="warning"
+          :title="credentialSlice.error ? 'Model availability could not be refreshed' : missingModel ? 'Selected model is unavailable' : 'Connect a model to continue'"
+        >
+          <template v-if="credentialSlice.error">The configured model or fallback was not in the last loaded models. Retry loading models to check its current availability.</template><template v-else><template v-if="missingModel">The configured model <code>{{ modelCredential }}</code> is not available in this workspace. </template>{{ credentials.length ? 'Choose a replacement below to restore this agent.' : 'Connect a model to restore this agent.' }}</template>
+        </InlineNotification>
         <label v-if="credentials.length">
           <span :id="domID('agent-model-credential-label')" class="sr-only">Default model</span>
           <FormSelect v-model="modelCredential" :options="credentialOptions" :invalid="missingModel" :labelledby="domID('agent-model-credential-label')" :describedby="missingModel ? domID('agent-model-unavailable') : undefined" />
@@ -1261,7 +1273,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
 
     <section class="agents-setting-region" :aria-labelledby="domID('agent-backend-heading')">
     <details class="agents-setting-disclosure" :open="executionSettingsOpen" @toggle="executionSettingsOpen = ($event.target as HTMLDetailsElement).open">
-      <summary>
+      <summary ref="executionSummary">
         <h3>
           <span :id="domID('agent-backend-heading')">Execution settings</span>
           <span class="agents-setting-disclosure__value">{{ backendSummary }}</span>
@@ -1281,46 +1293,75 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         </fieldset>
 
         <template v-if="backendType === 'harness'">
-          <div v-if="edgeSlice.error && !edgeSlice.hasSnapshot" class="k-inline-notification k-inline-notification--error" role="alert">
-            <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load machines. {{ edgeSlice.error }}</span></span>
-            <button class="k-inline-notification__action" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Retrying…' : 'Retry' }}</button>
-          </div>
+          <InlineNotification
+            v-if="edgeSlice.error && !edgeSlice.hasSnapshot"
+            tone="error"
+            action-label="Retry"
+            action-busy-label="Retrying…"
+            :action-busy="edgeSlice.loading"
+            v-focus-on-recovery="() => executionSummary?.focus({ preventScroll: true })"
+            @action="store.load('edges')"
+          >
+            Could not load machines. {{ edgeSlice.error }}
+          </InlineNotification>
           <div v-else-if="!edgeSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading machines…</div>
           <template v-else>
-            <div v-if="edgeSlice.error" class="k-inline-notification k-inline-notification--warning" role="status">
-              <span class="k-inline-notification__body"><span class="k-inline-notification__message">Showing the last loaded machines. {{ edgeSlice.error }}</span></span>
-              <button class="k-inline-notification__action" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Retrying…' : 'Retry' }}</button>
-            </div>
+            <InlineNotification
+              v-if="edgeSlice.error"
+              tone="warning"
+              action-label="Retry"
+              action-busy-label="Retrying…"
+              :action-busy="edgeSlice.loading"
+              v-focus-on-recovery="() => executionSummary?.focus({ preventScroll: true })"
+              @action="store.load('edges')"
+            >
+              Showing the last loaded machines. {{ edgeSlice.error }}
+            </InlineNotification>
             <div class="agents-grid2">
-              <label>
-                <span :id="domID('agent-harness-edge-label')">Machine *</span>
-                <FormSelect v-model="harnessEdge" :options="edgeOptions" :required="true" :labelledby="domID('agent-harness-edge-label')" :invalid="Boolean(harnessError) && !harnessEdge" :describedby="[domID('agent-harness-edge-hint'), hostEdges.length === 0 ? domID('agent-harness-edge-empty') : '', harnessError && !harnessEdge ? domID('agent-backend-error') : ''].filter(Boolean).join(' ')" />
+              <div class="agents-form-field">
+                <label :id="domID('agent-harness-edge-label')" :for="domID('agent-harness-edge-input')">Machine *</label>
+                <FormSelect :id="domID('agent-harness-edge-input')" v-model="harnessEdge" :options="edgeOptions" :required="true" :labelledby="domID('agent-harness-edge-label')" :invalid="Boolean(harnessError) && !harnessEdge" :describedby="[domID('agent-harness-edge-hint'), hostEdges.length === 0 ? domID('agent-harness-edge-empty') : '', harnessError && !harnessEdge ? domID('agent-backend-error') : ''].filter(Boolean).join(' ')" />
                 <span :id="domID('agent-harness-edge-hint')" class="agents-hint">Linux and macOS machines only — a Kubernetes cluster cannot run a harness process.</span>
                 <span v-if="hostEdges.length === 0" :id="domID('agent-harness-edge-empty')" class="agents-hint">No Linux or macOS machine in this workspace yet.
                   <a :href="portalHref('/providers/edges/connect/edge', api.tenant())" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost">Connect a machine (new tab)</a>
                   <button type="button" class="k-btn k-btn--ghost" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Checking machines…' : 'Check again' }}</button>
                   Keep this tab open to retain your changes.</span>
-              </label>
-              <label>
-                <span :id="domID('agent-harness-credential-label')">Harness credential *</span>
-                <div v-if="credentialSlice.error && !credentialSlice.hasSnapshot" :id="domID('agent-harness-credential-read-error')" class="k-inline-notification k-inline-notification--error" role="alert">
-                  <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load harness identities. {{ credentialSlice.error }}</span></span>
-                  <button class="k-inline-notification__action" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
-                </div>
+              </div>
+              <div class="agents-form-field">
+                <label :id="domID('agent-harness-credential-label')" :for="domID('agent-harness-credential-input')">Harness credential *</label>
+                <InlineNotification
+                  v-if="credentialSlice.error && !credentialSlice.hasSnapshot"
+                  :id="domID('agent-harness-credential-read-error')"
+                  tone="error"
+                  action-label="Retry"
+                  action-busy-label="Retrying…"
+                  :action-busy="credentialSlice.loading"
+                  v-focus-on-recovery="() => executionSummary?.focus({ preventScroll: true })"
+                  @action="store.load('credentials')"
+                >
+                  Could not load harness identities. {{ credentialSlice.error }}
+                </InlineNotification>
                 <div v-else-if="!credentialSlice.hasSnapshot" :id="domID('agent-harness-credential-loading')" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading harness identities…</div>
                 <template v-else>
-                  <div v-if="credentialSlice.error" class="k-inline-notification k-inline-notification--warning" role="status">
-                    <span class="k-inline-notification__body"><span class="k-inline-notification__message">Showing the last loaded harness identities. {{ credentialSlice.error }}</span></span>
-                    <button class="k-inline-notification__action" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Check again' }}</button>
-                  </div>
-                  <FormSelect v-model="harnessCredential" :options="harnessCredentialOptions" :required="true" :labelledby="domID('agent-harness-credential-label')" :invalid="Boolean(harnessError) && Boolean(harnessEdge) && !harnessCredential" :describedby="[domID('agent-harness-credential-hint'), harnessCredentials.length === 0 ? domID('agent-harness-credential-empty') : '', harnessError && Boolean(harnessEdge) && !harnessCredential ? domID('agent-backend-error') : ''].filter(Boolean).join(' ')" />
+                  <InlineNotification
+                    v-if="credentialSlice.error"
+                    tone="warning"
+                    action-label="Check again"
+                    action-busy-label="Retrying…"
+                    :action-busy="credentialSlice.loading"
+                    v-focus-on-recovery="() => executionSummary?.focus({ preventScroll: true })"
+                    @action="store.load('credentials')"
+                  >
+                    Showing the last loaded harness identities. {{ credentialSlice.error }}
+                  </InlineNotification>
+                  <FormSelect :id="domID('agent-harness-credential-input')" v-model="harnessCredential" :options="harnessCredentialOptions" :required="true" :labelledby="domID('agent-harness-credential-label')" :invalid="Boolean(harnessError) && Boolean(harnessEdge) && !harnessCredential" :describedby="[domID('agent-harness-credential-hint'), harnessCredentials.length === 0 ? domID('agent-harness-credential-empty') : '', harnessError && Boolean(harnessEdge) && !harnessCredential ? domID('agent-backend-error') : ''].filter(Boolean).join(' ')" />
                   <span v-if="harnessCredentials.length === 0" :id="domID('agent-harness-credential-empty')" class="agents-hint">{{ credentialSlice.error ? 'No harness identities in the last loaded snapshot.' : 'No harness identities yet.' }} Manage them under Models → Provider connections.
                     <a :href="portalHref('/providers/agents/#/create/model/harness', api.tenant())" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost">Add harness identity (new tab)</a>
                     <button type="button" class="k-btn k-btn--ghost" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Checking identities…' : 'Check again' }}</button>
                     Keep this tab open to retain your changes.</span>
                 </template>
                 <span :id="domID('agent-harness-credential-hint')" class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness} — decided by this credential’s provider.` : 'A claude-code credential means Claude Code; a codex one means Codex.' }}</span>
-              </label>
+              </div>
             </div>
             <div class="agents-grid2">
               <label>

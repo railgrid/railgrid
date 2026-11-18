@@ -11,7 +11,7 @@ technical boundaries, not a debt baseline:
 |---|---|
 | Agents floating Return to latest circle | Explicit user-requested 36px circular scroll control (44px for coarse pointers), scoped to `.agents-return-latest` in `providers/agents/portal/src/style.css`; its zero-height anchor overlays only the button and creates no full-width bar. Other buttons retain the 4px radius. |
 | Chat bubbles at 12–14px | Conversational voice, not chrome |
-| Terminal canvas colors in `TerminalDock.vue` | Terminals are always dark and read as one intentional dark surface |
+| Terminal canvas colors in `portal/src/components/TerminalInstance.vue` (rendered by `TerminalDock.vue`) | Terminals are always dark and read as one intentional dark surface |
 | App preview iframe white background | The user's app owns its canvas |
 | Third-party brand icon tiles (Google, GitHub, and similar on Dex) | Brand guidelines inside a 20px tile take precedence |
 | Kuery graph `RELATION_METADATA` colors | Semantic edge palette, not UI chrome |

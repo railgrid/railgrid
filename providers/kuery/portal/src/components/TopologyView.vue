@@ -432,10 +432,7 @@ onBeforeUnmount(() => { loadGeneration += 1; fullscreenGeneration += 1; loadCont
       </div>
     </InlineNotification>
     <div v-else-if="currentSnapshot">
-      <div v-if="notEngaged && loaded" class="kuery-warning" role="status">
-        <span>The last successful topology is still shown, but Kuery is not currently syncing an edge in this workspace.</span>
-        <button type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Checking…' : 'Check again' }}</button>
-      </div>
+      <InlineNotification v-if="notEngaged && loaded" tone="warning" action-label="Check again" action-busy-label="Checking…" :action-busy="loading" @action="retryLoad" message="The last successful topology is still shown, but Kuery is not currently syncing an edge in this workspace." />
       <InlineNotification v-if="error" tone="error" action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="retryLoad">
         <div class="kuery-error-copy">
           <span>Could not refresh the topology. The last successful result is still shown.</span>
@@ -463,20 +460,20 @@ onBeforeUnmount(() => { loadGeneration += 1; fullscreenGeneration += 1; loadCont
       </div>
       <div v-else>
         <InlineNotification v-if="graphError" tone="error" :message="graphError" action-label="Retry graph" action-busy-label="Retrying graph…" :action-busy="graphRetrying" @action="retryGraph" />
-        <div v-if="expansionFailure" class="kuery-inline-error" role="alert"><span>{{ expansionFailure.message }}</span><button type="button" class="k-btn k-btn--ghost" @click="retryExpansion">Retry expansion</button></div>
+        <InlineNotification v-if="expansionFailure" tone="error" action-label="Retry expansion" @action="retryExpansion" :message="expansionFailure.message" />
         <p class="kuery-sr-only" role="status" aria-live="polite" aria-atomic="true">{{ expansionStatus }}</p>
         <p v-if="layoutRunning" class="meta" role="status">Force layout is settling {{ layoutNodeCount.toLocaleString() }} nodes in the background; the graph stays interactive. Stop layout keeps the current positions.</p>
         <div ref="graphHost" class="kuery-graph" role="region" aria-label="Fleet topology visualization" aria-describedby="topology-help topology-bounds" tabindex="0" @keydown="graphKeydown" />
       </div>
     </div>
-    <template v-if="currentSnapshot">
-      <p v-if="incomplete" class="kuery-warning" role="status">Kuery reported response-level truncation for this query. That status does not identify relation-level bounds; the view limits above still apply.<span v-if="responseWarnings.length"> {{ responseWarnings.join(' ') }}</span></p>
-      <p v-else-if="responseWarnings.length" class="kuery-warning" role="status">Kuery reported: {{ responseWarnings.join(' ') }} Relation-level bounds are listed above separately.</p>
-      <p v-if="memberLimitReached" class="kuery-warning" role="status">At least one edge returned 1,000 members, its configured relation bound. Additional members may be omitted.</p>
-      <p v-if="relationResponseTruncated" class="kuery-warning" role="status">Kuery reported response-level truncation during relation expansion. This does not identify which relation was bounded.</p>
-      <p v-if="relationLimitReached" class="kuery-warning" role="status">Namespace membership reached its 200-object relation bound. Additional members may be omitted.</p>
-      <p v-if="expansionBound === 'nodes'" class="kuery-warning" role="status">Expand all stopped at 4,000 graph nodes. The graph remains usable; expand individual nodes to inspect a narrower branch.</p>
-      <p v-else-if="expansionBound === 'rounds'" class="kuery-warning" role="status">Expand all stopped after 30 rounds. The graph remains usable; expand individual nodes to inspect a narrower branch.</p>
-    </template>
+    <div v-if="currentSnapshot" class="kuery-query-notices">
+      <InlineNotification v-if="incomplete" tone="warning">Kuery reported response-level truncation for this query. That status does not identify relation-level bounds; the view limits above still apply.{{ responseWarnings.length ? ` ${responseWarnings.join(' ')}` : '' }}</InlineNotification>
+      <InlineNotification v-else-if="responseWarnings.length" tone="warning">Kuery reported: {{ responseWarnings.join(' ') }} Relation-level bounds are listed above separately.</InlineNotification>
+      <InlineNotification v-if="memberLimitReached" tone="warning" message="At least one edge returned 1,000 members, its configured relation bound. Additional members may be omitted." />
+      <InlineNotification v-if="relationResponseTruncated" tone="warning" message="Kuery reported response-level truncation during relation expansion. This does not identify which relation was bounded." />
+      <InlineNotification v-if="relationLimitReached" tone="warning" message="Namespace membership reached its 200-object relation bound. Additional members may be omitted." />
+      <InlineNotification v-if="expansionBound === 'nodes'" tone="warning" message="Expand all stopped at 4,000 graph nodes. The graph remains usable; expand individual nodes to inspect a narrower branch." />
+      <InlineNotification v-else-if="expansionBound === 'rounds'" tone="warning" message="Expand all stopped after 30 rounds. The graph remains usable; expand individual nodes to inspect a narrower branch." />
+    </div>
   </section>
 </template>

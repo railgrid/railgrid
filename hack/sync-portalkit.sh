@@ -117,7 +117,7 @@ sync_agentkit_vue_file() {
   local dst="$2"
   local name="$3"
   case "$name" in
-    ModelConnectionCard.vue|ModelCollection.vue|AIModelReasoningPicker.vue|AICommandPalette.vue|AIConversationComposer.vue|AITimestamp.vue|timestamp.ts)
+    ModelConnectionCard.vue|ModelConnectionForm.vue|ModelCollection.vue|AIModelReasoningPicker.vue|AICommandPalette.vue|AIConversationComposer.vue|AITimestamp.vue|timestamp.ts)
       # Canonical AgentKit resolves core components from the sibling Vue kit.
       # The self-contained portal copy resolves those dependencies from its
       # vendored portalkit directory.
@@ -226,7 +226,7 @@ verify_agentkit_vue_file() {
   local expected
   expected="$(mktemp)"
   case "$name" in
-    ModelConnectionCard.vue|ModelCollection.vue|AIModelReasoningPicker.vue|AICommandPalette.vue|AIConversationComposer.vue|AITimestamp.vue|timestamp.ts)
+    ModelConnectionCard.vue|ModelConnectionForm.vue|ModelCollection.vue|AIModelReasoningPicker.vue|AICommandPalette.vue|AIConversationComposer.vue|AITimestamp.vue|timestamp.ts)
       sed 's#\.\./portalkit-vue/#../portalkit/#g' "$src/$name" > "$expected"
       ;;
     *)
@@ -336,14 +336,56 @@ verify_unexpected() {
   return "$stale"
 }
 
+# These direct-entry pages must also work without the host, JavaScript or a CSS request.
+provider_fallback_styles() {
+  local mode="$1" page tmp failed=0
+  local pages=(
+    providers/agents/portal/public/index.html
+    providers/app-studio/portal/index.html
+    providers/infrastructure/portal/public/index.html
+    providers/kuery/portal/public/index.html
+    providers/quickstart/portal/public/index.html
+  )
+  tmp="$(mktemp)"
+  for page in "${pages[@]}"; do
+    if ! awk '
+      NR == FNR { css = css "  " $0 "\n"; next }
+      /^<style data-railgrid-provider-fallback>$/ {
+        print
+        blocks++
+        inside = 1
+        printf "%s", css
+        next
+      }
+      inside && /^<\/style>$/ { inside = 0 }
+      !inside { print }
+      END { if (blocks != 1 || inside) exit 1 }
+    ' "$TS_SRC/provider-fallback.css" "$ROOT/$page" > "$tmp"; then
+      printf 'cannot locate provider fallback stylesheet in %s\n' "$page" >&2
+      failed=1
+    elif ! cmp -s "$tmp" "$ROOT/$page"; then
+      if [[ "$mode" == verify ]]; then
+        printf 'stale provider fallback stylesheet: %s\n' "$page" >&2
+        failed=1
+      else
+        cp "$tmp" "$ROOT/$page"
+      fi
+    fi
+  done
+  rm -f "$tmp"
+  return "$failed"
+}
+
 verify_all() {
   local stale=0
+  local ts_canonical_expected=("${TS_FILES[@]}" provider-fallback.css)
   local vue_canonical_expected=("${VUE_FILES[@]}" "${VUE_TOAST_FILES[@]}")
 
-  if ! verify_manifest "$TS_SRC" TS_FILES TS_CANONICAL_ONLY; then stale=1; fi
+  if ! verify_manifest "$TS_SRC" ts_canonical_expected TS_CANONICAL_ONLY; then stale=1; fi
   if ! verify_manifest "$VUE_SRC" vue_canonical_expected VUE_CANONICAL_ONLY; then stale=1; fi
   if ! verify_manifest "$AGENTKIT_SRC" AGENTKIT_FILES AGENTKIT_CANONICAL_ONLY; then stale=1; fi
   if ! verify_manifest "$AGENTKIT_VUE_SRC" AGENTKIT_VUE_FILES AGENTKIT_VUE_CANONICAL_ONLY; then stale=1; fi
+  if ! provider_fallback_styles verify; then stale=1; fi
   if ! verify_file "$TS_SRC/railgrid-ui.css" "$HOST_UI"; then stale=1; fi
   if ! verify_group "$TS_SRC" TS_PORTALS TS_FILES; then stale=1; fi
   if ! verify_group "$VUE_SRC" VUE_PORTALS VUE_FILES; then stale=1; fi
@@ -392,6 +434,7 @@ case "${1:-}" in
 esac
 
 remove_obsolete
+provider_fallback_styles sync
 sync_group "$TS_SRC" TS_PORTALS TS_FILES
 sync_group "$VUE_SRC" VUE_PORTALS VUE_FILES
 sync_group "$VUE_SRC" VUE_TOAST_PORTALS VUE_TOAST_FILES

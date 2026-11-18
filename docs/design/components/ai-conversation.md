@@ -134,7 +134,7 @@ current; an asynchronous deletion must not steal focus after the user moves on. 
 uses the same recovery path, and the final scope/focus check and focus operation
 run in one render-flush callback so a second queued tick cannot steal focus.
 
-Accepted attachments sit above the user text bubble in both portals; attachment-only turns have no empty bubble. Files uses the same synchronous hidden-input activation as App Studio project conversations. The shared Add menu is teleported to the document body and positioned with PortalKit’s `useAnchoredPopover`, outside provider container-query, clipping, and transformed layout ancestors. Dismissal and keyboard navigation include both the trigger and the teleported panel. Style version 48 resets the previous inline-menu offsets when updating a live host. Native cancellation restores editor focus; element focus events must not impersonate window focus.
+Accepted attachments sit above the user text bubble in both portals; attachment-only turns have no empty bubble. Files uses the same synchronous hidden-input activation as App Studio project conversations. The shared Add menu is teleported to the document body and positioned with PortalKit’s `useAnchoredPopover`, outside provider container-query, clipping, and transformed layout ancestors. Dismissal and keyboard navigation include both the trigger and the teleported panel. Historical change: style version 48 reset the previous inline-menu offsets when updating a live host. Native cancellation restores editor focus; element focus events must not impersonate window focus.
 
 Draft or attachment-owner changes dismiss menus/palettes and invalidate native
 file-picker completion and focus callbacks. Multi-file uploads stop when their
@@ -382,10 +382,11 @@ Agents uses `AIWorkspace` for its agent workbench. Run
 check source copies and explicit manifests, including the declared canonical-to-vendored core-component path mapping. Standalone runtime fallback
 CSS is imported through Vite's `?inline` path and may be minified in the
 bundle; the authored canonical rules and synced source copies remain
-byte-identical. The current contracts are core PortalKit version 36 (from
-`RAILGRID_UI_CORE_VERSION` in `provider-sdk/portalkit/styles.ts`) and AgentKit
-style/runtime version 46 (from `AGENT_UI_VERSION` in
-`provider-sdk/agentkit/styles.ts`). Desktop rails stretch
+byte-identical. PortalKit's core contract is exposed by `RAILGRID_UI_CORE_VERSION`
+in `provider-sdk/portalkit/styles.ts` and `--railgrid-ui-core-version` in
+`provider-sdk/portalkit/railgrid-ui.css`. AgentKit's independent contract is
+exposed by `AGENT_UI_VERSION` in `provider-sdk/agentkit/styles.ts` and
+`--railgrid-agent-ui-version` in `provider-sdk/agentkit/agent-ui.css`. Desktop rails stretch
 to the flex row's cross-axis so content-sized conversation frames retain a
 visible panel; mobile rails keep their absolute inset overlay geometry. Run
 `make verify-design-docs` for this contract. These static checks do not
@@ -403,7 +404,7 @@ interactive/background grants, run evidence, and approval phases. Use
 [the distributed PortalKit asset index](portalkit-assets.md) for sync
 ownership.
 
-The workbench separator is `AIPaneDivider.vue` in both `AIWorkspace` (Agents) and App Studio. It occupies its own 6px track without negative margins; providers retain split geometry and resize events. Historical rendered evidence labels the separator as AgentKit stylesheet version 2; the current AgentKit stylesheet/runtime contract is version 15.
+The workbench separator is `AIPaneDivider.vue` in both `AIWorkspace` (Agents) and App Studio. It occupies its own 6px track without negative margins; providers retain split geometry and resize events. Historical rendered evidence labels the separator as AgentKit stylesheet version 2; the current AgentKit contract follows `AGENT_UI_VERSION` in `provider-sdk/agentkit/styles.ts` and `--railgrid-agent-ui-version` in `provider-sdk/agentkit/agent-ui.css`.
 
 The shared `AIWorkbenchTabs` strip supplies close and new-tab controls and
 forwards selection and drag events. Its fixed-width tab frames scroll
@@ -415,7 +416,7 @@ open resources or mutate provider state themselves.
 
 The tab strip and launcher rules live in injected `agentkit/agent-ui.css`,
 not SFC-only stylesheets: classic provider bundles must receive them through
-`ensureAgentUIStyles()`. Version 6 upgrades an already-loaded version 5.
+`ensureAgentUIStyles()`. Historical implementation note: version 6 upgraded an already-loaded version 5.
 
 Workbench lifecycle verification (2026-09-10): Agents passed four built-bundle
 fixture cases (review/mobile, light/dark), including New tab, close/last-tab,

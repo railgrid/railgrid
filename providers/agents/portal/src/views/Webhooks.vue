@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vFocusOnRecovery } from '../vue/noticeFocus'
 // Webhooks: the workspace's inbound endpoints. A Webhook is one URL and one
 // delivery sink; any number of triggers (on any agent) route from it, each
 // with its own filter. That split is why this is a page of its own rather
@@ -9,7 +10,7 @@
 // (#/webhooks), the create flow (#/create/webhook) and the detail page
 // (#/webhooks/<name>/edit) that holds the URL handoff, the routed triggers,
 // the delivery log, a sample sender and the settings.
-import { AlertCircle, Check, Copy, Plus, Send, Trash2, Webhook as WebhookIcon } from 'lucide-vue-next'
+import { Check, Copy, Plus, Send, Trash2, Webhook as WebhookIcon } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
@@ -59,6 +60,7 @@ const SAMPLES: Record<string, { headers: string; body: string }> = {
   },
 }
 
+const copyURLButton = ref<HTMLElement | null>(null)
 const props = withDefaults(defineProps<{
   store: AppStore
   api: ApiClient
@@ -445,10 +447,7 @@ function cancel(): void {
           Webhook “{{ editName }}” was not found in {{ slice.error ? 'the last loaded workspace snapshot' : 'this workspace' }}.
         </div>
         <div v-else class="agents-webhook-detail">
-          <div v-if="currentInvalid" class="k-inline-notification k-inline-notification--warning" role="status">
-            <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
-            <div class="k-inline-notification__body"><span class="k-inline-notification__message">{{ currentInvalid.message || currentInvalid.reason }}</span></div>
-          </div>
+          <InlineNotification v-if="currentInvalid" tone="warning" :message="currentInvalid.message || currentInvalid.reason" />
 
           <section v-if="currentURL" class="k-card agents-secret-handoff agents-webhook-url" aria-label="Webhook URL">
             <div>
@@ -457,16 +456,21 @@ function cancel(): void {
               <span class="agents-hint">{{ current.spec.source === 'github' ? 'On GitHub, under Settings → Webhooks → Add webhook: Payload URL is this URL, Content type is application/json, Secret stays empty (the URL carries the token), and under “Let me select individual events” tick the events your triggers listen to. ' : 'POST JSON deliveries here. ' }}The URL embeds this webhook’s secret token; treat it like a password.</span>
             </div>
             <div class="agents-secret-handoff-actions">
-              <button type="button" class="k-btn k-btn--ghost" @click="copyURL(currentURL, 'detail')"><Check v-if="copied" aria-hidden="true" /><Copy v-else aria-hidden="true" /> {{ copied ? 'Copied' : 'Copy webhook URL' }}</button>
+              <button ref="copyURLButton" type="button" class="k-btn k-btn--ghost" @click="copyURL(currentURL, 'detail')"><Check v-if="copied" aria-hidden="true" /><Copy v-else aria-hidden="true" /> {{ copied ? 'Copied' : 'Copy webhook URL' }}</button>
             </div>
             <span class="sr-only" role="status" aria-live="polite">{{ copied ? 'Webhook URL copied.' : '' }}</span>
             <p v-if="copyError" class="agents-fielderr" role="alert">{{ copyError }}</p>
           </section>
-          <div v-else class="k-inline-notification k-inline-notification--info" role="status">
-            <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
-            <div class="k-inline-notification__body"><span class="k-inline-notification__message">The webhook URL has not been minted yet — the provider stamps it shortly after the webhook is created.</span></div>
-            <button class="k-inline-notification__action" type="button" :disabled="slice.loading" @click="store.load('webhooks')">{{ slice.loading ? 'Refreshing…' : 'Refresh' }}</button>
-          </div>
+          <InlineNotification
+            v-else
+            tone="info"
+            action-label="Refresh"
+            action-busy-label="Refreshing…"
+            :action-busy="slice.loading"
+            v-focus-on-recovery="() => copyURLButton?.focus({ preventScroll: true })"
+            @action="store.load('webhooks')"
+            message="The webhook URL has not been minted yet — the provider stamps it shortly after the webhook is created."
+          />
 
           <ResourceSectionCard heading-id="webhook-routes-heading" title="Routed triggers" description="Every delivery is offered to each of these; a trigger fires when its own filter matches.">
             <ul v-if="routedTriggers.length" class="agents-webhook-routes" data-testid="webhook-routes">

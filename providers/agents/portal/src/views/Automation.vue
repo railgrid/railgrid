@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { vFocusOnRecovery } from '../vue/noticeFocus'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { containModalTab } from '../portalkit/modal-focus'
 
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
@@ -115,6 +117,7 @@ const EMPTY: Draft = {
   suspend: false,
 }
 
+const editHeading = ref<HTMLElement | null>(null)
 const props = withDefaults(defineProps<{
   store: AppStore
   api: ApiClient
@@ -928,14 +931,21 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
       </button>
     </header>
     <header v-else class="k-create-header">
-      <h1 class="k-create-title">{{ createRoute ? `New ${meta.one}` : `Edit ${meta.one} ${editName}` }}</h1>
+      <h1 ref="editHeading" class="k-create-title" tabindex="-1">{{ createRoute ? `New ${meta.one}` : `Edit ${meta.one} ${editName}` }}</h1>
       <p class="k-create-description">{{ meta.blurb }}</p>
     </header>
 
-    <div v-if="!createRoute && editing && slice.error && slice.hasSnapshot" class="k-stale" role="status">
+    <InlineNotification
+      v-if="!createRoute && editing && slice.error && slice.hasSnapshot"
+      tone="warning"
+      action-label="Retry"
+      action-busy-label="Retrying…"
+      :action-busy="slice.loading"
+      v-focus-on-recovery="() => editHeading?.focus({ preventScroll: true })"
+      @action="store.load(kind === 'schedule' ? 'schedules' : 'triggers')"
+    >
       Could not refresh {{ meta.title.toLowerCase() }}. Showing the last loaded data. {{ slice.error }}
-      <button class="k-dashboard-action" type="button" :disabled="slice.loading" @click="store.load(kind === 'schedule' ? 'schedules' : 'triggers')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
-    </div>
+    </InlineNotification>
 
     <div v-if="!createRoute && !editing" class="k-card agents-state" :class="slice.error ? 'agents-state-error' : slice.loading || !slice.hasSnapshot ? 'k-loading-reveal' : 'agents-state-empty'" :role="slice.error ? 'alert' : 'status'">
       <p class="muted">{{ slice.error ? `Could not load this ${meta.one}. ${slice.error}` : slice.loading || !slice.hasSnapshot ? `Loading ${meta.one}…` : `No ${meta.one} named “${editName}” belongs to this agent.` }}</p>
@@ -1002,9 +1012,9 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         <label class="agents-check k-checkbox-hit"><input class="k-checkbox" v-model="draft.suspend" type="checkbox" name="suspend" :disabled="formBusy" /> Paused</label>
       </div>
       <div class="k-create-actions" :class="{ 'agents-automation-dialog__actions': showCreateModal }">
-        <div v-if="showCreateModal && formError" class="k-inline-notification k-inline-notification--error agents-automation-dialog__error" role="alert">
+        <InlineNotification v-if="showCreateModal && formError" tone="error" class="agents-automation-dialog__error">
           Could not create this {{ meta.one }}. {{ formError }}
-        </div>
+        </InlineNotification>
         <button type="button" class="k-btn k-btn--ghost secondary" :disabled="formBusy" @click="returnToAutomation">Cancel</button>
         <button class="k-btn k-btn--primary" type="submit" :aria-disabled="formBusy || undefined" :aria-busy="formBusy || undefined">{{ formBusy ? (editing ? 'Saving…' : 'Creating…') : editing ? 'Save' : `Create ${meta.one}` }}</button>
       </div>
