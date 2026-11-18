@@ -23,7 +23,7 @@
 //   #/agents/<name>/triggers/<trigger>/edit
 //   #/create/agent
 //   #/create/connection[/<type>]
-//   #/create/toolset #/create/webhook #/create/model
+//   #/create/toolset #/create/webhook #/create/model #/create/skill
 
 import type { SliceKey } from './store'
 
@@ -37,7 +37,7 @@ export const MODELS_TABS: { id: ModelsTab; label: string }[] = [
 ]
 export type ActivityTab = 'runs' | 'inbox' | 'usage'
 export type AgentTab = 'chat' | 'config' | 'tools' | 'automation' | 'runs' | 'skills'
-export type CreateResource = 'agent' | 'connection' | 'toolset' | 'webhook' | 'model'
+export type CreateResource = 'agent' | 'connection' | 'toolset' | 'webhook' | 'model' | 'skill'
 export type EditResource = 'connection' | 'toolset' | 'webhook'
 export type AutomationResource = 'schedule' | 'trigger'
 
@@ -49,7 +49,7 @@ export type Route =
   | { kind: 'agent'; name: string; tab: AgentTab; runID?: string }
   | { kind: 'run'; id: string }
   | { kind: 'edit'; resource: EditResource; name: string }
-  | { kind: 'create'; resource: CreateResource; type?: string }
+  | { kind: 'create'; resource: CreateResource; type?: string; returnAgent?: string }
   | { kind: 'automation'; resource: AutomationResource; agent: string; action: 'create' }
   | { kind: 'automation'; resource: AutomationResource; agent: string; action: 'edit'; name: string }
 
@@ -148,6 +148,10 @@ export function parseHash(hash = location.hash): Route {
     }
     if (second === 'toolset') return { kind: 'create', resource: 'toolset' }
     if (second === 'webhook') return { kind: 'create', resource: 'webhook' }
+    if (second === 'skill' && parts.length === 2) {
+      const returnAgent = new URLSearchParams(query).get('agent')
+      return { kind: 'create', resource: 'skill', ...(returnAgent ? { returnAgent } : {}) }
+    }
     if (second === 'connection') {
       return { kind: 'create', resource: 'connection', ...(third ? { type: decodePart(third) } : {}) }
     }
@@ -207,6 +211,7 @@ export function hashFor(route: Route): string {
     case 'edit':
       return `#/${route.resource}s/${encodeURIComponent(route.name)}/edit`
     case 'create':
+      if (route.resource === 'skill' && route.returnAgent) return `#/create/skill?${new URLSearchParams({ agent: route.returnAgent })}`
       return `#/create/${route.resource}${route.type ? `/${encodeURIComponent(route.type)}` : ''}`
     case 'automation': {
       const collection = `${route.resource}s`
@@ -283,6 +288,7 @@ export function activeMenu(route: Route): MenuKey {
   if (route.kind === 'edit') return route.resource === 'webhook' ? 'webhooks' : 'connections'
   if (route.kind === 'automation') return 'agents'
   if (route.kind === 'create') {
+    if (route.resource === 'skill') return 'skills'
     if (route.resource === 'model') return 'models'
     if (route.resource === 'webhook') return 'webhooks'
     if (route.resource === 'connection' || route.resource === 'toolset') return 'connections'

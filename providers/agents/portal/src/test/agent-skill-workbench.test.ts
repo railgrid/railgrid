@@ -138,7 +138,7 @@ describe('Workspace skills library', () => {
     try {
       const notice = view.element.querySelector('[role="alert"]')!
       expect(text(notice)).toContain('Could not load the skill library. Fixture catalog failure')
-      expect(text(view.element)).not.toContain('No skills have been published in this workspace.')
+      expect(text(view.element)).not.toContain('Create your first skill')
       expect(view.element.querySelector('[aria-label="Skill catalog"] h3')).toBeNull()
 
       const retry = notice.querySelector<HTMLButtonElement>('button')!
@@ -165,6 +165,43 @@ describe('Workspace skills library', () => {
     } finally {
       view.unmount()
     }
+  })
+
+  it('offers retry after a partial read and shows the first-use guide only after both sources load', async () => {
+    const getSkillLibrary = vi.fn()
+      .mockResolvedValueOnce({ skills: [], unavailableSources: ['provider'] })
+      .mockResolvedValueOnce({ skills: [] })
+    const api = stubApi({ getSkillLibrary })
+    const view = await mountVue(SkillsLibrary, { store: makeStore(api), api })
+    expect(text(view.element)).toContain('Could not load provider skills.')
+    expect(text(view.element)).not.toContain('Create your first skill')
+
+    const retry = [...view.element.querySelectorAll('button')].find(button => text(button) === 'Retry')!
+    retry.focus()
+    retry.click()
+    await settleVue(8)
+
+    const create = view.element.querySelector('a[href="#/create/skill"]')
+    expect(text(view.element)).toContain('Create your first skill')
+    expect(view.element.querySelector('input[type=search]')).toBeNull()
+    expect(document.activeElement).toBe(create)
+  })
+
+  it('retains the last loaded rows from an unavailable source during partial retry', async () => {
+    const workspace = { id: 'workspace:review', name: 'Review', scope: 'workspace' }
+    const provider = { id: 'system:providers/edges/triage', name: 'Triage', scope: 'system' }
+    const getSkillLibrary = vi.fn()
+      .mockResolvedValueOnce({ skills: [provider], unavailableSources: ['workspace'] })
+      .mockResolvedValueOnce({ skills: [workspace], unavailableSources: ['provider'] })
+    const api = stubApi({ getSkillLibrary })
+    const view = await mountVue(SkillsLibrary, { store: makeStore(api), api })
+    const retry = [...view.element.querySelectorAll('button')].find(button => text(button) === 'Retry')!
+    retry.click()
+    await settleVue(8)
+
+    expect(text(view.element)).toContain('Showing the last loaded provider skills.')
+    expect(view.element.querySelector('button[aria-label^="Review."]')).toBeTruthy()
+    expect(view.element.querySelector('button[aria-label^="Triage."]')).toBeTruthy()
   })
 
   it('retries a failed skill detail read without leaving the selected skill', async () => {
@@ -416,8 +453,10 @@ describe('Workspace skills library', () => {
     const view = await mountVue(SkillsLibrary, { store, api })
     const findButton = (label: string) => [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button) === label)
 
-    findButton('New skill')!.click()
-    await settleVue()
+    const create = view.element.querySelector<HTMLAnchorElement>('a[href="#/create/skill"]')!
+    create.click()
+    expect(view.navigations.at(-1)).toMatchObject({ kind: 'create', resource: 'skill' })
+    await view.setProps({ createRoute: true })
     const authoredDocument = '---\nname: authored-skill\ndescription: Preserve this draft.\n---\nKeep the author text intact.\n'
     const editor = view.element.querySelector<HTMLTextAreaElement>('.agents-skill-workbench__document-editor')!
     editor.value = authoredDocument
@@ -431,12 +470,14 @@ describe('Workspace skills library', () => {
       metadata: { name: 'authored-skill' },
       spec: { document: authoredDocument },
     })
-    expect(findButton('New skill')?.disabled).toBe(true)
-    expect(findButton('Import')?.disabled).toBe(true)
+    expect(view.element.querySelector('input[type=search]')).toBeNull()
+    expect(view.element.querySelector('input[type=file]')).toBeNull()
     expect(editor.disabled).toBe(true)
     expect(view.element.querySelector<HTMLInputElement>('input[placeholder="my-skill"]')?.disabled).toBe(true)
+    expect(findButton('Cancel')?.disabled).toBe(true)
+    expect(findButton('Creating…')?.disabled).toBe(true)
 
-    findButton('New skill')!.click()
+    findButton('Cancel')!.click()
     await settleVue()
     expect(view.element.querySelector('.agents-skill-workbench__document-editor')).toBe(editor)
     expect(editor.value).toBe(authoredDocument)
@@ -444,8 +485,10 @@ describe('Workspace skills library', () => {
     createResponse.resolve(new Response(JSON.stringify({ metadata: { name: 'authored-skill' } }), { status: 201 }))
     await settleVue(12)
 
+    expect(view.navigations.at(-1)).toMatchObject({ kind: 'menu', menu: 'skills' })
+    await view.setProps({ createRoute: false })
     expect(view.element.querySelector('.agents-skill-workbench__document-editor')).toBeNull()
-    expect(text(view.element)).toContain('Choose a skill to review')
+    expect(text(view.element)).toContain('Create your first skill')
     view.unmount()
   })
 
@@ -469,7 +512,8 @@ describe('Workspace skills library', () => {
       await settleVue(8)
 
       expect(view.element.querySelector('.agents-skill-workbench__document-editor')).toBeNull()
-      expect(text(view.element)).toContain('Choose a skill to review')
+      expect(view.navigations).toEqual([])
+      expect(text(view.element)).toContain('Create your first skill')
     } finally {
       location.hash = previousHash
       view.unmount()

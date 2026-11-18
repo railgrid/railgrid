@@ -1,28 +1,30 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { Download, FileUp, Loader2, Plus, Save, Trash2, Upload, X } from 'lucide-vue-next'
+import { Download, FileUp, Loader2, Package, Pencil, Plus, Trash2 } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
 import type { AgentSkill, AgentSkillDetail } from '../types'
 import type { AgentKitSkill } from '../agentkit/composer'
 import { confirmDialog } from '../portalkit/confirm'
 import { providerFetch } from '../portalkit/tenant'
-import { createKubeClient, isKubeConflict, type KubeObject, type KubeResourceRef } from '../portalkit/kube'
+import { createKubeClient, isKubeConflict, type KubeObject } from '../portalkit/kube'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import InlineNotification from '../portalkit/InlineNotification.vue'
+import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
-import { hashFor, type Route } from '../router'
+import { hashFor, type HashHistoryMode, type Route } from '../router'
 import AISkillCatalogList from '../agentkit/AISkillCatalogList.vue'
 import { toast } from '../portalkit/toast'
 import { useAuthorityGuard } from '../vue/runtime'
 import { createSkillDocument, parseSkillDocument, skillPackageName, validateSkillResources } from '../skill-document'
+import { WORKSPACE_SKILLS, type SkillLibrarySource } from '../skill-library'
 
 ensureAgentUIStyles()
 
-const props = defineProps<{ store: AppStore; api: ApiClient; returnAgent?: string; authorityEpoch?: number }>()
-const emit = defineEmits<{ navigate: [route: Route] }>()
+const props = defineProps<{ store: AppStore; api: ApiClient; returnAgent?: string; authorityEpoch?: number; createRoute?: boolean }>()
+const emit = defineEmits<{ navigate: [route: Route, history?: HashHistoryMode] }>()
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 
 interface SkillResourceWrite { name: string; content: string }
@@ -31,17 +33,16 @@ interface WorkspaceSkillCR extends KubeObject {
   kind: string
   spec?: { document?: string; resources?: SkillResourceWrite[] }
 }
-const SKILLS_REF: KubeResourceRef = { group: 'agents.railgrid.ai', version: 'v1alpha1', resource: 'skills' }
-
 const catalog = ref<AgentSkill[]>([])
 const catalogWarnings = ref<string[]>([])
+const unavailableSources = ref<SkillLibrarySource[]>([])
 const catalogLoading = ref(false)
 const catalogHasSnapshot = ref(false)
-const catalogIncomplete = computed(() => catalogHasSnapshot.value && catalogWarnings.value.length > 0)
+const catalogIncomplete = computed(() => catalogWarnings.value.length > 0 || unavailableSources.value.length > 0)
 const catalogError = ref('')
 const catalogNotice = ref<HTMLElement | null>(null)
-const catalogWarningNotice = ref<HTMLElement | null>(null)
 const catalogSection = ref<HTMLElement | null>(null)
+const firstRunCreate = ref<HTMLAnchorElement | null>(null)
 const selectedSkill = ref<AgentKitSkill | null>(null)
 const detail = ref<AgentSkillDetail | null>(null)
 const detailLoading = ref(false)
@@ -49,7 +50,10 @@ const detailError = ref('')
 const detailNotice = ref<HTMLElement | null>(null)
 const detailSection = ref<HTMLElement | null>(null)
 const search = ref('')
-const mode = ref<'detail' | 'create' | 'edit'>('detail')
+const editing = ref(false)
+const mode = computed(() => props.createRoute ? 'create' : editing.value ? 'edit' : 'detail')
+const editorHeading = ref<HTMLElement | null>(null)
+const editorNotice = ref<HTMLElement | null>(null)
 const editSource = ref<{ uid: string; resourceVersion: string } | null>(null)
 const packageName = ref('')
 const skillDocument = ref('')
@@ -63,18 +67,39 @@ const fileInput = ref<HTMLInputElement | null>(null)
 let catalogSerial = 0
 let detailSerial = 0
 let requestSerial = 0
+let selectAfterCreate: string | undefined
 
-const parsedDocument = computed(() => {
-  try { return parseSkillDocument(skillDocument.value) } catch { return null }
-})
 const sortedCatalog = computed(() => [...catalog.value].sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id)))
 const readOnlySkill = computed(() => selectedSkill.value && selectedSkill.value.editable !== true)
 const selectedSkillUnverified = computed(() => Boolean(
-  selectedSkill.value && catalogIncomplete.value && !catalog.value.some((skill) => skill.id === selectedSkill.value?.id),
+  selectedSkill.value && (unavailableSources.value.includes(librarySource(selectedSkill.value)) ||
+    (catalogIncomplete.value && !catalog.value.some((skill) => skill.id === selectedSkill.value?.id))),
 ))
 const workbenchLocked = computed(() => saving.value || deleting.value || importing.value)
 const canEditDetail = computed(() => !detailLoading.value && !detailError.value && !workbenchLocked.value &&
   !selectedSkillUnverified.value && !!detail.value?.version && !!detail.value.sourceUID)
+const libraryRoute = computed<Route>(() => ({ kind: 'menu', menu: 'skills', returnAgent: props.returnAgent }))
+const createSkillRoute = computed<Route>(() => ({ kind: 'create', resource: 'skill', returnAgent: props.returnAgent }))
+const firstRun = computed(() => catalogHasSnapshot.value && !catalog.value.length &&
+  !catalogWarnings.value.length && !unavailableSources.value.length)
+const catalogProblem = computed(() => {
+  if (catalogError.value) return catalogHasSnapshot.value
+    ? `Could not refresh the skill library. Showing the last loaded catalog. ${catalogError.value}`
+    : `Could not load the skill library. ${catalogError.value}`
+  const source = unavailableSources.value[0]
+  if (!source) return catalogWarnings.value.length
+    ? 'Catalog needs attention. Returned skills remain usable, but the list may be incomplete. Review the warning details below.'
+    : ''
+  const name = source === 'workspace' ? 'workspace skills' : 'provider skills'
+  const hasRetained = catalog.value.some(skill => librarySource(skill) === source)
+  return hasRetained
+    ? `Could not refresh ${name}. Showing the last loaded ${name}.`
+    : `Could not load ${name}.`
+})
+
+function librarySource(skill: Pick<AgentKitSkill, 'scope'>): SkillLibrarySource {
+  return skill.scope === 'workspace' ? 'workspace' : 'provider'
+}
 
 function isCurrent(serial: number, api: ApiClient): boolean {
   return serial === requestSerial && props.api === api
@@ -84,26 +109,25 @@ async function loadCatalog(selectID?: string): Promise<void> {
   const serial = ++catalogSerial
   const api = props.api
   const authority = captureAuthority()
-  const restoreRetryFocus = Boolean(
-    catalogNotice.value?.contains(document.activeElement) ||
-    catalogWarningNotice.value?.contains(document.activeElement),
-  )
+  const restoreRetryFocus = Boolean(catalogNotice.value?.contains(document.activeElement))
   catalogLoading.value = true
   try {
     const result = await api.getSkillLibrary()
     if (serial !== catalogSerial || !authorityIsCurrent(authority) || props.api !== api) return
-    catalog.value = result.skills || []
+    unavailableSources.value = result.unavailableSources || []
+    const retained = catalog.value.filter(skill => unavailableSources.value.includes(librarySource(skill)))
+    catalog.value = [...(result.skills || []), ...retained]
     catalogWarnings.value = result.warnings || []
     catalogHasSnapshot.value = true
     catalogError.value = ''
     if (selectID) {
       const next = catalog.value.find((skill) => skill.id === selectID)
       if (next) await selectSkill(next, true)
-      else if (!catalogWarnings.value.length || selectedSkill.value?.id !== selectID) { selectedSkill.value = null; detail.value = null }
+      else if (!catalogIncomplete.value || selectedSkill.value?.id !== selectID) { selectedSkill.value = null; detail.value = null }
     } else if (selectedSkill.value) {
       const current = catalog.value.find((skill) => skill.id === selectedSkill.value?.id)
       if (current) selectedSkill.value = current
-      else if (!catalogWarnings.value.length) { selectedSkill.value = null; detail.value = null }
+      else if (!catalogIncomplete.value) { selectedSkill.value = null; detail.value = null }
     }
     await nextTick()
     if (
@@ -112,7 +136,7 @@ async function loadCatalog(selectID?: string): Promise<void> {
       authorityIsCurrent(authority) &&
       props.api === api &&
       focusWasLost()
-    ) catalogSection.value?.focus({ preventScroll: true })
+    ) (firstRunCreate.value || catalogSection.value)?.focus({ preventScroll: true })
   } catch (error) {
     if (serial === catalogSerial && authorityIsCurrent(authority) && props.api === api) {
       catalogError.value = (error as Error).message
@@ -173,8 +197,14 @@ async function selectSkill(skill: AgentKitSkill, allowLocked = false): Promise<v
     detail.value = null
     detailError.value = ''
   }
-  mode.value = 'detail'
+  editing.value = false
   await loadSkillDetail(skill)
+}
+
+function openSkill(skill: AgentKitSkill): void {
+  if (workbenchLocked.value) return
+  void selectSkill(skill)
+  void nextTick(() => detailSection.value?.focus())
 }
 
 function retrySkillDetail(): void {
@@ -182,16 +212,34 @@ function retrySkillDetail(): void {
   if (skill && !detailLoading.value) void loadSkillDetail(skill)
 }
 
-function startCreate(): void {
-  if (workbenchLocked.value) return
-  selectedSkill.value = null
-  detail.value = null
-  mode.value = 'create'
+function resetDraft(): void {
+  editSource.value = null
   packageName.value = ''
   skillDocument.value = createSkillDocument('new-skill', 'Describe what this skill helps the agent do.', '')
   resources.value = []
   validationError.value = ''
   saveError.value = ''
+}
+
+function startCreate(event: MouseEvent): void {
+  if (workbenchLocked.value) {
+    event.preventDefault()
+    return
+  }
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  resetDraft()
+  emit('navigate', createSkillRoute.value)
+}
+
+function leaveEditor(): void {
+  if (workbenchLocked.value) return
+  if (props.createRoute) emit('navigate', libraryRoute.value, 'replace')
+  else {
+    editing.value = false
+    resetDraft()
+    void nextTick(() => detailSection.value?.focus())
+  }
 }
 
 function startEdit(): void {
@@ -200,12 +248,13 @@ function startEdit(): void {
   const current = detail.value
   if (!selected || !current?.version || !current.sourceUID || !selected.editable || selected.scope !== 'workspace') return
   editSource.value = { uid: current.sourceUID, resourceVersion: current.version }
-  mode.value = 'edit'
+  editing.value = true
   packageName.value = selected.packageName || ''
   skillDocument.value = current.document ?? createSkillDocument(current.name, current.description, current.instructions || '')
   resources.value = (current.resources || []).map((resource) => ({ name: resource.path, content: resource.content || '' }))
   validationError.value = ''
   saveError.value = ''
+  void nextTick(() => editorHeading.value?.focus())
 }
 
 function addResource(): void { resources.value = [...resources.value, { name: '', content: '' }] }
@@ -243,7 +292,11 @@ async function save(): Promise<void> {
   const source = editSource.value
   if (operation === 'detail' || workbenchLocked.value || (operation === 'edit' && (!source || selectedSkillUnverified.value))) return
   const value = validateEditor()
-  if (!value) return
+  if (!value) {
+    await nextTick()
+    editorNotice.value?.focus()
+    return
+  }
   const savedPackageName = packageName.value
   const authority = captureAuthority()
   const api = authority.api
@@ -253,7 +306,7 @@ async function save(): Promise<void> {
   try {
     const client = kubeClient(api)
     if (operation === 'create') {
-      await client.create<WorkspaceSkillCR>(SKILLS_REF, {
+      await client.create<WorkspaceSkillCR>(WORKSPACE_SKILLS, {
         apiVersion: 'agents.railgrid.ai/v1alpha1',
         kind: 'Skill',
         metadata: { name: savedPackageName },
@@ -261,13 +314,13 @@ async function save(): Promise<void> {
       })
     } else if (operation === 'edit' && source) {
       const currentName = savedPackageName
-      const current = await client.get<WorkspaceSkillCR>(SKILLS_REF, currentName)
+      const current = await client.get<WorkspaceSkillCR>(WORKSPACE_SKILLS, currentName)
       if (!isCurrent(serial, api) || !authorityIsCurrent(authority)) return
       if (current.metadata.uid !== source.uid || current.metadata.resourceVersion !== source.resourceVersion) {
         saveError.value = editConflictMessage
         return
       }
-      await client.update<WorkspaceSkillCR>(SKILLS_REF, {
+      await client.update<WorkspaceSkillCR>(WORKSPACE_SKILLS, {
         ...current,
         apiVersion: 'agents.railgrid.ai/v1alpha1',
         kind: 'Skill',
@@ -276,11 +329,21 @@ async function save(): Promise<void> {
     }
     if (!isCurrent(serial, api) || !authorityIsCurrent(authority)) return
     toast('ok', operation === 'create' ? `Created workspace skill “${value.name}”.` : `Saved workspace skill “${value.name}”.`)
-    mode.value = 'detail'
-    await loadCatalog(`workspace:${savedPackageName}`)
+    const id = `workspace:${savedPackageName}`
+    if (operation === 'create') {
+      selectAfterCreate = id
+      emit('navigate', libraryRoute.value, 'replace')
+    } else {
+      editing.value = false
+      resetDraft()
+      await loadCatalog(id)
+      if (authorityIsCurrent(authority)) detailSection.value?.focus()
+    }
   } catch (error) {
     if (isCurrent(serial, api) && authorityIsCurrent(authority)) {
       saveError.value = operation === 'edit' && isKubeConflict(error) ? editConflictMessage : (error as Error).message
+      await nextTick()
+      editorNotice.value?.focus()
     }
   } finally {
     if (serial === requestSerial) saving.value = false
@@ -292,18 +355,19 @@ async function removeSkill(): Promise<void> {
   const packageID = selected?.packageName
   if (!selected || !packageID || !selected.editable || selected.scope !== 'workspace' || workbenchLocked.value || selectedSkillUnverified.value) return
   const ok = await confirmDialog({ title: `Delete “${selected.name}”?`, message: 'This removes the workspace skill package for every agent in this workspace. Agents that enabled it will no longer be able to use it.', danger: true, confirmLabel: 'Delete skill' })
-  if (!ok || workbenchLocked.value || selectedSkill.value?.id !== selected.id) return
+  if (!ok || workbenchLocked.value || selectedSkillUnverified.value || selectedSkill.value?.id !== selected.id) return
   const authority = captureAuthority()
   const api = authority.api
   const serial = ++requestSerial
   deleting.value = true
   try {
     const client = kubeClient(api)
-    const current = await client.get<WorkspaceSkillCR>(SKILLS_REF, packageID)
+    const current = await client.get<WorkspaceSkillCR>(WORKSPACE_SKILLS, packageID)
     if (!isCurrent(serial, api) || !authorityIsCurrent(authority)) return
-    await client.delete(SKILLS_REF, packageID, { preconditions: { uid: current.metadata.uid, resourceVersion: current.metadata.resourceVersion } })
+    await client.delete(WORKSPACE_SKILLS, packageID, { preconditions: { uid: current.metadata.uid, resourceVersion: current.metadata.resourceVersion } })
     if (!isCurrent(serial, api) || !authorityIsCurrent(authority)) return
     toast('ok', `Deleted workspace skill “${selected.name}”.`)
+    catalog.value = catalog.value.filter(skill => skill.id !== selected.id)
     selectedSkill.value = null
     detail.value = null
     await loadCatalog()
@@ -348,9 +412,10 @@ async function importFile(event: Event): Promise<void> {
   if (!file || workbenchLocked.value) return
   importing.value = true
   const authority = captureAuthority()
+  const serial = ++requestSerial
   try {
     const text = await file.text()
-    if (!authorityIsCurrent(authority) || saving.value || deleting.value) return
+    if (serial !== requestSerial || !authorityIsCurrent(authority)) return
     if (file.name.toLowerCase().endsWith('.json')) {
       const value = JSON.parse(text) as { metadata?: { name?: string }; packageName?: string; spec?: { document?: string; resources?: SkillResourceWrite[] }; document?: string; resources?: SkillResourceWrite[] }
       const importedDocument = value.spec?.document || value.document
@@ -365,24 +430,24 @@ async function importFile(event: Event): Promise<void> {
       skillDocument.value = text
       resources.value = []
     }
-    selectedSkill.value = null
-    detail.value = null
-    mode.value = 'create'
     validationError.value = ''
     saveError.value = ''
+    emit('navigate', createSkillRoute.value)
   } catch (error) {
-    if (authorityIsCurrent(authority)) toast('error', `Could not import skill: ${(error as Error).message}`)
+    if (serial === requestSerial && authorityIsCurrent(authority)) toast('error', `Could not import skill: ${(error as Error).message}`)
   } finally {
     if (input) input.value = ''
-    importing.value = false
+    if (serial === requestSerial) importing.value = false
   }
 }
 
 watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], () => {
   catalogSerial += 1
   detailSerial += 1
+  requestSerial += 1
   catalog.value = []
   catalogWarnings.value = []
+  unavailableSources.value = []
   catalogHasSnapshot.value = false
   catalogLoading.value = false
   catalogError.value = ''
@@ -390,105 +455,172 @@ watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], ()
   detail.value = null
   detailLoading.value = false
   detailError.value = ''
-  mode.value = 'detail'
-  void loadCatalog()
+  editing.value = false
+  saving.value = false
+  deleting.value = false
+  importing.value = false
+  selectAfterCreate = undefined
+  resetDraft()
+  if (!props.createRoute) void loadCatalog()
 }, { immediate: true })
+
+watch(() => props.createRoute, (creating) => {
+  catalogSerial += 1
+  detailSerial += 1
+  requestSerial += 1
+  catalogLoading.value = false
+  detailLoading.value = false
+  saving.value = false
+  deleting.value = false
+  importing.value = false
+  if (creating) {
+    if (editing.value) resetDraft()
+    editing.value = false
+    return
+  }
+  resetDraft()
+  const id = selectAfterCreate
+  selectAfterCreate = undefined
+  if (id) search.value = ''
+  void loadCatalog(id ?? (detail.value ? undefined : selectedSkill.value?.id))
+})
 </script>
 
 <template>
-  <ResourcePage class="agents-skill-workbench" title="Skills library" variant="collection" subtitle="Manage reusable workspace skills and inspect published provider packages.">
-    <template v-if="returnAgent" #summary><ResourceBackLink :href="hashFor({ kind: 'agent', name: returnAgent, tab: 'skills' })" @back="emit('navigate', { kind: 'agent', name: returnAgent, tab: 'skills' })">Back to {{ returnAgent }}’s skills</ResourceBackLink></template>
-    <template #actions>
-      <button type="button" class="k-btn k-btn--ghost secondary" :disabled="workbenchLocked" :aria-busy="importing ? 'true' : undefined" @click="openImport"><Loader2 v-if="importing" class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" /><FileUp v-else class="agents-skill-workbench__button-icon" aria-hidden="true" /> {{ importing ? 'Importing…' : 'Import' }}</button>
-      <button type="button" class="k-btn k-btn--primary" :disabled="workbenchLocked" @click="startCreate"><Plus class="agents-skill-workbench__button-icon" aria-hidden="true" /> New skill</button>
-      <input ref="fileInput" type="file" class="hidden" accept=".md,.markdown,.json,application/json,text/markdown,text/plain" :disabled="workbenchLocked" @change="importFile" />
+  <div v-if="mode !== 'detail'" class="k-create-page">
+    <ResourceBackLink :href="hashFor(libraryRoute)" :disabled="workbenchLocked" @back="leaveEditor">Skills library</ResourceBackLink>
+    <header class="k-create-header">
+      <h1 ref="editorHeading" class="k-create-title" tabindex="-1">{{ mode === 'create' ? 'Create skill' : 'Edit skill' }}</h1>
+      <p class="k-create-description">Write instructions that agents in this workspace can reuse.</p>
+    </header>
+    <form class="k-create-surface" :aria-busy="saving" @submit.prevent="save">
+      <div class="k-create-body">
+        <div class="k-create-fields">
+          <label v-if="mode === 'create'" class="grid min-w-0 gap-1 text-[13px] font-medium">
+            Package name
+            <input v-model="packageName" class="k-input font-mono" placeholder="my-skill" autocomplete="off" :disabled="workbenchLocked" aria-describedby="agents-skill-package-hint" />
+            <span id="agents-skill-package-hint" class="text-[12px] font-normal text-text-secondary">Optional. Derived from the name in SKILL.md.</span>
+          </label>
+          <label class="grid min-w-0 gap-1 text-[13px] font-medium">
+            SKILL.md
+            <textarea v-model="skillDocument" class="agents-skill-workbench__document-editor k-input font-mono" rows="9" spellcheck="false" :disabled="workbenchLocked" aria-describedby="agents-skill-document-hint" />
+            <span id="agents-skill-document-hint" class="text-[12px] font-normal text-text-secondary">Include a name, a description, and the instructions agents should follow.</span>
+          </label>
+          <fieldset class="grid min-w-0 gap-2 border-t border-border-subtle pt-3" :disabled="workbenchLocked">
+            <legend class="pr-2 text-[13px] font-medium">Supporting files <span class="text-[12px] font-normal text-text-secondary">(optional)</span></legend>
+            <p class="text-[12px] text-text-secondary">Include examples or references with the skill.</p>
+            <div v-for="(resource, index) in resources" :key="index" class="grid min-w-0 gap-2 rounded-lg border border-border-subtle p-3">
+              <label class="grid min-w-0 gap-1 text-[12px]">
+                File path
+                <input :value="resource.name" class="k-input font-mono" placeholder="references/example.md" @input="updateResource(index, { name: ($event.target as HTMLInputElement).value })" />
+              </label>
+              <label class="grid min-w-0 gap-1 text-[12px]">
+                File contents
+                <textarea :value="resource.content" class="agents-skill-workbench__resource-editor k-input font-mono" rows="4" @input="updateResource(index, { content: ($event.target as HTMLTextAreaElement).value })" />
+              </label>
+              <button type="button" class="k-btn k-btn--text justify-self-start" :aria-label="`Remove file ${resource.name || index + 1}`" @click="removeResource(index)">
+                <Trash2 class="agents-skill-workbench__button-icon" aria-hidden="true" /> Remove file
+              </button>
+            </div>
+            <button type="button" class="k-btn k-btn--ghost justify-self-start" @click="addResource"><Plus class="agents-skill-workbench__button-icon" aria-hidden="true" /> Add file</button>
+          </fieldset>
+          <div v-if="validationError || saveError" ref="editorNotice" tabindex="-1">
+            <InlineNotification tone="error" :message="validationError || `Could not save skill: ${saveError}`" />
+          </div>
+        </div>
+      </div>
+      <div class="k-create-actions">
+        <button type="button" class="k-btn k-btn--ghost" :disabled="workbenchLocked" @click="leaveEditor">Cancel</button>
+        <button type="submit" class="k-btn k-btn--primary" :disabled="workbenchLocked || (mode === 'edit' && selectedSkillUnverified)" :aria-busy="saving ? 'true' : undefined">
+          <Loader2 v-if="saving" class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" />
+          {{ saving ? (mode === 'create' ? 'Creating…' : 'Saving…') : (mode === 'create' ? 'Create skill' : 'Save skill') }}
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <ResourcePage v-else class="agents-skill-workbench" title="Skills library" variant="collection"
+    subtitle="Manage workspace skills and browse skills published by providers."
+    :loaded="catalogHasSnapshot || undefined" :loading="catalogLoading && !catalogProblem">
+    <template v-if="returnAgent" #summary>
+      <ResourceBackLink :href="hashFor({ kind: 'agent', name: returnAgent, tab: 'skills' })" @back="emit('navigate', { kind: 'agent', name: returnAgent, tab: 'skills' })">Back to {{ returnAgent }}’s skills</ResourceBackLink>
+    </template>
+    <template v-if="!firstRun && (catalogHasSnapshot || catalogProblem)" #actions>
+      <button type="button" class="k-btn k-btn--ghost" :disabled="workbenchLocked" :aria-busy="importing ? 'true' : undefined" @click="openImport">
+        <Loader2 v-if="importing" class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" />
+        <FileUp v-else class="agents-skill-workbench__button-icon" aria-hidden="true" />
+        {{ importing ? 'Importing…' : 'Import skill' }}
+      </button>
+      <a class="k-btn k-btn--primary" :href="hashFor(createSkillRoute)" :aria-disabled="workbenchLocked || undefined" @click="startCreate">
+        <Plus class="agents-skill-workbench__button-icon" aria-hidden="true" /> Create skill
+      </a>
     </template>
 
-    <div v-if="catalogError" ref="catalogNotice" class="mb-3">
+    <input ref="fileInput" type="file" hidden accept=".md,.markdown,.json,application/json,text/markdown,text/plain" :disabled="workbenchLocked" @change="importFile" />
+    <div v-if="catalogProblem" ref="catalogNotice" class="mb-3">
       <InlineNotification
         :tone="catalogHasSnapshot ? 'warning' : 'error'"
-        :message="catalogHasSnapshot ? `Could not refresh the skill library. Showing the last loaded catalog. ${catalogError}` : `Could not load the skill library. ${catalogError}`"
+        :message="catalogProblem"
         action-label="Retry"
         action-busy-label="Retrying catalog…"
         :action-busy="catalogLoading"
         @action="retryCatalog"
       />
     </div>
-    <div v-if="catalogIncomplete" ref="catalogWarningNotice" class="mb-3">
-      <InlineNotification
-        tone="warning"
-        message="Catalog needs attention. Returned skills remain usable, but the list may be incomplete. Review the warning details below."
-        action-busy-label="Retrying catalog…"
-        :action-busy="catalogLoading"
-        :action-label="catalogError ? '' : 'Retry'"
-        @action="retryCatalog"
-      />
-    </div>
     <p v-for="warning in catalogWarnings" :key="warning" class="agents-hint" role="status">{{ warning }}</p>
 
-    <div class="agents-skill-workbench__columns grid min-h-0 gap-4 xl:grid-cols-[minmax(300px,0.8fr)_minmax(0,1.2fr)]">
-      <section ref="catalogSection" tabindex="-1" class="min-w-0 rounded-xl border border-border-subtle bg-surface p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="Skill catalog">
+    <FirstRunGuide v-if="firstRun" title="Create your first skill"
+      description="Give your agents reusable instructions for tasks such as reviewing a rollout or summarizing an incident."
+      :steps="[]">
+      <template #icon><Package :stroke-width="1.5" aria-hidden="true" /></template>
+      <template #actions>
+        <a ref="firstRunCreate" class="k-btn k-btn--primary" :href="hashFor(createSkillRoute)" :aria-disabled="workbenchLocked || undefined" @click="startCreate">
+          <Plus class="agents-skill-workbench__button-icon" aria-hidden="true" /> Create skill
+        </a>
+        <button type="button" class="k-btn k-btn--ghost" :disabled="workbenchLocked" :aria-busy="importing ? 'true' : undefined" @click="openImport">
+          <Loader2 v-if="importing" class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" />
+          <FileUp v-else class="agents-skill-workbench__button-icon" aria-hidden="true" />
+          {{ importing ? 'Importing…' : 'Import skill' }}
+        </button>
+      </template>
+    </FirstRunGuide>
+
+    <div v-else-if="catalogHasSnapshot" class="agents-skill-workbench__columns" :class="{ 'has-detail': selectedSkill }">
+      <section ref="catalogSection" tabindex="-1" class="k-card k-card--flat min-w-0 p-4" aria-label="Skill catalog">
         <AISkillCatalogList
-          v-if="catalogHasSnapshot || !catalogError"
           v-model:query="search"
           :skills="sortedCatalog"
           :show-status="false"
-          :selected-id="selectedSkill?.id || ''"
-          :loading="catalogLoading"
+          :selectedID="selectedSkill?.id"
+          :loading="catalogLoading && !!catalog.length"
+          :busy="workbenchLocked"
           :incomplete="catalogIncomplete"
-          :busy="detailLoading || workbenchLocked"
+          variant="workbench"
           title="Workspace and provider skills"
-          empty-text="No skills have been published in this workspace."
-          @select="selectSkill($event)"
+          empty-text="No skills are available from the sources that loaded."
+          @select="openSkill"
         />
       </section>
 
-      <section ref="detailSection" tabindex="-1" class="min-w-0 rounded-xl border border-border-subtle bg-surface p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="Skill details">
-        <InlineNotification
-          v-if="selectedSkillUnverified"
-          class="mb-4"
-          tone="warning"
-          title="Skill not listed in the latest catalog response."
-          message="Its existing details are retained, but edit, export, and delete are paused. Retry to verify it before making changes."
-        />
-        <template v-if="mode === 'create' || mode === 'edit'">
-          <div class="mb-4 flex items-start justify-between gap-3">
-            <div><h3 class="text-[16px] font-semibold text-text-primary">{{ mode === 'create' ? 'Create a workspace skill' : 'Edit workspace skill' }}</h3><p class="mt-1 text-[12px] text-text-secondary">The SKILL.md frontmatter supplies the skill name and description.</p></div>
-            <button type="button" class="k-btn k-btn--ghost secondary" :disabled="workbenchLocked" @click="mode = 'detail'"><X class="agents-skill-workbench__button-icon" aria-hidden="true" /> Cancel</button>
-          </div>
-          <label v-if="mode === 'create'" class="mb-3 block">Package name<input v-model="packageName" class="k-input mt-1" placeholder="my-skill" autocomplete="off" :disabled="workbenchLocked" /><span class="agents-hint">Unique package identifier used for imports and updates; separate from the skill name in SKILL.md.</span></label>
-          <label class="block">SKILL.md<textarea v-model="skillDocument" class="agents-skill-workbench__document-editor k-input mt-1 min-h-72 font-mono text-[12px]" spellcheck="false" :disabled="workbenchLocked" :aria-invalid="validationError ? 'true' : undefined" /></label>
-          <div v-if="parsedDocument" class="my-2 rounded-md bg-surface-raised px-3 py-2 text-[11px] text-text-secondary"><strong>{{ parsedDocument.name }}</strong><span aria-hidden="true"> · </span>{{ parsedDocument.description }}</div>
-          <fieldset class="mt-4 grid gap-2" :disabled="workbenchLocked">
-            <legend class="mb-1 text-[13px] font-semibold">Supporting resources</legend>
-            <p class="text-[11px] text-text-secondary">Text files shipped with this skill, such as examples or reference material.</p>
-            <div v-for="(resource, index) in resources" :key="index" class="rounded-lg border border-border-subtle p-3">
-              <div class="mb-2 flex items-center gap-2"><label class="min-w-0 flex-1 text-[11px]">Resource path<input :value="resource.name" class="k-input mt-1" placeholder="references/guide.md" @input="updateResource(index, { name: ($event.target as HTMLInputElement).value })" /></label><button type="button" class="k-icon-action agents-iconbtn-danger mt-4" :aria-label="`Remove resource ${resource.name || index + 1}`" title="Remove resource" @click="removeResource(index)"><Trash2 class="agents-skill-workbench__button-icon" aria-hidden="true" /></button></div>
-              <label class="block text-[11px]">Content<textarea :value="resource.content" class="agents-skill-workbench__resource-editor k-input mt-1 min-h-32 font-mono text-[11px]" @input="updateResource(index, { content: ($event.target as HTMLTextAreaElement).value })" /></label>
-            </div>
-            <button type="button" class="k-btn k-btn--ghost secondary justify-self-start" @click="addResource"><Plus class="agents-skill-workbench__button-icon" aria-hidden="true" /> Add resource</button>
-          </fieldset>
-          <p v-if="validationError" class="agents-fielderr" role="alert">{{ validationError }}</p>
-          <p v-if="saveError" class="agents-fielderr" role="alert">Could not save skill: {{ saveError }}</p>
-          <div class="mt-4 flex flex-wrap justify-end gap-2">
-            <button type="button" class="k-btn k-btn--primary" :disabled="workbenchLocked || (mode === 'edit' && selectedSkillUnverified)" :aria-busy="saving ? 'true' : undefined" @click="save"><Loader2 v-if="saving" class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" /><Save v-else class="agents-skill-workbench__button-icon" aria-hidden="true" /> {{ saving ? 'Saving…' : mode === 'create' ? 'Create skill' : 'Save skill' }}</button>
-          </div>
-        </template>
-        <div v-else-if="!selectedSkill" class="flex min-h-72 flex-col items-center justify-center gap-3 text-center" role="status">
-          <Upload class="h-7 w-7" :stroke-width="1.75" aria-hidden="true" />
-          <h3 class="text-[14px] font-medium text-text-primary">Choose a skill to review</h3>
-          <p class="max-w-sm text-[12px] text-text-secondary">Create a workspace skill or select an existing package from the catalog.</p>
-        </div>
-        <template v-else>
-          <div class="agents-skill-workbench__detail-header mb-4 flex items-start justify-between gap-3">
-            <div class="agents-skill-workbench__detail-heading min-w-0"><p class="text-[10px] uppercase tracking-wide text-text-muted">{{ selectedSkill.scope }}{{ selectedSkill.editable ? ' · editable' : ' · read-only' }}</p><h3 class="mt-1 break-words text-[18px] font-semibold text-text-primary">{{ selectedSkill.name }}</h3><p class="mt-1 text-[12px] text-text-secondary">{{ selectedSkill.description }}</p><code class="mt-1 block break-all text-[10px] text-text-muted" :title="selectedSkill.id">{{ selectedSkill.packageName || selectedSkill.packagePath }}</code></div>
-            <div v-if="selectedSkill.editable" class="agents-skill-workbench__detail-actions flex shrink-0 gap-1">
-              <button type="button" class="k-btn k-btn--ghost secondary" :disabled="detailLoading || workbenchLocked || selectedSkillUnverified" @click="exportSkill"><Download class="agents-skill-workbench__button-icon" aria-hidden="true" /> Export</button>
-              <button type="button" class="k-btn k-btn--ghost secondary" :disabled="!canEditDetail" @click="startEdit"><Save class="agents-skill-workbench__button-icon" aria-hidden="true" /> Edit</button>
-              <button type="button" class="k-icon-action agents-iconbtn-danger" :disabled="workbenchLocked || selectedSkillUnverified" aria-label="Delete workspace skill" title="Delete workspace skill" @click="removeSkill"><Trash2 class="agents-skill-workbench__button-icon" aria-hidden="true" /></button>
-            </div>
-          </div>
-          <div v-if="detailError" ref="detailNotice" class="agents-skill-workbench__detail-error mb-3">
+      <div v-if="selectedSkill" ref="detailSection" tabindex="-1" role="region" aria-label="Skill details" class="min-w-0">
+        <ResourceSectionCard :title="selectedSkill.name" :description="selectedSkill.description">
+          <template v-if="selectedSkill.editable" #actions>
+            <button type="button" class="k-btn k-btn--ghost" :disabled="detailLoading || workbenchLocked || selectedSkillUnverified || !detail" @click="exportSkill"><Download class="agents-skill-workbench__button-icon" aria-hidden="true" /> Export</button>
+            <button type="button" class="k-btn k-btn--ghost" :disabled="!canEditDetail" @click="startEdit"><Pencil class="agents-skill-workbench__button-icon" aria-hidden="true" /> Edit</button>
+            <button type="button" class="k-icon-action agents-iconbtn-danger" :disabled="workbenchLocked || selectedSkillUnverified" aria-label="Delete workspace skill" title="Delete workspace skill" @click="removeSkill"><Trash2 class="agents-skill-workbench__button-icon" aria-hidden="true" /></button>
+          </template>
+          <InlineNotification
+            v-if="selectedSkillUnverified"
+            tone="warning"
+            title="Skill not listed in the latest catalog response."
+            message="Its existing details are retained. Retry to verify the skill before editing, exporting, or deleting it."
+          />
+          <p class="text-[11px] text-text-secondary">
+            {{ readOnlySkill ? 'Provider skill · Read-only' : 'Workspace skill' }}
+            <span aria-hidden="true"> · </span>
+            <code class="break-all" :title="selectedSkill.id">{{ selectedSkill.packageName || selectedSkill.packagePath }}</code>
+          </p>
+          <div v-if="detailError" ref="detailNotice">
             <InlineNotification
               :tone="detail ? 'warning' : 'error'"
               :message="detail ? `Could not refresh this skill detail. Showing the last loaded details. ${detailError}` : `Could not load skill detail. ${detailError}`"
@@ -500,16 +632,20 @@ watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], ()
           </div>
           <p v-if="detailLoading && !detail" class="agents-state agents-state-loading" role="status"><Loader2 class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" /> Loading skill…</p>
           <template v-else-if="detail">
-            <ResourceSectionCard class="mb-3" variant="document" title="Instructions" description="This guidance is added to the agent context when the skill is selected.">
-              <pre class="max-h-[50vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-raised p-3 text-[11px] leading-5 text-text-secondary">{{ detail.instructions }}</pre>
-            </ResourceSectionCard>
-            <ResourceSectionCard v-if="detail.resources?.length" variant="document" title="Supporting resources" :description="`${detail.resources.length} resource${detail.resources.length === 1 ? '' : 's'} in this package.`">
-              <details v-for="resource in detail.resources" :key="resource.path" class="border-b border-border-subtle py-2 last:border-0"><summary class="cursor-pointer text-[12px] font-mono">{{ resource.path }} <span class="text-text-muted">· {{ resource.size }} bytes</span></summary><pre class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-raised p-3 text-[11px] text-text-secondary">{{ resource.content }}</pre></details>
-            </ResourceSectionCard>
+            <div>
+              <h3 class="mb-2 text-[13px] font-semibold">Instructions</h3>
+              <pre class="max-h-[50vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-overlay p-3 text-[12px] leading-5 text-text-secondary">{{ detail.instructions }}</pre>
+            </div>
+            <div v-if="detail.resources?.length">
+              <h3 class="text-[13px] font-semibold">Supporting files</h3>
+              <details v-for="resource in detail.resources" :key="resource.path" class="border-b border-border-subtle py-2 last:border-0">
+                <summary class="cursor-pointer text-[12px] font-mono break-all">{{ resource.path }} <span class="text-text-muted">· {{ resource.size }} bytes</span></summary>
+                <pre class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-overlay p-3 text-[12px] text-text-secondary">{{ resource.content }}</pre>
+              </details>
+            </div>
           </template>
-          <div v-if="readOnlySkill" class="mt-3 rounded-md border border-border-subtle bg-surface-raised px-3 py-2 text-[11px] text-text-secondary" role="note">Provider packages are read-only. Enable skills from an Agent’s Skills workbench tab.</div>
-        </template>
-      </section>
+        </ResourceSectionCard>
+      </div>
     </div>
   </ResourcePage>
 </template>

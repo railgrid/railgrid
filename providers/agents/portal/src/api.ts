@@ -472,7 +472,7 @@ export class ApiClient {
   deleteAgent = (name: string): Promise<void> => this.resources.deleteAgent(name)
 
   // Library presentation reads Skill objects and the published provider catalog.
-  getSkillLibrary = (): Promise<AgentSkillCatalog> => loadSkillLibrary(this.context())
+  getSkillLibrary = () => loadSkillLibrary(this.context())
   getSkillLibraryDetail = (id: string): Promise<AgentSkillDetail> => loadSkillLibraryDetail(this.context(), id)
   // Runtime skill availability remains an authorized per-Agent catalog.
   getAgentSkillCatalog = (agent: string): Promise<AgentSkillCatalog> =>

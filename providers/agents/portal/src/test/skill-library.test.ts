@@ -30,7 +30,7 @@ describe('workspace skill library', () => {
     const { ctx } = context(503)
     const result = await loadSkillLibrary(ctx)
     expect(result.skills).toHaveLength(1)
-    expect(result.warnings).toContain('Provider skills could not be loaded. Retry to refresh the library.')
+    expect(result.unavailableSources).toEqual(['provider'])
   })
 
   it('reads details using the source object name rather than the display name', async () => {

@@ -4,6 +4,10 @@ import { parseSkillDocument, validateSkillResources } from './skill-document'
 import type { AgentSkillCatalog, AgentSkillDetail, RailgridContext } from './types'
 
 export const WORKSPACE_SKILLS: KubeResourceRef = { group: 'agents.railgrid.ai', version: 'v1alpha1', resource: 'skills' }
+export type SkillLibrarySource = 'workspace' | 'provider'
+export interface SkillLibraryCatalog extends AgentSkillCatalog {
+  unavailableSources?: SkillLibrarySource[]
+}
 interface SkillObject extends KubeObject { spec?: { document?: string; resources?: Array<{ name: string; content: string }> } }
 interface PublishedProvider {
   name: string
@@ -34,23 +38,24 @@ async function providers(context: RailgridContext | null): Promise<PublishedProv
   return (await response.json() as { items?: PublishedProvider[] }).items || []
 }
 
-export async function loadSkillLibrary(context: RailgridContext | null): Promise<AgentSkillCatalog> {
+export async function loadSkillLibrary(context: RailgridContext | null): Promise<SkillLibraryCatalog> {
   const [workspace, published] = await Promise.allSettled([client(context).listAll<SkillObject>(WORKSPACE_SKILLS), providers(context)])
   const skills: AgentSkillDetail[] = [], warnings: string[] = []
+  const unavailableSources: SkillLibrarySource[] = []
   if (workspace.status === 'rejected' && published.status === 'rejected') throw workspace.reason
   if (workspace.status === 'fulfilled') {
     for (const item of workspace.value) {
       try { skills.push(librarySkill('workspace', item.metadata.name, item.spec?.document || '', item.spec?.resources || [], item.metadata.resourceVersion)) }
       catch { warnings.push(`Workspace skill “${item.metadata.name}” is invalid or exceeds its bounds.`) }
     }
-  } else warnings.push('Workspace skills could not be loaded. Retry to refresh the library.')
+  } else unavailableSources.push('workspace')
   if (published.status === 'fulfilled') {
     for (const provider of published.value) for (const item of provider.hub?.assistantSkills || []) {
       try { skills.push(librarySkill('system', `providers/${provider.name}/${item.packageName}`, item.skill, (item.resources || []).map(resource => ({ name: resource.path, content: resource.content })), item.version, item.digest)) }
       catch { warnings.push(`Published skill “${provider.name}/${item.packageName}” could not be read.`) }
     }
-  } else warnings.push('Provider skills could not be loaded. Retry to refresh the library.')
-  return { skills, warnings }
+  } else unavailableSources.push('provider')
+  return { skills, warnings, unavailableSources }
 }
 
 export async function loadSkillLibraryDetail(context: RailgridContext | null, id: string): Promise<AgentSkillDetail> {
@@ -62,6 +67,7 @@ export async function loadSkillLibraryDetail(context: RailgridContext | null, id
     }
   }
   const catalog = await loadSkillLibrary(context)
+  if (catalog.unavailableSources?.includes('provider')) throw new Error('Could not load published provider skills.')
   const skill = catalog.skills.find(item => item.id === id)
   if (!skill) throw new Error('This skill is no longer in the library. Refresh the catalog.')
   return skill as AgentSkillDetail
