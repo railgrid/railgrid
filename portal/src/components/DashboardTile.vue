@@ -146,9 +146,12 @@ async function loadAndMount(name: string, version: string | undefined, generatio
     const bundle = await resolveProviderBundle(props.provider, authFetch)
     if (!isCurrentLoad(generation, name, version)) return
     // See ProviderFrame.vue: one pinned retry against the hub's corrected pin.
+    // acceptLoadedVersion: a tile is a secondary surface, so after a deploy
+    // it keeps rendering the bundle this page already loaded.
     await loadProviderScript(name, version, document, undefined, {
       ...bundle,
       refreshIntegrity: () => providers.refreshWorkspaceMainJSIntegrity(name),
+      acceptLoadedVersion: true,
     })
   } catch {
     if (isCurrentLoad(generation, name, version)) loadState.value = 'error'

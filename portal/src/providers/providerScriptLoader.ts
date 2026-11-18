@@ -115,6 +115,13 @@ export interface ProviderScriptOptions {
   // refresh, would be loading whatever the upstream now serves on no authority
   // at all. SRI is never weakened here: the retry is pinned too.
   refreshIntegrity?: (() => Promise<string | null>) | null
+  // Keep using the version this document already loaded when the catalog now
+  // names a newer one for a direct-registration provider, instead of rejecting
+  // with ProviderPageReloadRequiredError. For secondary surfaces (dashboard
+  // tiles, the agent overlay): a deploy must not break what the user is
+  // looking at, and the next page load picks the new version up. Only the
+  // version may differ; a different provider copy (identity) still rejects.
+  acceptLoadedVersion?: boolean
 }
 
 function injectProviderScript(
@@ -222,9 +229,11 @@ export function loadProviderScript(
   if (current?.version === requestedVersion && current.identity === identity) return current.promise
   if (current && !canReloadProviderScriptInDocument(name)) {
     // A direct-registration provider cannot replace its custom-element class
-    // without reloading the document. Reject this different catalog version
-    // explicitly: resolving with the existing promise would falsely report the
-    // requested bundle as loaded and mount the stale element against new APIs.
+    // without reloading the document. A caller that opted in keeps the loaded
+    // version until the next page load. Otherwise reject explicitly: resolving
+    // silently would report the requested bundle as loaded, and the caller
+    // should decide between reloading and running the older bundle.
+    if (options.acceptLoadedVersion && current.identity === identity) return current.promise
     return Promise.reject(
       new ProviderPageReloadRequiredError(name, current.version, requestedVersion, current.identity !== identity),
     )

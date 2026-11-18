@@ -1542,7 +1542,8 @@ test('provider frames gate APIExport providers on an authoritative workspace bin
   assert.match(providerFrame, /providers\.isEnabled\(props\.providerName\)/)
   assert.match(providerFrame, /const accessAllowed = computed/)
   assert.match(providerFrame, /!!entry\.value\.serving\?\.ui/)
-  assert.match(providerFrame, /v-if="accessAllowed"[\s\S]*ref="mountRef"/)
+  assert.match(providerFrame, /v-if="accessActive"[\s\S]*ref="mountRef"/)
+  assert.match(providerFrame, /const accessActive = computed\(\(\) => accessAllowed\.value \|\| accessHeld\.value\)/)
   assert.match(providerFrame, /clearMountedElement\(\)/)
   assert.match(providerFrame, /not enabled in this workspace/)
   assert.match(providerFrame, /:to="scopePath\('\/'\)"[\s\S]*>Dashboard<\/router-link>/)
@@ -1576,10 +1577,11 @@ test('provider hard refresh waits for the hydrated AppLayout mount outlet', () =
   assert.ok(mountWatchStart >= 0 && mountWatchEnd > mountWatchStart)
   const mountWatch = providerFrame.slice(mountWatchStart, mountWatchEnd)
 
-  assert.match(mountWatch, /mountRef\.value/)
-  assert.match(mountWatch, /async \(\[name, version, ready, settled, allowed, mount\]\) =>/)
-  assert.match(mountWatch, /if \(!name \|\| !ready \|\| !settled \|\| !allowed \|\| !mount\) return/)
-  assert.match(mountWatch, /await loadAndMount\(name, version, mount\)/)
+  // The outlet ref is one of the per-key watch sources.
+  assert.match(mountWatch, /^\s+mountRef,$/m)
+  assert.match(mountWatch, /async \(\[name, ready, allowed, mount\]\) =>/)
+  assert.match(mountWatch, /if \(!name \|\| !ready \|\| !allowed \|\| !mount\) return/)
+  assert.match(mountWatch, /await loadAndMount\(name, entry\.value\?\.version, mount\)/)
 
   const loaderStart = providerFrame.indexOf('async function loadAndMount(')
   const loaderEnd = providerFrame.indexOf('\n}\n\nfunction pushContext', loaderStart)

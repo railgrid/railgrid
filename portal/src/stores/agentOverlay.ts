@@ -21,6 +21,9 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
   const sidePanelClosing = ref(false)
   const settingsOpen = ref(false)
   const followContext = ref(true)
+  // Runtime only: the mounted assistant reports an active conversation. A
+  // full page load would drop it, so automatic reloads defer to the user.
+  const conversationOpen = ref(false)
   const preferenceKey = computed(() => {
     const user = auth.user?.userId || auth.user?.email
     return user && tenant.orgUUID && tenant.workspaceUUID
@@ -76,5 +79,6 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
   function setDockVisible(value: boolean): void { dockVisible.value = value }
   function setChatLauncherVisible(value: boolean): void { chatLauncherVisible.value = value }
   function setFollowContext(value: boolean): void { followContext.value = value; save() }
-  return { sidePanelClosing, setSidePanelClosing, sidePanelWidth, sidePanelFullscreen, setSidePanel, selectedAgent, open, minimized, dockVisible, chatLauncherVisible, setChatLauncherVisible, setMinimized, closeForNavigation, setSettingsOpen, setDockVisible, settingsOpen, followContext, preferenceKey, select, setFollowContext }
+  function setConversationOpen(value: boolean): void { conversationOpen.value = value }
+  return { sidePanelClosing, setSidePanelClosing, sidePanelWidth, sidePanelFullscreen, setSidePanel, selectedAgent, open, minimized, dockVisible, chatLauncherVisible, setChatLauncherVisible, setMinimized, closeForNavigation, setSettingsOpen, setDockVisible, settingsOpen, followContext, preferenceKey, select, setFollowContext, conversationOpen, setConversationOpen }
 })

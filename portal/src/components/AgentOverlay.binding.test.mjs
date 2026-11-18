@@ -41,6 +41,7 @@ function scenario({ available = true, shadowReady = false, bindingReady = true, 
     setMinimized(value) { this.open = !value },
     setSidePanel(width, fullscreen) { this.sidePanelWidth = width; this.sidePanelFullscreen = fullscreen },
     setFollowContext(value) { this.followContext = value },
+    setConversationOpen(value) { this.conversationOpen = value },
     setChatLauncherVisible(value) { this.chatLauncherVisible = value },
     setDockVisible(value) { this.dockVisible = value } })
   const modules = {

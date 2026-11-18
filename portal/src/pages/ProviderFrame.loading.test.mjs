@@ -96,7 +96,7 @@ function providerContextHarness() {
     .replace('(name: string | null, followContext: boolean)', '(name, followContext)')
     .replace('(name: string | null)', '(name)')
   const makeContext = new Function(
-    'elementRef', 'entry', 'accessAllowed', 'auth', 'tenant', 'routeContext', 'router',
+    'elementRef', 'entry', 'accessActive', 'auth', 'tenant', 'routeContext', 'router',
     'theme', 'props', 'agentOverlay', 'providerRouteEpoch', 'pageResource', 'resourceSource',
     'createAgentContextPublisher', 'createPageResourcePublisher', 'createProviderContext',
     'guardProviderContextCallback', 'scopePath',
@@ -172,7 +172,7 @@ test('App Studio keeps its workspace default and dynamic overrides require host 
   const accessExpression = source.match(/const accessAllowed = computed\(\(\) =>([\s\S]*?)\n\)/)?.[1]
   assert.ok(expression)
   assert.ok(accessExpression)
-  const createValue = new Function('computed', 'isAppStudioWorkspaceRoute', 'providerFullBleedOverride', 'accessAllowed',
+  const createValue = new Function('computed', 'isAppStudioWorkspaceRoute', 'providerFullBleedOverride', 'accessActive',
     `return computed(() => ${expression})`)
   const createAccess = new Function(
     'computed', 'catalogSettled', 'entry', 'requiresBinding', 'bindingsAuthoritative', 'providerBound', 'bindingUnavailable',
@@ -274,9 +274,64 @@ test('A-B-A navigation retires page callbacks while same-owner transport and tok
   assert.equal(host.publishedContexts[1].value.title, 'Current A context after return')
 })
 
+test('a provider deploy leaves the mounted element transport current', () => {
+  const host = providerContextHarness()
+  const context = host.element.railgridContext
+  host.entry.value.version = 'v2'
+  assert.equal(context.options.isCurrent(), true)
+})
+
+test('a catalog version change alone never remounts the provider element', () => {
+  const identity = source.match(/watch\(\n  \[\n    \(\) => entry\.value\?\.name,([\s\S]*?)\n  \],/)?.[1]
+  assert.ok(identity, 'expected the mount identity watch')
+  assert.doesNotMatch(identity, /version/)
+  // Per-key sources: a getter returning a fresh array would fire on every
+  // entry replacement, which is how a deploy used to remount the page.
+  assert.doesNotMatch(identity, /\] as const/)
+  assert.match(source, /await loadAndMount\(name, entry\.value\?\.version, mount\)/)
+})
+
+test('opening a provider with an older bundle loaded finishes as a guarded page load', () => {
+  // Never while an assistant conversation is open: the error offers the reload instead.
+  assert.match(source, /e instanceof ProviderPageReloadRequiredError && isCurrentMount\(generation, name\) &&\s*!agentOverlay\.conversationOpen && reloadForProviderUpdate\(name\)\) \{\s*return\s*\}/)
+  // A successful mount forgets the guard so a later deploy reloads again.
+  assert.match(functionBody('loadAndMount'), /loadState\.value = 'ready'\s*clearProviderUpdateReload\(name\)/)
+})
+
+test('a catalog or bindings re-read holds the mounted element for the same identity only', () => {
+  const heldExpression = source.match(/const accessHeld = computed\(\(\) =>([\s\S]*?)\n\)/)?.[1]
+  assert.ok(heldExpression, 'expected accessHeld')
+  const held = overrides => {
+    const v = { accessAllowed: false, mountedIdentity: 'id', mountIdentity: 'id', ready: true, catalogError: null,
+      catalogRefreshing: false, bindingsRefreshing: true, ...overrides }
+    return new Function('accessAllowed', 'mountedIdentity', 'mountIdentity', 'entry', 'catalogError', 'catalogRefreshing', 'bindingsRefreshing',
+      `return ${heldExpression.trim().replace(/,$/, "")}`)(
+      { value: v.accessAllowed }, { value: v.mountedIdentity }, { value: v.mountIdentity }, { value: { ready: v.ready } },
+      { value: v.catalogError }, { value: v.catalogRefreshing }, { value: v.bindingsRefreshing })
+  }
+  assert.equal(held({}), true, 'bindings re-read in flight')
+  assert.equal(held({ bindingsRefreshing: false, catalogRefreshing: true }), true, 'catalog re-read in flight')
+  assert.equal(held({ bindingsRefreshing: false }), false, 'a settled denial tears down')
+  assert.equal(held({ mountedIdentity: null }), false, 'nothing mounted yet')
+  assert.equal(held({ mountIdentity: 'other' }), false, 'another provider copy or workspace')
+  assert.equal(held({ ready: false }), false, 'provider no longer ready')
+  assert.equal(held({ catalogError: 'boom' }), false, 'failed catalog read')
+  // The identity spans the provider copy and the full tenant scope.
+  const identity = source.match(/const mountIdentity = computed\(\(\) => JSON\.stringify\(\[([\s\S]*?)\]\)\)/)?.[1]
+  for (const key of ['entry.value?.name', 'entry.value?.export?.path', 'entry.value?.scope', 'tenant.orgUUID', 'tenant.workspaceUUID', 'auth.clusterName']) {
+    assert.ok(identity?.includes(key), `mount identity includes ${key}`)
+  }
+  // Only a re-read that keeps the retained projection of this workspace holds.
+  assert.match(source, /const bindingsRefreshing = computed\(\(\) =>\s*requiresBinding\.value &&\s*providers\.bindingsLoadState === 'loading' &&\s*providers\.bindingsStale &&\s*bindingProjectionCurrent\.value,/)
+  // The mount outlet and the refresh banners follow the held state.
+  assert.match(source, /v-if="accessActive"\s*ref="mountRef"/)
+  assert.match(source, /v-else-if="catalogRefreshing && !accessHeld"/)
+  assert.match(source, /v-else-if="bindingChecking && !accessHeld"/)
+})
+
 test('captured ProviderFrame context retires on provider, principal, workspace, access, and mount changes', () => {
   const changes = [
-    ['provider version', host => { host.entry.value.version = 'v2' }],
+    ['provider', host => { host.entry.value.name = 'kuery' }],
     ['principal', host => { host.auth.user = { userId: 'bob' } }],
     ['logical cluster', host => { host.auth.clusterName = 'cluster-b' }],
     ['organization', host => { host.tenant.orgUUID = 'org-b' }],
@@ -301,7 +356,7 @@ test('mounted-element cleanup clears the override and removes the mount listener
     'pageResource', 'resourceSource', 'routeFocus', 'boundMount',
     'onRouteReady', 'onNavigate', 'onLayoutChange', 'onProviderBootstrapRetry',
     'elementRef', 'mountRef', 'loadState', 'loadError', 'providerFullBleedOverride', 'bundleReloading',
-    `let mountGeneration = 0; return function () { ${body} }`,
+    `let mountGeneration = 0; const mountedIdentity = { value: 'mounted' }; return function () { ${body} }`,
   )
   const removedListeners = []
   const removedElements = []
@@ -366,7 +421,7 @@ test('mount resets old layout state and accepts a synchronous request from the n
   const makeMount = new Function(
     'mountRef', 'isCurrentMount', 'document', 'tagFor', 'elementRef',
     'providerFullBleedOverride', 'props', 'routeFocus', 'bindMountEvents', 'pushContext',
-    `let mountGeneration = 0; return function (name, generation) { ${body} }`,
+    `let mountGeneration = 0; const mountedIdentity = { value: null }, mountIdentity = { value: 'identity' }; return function (name, generation) { ${body} }`,
   )
   const mountElement = makeMount(
     { value: mount },

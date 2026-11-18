@@ -104,6 +104,32 @@ test('requires a page reload when a direct-registration provider catalog version
   assert.equal(doc.getElementById('railgrid-provider-script-quickstart'), doc.appended[0])
 })
 
+test('a secondary surface can keep the loaded version of a direct-registration provider', async () => {
+  const doc = providerDocument()
+  const first = loadProviderScript('quickstart', '1', doc, undefined, { identity: 'platform' })
+  await Promise.resolve()
+  doc.appended[0].onload()
+  await first
+
+  // Same provider copy, newer catalog version: the tile/overlay keeps v1.
+  assert.strictEqual(
+    loadProviderScript('quickstart', '2', doc, undefined, { identity: 'platform', acceptLoadedVersion: true }),
+    first,
+  )
+  assert.equal(doc.appended.length, 1)
+
+  // A different provider copy is never satisfied by the loaded bundle.
+  await assert.rejects(
+    loadProviderScript('quickstart', '2', doc, undefined, { identity: 'org-copy', acceptLoadedVersion: true }),
+    ProviderPageReloadRequiredError,
+  )
+  // Without the opt-in the caller still learns a reload is needed.
+  await assert.rejects(
+    loadProviderScript('quickstart', '2', doc, undefined, { identity: 'platform' }),
+    ProviderPageReloadRequiredError,
+  )
+})
+
 test('keeps bootstrap generation tokens unique across loader module re-evaluation', async () => {
   const doc = providerDocument()
   const first = loadProviderScript('app-studio', 'hmr-1', doc)

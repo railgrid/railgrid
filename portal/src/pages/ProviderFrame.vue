@@ -13,10 +13,12 @@ import { usePageResourceStore } from '@/stores/pageResource'
 import { useAgentOverlayStore } from '@/stores/agentOverlay'
 import { useThemeStore } from '@/stores/theme'
 import {
+  ProviderPageReloadRequiredError,
   canReloadProviderScriptInDocument,
   invalidateProviderScript,
   loadProviderScript,
 } from '@/providers/providerScriptLoader'
+import { clearProviderUpdateReload, reloadForProviderUpdate } from '@/providers/providerUpdateReload'
 import { createProviderRouteFocus } from '@/providers/providerRouteFocus'
 import { createPageResourcePublisher } from '@/providers/pageResourcePublisher'
 import { createAgentContextPublisher } from '@/providers/agentContextPublisher'
@@ -138,7 +140,7 @@ const isAppStudioWorkspaceRoute = computed(() => props.providerName === 'app-stu
 // providers own in-view identity while host readiness and access still gate mounting.
 const isFullBleedProvider = computed(() =>
   isAppStudioWorkspaceRoute.value ||
-  (providerFullBleedOverride.value === true && accessAllowed.value),
+  (providerFullBleedOverride.value === true && accessActive.value),
 )
 
 const isBuiltinProvider = computed(() => {
@@ -214,6 +216,33 @@ const accessAllowed = computed(() =>
   (!requiresBinding.value || (bindingsAuthoritative.value && providerBound.value)),
 )
 
+// The provider copy and tenant scope a mounted element was created for. A
+// catalog or bindings re-read briefly makes access non-authoritative; while
+// that re-read is in flight for exactly this identity, the element that was
+// already authorized keeps running instead of being torn down and remounted.
+// A different provider copy, workspace, organization or cluster never holds,
+// and a re-read that settles to "not allowed" or fails tears it down.
+const mountIdentity = computed(() => JSON.stringify([
+  entry.value?.name, entry.value?.export?.path, entry.value?.scope,
+  tenant.orgUUID, tenant.workspaceUUID, auth.clusterName,
+]))
+const mountedIdentity = ref<string | null>(null)
+const bindingsRefreshing = computed(() =>
+  requiresBinding.value &&
+  providers.bindingsLoadState === 'loading' &&
+  providers.bindingsStale &&
+  bindingProjectionCurrent.value,
+)
+const accessHeld = computed(() =>
+  !accessAllowed.value &&
+  mountedIdentity.value !== null &&
+  mountedIdentity.value === mountIdentity.value &&
+  !!entry.value?.ready &&
+  !catalogError.value &&
+  (catalogRefreshing.value || bindingsRefreshing.value),
+)
+const accessActive = computed(() => accessAllowed.value || accessHeld.value)
+
 watch(
   () => [props.providerName, providerRoutePath.value] as const,
   () => { providerFullBleedOverride.value = null },
@@ -248,21 +277,30 @@ watch(
 // suppresses its slot while a persisted workspace hydrates on hard refresh.
 // Starting the loader before that outlet exists would let the script finish
 // with nowhere to mount and leave loadState stuck at "loading" forever.
+//
+// The catalog version is deliberately NOT part of this identity. A provider
+// deploy must never tear down the page the user is working in; the mounted
+// element keeps running the bundle this document loaded, and the new version
+// is picked up the next time the provider is opened (see loadAndMount).
+//
+// Each key is its own watch source so Vue compares them one by one. A single
+// getter returning an array would hand Vue a new array on every evaluation,
+// and any replacement of the catalog entry or binding projection (a version
+// bump, an ordinary bindings refresh) would then remount the element even
+// though none of these keys changed.
 watch(
-  () => [
-    entry.value?.name,
-    entry.value?.version,
-    entry.value?.ready,
-    catalogSettled.value,
-    accessAllowed.value,
-    mountRef.value,
-    entry.value?.export?.path,
-    entry.value?.scope,
-  ] as const,
-  async ([name, version, ready, settled, allowed, mount]) => {
+  [
+    () => entry.value?.name,
+    () => entry.value?.ready,
+    accessActive,
+    mountRef,
+    () => entry.value?.export?.path,
+    () => entry.value?.scope,
+  ],
+  async ([name, ready, allowed, mount]) => {
     clearMountedElement()
-    if (!name || !ready || !settled || !allowed || !mount) return
-    await loadAndMount(name, version, mount)
+    if (!name || !ready || !allowed || !mount) return
+    await loadAndMount(name, entry.value?.version, mount)
   },
   { immediate: true, flush: 'post' },
 )
@@ -298,14 +336,14 @@ watch(
     // Only an already-mounted bundle needs the transport remount. During the
     // initial load, invalidating the generation here would abandon the real
     // loader and leave the frame stuck in its loading state.
-    if (loadState.value !== 'ready' || !accessAllowed.value || !entry.value?.ready) return
+    if (loadState.value !== 'ready' || !accessActive.value || !entry.value?.ready) return
     const generation = mountGeneration
     const name = entry.value.name
     await nextTick()
     if (
       generation !== mountGeneration ||
       loadState.value !== 'ready' ||
-      !accessAllowed.value ||
+      !accessActive.value ||
       entry.value?.name !== name
     ) return
     mountElement(name)
@@ -315,7 +353,7 @@ watch(
 
 function isCurrentMount(generation: number, name: string): boolean {
   return generation === mountGeneration &&
-    accessAllowed.value &&
+    accessActive.value &&
     entry.value?.name === name
 }
 
@@ -350,6 +388,7 @@ function clearMountedElement() {
   if (element?.parentNode) element.parentNode.removeChild(element)
   mountRef.value?.replaceChildren()
   elementRef.value = null
+  mountedIdentity.value = null
   loadState.value = 'idle'
   loadError.value = null
   bundleReloading.value = false
@@ -366,6 +405,7 @@ function mountElement(name: string, generation?: number): boolean {
   mountRef.value.replaceChildren()
   const el = document.createElement(tagFor(name)) as HTMLElement
   elementRef.value = el
+  mountedIdentity.value = mountIdentity.value
   bindMountEvents()
   mountRef.value.appendChild(el)
   routeFocus.before(el, props.subPath || '')
@@ -407,6 +447,16 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
       ),
     ])
   } catch (e: unknown) {
+    // This document still holds an older bundle of a provider that cannot be
+    // replaced in place. A held element never reaches here (a refresh keeps
+    // it mounted), so this is the user opening the provider: finish that as
+    // an ordinary page load of the same URL instead of showing an error. An
+    // open assistant conversation would be lost by a reload, so then the
+    // error below offers the reload instead, as does the loop guard.
+    if (e instanceof ProviderPageReloadRequiredError && isCurrentMount(generation, name) &&
+        !agentOverlay.conversationOpen && reloadForProviderUpdate(name)) {
+      return
+    }
     if (isCurrentMount(generation, name)) {
       // A downloaded script can still fail before defining its element.
       // Generation-aware providers may clear that attempt for in-document
@@ -432,14 +482,14 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
   ) return
   loadError.value = null
   loadState.value = 'ready'
+  clearProviderUpdateReload(name)
 }
 
 function pushContext() {
   const contextGeneration = routeContext.generation
   const el = elementRef.value as HTMLElement & { railgridContext?: unknown } | null
-  if (!el || !entry.value || !accessAllowed.value) return
+  if (!el || !entry.value || !accessActive.value) return
   const providerName = entry.value.name
-  const providerVersion = entry.value.version
   const principal = JSON.stringify(auth.user)
   const ownerClusterName = auth.clusterName
   const ownerOrgUUID = tenant.orgUUID
@@ -448,11 +498,13 @@ function pushContext() {
   const routeEpoch = providerRouteEpoch.capture()
   const resourceRoute = router.currentRoute.value.fullPath
   const resourceScope = JSON.stringify([agentOverlay.preferenceKey, auth.clusterName, resourceRoute])
+  // No version check: a deploy leaves the mounted element running, so its
+  // transport must stay usable until the element itself is replaced.
   const isCurrentOwnerContext = () => ownerGeneration === mountGeneration && el === elementRef.value &&
-    entry.value?.name === providerName && entry.value?.version === providerVersion &&
+    entry.value?.name === providerName &&
     principal === JSON.stringify(auth.user) && auth.clusterName === ownerClusterName &&
     tenant.orgUUID === ownerOrgUUID && tenant.workspaceUUID === ownerWorkspaceUUID &&
-    contextGeneration === routeContext.generation && routeContext.state === 'ready' && accessAllowed.value
+    contextGeneration === routeContext.generation && routeContext.state === 'ready' && accessActive.value
   const isCurrentPageContext = () => isCurrentOwnerContext() &&
     providerRouteEpoch.isCurrent(routeEpoch) &&
     resourceScope === JSON.stringify([agentOverlay.preferenceKey, auth.clusterName, router.currentRoute.value.fullPath])
@@ -642,7 +694,7 @@ onBeforeUnmount(() => {
       <div v-else-if="catalogLoading" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted" role="status" aria-live="polite" aria-busy="true">
         Loading provider catalog&hellip;
       </div>
-      <div v-else-if="catalogRefreshing" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted" role="status" aria-live="polite" aria-busy="true">
+      <div v-else-if="catalogRefreshing && !accessHeld" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted" role="status" aria-live="polite" aria-busy="true">
         Refreshing provider status&hellip;
       </div>
       <div v-else-if="catalogMissing" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
@@ -691,7 +743,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div
-        v-else-if="bindingChecking"
+        v-else-if="bindingChecking && !accessHeld"
         class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
         role="status"
         aria-live="polite"
@@ -752,7 +804,7 @@ onBeforeUnmount(() => {
       <!-- The provider's custom element mounts here. No iframe, no border,
            no scrollbars; it's just DOM in the portal's tree. -->
       <div
-        v-if="accessAllowed"
+        v-if="accessActive"
         ref="mountRef"
         class="min-h-0 min-w-0 flex-1"
       />
