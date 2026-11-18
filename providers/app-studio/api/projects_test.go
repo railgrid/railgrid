@@ -730,6 +730,53 @@ func TestReserveProjectExternalOperationRejectsActiveAssistant(t *testing.T) {
 	}
 }
 
+// A hydrate schedules a background development sync, and `railgrid app sync`
+// asks for an explicit one right after: the explicit request finds the
+// workspace held by that runtime operation while no assistant run exists. The
+// conflict must name the real cause and invite a retry, not send the caller
+// looking for an assistant run.
+func TestReserveProjectExternalOperationNamesRuntimeOperationConflict(t *testing.T) {
+	ctx := context.Background()
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	t.Cleanup(func() { server.projectAssistantSupervisor().Shutdown(context.Background()) })
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", user: "alice"}
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid-demo"}}
+
+	releaseSync, err := server.acquireProjectRuntimeOperation(ctx, projectWorkspaceScope(id, project))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Registered after Shutdown, so it runs first: a failed assertion must not
+	// leave Shutdown waiting on an owner nobody releases.
+	t.Cleanup(releaseSync)
+	recorder := httptest.NewRecorder()
+	release, ok := server.reserveProjectExternalOperation(recorder, ctx, id, project, "manually synchronizing the development workspace")
+	if release != nil {
+		release()
+	}
+	if ok || recorder.Code != http.StatusConflict {
+		t.Fatalf("reservation during a runtime operation = (%t, %d, %q), want conflict", ok, recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "5" {
+		t.Fatalf("Retry-After = %q, want 5", got)
+	}
+	var status statusResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	want := "another workspace operation, such as a development sync, is in progress; retry manually synchronizing the development workspace in a few seconds"
+	if status.Message != want {
+		t.Fatalf("conflict message = %q, want %q", status.Message, want)
+	}
+
+	releaseSync()
+	release, ok = server.reserveProjectExternalOperation(httptest.NewRecorder(), ctx, id, project, "manually synchronizing the development workspace")
+	if !ok || release == nil {
+		t.Fatal("reservation after the runtime operation finished was refused")
+	}
+	release()
+}
+
 func TestReserveProjectExternalOperationChecksActiveSiblingAfterAnotherThreadStops(t *testing.T) {
 	ctx := context.Background()
 	messages := store.NewMemoryStore()

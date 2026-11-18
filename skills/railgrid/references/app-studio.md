@@ -236,7 +236,7 @@ with `?download=1`. 409 `file changed while it was being read; retry`.
 
 Writes share one gate: 503 `project workspace store is not
 configured`, 409 `project is being deleted`, 409
-`wait for or stop the active assistant run before changing project files`.
+`project workspace is reserved by another owner or a project-wide operation`.
 Every write marks the paths uncommitted (the reconciler commits them) and
 schedules a dev sync, like an assistant edit. Measured on a hosted hub: the
 reconciler's commit landed ~30 s after a `PUT`, one commit per burst of
