@@ -509,38 +509,36 @@ railgrid-provider-agents .agents-skill-activation__summary code {
 railgrid-provider-agents .agents-skill-activation .agents-hint { margin: 0; }
 railgrid-provider-agents .agents-skill-workbench__columns {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
   gap: 16px;
   min-width: 0;
-  container: agents-skill-workbench-columns / inline-size;
 }
-railgrid-provider-agents .agents-skill-workbench__detail-heading { min-width: 0; overflow-wrap: anywhere; }
-railgrid-provider-agents .agents-skill-workbench__detail-actions { min-width: 0; flex-wrap: wrap; }
+@container (min-width: 840px) {
+  railgrid-provider-agents .agents-skill-workbench__columns.has-detail {
+    grid-template-columns: minmax(260px, 2fr) minmax(0, 3fr);
+  }
+}
+railgrid-provider-agents .agents-skill-workbench {
+  container-type: inline-size;
+}
+railgrid-provider-agents .agents-skill-workbench .skill-catalog-root {
+  grid-template-columns: minmax(0, 1fr);
+}
+railgrid-provider-agents .agents-skill-workbench .skill-catalog-root code {
+  min-width: 0;
+}
+railgrid-provider-agents .agents-skill-workbench pre {
+  overflow-wrap: anywhere;
+}
 railgrid-provider-agents .agents-skill-workbench__document-editor,
 railgrid-provider-agents .agents-skill-workbench__resource-editor {
-  display: block;
-  box-sizing: border-box;
-  width: 100%;
   resize: vertical;
-}
-railgrid-provider-agents .agents-skill-workbench__document-editor { min-height: 18rem; }
-railgrid-provider-agents .agents-skill-workbench__resource-editor { min-height: 8rem; }
-railgrid-provider-agents .agents-skill-workbench__detail-error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
 }
 railgrid-provider-agents .agents-skill-workbench__button-icon {
   width: 16px;
   height: 16px;
   stroke-width: 1.75;
-}
-@container agents-skill-workbench-columns (max-width: 640px) {
-  railgrid-provider-agents .agents-skill-workbench__detail-header { flex-wrap: wrap; }
-  railgrid-provider-agents .agents-skill-workbench__detail-heading { width: 100%; flex: 1 1 100%; }
-  railgrid-provider-agents .agents-skill-workbench__detail-actions { width: 100%; flex: 1 1 100%; }
 }
 
 /* --- loading / empty / error states --- */

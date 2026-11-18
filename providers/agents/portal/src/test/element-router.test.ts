@@ -135,10 +135,23 @@ describe('public Agents shell routing', () => {
   })
 
   it('keeps the agent return link when the Skills library opens from a Workbench', async () => {
-    const element = await mountShell('#/skills?agent=scout')
+    const fetch: RailgridContext['fetch'] = async () => Response.json({ items: [] })
+    const element = await mountShell('#/skills?agent=scout', ctx({ fetch }))
+    await settleVue(12)
     expect(text(element.querySelector('[aria-label="Setup sections"] [aria-current="page"]'))).toBe('Skills library')
     const back = element.querySelector<HTMLAnchorElement>('a[href="#/agents/scout/skills"]')
     expect(text(back)).toBe('Back to scout’s skills')
+
+    element.querySelector<HTMLAnchorElement>('a[href="#/create/skill?agent=scout"]')!.click()
+    await settleVue()
+    expect(location.hash).toBe('#/create/skill?agent=scout')
+    expect(text(element.querySelector('.k-create-title'))).toBe('Create skill')
+    expect(element.querySelector('[aria-label="Setup sections"]')).toBeNull()
+
+    element.querySelector<HTMLAnchorElement>('a[href="#/skills?agent=scout"]')!.click()
+    await settleVue(12)
+    expect(location.hash).toBe('#/skills?agent=scout')
+    expect(text(element.querySelector('a[href="#/agents/scout/skills"]'))).toBe('Back to scout’s skills')
   })
 
   it('opens usage from Activity and assistant settings from Agents', async () => {

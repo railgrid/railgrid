@@ -433,6 +433,7 @@ function sourceIsCurrent(detail: SourceDetail, needsCreateSession = false): bool
 function createSuccessRoute(detail: CreateSuccessDetail): Route {
   switch (detail.resource) {
     case 'agent': return { kind: 'agent', name: detail.name || '', tab: 'chat' }
+    case 'skill': return { kind: 'menu', menu: 'skills' }
     case 'model': return modelCreateOwner
     // A webhook owns its URL and its delivery log: land on it, so the URL the
     // sender needs is the first thing the person sees.
@@ -445,6 +446,7 @@ function createSuccessRoute(detail: CreateSuccessDetail): Route {
 function createOwnerRoute(current: Extract<Route, { kind: 'create' }>): Route {
   if (current.resource === 'model') return modelCreateOwner
   if (current.resource === 'agent') return { kind: 'menu', menu: 'agents' }
+  if (current.resource === 'skill') return { kind: 'menu', menu: 'skills', returnAgent: current.returnAgent }
   if (current.resource === 'webhook') return { kind: 'menu', menu: 'webhooks' }
   return { kind: 'menu', menu: 'connections' }
 }
@@ -659,9 +661,9 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         @navigate="go"
       />
       <SkillsLibrary
-        v-else-if="route.kind === 'menu' && route.menu === 'skills'"
-        :key="routeSurfaceKey" :store="store" :api="api" :authority-epoch="authorityEpoch"
-        :return-agent="route.returnAgent" @navigate="go"
+        v-else-if="(route.kind === 'menu' && route.menu === 'skills') || (route.kind === 'create' && route.resource === 'skill')"
+        :store="store" :api="api" :authority-epoch="authorityEpoch"
+        :create-route="route.kind === 'create'" :return-agent="route.returnAgent" @navigate="go"
       />
       <Activity
         v-else-if="route.kind === 'menu' && route.menu === 'activity'"
