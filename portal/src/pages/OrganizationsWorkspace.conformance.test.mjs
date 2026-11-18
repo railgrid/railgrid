@@ -1577,9 +1577,9 @@ test('provider hard refresh waits for the hydrated AppLayout mount outlet', () =
   const mountWatch = providerFrame.slice(mountWatchStart, mountWatchEnd)
 
   assert.match(mountWatch, /mountRef\.value/)
-  assert.match(mountWatch, /async \(\[name, version, ready, settled, allowed, mount\]\) =>/)
+  assert.match(mountWatch, /async \(\[name, ready, settled, allowed, mount\]\) =>/)
   assert.match(mountWatch, /if \(!name \|\| !ready \|\| !settled \|\| !allowed \|\| !mount\) return/)
-  assert.match(mountWatch, /await loadAndMount\(name, version, mount\)/)
+  assert.match(mountWatch, /await loadAndMount\(name, entry\.value\?\.version, mount\)/)
 
   const loaderStart = providerFrame.indexOf('async function loadAndMount(')
   const loaderEnd = providerFrame.indexOf('\n}\n\nfunction pushContext', loaderStart)

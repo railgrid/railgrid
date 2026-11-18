@@ -274,9 +274,27 @@ test('A-B-A navigation retires page callbacks while same-owner transport and tok
   assert.equal(host.publishedContexts[1].value.title, 'Current A context after return')
 })
 
+test('a provider deploy leaves the mounted element transport current', () => {
+  const host = providerContextHarness()
+  const context = host.element.railgridContext
+  host.entry.value.version = 'v2'
+  assert.equal(context.options.isCurrent(), true)
+})
+
+test('a catalog version change alone never remounts the provider element', () => {
+  const identity = source.match(/watch\(\n  \(\) => \[\n    entry\.value\?\.name,([\s\S]*?)\] as const,/)?.[1]
+  assert.ok(identity, 'expected the mount identity watch')
+  assert.doesNotMatch(identity, /version/)
+  assert.match(source, /await loadAndMount\(name, entry\.value\?\.version, mount\)/)
+})
+
+test('opening a provider with an older bundle loaded finishes as a guarded page load', () => {
+  assert.match(source, /e instanceof ProviderPageReloadRequiredError && isCurrentMount\(generation, name\) &&\s*reloadForProviderUpdate\(name\)\) \{\s*return\s*\}/)
+})
+
 test('captured ProviderFrame context retires on provider, principal, workspace, access, and mount changes', () => {
   const changes = [
-    ['provider version', host => { host.entry.value.version = 'v2' }],
+    ['provider', host => { host.entry.value.name = 'kuery' }],
     ['principal', host => { host.auth.user = { userId: 'bob' } }],
     ['logical cluster', host => { host.auth.clusterName = 'cluster-b' }],
     ['organization', host => { host.tenant.orgUUID = 'org-b' }],

@@ -98,11 +98,16 @@ const allowed = computed(() => !!auth.token && !!auth.user && !!auth.clusterName
   providers.bindingsLoadState === 'ready' && !providers.bindingsStale &&
   providers.bindingsOrgUUID === tenant.orgUUID && providers.bindingsWorkspace === tenant.workspaceUUID &&
   providers.isEnabled('agents') && providers.bindingsByProvider.agents?.ready !== false && !providers.bindingsByProvider.agents?.terminating)
+// Who the assistant acts for and which provider copy serves it. The catalog
+// version and bundle pin are deliberately absent: a deploy must not wipe an
+// open conversation, so a mounted assistant keeps the bundle it loaded until
+// the next page load. A failed mount still retries on a new version or pin
+// (see the bundleRevision watch below).
 const authorityKey = computed(() => JSON.stringify([
   overlay.preferenceKey, auth.clusterName, entry.value?.scope, entry.value?.ownerOrg,
-  entry.value?.version, entry.value?.export?.path, providers.bindingsByProvider.agents?.exportCluster,
-  entry.value?.serving?.ui?.mainJSIntegrity,
+  entry.value?.export?.path, providers.bindingsByProvider.agents?.exportCluster,
 ]))
+const bundleRevision = computed(() => JSON.stringify([entry.value?.version, entry.value?.serving?.ui?.mainJSIntegrity]))
 const agentChat = computed(() => {
   if (route.params.name === 'agents') {
     const hashStart = route.fullPath.indexOf('#')
@@ -236,6 +241,7 @@ async function mountAgent(): Promise<void> {
     if (!current()) return
     await loadProviderScript('agents', provider.version, document, undefined, {
       ...bundle, refreshIntegrity: () => providers.refreshWorkspaceMainJSIntegrity('agents'),
+      acceptLoadedVersion: true,
     })
     if (!current() || !mount.value) return
     if (!customElements.get('railgrid-provider-agents')) throw new Error('The Agents interface did not load. Reload the page to try again.')
@@ -272,6 +278,8 @@ watch([mountable, authorityKey, () => overlay.selectedAgent], () => {
   clear()
 }, { flush: 'sync' })
 watch([mountable, authorityKey, () => overlay.selectedAgent, mount, retry], () => { void mountAgent() }, { flush: 'post' })
+// Only an assistant that is not running is remounted for a new bundle.
+watch(bundleRevision, () => { if (!element && !loading.value) void mountAgent() }, { flush: 'post' })
 // Navigation and context sharing must not replace the provider's fetch wrapper
 // or reset its API/store watchers while a conversation is streaming.
 watch([expanded, panelVisible, () => overlay.followContext, pageContext], pushOverlayState, { flush: 'sync' })

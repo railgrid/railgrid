@@ -13,10 +13,12 @@ import { usePageResourceStore } from '@/stores/pageResource'
 import { useAgentOverlayStore } from '@/stores/agentOverlay'
 import { useThemeStore } from '@/stores/theme'
 import {
+  ProviderPageReloadRequiredError,
   canReloadProviderScriptInDocument,
   invalidateProviderScript,
   loadProviderScript,
 } from '@/providers/providerScriptLoader'
+import { reloadForProviderUpdate } from '@/providers/providerUpdateReload'
 import { createProviderRouteFocus } from '@/providers/providerRouteFocus'
 import { createPageResourcePublisher } from '@/providers/pageResourcePublisher'
 import { createAgentContextPublisher } from '@/providers/agentContextPublisher'
@@ -248,10 +250,14 @@ watch(
 // suppresses its slot while a persisted workspace hydrates on hard refresh.
 // Starting the loader before that outlet exists would let the script finish
 // with nowhere to mount and leave loadState stuck at "loading" forever.
+//
+// The catalog version is deliberately NOT part of this identity. A provider
+// deploy must never tear down the page the user is working in; the mounted
+// element keeps running the bundle this document loaded, and the new version
+// is picked up the next time the provider is opened (see loadAndMount).
 watch(
   () => [
     entry.value?.name,
-    entry.value?.version,
     entry.value?.ready,
     catalogSettled.value,
     accessAllowed.value,
@@ -259,10 +265,10 @@ watch(
     entry.value?.export?.path,
     entry.value?.scope,
   ] as const,
-  async ([name, version, ready, settled, allowed, mount]) => {
+  async ([name, ready, settled, allowed, mount]) => {
     clearMountedElement()
     if (!name || !ready || !settled || !allowed || !mount) return
-    await loadAndMount(name, version, mount)
+    await loadAndMount(name, entry.value?.version, mount)
   },
   { immediate: true, flush: 'post' },
 )
@@ -407,6 +413,14 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
       ),
     ])
   } catch (e: unknown) {
+    // This document still holds an older bundle of a provider that cannot be
+    // replaced in place. Opening it is a navigation, so finish it as an
+    // ordinary page load of the same URL instead of showing an error; the
+    // guard falls through to the error below if that would loop.
+    if (e instanceof ProviderPageReloadRequiredError && isCurrentMount(generation, name) &&
+        reloadForProviderUpdate(name)) {
+      return
+    }
     if (isCurrentMount(generation, name)) {
       // A downloaded script can still fail before defining its element.
       // Generation-aware providers may clear that attempt for in-document
@@ -439,7 +453,6 @@ function pushContext() {
   const el = elementRef.value as HTMLElement & { railgridContext?: unknown } | null
   if (!el || !entry.value || !accessAllowed.value) return
   const providerName = entry.value.name
-  const providerVersion = entry.value.version
   const principal = JSON.stringify(auth.user)
   const ownerClusterName = auth.clusterName
   const ownerOrgUUID = tenant.orgUUID
@@ -448,8 +461,10 @@ function pushContext() {
   const routeEpoch = providerRouteEpoch.capture()
   const resourceRoute = router.currentRoute.value.fullPath
   const resourceScope = JSON.stringify([agentOverlay.preferenceKey, auth.clusterName, resourceRoute])
+  // No version check: a deploy leaves the mounted element running, so its
+  // transport must stay usable until the element itself is replaced.
   const isCurrentOwnerContext = () => ownerGeneration === mountGeneration && el === elementRef.value &&
-    entry.value?.name === providerName && entry.value?.version === providerVersion &&
+    entry.value?.name === providerName &&
     principal === JSON.stringify(auth.user) && auth.clusterName === ownerClusterName &&
     tenant.orgUUID === ownerOrgUUID && tenant.workspaceUUID === ownerWorkspaceUUID &&
     contextGeneration === routeContext.generation && routeContext.state === 'ready' && accessAllowed.value
