@@ -84,8 +84,8 @@ test('App preview keeps the origin-bound bridge and annotation contract without 
 	  assert.match(recoverySource, /developmentPreviewRecoveryAction/)
 	  assert.match(recoverySource, /recoverDevelopmentPreviewDocument/)
 	  assert.match(recoverySource, /authorizeDevelopmentPreview\(\{ force: true, preserveExistingPreview: true \}\)/)
-	  assert.match(appSource, /v-if="developmentPreviewRecoveryError && !developmentPreviewFrameLoaded"/)
-	  assert.match(appSource, /!developmentPreviewFrameLoaded && \(developmentPreviewDocumentState === 'connecting'/)
+	  assert.match(appSource, /:inert="!developmentPreviewFrameVisible"/)
+	  assert.match(appSource, /v-else-if="!developmentPreviewFrameVisible"/)
 })
 
 test('binds only a READY from the exact iframe window and preview origin', async () => {

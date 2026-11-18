@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict'
 import { access, mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { previewBridgeClientSource } from '../providers/infrastructure/dev-agent/preview-bridge-plugin.mjs'
 
 const portal = new URL('../providers/app-studio/portal/', import.meta.url)
 const dist = new URL('dist/', portal)
@@ -19,6 +20,8 @@ const screenshots = process.env.APP_STUDIO_WORKBENCH_SCREENSHOTS
 if (screenshots) await mkdir(screenshots, { recursive: true })
 
 const origin = 'https://app-studio-workbench.test'
+const previewOrigin = 'https://app-studio-preview.test'
+const previewLoginURL = `${origin}/preview-login`
 const base = '/ui/providers/app-studio/'
 const project = { name: 'workbench-demo', uid: 'fixture-project', displayName: 'Workbench demo', phase: 'Ready' }
 const pagePath = `${base}${project.name}`
@@ -54,12 +57,21 @@ function shell(themeName) {
     })</script></body></html>`
 }
 
-async function mountFixture(page, themeName) {
+async function mountFixture(page, themeName, previewFixture) {
   const denied = []
   await page.route('**/*', async route => {
     const request = route.request()
     const url = new URL(request.url())
     const path = url.pathname
+    if (previewFixture) {
+      if (url.origin === previewOrigin) return previewFixture(route, url)
+      if (url.href === previewLoginURL) {
+        return route.fulfill({ contentType: 'text/html', body: '<h1>Sign in to Railgrid</h1><button>Sign in</button>' })
+      }
+      if (path.endsWith('/authorize-development-preview') && request.method() === 'POST') {
+        return route.fulfill({ json: { ready: true, previewURL: `${previewOrigin}/` } })
+      }
+    }
     if (url.origin !== origin || request.method() !== 'GET') {
       denied.push(`${request.method()} ${path}`)
       return route.abort()
@@ -76,7 +88,10 @@ async function mountFixture(page, themeName) {
     if (path === '/api/providers') return route.fulfill({ json: { items: [codeProvider] } })
     if (path.endsWith('/events')) return route.fulfill({ contentType: 'text/event-stream', body: '' })
     const responses = {
-      projects: { items: [projectItem] }, view: project, sessions: { items: [thread] },
+      projects: { items: [projectItem] }, view: previewFixture ? {
+        ...project,
+        environments: [{ name: 'development', mode: 'live', bindings: [{ name: 'dev', provider: 'app-studio', url: previewOrigin }] }],
+      } : project, sessions: { items: [thread] },
       items: { items: threadItems }, 'active-turn': turn, files: { files: [{ path: codeFile.path, size: codeFile.size }] },
       'files-content': codeFile, studio: { metadata: { name: 'studio' }, status: { models: [] } },
     }
@@ -89,9 +104,96 @@ async function mountFixture(page, themeName) {
   const preview = pane.getByRole('tab', { name: 'Preview', exact: true })
   await preview.waitFor()
   assert.equal(await preview.getAttribute('aria-selected'), 'true', 'Preview should be active when the project opens')
+  if (previewFixture) return { pane, denied }
   await pane.getByRole('button', { name: 'New tab', exact: true }).click()
   await pane.getByRole('searchbox', { name: 'Search workbench tabs' }).waitFor()
   return { pane, denied }
+}
+
+async function checkPreviewStartup(page, themeName) {
+  page.setDefaultTimeout(8000)
+  const releaseCSS = Promise.withResolvers()
+  const bridge = previewBridgeClientSource({ portalOrigins: [origin] })
+  await page.addInitScript(bridgeOrigin => {
+    window.addEventListener('message', event => {
+      if (event.origin === bridgeOrigin && event.data?.type === 'railgrid.preview-bridge.ready') window.previewBridgeAnnounced = true
+    })
+  }, previewOrigin)
+  const { pane, denied } = await mountFixture(page, themeName, async (route, url) => {
+    if (url.pathname === '/app.css') {
+      await releaseCSS.promise
+      return route.fulfill({ contentType: 'text/css', body: 'h1 { color: rgb(12, 34, 56) }' })
+    }
+    // A document-initiated redirect keeps the follow-up request intercepted by Playwright.
+    if (url.pathname === '/') {
+      return route.fulfill({ contentType: 'text/html', body: `<script>location.replace(${JSON.stringify(previewLoginURL)})</script>` })
+    }
+    const body = `<script>${bridge}</script><h1>Preview app</h1><link rel="stylesheet" href="/app.css">`
+    return route.fulfill({ contentType: 'text/html', body })
+  })
+  const frame = pane.locator('iframe[title="Development preview"]')
+  const loading = pane.getByText('Connecting to preview…')
+  const app = () => page.frames().find(candidate => candidate.url() === `${previewOrigin}/app`)
+  const login = () => page.frames().find(candidate => candidate.url() === previewLoginURL)
+  const hidden = () => frame.evaluate(el => getComputedStyle(el).visibility === 'hidden' && el.inert)
+
+  // Reload the project shell, then let an intermediate sign-in document load.
+  await frame.waitFor({ state: 'attached' })
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await frame.contentFrame().getByText('Sign in to Railgrid').waitFor({ state: 'attached' })
+  await login().waitForLoadState('load')
+  await loading.waitFor()
+  assert.equal(await hidden(), true, 'the intermediate sign-in document must stay hidden')
+
+  try {
+    await Promise.all([
+      page.waitForRequest(`${previewOrigin}/app.css`),
+      login().evaluate(url => { window.location.href = url }, `${previewOrigin}/app`),
+    ])
+    await page.waitForFunction(() => window.previewBridgeAnnounced)
+    assert.equal(await hidden(), true, 'the app must stay hidden while its stylesheet loads')
+    assert.equal(await loading.isVisible(), true)
+  } finally { releaseCSS.resolve() }
+  await frame.waitFor({ state: 'visible' })
+  await loading.waitFor({ state: 'hidden' })
+  assert.equal(await app().locator('h1').evaluate(el => getComputedStyle(el).color), 'rgb(12, 34, 56)')
+
+  // When sign-in needs a person, the preview remains hidden until they choose
+  // to show it. The keyboard is then on the frame and can reach its controls.
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  const show = pane.getByRole('button', { name: 'Show preview', exact: true })
+  await show.waitFor({ timeout: 15_000 })
+  assert.equal(await hidden(), true)
+  const retry = pane.getByRole('button', { name: 'Retry preview', exact: true })
+  await retry.waitFor()
+  if (themeName === 'light') {
+    await retry.focus()
+    await retry.press('Enter')
+    await loading.waitFor()
+    assert.equal(await focused(pane.getByRole('tab', { name: 'Preview', exact: true })), true)
+    await show.waitFor({ timeout: 15_000 })
+  } else {
+    for (const control of [retry, show]) assert.ok((await control.boundingBox()).height >= 44)
+  }
+  await show.focus()
+  await show.press('Enter')
+  await frame.waitFor({ state: 'visible' })
+  assert.equal(await focused(frame), true)
+  await login().getByRole('button', { name: 'Sign in' }).waitFor()
+  assert.deepEqual(denied, [])
+}
+
+async function checkPreviewWithoutBridge(page) {
+  const { pane, denied } = await mountFixture(page, 'light', route => route.fulfill({
+    contentType: 'text/html',
+    body: '<h1>Preview without annotations</h1>',
+  }))
+  const frame = pane.locator('iframe[title="Development preview"]')
+  await frame.contentFrame().getByText('Preview without annotations').waitFor({ state: 'attached' })
+  await frame.waitFor({ state: 'visible', timeout: 6_000 })
+  await pane.getByText('Loaded unverified', { exact: true }).waitFor()
+  assert.equal(await pane.getByRole('button', { name: 'Show preview', exact: true }).count(), 0)
+  assert.deepEqual(denied, [])
 }
 
 const launcherSearch = pane => pane.getByRole('searchbox', { name: 'Search workbench tabs' })
@@ -184,6 +286,18 @@ async function checkReviewHeader(pane, touch) {
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE })
 try {
+  const unverifiedPage = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+  try {
+    await checkPreviewWithoutBridge(unverifiedPage)
+    console.log('Preview without an annotation bridge opened automatically')
+  } finally { await unverifiedPage.close() }
+  for (const [themeName, width] of [['light', 1440], ['dark', 390]]) {
+    const context = await browser.newContext({ viewport: { width, height: 900 }, hasTouch: width < 768 })
+    try {
+      await checkPreviewStartup(await context.newPage(), themeName)
+      console.log(`${themeName}, ${width}px viewport: preview startup and sign-in recovery passed`)
+    } finally { await context.close() }
+  }
   for (const themeName of ['light', 'dark']) for (const width of [768, 320, 430, 1440]) {
     const touch = width < 768
     const context = await browser.newContext({ viewport: { width, height: 900 }, hasTouch: touch, isMobile: touch, reducedMotion: 'reduce', serviceWorkers: 'block' })

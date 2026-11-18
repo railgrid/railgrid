@@ -618,6 +618,7 @@ const PROJECT_THUMBNAIL_REFRESH_MAX_WINDOW_MS = 5 * 60_000
 const PROJECT_THUMBNAIL_VIEW_TIMEOUT_MS = 15_000
 const PROJECT_THUMBNAIL_BLOB_TIMEOUT_MS = 15_000
 const DEVELOPMENT_PREVIEW_AUTH_RETRY_MS = 2000
+const DEVELOPMENT_PREVIEW_FRAME_WAIT_MS = 8_000
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
 const assistantMarkdown = new MarkdownIt({
   html: false,
@@ -896,6 +897,11 @@ const developmentPreviewFrameKey = ref(0)
 const codeExplorerRefreshRevision = ref(0)
 const developmentPreviewFrameRef = ref<HTMLIFrameElement | null>(null)
 const developmentPreviewFrameLoaded = ref(false)
+const developmentPreviewCanRevealUnverified = ref(false)
+const developmentPreviewFrameVisible = ref(false)
+const developmentPreviewFrameWaitExceeded = ref(false)
+const developmentPreviewFrameRevealedUnverified = ref(false)
+const developmentPreviewRecoveryPanel = ref<HTMLElement | null>(null)
 const developmentPreviewDocumentState = ref<PreviewBridgeConnectionState>('disabled')
 const developmentPreviewRecoveryError = ref<string | null>(null)
 const developmentPreviewRecoveryAttempt = ref(0)
@@ -3164,8 +3170,8 @@ const developmentPreviewPhase = computed(() => {
     previewURL: developmentPreviewURL.value,
     authorizationError: developmentPreviewAuthorizationError.value || '',
 	documentState: developmentPreviewDocumentState.value,
-	frameLoaded: developmentPreviewFrameLoaded.value,
-	recoveryExhausted: !!developmentPreviewRecoveryError.value,
+	frameVisible: developmentPreviewFrameVisible.value,
+	recoveryExhausted: !!developmentPreviewRecoveryError.value || developmentPreviewFrameWaitExceeded.value,
 	starting: developmentPreviewAuthorizing.value || !!developmentPreviewReadinessMessage.value,
   })
 })
@@ -3511,6 +3517,19 @@ watch(
   },
 )
 
+watch(developmentPreviewFrameRef, (frame, _previous, onCleanup) => {
+  if (!frame) {
+    resetDevelopmentPreviewFramePresentation()
+    return
+  }
+  const timer = window.setTimeout(() => {
+    if (developmentPreviewFrameRef.value === frame && !developmentPreviewFrameVisible.value) {
+      developmentPreviewFrameWaitExceeded.value = true
+    }
+  }, DEVELOPMENT_PREVIEW_FRAME_WAIT_MS)
+  onCleanup(() => window.clearTimeout(timer))
+})
+
 watch(selectedNameFromPath, (projectName) => {
   if (projectName) void loadLLMSettings()
   else if (llmSettingsLoadProject) invalidateLLMSettingsLoad()
@@ -3834,8 +3853,26 @@ function clearDevelopmentPreviewRecovery() {
 }
 
 function reloadDevelopmentPreviewFrame() {
-	developmentPreviewFrameLoaded.value = false
+	const restoreFocus = developmentPreviewRecoveryPanel.value?.contains(document.activeElement)
+	clearDevelopmentPreviewRecovery()
+	resetDevelopmentPreviewFramePresentation()
 	developmentPreviewFrameKey.value += 1
+	if (restoreFocus) {
+		void nextTick(() => {
+			const tab = activeWorkbenchTab.value
+			if (tab?.kind === 'preview' && document.activeElement === document.body) {
+				document.getElementById(workbenchTabControlID(tab))?.focus()
+			}
+		})
+	}
+}
+
+function resetDevelopmentPreviewFramePresentation() {
+  developmentPreviewFrameLoaded.value = false
+  developmentPreviewCanRevealUnverified.value = false
+  developmentPreviewFrameVisible.value = false
+  developmentPreviewFrameWaitExceeded.value = false
+  developmentPreviewFrameRevealedUnverified.value = false
 }
 
 function resetDevelopmentPreviewDocumentState() {
@@ -3847,7 +3884,6 @@ function resetDevelopmentPreviewDocumentState() {
   developmentPreviewAnnotationDocumentID.value = ''
   developmentPreviewAnnotationPagePath.value = ''
   developmentPreviewAnnotationPinResolution.value = {}
-	developmentPreviewFrameLoaded.value = false
   developmentPreviewRecoveryError.value = null
   developmentPreviewRecoveryAttempt.value = 0
 	developmentPreviewRecoveryReloadAttempted.value = false
@@ -7988,6 +8024,7 @@ async function authorizeDevelopmentPreviewRequest(projectName: string, key: stri
   try {
     const result = await api.authorizeDevelopmentPreview(props.ctx, projectName)
     if (serial !== developmentPreviewAuthorizationSerial || accessRevision !== previewAccessRevision || selected.value?.name !== projectName) return
+    if (preserveExistingPreview && developmentPreviewFrameRevealedUnverified.value) return
     const authorization = projectDevelopmentPreviewAuthorization(result)
     developmentPreviewAccessModesFromAuthorization.value = authorization.previewAccessModes
     if (!previewAccess.value?.supported) developmentPreviewAccessConverged.value = authorization.accessConverged
@@ -8117,14 +8154,41 @@ function projectDevelopmentPreviewString(result: unknown, key: 'message' | 'reas
   return typeof value === 'string' ? value : ''
 }
 
-function handleDevelopmentPreviewFrameLoad() {
+function handleDevelopmentPreviewFrameLoad(event: Event) {
   const projectName = selected.value?.name
-	if (projectName) {
+	const frame = developmentPreviewFrameRef.value
+	if (projectName && frame && event.currentTarget === frame) {
 		developmentPreviewFrameLoaded.value = true
+		// A cross-origin app can omit the optional bridge. A readable hub
+		// interstitial must stay hidden while its automatic sign-in completes.
+		const location = frame.contentDocument?.location
+		developmentPreviewCanRevealUnverified.value = !location || (
+			location.origin === new URL(frame.src).origin &&
+			!/^\/(?:ui\/(?:login|auth)|auth\/apps)(?:\/|$)/.test(location.pathname)
+		)
 		clearDevelopmentPreviewAnnotationHover()
 		developmentPreviewDocumentState.value = 'connecting'
 		void previewBridgeController.connect(projectName)
 	}
+}
+
+function revealDevelopmentPreviewFrame() {
+  const frame = developmentPreviewFrameRef.value
+  if (!frame || !developmentPreviewFrameLoaded.value || developmentPreviewFrameVisible.value) return
+  const restoreFocus = developmentPreviewRecoveryPanel.value?.contains(document.activeElement)
+  developmentPreviewFrameVisible.value = true
+  if (restoreFocus) {
+    void nextTick(() => {
+      if (developmentPreviewFrameRef.value === frame && document.activeElement === document.body) frame.focus()
+    })
+  }
+}
+
+function showUnverifiedDevelopmentPreview() {
+  // Automatic recovery must leave an interactive sign-in or unverified app open.
+  developmentPreviewFrameRevealedUnverified.value = true
+  clearDevelopmentPreviewRecovery()
+  revealDevelopmentPreviewFrame()
 }
 
 // The control that started annotation. Escape in the picker ends it inside
@@ -8331,6 +8395,7 @@ function cancelDevelopmentPreviewAnnotation() {
 }
 
 function handleDevelopmentPreviewBridgeState(state: PreviewBridgeConnectionState) {
+	if (state === 'connected' && !developmentPreviewFrameLoaded.value) return
 	developmentPreviewDocumentState.value = state
 	if (state !== 'connected') {
 		clearDevelopmentPreviewAnnotationHover()
@@ -8338,6 +8403,8 @@ function handleDevelopmentPreviewBridgeState(state: PreviewBridgeConnectionState
 		developmentPreviewAnnotationDraft.value = null
 	}
 	if (state === 'connected') {
+		revealDevelopmentPreviewFrame()
+		developmentPreviewFrameRevealedUnverified.value = false
 		clearDevelopmentPreviewRecovery()
 		developmentPreviewRecoveryAttempt.value = 0
 		developmentPreviewRecoveryReloadAttempted.value = false
@@ -8348,16 +8415,18 @@ function handleDevelopmentPreviewBridgeState(state: PreviewBridgeConnectionState
 		}
 		return
 	}
-	if (state === 'disabled' && developmentPreviewPendingLoadedStatus.value) {
+	const revealWithoutBridge = state === 'unavailable' && !developmentPreviewFrameVisible.value && developmentPreviewCanRevealUnverified.value
+	if (revealWithoutBridge) showUnverifiedDevelopmentPreview()
+	if ((state === 'disabled' || revealWithoutBridge) && developmentPreviewPendingLoadedStatus.value) {
 		developmentSyncStatus.value = 'Synced project files. Preview loaded; document verification is unavailable.'
 		developmentPreviewPendingLoadedStatus.value = null
 		return
 	}
-	if (state === 'unavailable') scheduleDevelopmentPreviewRecovery()
+	if (state === 'unavailable' && !revealWithoutBridge) scheduleDevelopmentPreviewRecovery()
 }
 
 function scheduleDevelopmentPreviewRecovery() {
-	if (!developmentPreviewComponentMounted || !developmentPreviewNeedsAuthorization.value || !developmentPreviewURL.value || developmentPreviewRecoveryTimer !== undefined) return
+	if (!developmentPreviewComponentMounted || !developmentPreviewNeedsAuthorization.value || !developmentPreviewURL.value || developmentPreviewRecoveryTimer !== undefined || developmentPreviewFrameRevealedUnverified.value) return
 	const attempt = developmentPreviewRecoveryAttempt.value
 	const projectName = selected.value?.name
 	if (!projectName) return
@@ -8415,7 +8484,7 @@ function handleDevelopmentPreviewAuthorizationWake() {
 
 function refreshDevelopmentPreviewAuthorizationIfNeeded() {
   const projectName = selected.value?.name
-  if (!projectName || !developmentPreviewShouldRefreshOnWake({
+  if (!projectName || developmentPreviewFrameRevealedUnverified.value || !developmentPreviewShouldRefreshOnWake({
     needsAuthorization: developmentPreviewNeedsAuthorization.value,
     authorizing: developmentPreviewAuthorizing.value,
     previewURL: developmentPreviewURL.value,
@@ -12055,6 +12124,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-scripts allow-same-origin"
 			  referrerpolicy="no-referrer"
 			  class="block h-full w-full border-0 bg-surface"
+			  :class="{ invisible: !developmentPreviewFrameVisible }"
+			  :inert="!developmentPreviewFrameVisible"
 			  @load="handleDevelopmentPreviewFrameLoad"
 			/>
 			<div
@@ -12105,29 +12176,31 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 				</div>
 			</div>
 				<div
-					v-if="developmentPreviewRecoveryError && !developmentPreviewFrameLoaded"
-				class="absolute inset-0 flex items-center justify-center bg-surface/95 p-6 text-center"
-				role="alert"
-				aria-live="assertive"
-				aria-atomic="true"
+				v-if="!developmentPreviewFrameVisible && (developmentPreviewFrameWaitExceeded || developmentPreviewRecoveryError)"
+				ref="developmentPreviewRecoveryPanel"
+				class="absolute inset-0 flex items-center justify-center bg-surface p-6 text-center"
 			>
 				<div class="max-w-sm">
-					<div class="text-[13px] font-semibold text-text-primary">Preview did not finish loading</div>
-					<div class="mt-1 text-[12px] leading-5 text-text-muted">The runtime may still be starting. Retry now or use Sync to restart it.</div>
-					<button type="button" class="app-studio-touch-target mt-3 rounded-md border border-border-subtle bg-surface px-3 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-hover" @click="retryDevelopmentPreview">
-						Retry preview
-					</button>
+					<div :role="developmentPreviewRecoveryError && !developmentPreviewFrameLoaded ? 'alert' : 'status'" aria-atomic="true">
+						<div class="text-[13px] font-semibold text-text-primary">
+							{{ developmentPreviewRecoveryError && !developmentPreviewFrameLoaded ? 'Preview did not finish loading' : 'Preview is taking longer than expected' }}
+						</div>
+						<div v-if="developmentPreviewFrameLoaded" class="mt-1 text-[12px] leading-5 text-text-muted">Show the loaded page to continue if sign-in is required.</div>
+					</div>
+					<div class="mt-3 flex flex-wrap justify-center gap-2">
+						<button type="button" class="k-btn k-btn--ghost app-studio-touch-target" @click="retryDevelopmentPreview">Retry preview</button>
+						<button v-if="developmentPreviewFrameLoaded" type="button" class="k-btn k-btn--primary app-studio-touch-target" @click="showUnverifiedDevelopmentPreview">Show preview</button>
+					</div>
 				</div>
 			</div>
 				<div
-					v-else-if="!developmentPreviewFrameLoaded && (developmentPreviewDocumentState === 'connecting' || developmentPreviewPhase === 'Starting' || developmentPreviewPhase === 'Loading')"
-				class="absolute inset-0 flex items-center justify-center bg-surface/80 p-6 text-center"
+				v-else-if="!developmentPreviewFrameVisible"
+				class="absolute inset-0 flex items-center justify-center bg-surface p-6 text-center"
 				role="status"
 				aria-live="polite"
-				aria-busy="true"
 			>
 				<div class="flex items-center gap-2 text-[13px] text-text-secondary">
-					<Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" />
+					<Loader2 class="k-spin h-4 w-4 text-accent" :stroke-width="1.75" aria-hidden="true" />
 					Connecting to preview…
 				</div>
 			</div>

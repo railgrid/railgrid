@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -198,80 +199,80 @@ func TestHTTPExecDispatcherDoesNotRetryAmbiguousTransportFailure(t *testing.T) {
 	}
 }
 
+type execTestRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f execTestRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func TestCoordinatorStartTimeoutBoundsMutationLock(t *testing.T) {
-	var requests atomic.Int32
-	requestSeen := make(chan struct{})
-	requestCanceled := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		if requests.Add(1) == 1 {
-			close(requestSeen)
+	synctest.Test(t, func(t *testing.T) {
+		const startTimeout = 400 * time.Millisecond
+		var requests int
+		var requestCanceled bool
+		stop := make(chan struct{})
+		defer func() {
+			close(stop)
+			synctest.Wait()
+		}()
+		dispatcher := &httpExecDispatcher{
+			url:          "http://executor.test/internal/exec",
+			startTimeout: startTimeout,
+			client: &http.Client{Transport: execTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+				requests++
+				select {
+				case <-req.Context().Done():
+					requestCanceled = true
+					return nil, req.Context().Err()
+				case <-stop:
+					return nil, errors.New("test ended before the executor request was canceled")
+				}
+			})},
 		}
-		_, _ = io.Copy(io.Discard, r.Body)
-		<-r.Context().Done()
-		select {
-		case <-requestCanceled:
-		default:
-			close(requestCanceled)
-		}
-	}))
-	t.Cleanup(server.Close)
-	dispatcher := &httpExecDispatcher{
-		url: server.URL + "/internal/exec", client: server.Client(), startTimeout: 400 * time.Millisecond,
-	}
-	defer dispatcher.client.CloseIdleConnections()
 
-	mutationMu := &sync.Mutex{}
-	coordinator, err := newExecCoordinator(t.TempDir(), t.TempDir(), "token", dispatcher, mutationMu)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := testWorkerRequest()
-	if _, err := coordinator.start(req); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-requestSeen:
-	case <-time.After(time.Second):
-		t.Fatal("dispatcher did not reach the stalled executor")
-	}
-
-	lockAcquired := make(chan struct{})
-	go func() {
-		mutationMu.Lock()
-		close(lockAcquired)
-		mutationMu.Unlock()
-	}()
-	select {
-	case <-lockAcquired:
-	case <-time.After(2 * time.Second):
-		t.Fatal("stalled executor kept the workspace mutation lock past the startup budget")
-	}
-	select {
-	case <-requestCanceled:
-	case <-time.After(time.Second):
-		t.Fatal("executor request context was not canceled at the startup deadline")
-	}
-
-	poll := req
-	poll.Action = "poll"
-	deadline := time.Now().Add(2 * time.Second)
-	var result workerExecResult
-	for time.Now().Before(deadline) {
-		result, err = coordinator.poll(poll)
+		mutationMu := &sync.Mutex{}
+		coordinator, err := newExecCoordinator(t.TempDir(), t.TempDir(), "token", dispatcher, mutationMu)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if workerTerminal(result.State) {
-			break
+		req := testWorkerRequest()
+		if _, err := coordinator.start(req); err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if result.State != "failed" || result.ExitCode != nil || !strings.Contains(result.Stderr, context.DeadlineExceeded.Error()) {
-		t.Fatalf("stalled startup result = %+v, want failed with no exit code and startup timeout", result)
-	}
-	if got := requests.Load(); got != 1 {
-		t.Fatalf("executor requests = %d, want one request with no ambiguous replay", got)
-	}
+
+		// Let the coordinator reach the stalled transport before advancing
+		// the startup clock, regardless of scheduling or disk latency.
+		synctest.Wait()
+		if requests != 1 {
+			t.Fatalf("executor requests before timeout = %d, want one stalled request", requests)
+		}
+		if mutationMu.TryLock() {
+			mutationMu.Unlock()
+			t.Fatal("workspace mutation lock was released before the executor started or timed out")
+		}
+
+		time.Sleep(startTimeout + time.Nanosecond)
+		synctest.Wait()
+		if !requestCanceled {
+			t.Fatal("executor request context was not canceled at the startup deadline")
+		}
+		if !mutationMu.TryLock() {
+			t.Fatal("stalled executor kept the workspace mutation lock past the startup budget")
+		}
+		mutationMu.Unlock()
+
+		req.Action = "poll"
+		result, err := coordinator.poll(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.State != "failed" || result.ExitCode != nil || !strings.Contains(result.Stderr, context.DeadlineExceeded.Error()) {
+			t.Fatalf("stalled startup result = %+v, want failed with no exit code and startup timeout", result)
+		}
+		if requests != 1 {
+			t.Fatalf("executor requests = %d, want one request with no ambiguous replay", requests)
+		}
+	})
 }
 
 func TestHTTPExecDispatcherBoundsUnacknowledgedResponseBodies(t *testing.T) {

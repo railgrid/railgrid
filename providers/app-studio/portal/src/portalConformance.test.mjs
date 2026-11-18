@@ -163,13 +163,12 @@ test('registers lightweight elements and defers page and tile implementations in
   assert.match(pageElement, /element\.replaceChildren\(\)[\s\S]*element\.appendChild\(host\)/)
 })
 
-test('announces preview recovery failures assertively', () => {
-  const recoveryStart = app.indexOf('v-if="developmentPreviewRecoveryError && !developmentPreviewFrameLoaded"')
-  const recoveryEnd = app.indexOf('>', recoveryStart)
+test('announces preview slow loading politely and recovery failures assertively', () => {
+  const recoveryStart = app.indexOf('ref="developmentPreviewRecoveryPanel"')
+  const recoveryEnd = app.indexOf('Retry preview', recoveryStart)
   assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart)
   const recoveryOverlay = app.slice(recoveryStart, recoveryEnd)
-  assert.match(recoveryOverlay, /role="alert"/)
-  assert.match(recoveryOverlay, /aria-live="assertive"/)
+  assert.match(recoveryOverlay, /:role="developmentPreviewRecoveryError && !developmentPreviewFrameLoaded \? 'alert' : 'status'"/)
   assert.match(recoveryOverlay, /aria-atomic="true"/)
 })
 
