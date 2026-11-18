@@ -42,6 +42,17 @@ export function reloadForProviderUpdate(name: string, env: ProviderUpdateReloadE
   return true
 }
 
+/**
+ * Forgets the guard once the provider mounted, so a later deploy of the same
+ * provider inside the window still gets its page load instead of the error.
+ */
+export function clearProviderUpdateReload(name: string, env: { storage?: Pick<Storage, 'getItem' | 'removeItem'> } = {}): void {
+  try {
+    const storage = env.storage ?? window.sessionStorage
+    if (readMarker(storage.getItem(KEY))?.name === name) storage.removeItem(KEY)
+  } catch { /* No storage, no marker. */ }
+}
+
 // A marker this code cannot read is treated as absent, never as a block.
 function readMarker(raw: string | null): Partial<ReloadMarker> | null {
   if (!raw) return null

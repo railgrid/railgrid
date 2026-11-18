@@ -193,6 +193,7 @@ function clear(): void {
   contextPreviewOpen.value = false
   chatsVisible.value = false
   conversationTitle.value = ''
+  overlay.setConversationOpen(false)
   generation++
   // Revoke in the same stack, before Vue unmounts or a pending confirmation resolves.
   if (element) element.railgridContext = null
@@ -254,6 +255,7 @@ async function mountAgent(): Promise<void> {
       const detail = (event as CustomEvent<{ chats: boolean; title: string }>).detail
       chatsVisible.value = detail.chats === true
       conversationTitle.value = typeof detail.title === 'string' ? detail.title : ''
+      overlay.setConversationOpen(conversationTitle.value !== '')
     })
     candidate.addEventListener('railgrid-overlay-engage', () => { if (current()) engage() })
     candidate.addEventListener('railgrid-overlay-expand', () => { if (current()) openDedicated() })
