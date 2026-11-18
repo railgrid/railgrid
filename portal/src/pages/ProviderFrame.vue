@@ -255,16 +255,22 @@ watch(
 // deploy must never tear down the page the user is working in; the mounted
 // element keeps running the bundle this document loaded, and the new version
 // is picked up the next time the provider is opened (see loadAndMount).
+//
+// Each key is its own watch source so Vue compares them one by one. A single
+// getter returning an array would hand Vue a new array on every evaluation,
+// and any replacement of the catalog entry or binding projection (a version
+// bump, an ordinary bindings refresh) would then remount the element even
+// though none of these keys changed.
 watch(
-  () => [
-    entry.value?.name,
-    entry.value?.ready,
-    catalogSettled.value,
-    accessAllowed.value,
-    mountRef.value,
-    entry.value?.export?.path,
-    entry.value?.scope,
-  ] as const,
+  [
+    () => entry.value?.name,
+    () => entry.value?.ready,
+    catalogSettled,
+    accessAllowed,
+    mountRef,
+    () => entry.value?.export?.path,
+    () => entry.value?.scope,
+  ],
   async ([name, ready, settled, allowed, mount]) => {
     clearMountedElement()
     if (!name || !ready || !settled || !allowed || !mount) return

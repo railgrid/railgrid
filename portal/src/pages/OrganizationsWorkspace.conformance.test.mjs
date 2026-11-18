@@ -1576,7 +1576,8 @@ test('provider hard refresh waits for the hydrated AppLayout mount outlet', () =
   assert.ok(mountWatchStart >= 0 && mountWatchEnd > mountWatchStart)
   const mountWatch = providerFrame.slice(mountWatchStart, mountWatchEnd)
 
-  assert.match(mountWatch, /mountRef\.value/)
+  // The outlet ref is one of the per-key watch sources.
+  assert.match(mountWatch, /^\s+mountRef,$/m)
   assert.match(mountWatch, /async \(\[name, ready, settled, allowed, mount\]\) =>/)
   assert.match(mountWatch, /if \(!name \|\| !ready \|\| !settled \|\| !allowed \|\| !mount\) return/)
   assert.match(mountWatch, /await loadAndMount\(name, entry\.value\?\.version, mount\)/)

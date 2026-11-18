@@ -282,9 +282,12 @@ test('a provider deploy leaves the mounted element transport current', () => {
 })
 
 test('a catalog version change alone never remounts the provider element', () => {
-  const identity = source.match(/watch\(\n  \(\) => \[\n    entry\.value\?\.name,([\s\S]*?)\] as const,/)?.[1]
+  const identity = source.match(/watch\(\n  \[\n    \(\) => entry\.value\?\.name,([\s\S]*?)\n  \],/)?.[1]
   assert.ok(identity, 'expected the mount identity watch')
   assert.doesNotMatch(identity, /version/)
+  // Per-key sources: a getter returning a fresh array would fire on every
+  // entry replacement, which is how a deploy used to remount the page.
+  assert.doesNotMatch(identity, /\] as const/)
   assert.match(source, /await loadAndMount\(name, entry\.value\?\.version, mount\)/)
 })
 
