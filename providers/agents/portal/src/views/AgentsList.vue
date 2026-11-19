@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import { computed, nextTick, onMounted, ref, useId, watch } from 'vue'
 import { AlertCircle, Bot, Megaphone, Plus, Search } from 'lucide-vue-next'
 import AgentTemplateCards from '../components/AgentTemplateCards.vue'
@@ -194,7 +195,7 @@ function openAgentRow(row: Record<string, unknown>): void {
         {{ agents.loading ? 'Retrying…' : 'Retry' }}
       </button>
     </div>
-    <div v-else-if="!agents.loaded" class="k-card agents-state k-loading-reveal" role="status">Loading agents…</div>
+    <LoadingSkeleton v-else-if="!agents.loaded" label="Loading agents…" />
     <template v-else>
       <div v-if="agents.error" class="agents-stale" role="status">
         <AlertCircle aria-hidden="true" /> Showing the last loaded agents. {{ agents.error }}
@@ -303,7 +304,7 @@ function openAgentRow(row: Record<string, unknown>): void {
 
     <section class="agents-template-starters" aria-labelledby="agents-templates-heading">
       <h2 id="agents-templates-heading">Start from a template</h2>
-      <p v-if="templatesLoading" class="agents-layout-empty" role="status">Loading templates…</p>
+      <LoadingSkeleton v-if="templatesLoading" label="Loading templates…" compact />
       <div v-else-if="templatesFailed" class="agents-stale" role="status">
         <AlertCircle aria-hidden="true" /> Could not load agent templates.
         <button class="k-btn k-btn--ghost" type="button" @click="loadTemplates">Retry</button>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import { computed, provide, ref, watch } from 'vue'
 import { GitBranch, Package, Plug } from 'lucide-vue-next'
 import type { RailgridContext } from './types'
@@ -191,19 +192,7 @@ function completeConnectionPrerequisite(success: boolean, connectionName?: strin
 
 <template>
   <div ref="rootRef" class="app">
-    <template v-if="!contextInitialized">
-      <section class="page" role="status" aria-live="polite" aria-busy="true" aria-label="Loading workspace context">
-        <header class="page-head">
-          <div>
-            <h2 class="page-title">Code</h2>
-            <p class="page-meta">Loading workspace context…</p>
-          </div>
-        </header>
-        <div class="detail-loading" aria-hidden="true">
-          <div v-for="i in 4" :key="i" class="shimmer detail-loading-line" />
-        </div>
-      </section>
-    </template>
+    <LoadingSkeleton v-if="!contextInitialized" class="page" label="Loading workspace context…" tabs />
 
     <template v-else>
       <template v-if="!route.repo && !route.connection">

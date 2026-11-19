@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 // Tile content for the infrastructure provider's dashboard summary.
 // Mounted by <railgrid-dashboard-tile-infrastructure> (see element.ts).
 //
@@ -199,10 +200,7 @@ function dotFor(phase: string) {
       {{ loaded ? 'Could not refresh. Showing the last successful result.' : 'Could not load instances.' }} {{ displayError }}
       <button type="button" class="k-dashboard-action" :aria-disabled="retryPending || undefined" :aria-busy="retryPending || undefined" @click="retry">{{ retryPending ? 'Retrying…' : 'Retry' }}</button>
     </div>
-    <div v-if="!loaded && loading && !displayError" class="space-y-2" role="status" aria-live="polite" aria-busy="true" aria-label="Loading infrastructure instances">
-      <div class="shimmer h-3 w-32 rounded" aria-hidden="true" />
-      <div v-for="i in 4" :key="i" class="shimmer h-7 w-full rounded" aria-hidden="true" />
-    </div>
+    <LoadingSkeleton v-if="!loaded && loading && !displayError" label="Loading infrastructure instances…" compact />
     <template v-if="loaded">
       <span v-if="loading && !displayError" class="sr-only" role="status" aria-live="polite">Updating infrastructure instances…</span>
       <!-- Slim horizontal status row (matches the clusters/edges tiles): a

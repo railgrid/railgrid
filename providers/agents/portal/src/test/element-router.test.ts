@@ -323,7 +323,7 @@ describe('public Agents shell routing', () => {
     document.body.appendChild(element)
     await settleVue()
 
-    expect(text(element)).toContain('Connecting')
+    expect(element.querySelector('[data-loading-visual]')).not.toBeNull()
     expect(element.route).toEqual({ kind: 'run', id: 'run/42' })
 
     element.railgridContext = ctx()
@@ -825,7 +825,7 @@ describe('public Agents shell routing', () => {
     await settleVue(4, 5)
 
     expect(text(element.querySelector('h1'))).toBe('Edit schedule missing')
-    expect(text(element.querySelector('[role="status"]'))).toContain('Loading schedule')
+    expect(element.querySelector('[data-loading-visual]')).not.toBeNull()
     expect(document.activeElement).toBe(element.querySelector('.k-create-title'))
 
     const store = element.store!
@@ -1391,7 +1391,7 @@ describe('context and create-session routing fences', () => {
     expect(oldDisconnect).toHaveBeenCalled()
     expect(location.hash).toBe('#/agents')
     await settleVue()
-    expect(text(element)).toContain('Connecting')
+    expect(element.querySelector('[data-loading-visual]')).not.toBeNull()
   })
 })
 

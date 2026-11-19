@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 // Tests the filter being edited against real traffic, live. The verdict comes
 // from the provider's `evaluate` verb — the same matcher the webhook runs — so
 // what reads green here is what fires on the wire; the portal never re-implements
@@ -163,7 +164,7 @@ onBeforeUnmount(() => {
     <p v-if="webhookChanged" class="agents-hint" role="status">The recorded deliveries are still <code>{{ webhook }}</code>’s; save to test against <code>{{ draftWebhook }}</code>’s traffic.</p>
     <div v-if="source === 'delivery'" class="agents-tester-pick">
       <p v-if="deliveriesError" class="agents-fielderr" role="alert">Could not load deliveries. {{ deliveriesError }}</p>
-      <p v-else-if="!deliveriesLoaded" class="muted" role="status">Loading deliveries…</p>
+      <LoadingSkeleton v-else-if="!deliveriesLoaded" label="Loading deliveries…" compact />
       <p v-else-if="options.length === 0" class="muted" role="status">Nothing has reached this webhook URL yet. Once a delivery arrives it can be picked here; until then, test with a pasted sample.</p>
       <label v-else><span id="agents-tester-delivery-label">Delivery</span><FormSelect v-model="selected" :options="options" :labelledby="'agents-tester-delivery-label'" name="testDelivery" /></label>
       <p v-if="selectedDelivery" class="agents-hint">Received&nbsp;<ResourceTimestamp :value="selectedDelivery.receivedAt" label="Delivery received" /></p>

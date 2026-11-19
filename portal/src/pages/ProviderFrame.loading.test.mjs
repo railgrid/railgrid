@@ -462,6 +462,7 @@ test('provider bundle loading is delayed so cached navigation does not flash', (
   assert.match(source, /const providerLoadPending = computed\(\(\) => loadState\.value === 'loading'\)/)
   assert.match(source, /const showProviderLoading = useDelayedLoading\(providerLoadPending\)/)
   assert.match(source, /loadState === 'loading' && showProviderLoading/)
+  assert.match(source, /<LoadingSkeleton v-else-if="loadState === 'loading' && !isAppStudioWorkspaceRoute" label="Loading provider…" tabs/)
 })
 
 test('App Studio deep links receive a responsive three-region loading shell', () => {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import { vFocusOnRecovery } from '../vue/noticeFocus'
 import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue'
@@ -1141,7 +1142,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
     Could not load configuration. {{ agentReadState.error }}
     <button class="k-btn k-btn--ghost" type="button" :disabled="agentReadState.loading" @click="store.load('agents')">{{ agentReadState.loading ? 'Retrying…' : 'Retry' }}</button>
   </div>
-  <div v-else-if="!agent || !formHydrated" class="k-card agents-state agents-state-loading k-loading-reveal" role="status">Loading configuration…</div>
+  <LoadingSkeleton v-else-if="!agent || !formHydrated" label="Loading configuration…" />
   <template v-else>
     <AgentsWorkbenchSection class="agents-config-sec" :heading-id="domID('agent-persona-heading')" title="Instructions">
       <textarea v-model="systemPrompt" class="k-input" rows="5" :aria-labelledby="domID('agent-persona-heading')" placeholder="Describe how this agent should help."></textarea>
@@ -1169,7 +1170,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <span>Could not load model credentials. {{ credentialSlice.error }}</span>
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
-      <div v-else-if="!credentialSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading model credentials…</div>
+      <LoadingSkeleton v-else-if="!credentialSlice.hasSnapshot" label="Loading model credentials…" compact />
       <div v-else-if="credentialSlice.error" class="agents-stale" role="status">
         Showing the last loaded credentials. {{ credentialSlice.error }}
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
@@ -1304,7 +1305,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           >
             Could not load machines. {{ edgeSlice.error }}
           </InlineNotification>
-          <div v-else-if="!edgeSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading machines…</div>
+          <LoadingSkeleton v-else-if="!edgeSlice.hasSnapshot" label="Loading machines…" compact />
           <template v-else>
             <InlineNotification
               v-if="edgeSlice.error"
@@ -1341,7 +1342,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
                 >
                   Could not load harness identities. {{ credentialSlice.error }}
                 </InlineNotification>
-                <div v-else-if="!credentialSlice.hasSnapshot" :id="domID('agent-harness-credential-loading')" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading harness identities…</div>
+                <LoadingSkeleton v-else-if="!credentialSlice.hasSnapshot" :id="domID('agent-harness-credential-loading')" label="Loading harness identities…" compact />
                 <template v-else>
                   <InlineNotification
                     v-if="credentialSlice.error"
@@ -1437,7 +1438,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
                 <span>Could not load toolsets. {{ toolsetSlice.error }}</span>
                 <button class="k-btn k-btn--ghost secondary" type="button" :disabled="toolsetSlice.loading" @click="store.load('toolsets')">{{ toolsetSlice.loading ? 'Retrying…' : 'Retry' }}</button>
               </div>
-              <div v-else-if="!toolsetSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading toolsets…</div>
+              <LoadingSkeleton v-else-if="!toolsetSlice.hasSnapshot" label="Loading toolsets…" compact />
               <template v-else>
                 <div v-if="toolsetSlice.error" class="agents-stale" role="status">
                   Showing the last loaded toolsets. {{ toolsetSlice.error }}
@@ -1577,7 +1578,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
                 <span>Could not load tool connections. {{ connectionSlice.error }}</span>
                 <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
               </div>
-              <div v-else-if="!connectionSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading tool connections…</div>
+              <LoadingSkeleton v-else-if="!connectionSlice.hasSnapshot" label="Loading tool connections…" compact />
               <template v-else>
                 <div v-if="connectionSlice.error" class="agents-stale" role="status">
                   Showing the last loaded connections. {{ connectionSlice.error }}
@@ -1631,7 +1632,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <span>Could not load channel connections. {{ connectionSlice.error }}</span>
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
-      <div v-else-if="!connectionSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading channel connections…</div>
+      <LoadingSkeleton v-else-if="!connectionSlice.hasSnapshot" label="Loading channel connections…" compact />
       <div v-else-if="connectionSlice.error" class="agents-stale" role="status">
         Showing the last loaded connections. {{ connectionSlice.error }}
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>

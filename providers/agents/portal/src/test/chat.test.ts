@@ -1973,7 +1973,7 @@ describe('chat read ownership', () => {
 
     if (destination === 'switch') {
       await chooseSession(el, 'Second chat')
-      expect(text(el.querySelector('.agents-log'))).toContain('Loading conversation…')
+      expect(el.querySelector('.agents-log [data-loading-visual]')).not.toBeNull()
     } else {
       el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
       await settle()
@@ -1985,7 +1985,7 @@ describe('chat read ownership', () => {
     await settle()
     expect(el.querySelector('.agents-chat-transcript-notice')).toBeNull()
     if (destination === 'switch') {
-      expect(text(el.querySelector('.agents-log'))).toContain('Loading conversation…')
+      expect(el.querySelector('.agents-log [data-loading-visual]')).not.toBeNull()
       pendingDestination.resolve({ items: [] })
       await settle()
       expect(text(el.querySelector('.agents-log'))).toContain('Start a conversation')

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 // The delivery log of one webhook: every authenticated POST to its URL,
 // newest first, and what each trigger routed from it made of it. This is the
 // one place a delivery no trigger fired on is visible — the sender was acked,
@@ -235,7 +236,7 @@ onBeforeUnmount(() => {
     </header>
 
     <p v-if="error" class="agents-fielderr" role="alert">Could not load deliveries. {{ error }}</p>
-    <p v-else-if="!loaded" class="muted" role="status">Loading deliveries…</p>
+    <LoadingSkeleton v-else-if="!loaded" label="Loading deliveries…" compact />
     <p v-else-if="items.length === 0" class="muted agents-deliveries-empty" role="status">
       <template v-if="routeFilter">Nothing among the recorded deliveries was routed to {{ routeFilter }}.</template>
       <template v-else>Nothing has reached this webhook URL yet. Once the sender POSTs, every delivery shows here — fired or not.</template>

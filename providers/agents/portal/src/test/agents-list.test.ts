@@ -134,7 +134,7 @@ describe('agents list refresh resilience', () => {
     const api = stubApi()
     const store = makeStore(api)
     const mounted = await mountVue(AgentsList, { store, api })
-    expect(text(mounted.element.querySelector('.agents-state[role=status]'))).toContain('Loading agents')
+    expect(mounted.element.querySelector('[data-loading-visual]')).not.toBeNull()
 
     store.agents.data = [agentFixture('scout')]
     Object.assign(store.agents, { loading: false, loaded: true, hasSnapshot: true })

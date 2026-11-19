@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import { computed, nextTick, ref, useId, watch } from 'vue'
 import { ArrowLeft, ArrowRight, Check, Cpu, Loader2, Play, Plus, RefreshCw, Star } from 'lucide-vue-next'
 import ResourceTableEditButton from './portalkit/ResourceTableEditButton.vue'
@@ -688,8 +689,8 @@ const createActions = computed(() => [
 ])
 const showFirstRun = computed(() => !!props.settings && props.connectionsLoaded
   && !modelRows.value.length && !connectionRows.value.length)
-const showFirstModel = computed(() => !!props.settings && !props.loading && !props.loadError
-  && !props.connectionsLoading && !props.connectionsError
+const showFirstModel = computed(() => !!props.settings && !props.loadError
+  && !props.connectionsError
   && !modelRows.value.length && modelConnectionOptions.value.length > 0)
 
 function selectCreateAction(id: string) {
@@ -735,9 +736,7 @@ watch(
     <InlineNotification v-if="loadError" data-model-recovery="models" :tone="settings ? 'warning' : 'error'" :message="settings ? `Models could not be refreshed. Showing the last successful result. ${loadError}` : loadError" action-label="Retry" :action-busy="loading" action-busy-label="Retrying models…" @action="emit('retry')" />
     <InlineNotification v-if="actionError" tone="error" :message="actionError" />
 
-    <div v-if="onboarding && connectionsLoading && !connectionsError && !connectionRef && !connectionEditorOpen" role="status" class="k-inline-notification">
-      <Loader2 class="h-4 w-4 animate-spin text-accent" /> Loading provider connections…
-    </div>
+    <LoadingSkeleton v-if="onboarding && connectionsLoading && !connectionsError && !connectionRef && !connectionEditorOpen" label="Loading provider connections…" compact />
     <InlineNotification
       v-else-if="onboarding && connectionsError && !connectionRef && !connectionEditorOpen"
       data-model-recovery="connections" tone="error" :message="connectionsError" action-label="Retry" :action-busy="connectionsLoading" action-busy-label="Retrying connections…" @action="emit('retryConnections')"
@@ -841,11 +840,9 @@ watch(
           </button>
         </template>
       </FirstRunGuide>
-      <div v-else-if="loading && !settings && !loadError" class="grid min-h-48 content-start gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-live="polite" aria-busy="true">
-        <div class="shimmer h-4 w-36 rounded bg-surface-overlay" /><div class="shimmer h-24 w-full rounded bg-surface-overlay" /><div class="text-[12px] text-text-muted">Loading models…</div>
-      </div>
+      <LoadingSkeleton v-else-if="loading && !settings && !loadError" label="Loading models…" />
       <div v-else-if="!onboarding">
-        <div v-if="loading" class="flex items-center gap-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true"><Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" /> Refreshing models…</div>
+        <span class="sr-only" role="status" aria-live="polite">{{ loading && !loadError ? 'Refreshing models…' : '' }}</span>
         <InlineNotification v-if="testError" tone="error" :message="testError" />
         <InlineNotification v-else-if="testStatus" tone="success" :message="testStatus" />
         <ModelCollection v-if="modelRows.length" class="k-table-stack-actions" :rows="modelRows" preference-key="railgrid:app-studio:models:layout" table-only show-provider-connection>
@@ -882,7 +879,7 @@ watch(
             <ResourceTableDeleteButton :label="`Delete ${saved.name}`" :disabled="saving" @click="emit('delete', saved.id)" />
           </template>
         </ModelCollection>
-        <template v-else-if="settings && !loadError && !loading && !showFirstRun && !showFirstModel">
+        <template v-else-if="settings && !loadError && !showFirstRun && !showFirstModel">
           <p v-if="onboarding" class="text-[13px] text-text-muted">No models configured</p>
           <FirstRunGuide v-else title="No models configured" :steps="[]" :actions-visible="false">
             <template #icon><Cpu :stroke-width="1.75" aria-hidden="true" /></template>
@@ -898,11 +895,21 @@ watch(
           </div>
         </header>
         <InlineNotification v-if="pendingConnection" tone="warning" message="Provider changes are saved and waiting for revision space. Existing model bindings keep their previous configuration." action-label="Dismiss" @action="pendingConnection = null" />
-        <div v-if="connectionsLoading && !connectionsLoaded && !connectionsError" class="grid gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-busy="true">
-          <Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" /> Loading provider connections…
-        </div>
-        <InlineNotification v-else-if="connectionsError" data-model-recovery="connections" :tone="connectionsLoaded ? 'warning' : 'error'" :message="connectionsLoaded ? `Provider connections could not be refreshed. Showing the last successful result. ${connectionsError}` : connectionsError" action-label="Retry" :action-busy="connectionsLoading" action-busy-label="Retrying connections…" @action="emit('connectionsChanged')" />
-        <ResourceTable v-if="connectionRows.length" :rows="connectionTableRows" :columns="providerConnectionColumns" row-key="id" :interactive="false" searchable search-placeholder="Search provider connections…" :search-keys="['name', 'endpoint', 'status']" aria-label="Provider connections" loaded empty-text="No provider connections match your search.">
+        <InlineNotification v-if="connectionsError" data-model-recovery="connections" :tone="connectionsLoaded ? 'warning' : 'error'" :message="connectionsLoaded ? `Provider connections could not be refreshed. Showing the last successful result. ${connectionsError}` : connectionsError" action-label="Retry" :action-busy="connectionsLoading" action-busy-label="Retrying connections…" @action="emit('connectionsChanged')" />
+        <ResourceTable
+          v-if="connectionRows.length || (connectionsLoading && !connectionsLoaded && !connectionsError)"
+          :rows="connectionTableRows"
+          :columns="providerConnectionColumns"
+          row-key="id"
+          :interactive="false"
+          searchable
+          search-placeholder="Search provider connections…"
+          :search-keys="['name', 'endpoint', 'status']"
+          aria-label="Provider connections"
+          :loaded="connectionsLoaded || connectionRows.length > 0"
+          :loading="connectionsLoading"
+          empty-text="No provider connections match your search."
+        >
           <template #name="{ row }">
             <div class="grid min-w-0 gap-1"><span class="font-medium">{{ row.name }}</span><span class="text-[10px] text-text-muted">{{ connectionFromTableRow(row).provider === 'google-ai-studio' ? 'Google AI Studio / Vertex' : providerOptions.find(option => option.value === providerPresetFor(connectionFromTableRow(row).provider, connectionFromTableRow(row).baseURL))?.label || 'OpenAI-compatible' }}</span></div>
           </template>

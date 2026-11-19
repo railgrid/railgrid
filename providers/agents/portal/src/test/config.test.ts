@@ -1185,10 +1185,7 @@ describe('agent config', () => {
     mounted.push(view)
     await settle()
 
-    expect(text(view.element)).toContain('Loading model credentials…')
-    expect(text(view.element)).toContain('Loading toolsets…')
-    expect(text(view.element)).toContain('Loading tool connections…')
-    expect(text(view.element)).toContain('Loading channel connections…')
+    expect(view.element.querySelectorAll('[data-loading-visual]').length).toBeGreaterThanOrEqual(4)
     expect(text(view.element)).not.toContain('No models yet')
     expect(text(view.element)).not.toContain('No toolsets yet')
     expect(text(view.element)).not.toContain('No tools yet')
@@ -1853,7 +1850,7 @@ describe('agent backend', () => {
       { loaded: false, hasSnapshot: false, loading: true },
     )
 
-    expect(el.querySelector('#agent-harness-credential-loading')?.textContent).toContain('Loading harness identities')
+    expect(el.querySelector('#agent-harness-credential-loading [data-loading-visual]')).not.toBeNull()
     expect(el.querySelector('#agent-harness-credential-empty')).toBeNull()
     expect(el.querySelector('a[href*="create/model/harness"]')).toBeNull()
     expect(sectionButton(el, 'Save backend').disabled).toBe(true)

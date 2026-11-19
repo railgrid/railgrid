@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import ResourceTimestamp from './portalkit/ResourceTimestamp.vue'
 import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
 import AIWorkbenchSection from './agentkit/AIWorkbenchSection.vue'
@@ -107,7 +108,7 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
       <slot name="connect" />
     </template>
 
-    <div v-else-if="refreshing && commits.length === 0" class="py-4 text-[12px] leading-5 text-text-muted" role="status">Loading saved commits…</div>
+    <LoadingSkeleton v-else-if="refreshing && commits.length === 0" label="Loading saved commits…" compact />
 
     <InlineNotification v-else-if="error && commits.length === 0" tone="error" :message="error" />
 

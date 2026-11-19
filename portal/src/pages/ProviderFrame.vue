@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '@/portalkit/LoadingSkeleton.vue'
 import { useRouteContextStore } from '@/stores/routeContext'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from 'vue'
@@ -691,12 +692,8 @@ onBeforeUnmount(() => {
       <InlineNotification v-if="catalogError" tone="error" title="Failed to load provider catalog"
         :message="catalogError" action-label="Retry" action-busy-label="Retrying…"
         :action-busy="providers.loading" @action="retryCatalog" />
-      <div v-else-if="catalogLoading" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted" role="status" aria-live="polite" aria-busy="true">
-        Loading provider catalog&hellip;
-      </div>
-      <div v-else-if="catalogRefreshing && !accessHeld" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted" role="status" aria-live="polite" aria-busy="true">
-        Refreshing provider status&hellip;
-      </div>
+      <LoadingSkeleton v-else-if="catalogLoading" label="Loading provider catalog…" tabs />
+      <LoadingSkeleton v-else-if="catalogRefreshing && !accessHeld" label="Refreshing provider status…" tabs />
       <div v-else-if="catalogMissing" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
         Provider <code class="font-mono text-text-secondary">{{ props.providerName }}</code> is not available in this catalog.
       </div>
@@ -742,15 +739,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
-      <div
-        v-else-if="bindingChecking && !accessHeld"
-        class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
-        role="status"
-        aria-live="polite"
-        aria-busy="true"
-      >
-        Checking provider access&hellip;
-      </div>
+      <LoadingSkeleton v-else-if="bindingChecking && !accessHeld" label="Checking provider access…" tabs />
       <div
         v-else-if="bindingMissing"
         class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
@@ -790,16 +779,7 @@ onBeforeUnmount(() => {
           <div v-for="i in 3" :key="`workbench-${i}`" class="shimmer h-12 rounded bg-surface-overlay" />
         </div>
       </div>
-      <div
-        v-else-if="loadState === 'loading' && showProviderLoading"
-        class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
-        role="status"
-        aria-live="polite"
-        aria-busy="true"
-      >
-        Loading provider&hellip;
-      </div>
-
+      <LoadingSkeleton v-else-if="loadState === 'loading' && !isAppStudioWorkspaceRoute" label="Loading provider…" tabs />
 
       <!-- The provider's custom element mounts here. No iframe, no border,
            no scrollbars; it's just DOM in the portal's tree. -->

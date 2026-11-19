@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
@@ -347,7 +348,7 @@ watch(contextGeneration, () => {
       <p class="k-create-description">Manage GitHub repositories from this workspace.</p>
     </header>
 
-    <div v-if="loading && !loaded" class="panel k-card" role="status" aria-live="polite">Loading connections…</div>
+    <LoadingSkeleton v-if="loading && !loaded" label="Loading connections…" />
     <InlineNotification v-if="readError" tone="error" action-label="Retry connections" action-busy-label="Retrying connections…" :action-busy="loading" @action="loadConnections" :message="readError" />
 
     <div v-if="isGitHub && !oauthAuthorized" class="k-create-surface k-create-surface--guided">

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import type { QuestionReply } from '../types'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ArrowLeft, Check, ChevronRight, CircleHelp, Inbox, RefreshCw, ShieldCheck, X } from 'lucide-vue-next'
@@ -492,7 +493,7 @@ onBeforeUnmount(() => {
           <span>Showing the last loaded data. {{ inboxSlice.error }}</span>
           <button class="k-btn k-btn--ghost secondary" type="button" @click="store.load('inbox')">Retry</button>
         </div>
-        <p v-if="viewingInbox && !inboxSlice.hasSnapshot && inboxSlice.loading" class="agents-inbox-empty" role="status">Loading inbox…</p>
+        <LoadingSkeleton v-if="viewingInbox && !inboxSlice.hasSnapshot && inboxSlice.loading" label="Loading inbox…" compact />
         <p v-else-if="viewingInbox && !pending.length" ref="inboxEmpty" class="agents-inbox-empty" tabindex="-1">You’re all caught up.</p>
         <section
           v-if="pending.length"

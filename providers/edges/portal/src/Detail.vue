@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import { portalHref } from './portalkit/navigation'
 import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
 import { Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Globe2, Home, Laptop, Plug, Plus, RefreshCw, Server, TerminalSquare } from 'lucide-vue-next'
@@ -848,9 +849,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                   ><Plus :size="14" aria-hidden="true" /> Add service</button>
                 </div>
 
-                <div v-if="!servicesLoaded && !svcError" class="muted" role="status" aria-live="polite">
-                  Loading services…
-                </div>
+                <LoadingSkeleton v-if="!servicesLoaded && !svcError" label="Loading services…" compact />
                 <div v-else-if="servicesLoaded && services.length === 0" class="muted">
                   {{ type === 'server'
                     ? 'No services yet. Discovery runs when the agent is connected, or add one to point at a host-local service such as a runner.'

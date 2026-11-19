@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import { Info } from 'lucide-vue-next'
 import FormSelect from '../portalkit/FormSelect.vue'
@@ -72,7 +73,7 @@ async function retryAgents(): Promise<void> {
         :title="agents.hasSnapshot ? 'Could not refresh agents' : 'Could not load agents'"
         :message="agents.hasSnapshot ? 'Showing the last successful agent choices.' : 'Check your connection and try again.'"
         action-label="Retry" action-busy-label="Retrying…" :action-busy="agents.loading" @action="retryAgents" />
-      <p v-else-if="!agents.hasSnapshot" role="status">Loading agents…</p>
+      <LoadingSkeleton v-else-if="!agents.hasSnapshot" label="Loading agents…" compact />
       <p v-if="unavailableAgent" role="status">This agent is unavailable. Choose another agent or turn the assistant off.</p>
       <form @submit.prevent="saveAssistant">
         <div class="agents-assistant-settings__agent">

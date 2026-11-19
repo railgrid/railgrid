@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 // Dashboard tile for the edges provider, mounted by
 // <railgrid-dashboard-tile-edges> (see element.ts).
 //
@@ -168,7 +169,7 @@ watch(
 <template>
   <div ref="rootRef" :class="tileClass.root" :aria-busy="loading || retryPending" tabindex="-1">
     <div v-if="displayError" :class="tileClass.error" :role="loaded ? 'status' : 'alert'" aria-live="polite">{{ loaded ? 'Could not refresh. Showing cached edges.' : 'Could not load edges.' }} {{ displayError }} <button type="button" class="k-dashboard-action" :aria-disabled="retryPending || undefined" :aria-busy="retryPending || undefined" @click="retry">{{ retryPending ? 'Retrying…' : 'Retry' }}</button></div>
-    <div v-if="loading && !loaded && !displayError" :class="tileClass.message" role="status" aria-live="polite">Loading edges&hellip;</div>
+    <LoadingSkeleton v-if="loading && !loaded && !displayError" label="Loading edges&hellip;" compact />
 
     <template v-if="loaded">
       <span v-if="loading && !displayError" class="sr-only" role="status" aria-live="polite">Updating edges…</span>

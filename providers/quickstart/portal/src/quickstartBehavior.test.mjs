@@ -6,6 +6,11 @@ import ts from 'typescript'
 
 const source = await readFile(new URL('./element.ts', import.meta.url), 'utf8')
 const javascript = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
+const loadingSkeletonSource = await readFile(new URL('./portalkit/loading-skeleton.ts', import.meta.url), 'utf8')
+const loadingSkeletonModule = {}
+vm.runInNewContext(ts.transpileModule(loadingSkeletonSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS },
+}).outputText, { exports: loadingSkeletonModule })
 const deferred = () => {
   let resolve, reject
   const promise = new Promise((yes, no) => { resolve = yes; reject = no })
@@ -18,7 +23,8 @@ function harness(client, render = false) {
   vm.runInNewContext(javascript, {
     exports, HTMLElement: class { querySelector() { return null } querySelectorAll() { return [] } dispatchEvent() { return true } },
     require: name => name.endsWith('/toastFallback') ? { mountToastFallback: () => () => {} } : name.endsWith('/kube') ? { createKubeClient: options => client(options) }
-      : name.endsWith('/tenant') ? { providerFetch: ctx => ctx.fetch } : name.endsWith('/toast') ? { toast: () => {} } : { ic: () => '' },
+      : name.endsWith('/tenant') ? { providerFetch: ctx => ctx.fetch } : name.endsWith('/toast') ? { toast: () => {} }
+      : name.endsWith('/loading-skeleton') ? loadingSkeletonModule : { ic: () => '' },
     Set, Map, Date, CustomEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init) } },
   })
   const element = new exports.QuickstartElement()
@@ -230,6 +236,7 @@ function tileHarness(client) {
     require: name => name.endsWith('/toastFallback') ? { mountToastFallback: () => () => {} } : name.endsWith('/kube') ? { createKubeClient: options => client(options) }
       : name.endsWith('/tenant') ? { providerFetch: ctx => ctx?.fetch }
       : name.endsWith('/element') ? { escapeHTML: value => value }
+      : name.endsWith('/loading-skeleton') ? loadingSkeletonModule
       : {
         createTilePoller: () => ({ start() {}, stop() {}, refresh() {} }),
         dashboardTileSemanticClass: new Proxy({}, { get: (_object, property) => String(property) }),

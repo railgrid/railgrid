@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
@@ -148,8 +149,8 @@ onBeforeUnmount(() => { requestID += 1 })
           </details>
         </div>
       </InlineNotification>
-      <div v-if="!requestContext.ready" class="kuery-read-state" role="status">Waiting for workspace context…</div>
-      <div v-else-if="loading && !loaded && !error" class="kuery-read-state" role="status">Checking workspace setup…</div>
+      <LoadingSkeleton v-if="!requestContext.ready" label="Waiting for workspace context…" />
+      <LoadingSkeleton v-else-if="loading && !loaded && !error" label="Checking workspace setup…" />
       <InlineNotification v-else-if="error && !loaded" tone="error" action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="retryLoad">
         <div class="kuery-error-copy">
           <span>{{ error }}</span>
@@ -182,7 +183,7 @@ onBeforeUnmount(() => { requestID += 1 })
         <InventoryView v-if="visited.inventory" v-show="active === 'inventory'" :key="`${identity}:inventory`" :context="context" :edges="edges" :saved-view="scratchView" @inspect="impact = $event" />
         <PlaygroundView v-if="visited.playground" v-show="active === 'playground'" :key="`${identity}:playground`" :context="context" :saved-view="scratchView" :active="!impact && active === 'playground'" />
       </template>
-      <div v-else class="kuery-read-state" role="status">Checking workspace setup…</div>
+      <LoadingSkeleton v-else label="Checking workspace setup…" />
     </div>
   </div>
 </template>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import { portalHref } from '../portalkit/navigation'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { AlertTriangle, ArrowLeftRight, ExternalLink, Eye, GitBranch, Github, Package as PackageIcon, PackageOpen, Plug, RefreshCw, User, Users, X } from 'lucide-vue-next'
@@ -963,7 +964,7 @@ onUnmounted(() => {
                 </select>
                 <button class="k-btn k-btn--ghost" type="button" :disabled="repositoryDeleting || changingConn || !connectionsLoaded || selectedConn === repo.connectionRef" @click="changeConnection"><ArrowLeftRight :size="14" aria-hidden="true" />{{ changingConn ? 'Changing…' : 'Change' }}</button>
               </div>
-              <span v-if="connectionsLoading && !connectionsLoaded && !connectionsError" class="muted" role="status" aria-live="polite">Loading connections…</span>
+              <LoadingSkeleton v-if="connectionsLoading && !connectionsLoaded && !connectionsError" label="Loading connections…" compact />
               <div v-if="connectionsError" ref="connectionWarning">
                 <InlineNotification :tone="connectionsLoaded ? 'warning' : 'error'" :message="connectionsLoaded ? `Could not refresh connections. Showing cached connection choices. ${connectionsError}` : `Could not load connections. ${connectionsError}`" action-label="Retry" action-busy-label="Retrying…" :action-busy="connectionsLoading" @action="retryConnections" />
               </div>

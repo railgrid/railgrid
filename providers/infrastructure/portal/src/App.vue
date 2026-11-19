@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import { computed, ref, watch } from 'vue'
 import CatalogPage from './views/CatalogPage.vue'
 import ProvisionPage from './views/ProvisionPage.vue'
@@ -11,7 +12,6 @@ import { setBasePath, setHostFetch, setTenant } from './api'
 import { createResourceTombstones } from './refresh'
 import { legacyInfrastructurePath, parseInfrastructureSubPath } from './routes'
 import type { RailgridContext } from './types'
-import { useDelayedLoading } from './portalkit/useDelayedLoading'
 
 // Two top-level pages: 'templates' and 'instances'. Sub-routes:
 //
@@ -35,8 +35,6 @@ const props = defineProps<{ ctx: RailgridContext | null }>()
 const route = computed(() => parseInfrastructureSubPath(props.ctx?.subPath))
 const tenantPath = computed(() => props.ctx?.tenant ?? null)
 const contextInitialized = computed(() => props.ctx !== null)
-const contextPending = computed(() => !contextInitialized.value)
-const showContextLoading = useDelayedLoading(contextPending)
 const contextVersion = ref(0)
 // Route-local pages remount during detail/list navigation, but acknowledged
 // deletions must remain marked Deleting until a successful list proves the old
@@ -117,26 +115,7 @@ function provisioned(name: string) {
       genuinely no workspace selected, the friendly message below
       stays put until they pick one in the shell's sidebar chip.
     -->
-    <template v-if="!contextInitialized">
-      <section
-        class="page k-delayed-loading"
-        :role="showContextLoading ? 'status' : undefined"
-        :aria-live="showContextLoading ? 'polite' : undefined"
-        :aria-busy="showContextLoading ? 'true' : undefined"
-        :aria-hidden="showContextLoading ? undefined : 'true'"
-      >
-        <header class="page-head">
-          <div>
-            <h2 class="page-title">Infrastructure</h2>
-            <p class="page-meta">Loading workspace context…</p>
-          </div>
-        </header>
-        <div class="page-loading-shell" aria-hidden="true">
-          <div class="shimmer page-loading-line page-loading-line-short" />
-          <div class="shimmer page-loading-panel" />
-        </div>
-      </section>
-    </template>
+    <LoadingSkeleton v-if="!contextInitialized" class="page" label="Loading workspace context…" tabs />
     <template v-else-if="!tenantPath">
       <section class="page">
         <header class="page-head">

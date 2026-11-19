@@ -216,6 +216,7 @@ export function projectIntegrationMatchesSearch(
 </script>
 
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
 import AIWorkbenchSection from './agentkit/AIWorkbenchSection.vue'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
@@ -631,13 +632,7 @@ onBeforeUnmount(() => {
         ><X :size="14" :stroke-width="1.75" aria-hidden="true" /></button>
       </div>
 
-      <div v-if="loading && !integrationsLoaded" class="grid gap-2" role="status" aria-live="polite">
-        <p class="text-[12px] text-text-muted">Loading integrations…</p>
-        <div v-for="i in 3" :key="i" aria-hidden="true" class="grid gap-2 border-t border-border-subtle py-3">
-          <div class="shimmer h-3.5 w-32 rounded bg-surface-overlay" />
-          <div class="shimmer h-3 w-48 max-w-full rounded bg-surface-overlay" />
-        </div>
-      </div>
+      <LoadingSkeleton v-if="loading && !integrationsLoaded" label="Loading integrations…" />
       <p v-else-if="error && !integrationsLoaded" class="py-2 text-[13px] text-text-secondary" role="status">
         Provider resources could not be loaded. Use Refresh to try again.
       </p>

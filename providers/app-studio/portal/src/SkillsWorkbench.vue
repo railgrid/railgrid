@@ -24,6 +24,7 @@ export function assistantSkillsRequestIsCurrent(
 </script>
 
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
 import AISkillCatalogList from './agentkit/AISkillCatalogList.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
@@ -486,8 +487,9 @@ function friendlyError(error: unknown, fallback: string): string {
         @update:query="query = $event"
         @select="selectSkill($event)"
       />
+      <LoadingSkeleton v-else-if="props.loading || catalogLoading" label="Loading the skills catalog…" />
       <p v-else class="px-4 py-8 text-center text-[12px] text-text-muted" role="status">
-        {{ props.loading || catalogLoading ? 'Loading the skills catalog…' : catalogFailure ? 'Skill count is unavailable until the catalog loads.' : 'Skills will appear after the first catalog read.' }}
+        {{ catalogFailure ? 'Skill count is unavailable until the catalog loads.' : 'Skills will appear after the first catalog read.' }}
       </p>
     </div>
 
@@ -562,7 +564,7 @@ function friendlyError(error: unknown, fallback: string): string {
                 @action="retrySkillDetail"
               />
             </div>
-            <div v-if="detailLoading && !selectedDetail" class="flex min-h-48 items-center justify-center gap-2 text-[12px] text-text-muted" role="status"><Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" /> Loading skill…</div>
+            <LoadingSkeleton v-if="detailLoading && !selectedDetail" label="Loading skill…" compact />
             <div v-else-if="selectedDetail" class="grid gap-4">
               <div class="rounded-xl border border-border-subtle bg-surface p-5">
                 <pre v-if="detailInstructions" class="whitespace-pre-wrap font-sans text-[13px] leading-6 text-text-secondary">{{ detailInstructions }}</pre>

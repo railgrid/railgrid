@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import { vFocusOnRecovery } from '../vue/noticeFocus'
 import InlineNotification from '../portalkit/InlineNotification.vue'
 import { containModalTab } from '../portalkit/modal-focus'
@@ -947,8 +948,9 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
       Could not refresh {{ meta.title.toLowerCase() }}. Showing the last loaded data. {{ slice.error }}
     </InlineNotification>
 
-    <div v-if="!createRoute && !editing" class="k-card agents-state" :class="slice.error ? 'agents-state-error' : slice.loading || !slice.hasSnapshot ? 'k-loading-reveal' : 'agents-state-empty'" :role="slice.error ? 'alert' : 'status'">
-      <p class="muted">{{ slice.error ? `Could not load this ${meta.one}. ${slice.error}` : slice.loading || !slice.hasSnapshot ? `Loading ${meta.one}…` : `No ${meta.one} named “${editName}” belongs to this agent.` }}</p>
+    <LoadingSkeleton v-if="!createRoute && !editing && !slice.error && !slice.hasSnapshot" :label="`Loading ${meta.one}…`" />
+    <div v-else-if="!createRoute && !editing" class="k-card agents-state" :class="slice.error ? 'agents-state-error' : 'agents-state-empty'" :role="slice.error ? 'alert' : 'status'">
+      <p class="muted">{{ slice.error ? `Could not load this ${meta.one}. ${slice.error}` : `No ${meta.one} named “${editName}” belongs to this agent.` }}</p>
       <button v-if="slice.error" class="k-btn k-btn--ghost secondary" type="button" :disabled="slice.loading" @click="store.load(kind === 'schedule' ? 'schedules' : 'triggers')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
     </div>
 

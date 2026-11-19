@@ -591,7 +591,7 @@ describe('route-owned creation surfaces', () => {
     const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
 
     expect(el.querySelector('form')).toBeNull()
-    expect(el.querySelector('.agents-state-loading')?.textContent).toContain('Loading existing agents and model credentials')
+    expect(el.querySelector('[data-loading-visual]')).not.toBeNull()
     expect(el.textContent).not.toContain('This workspace needs a chat model')
   })
 
@@ -628,7 +628,7 @@ describe('route-owned creation surfaces', () => {
     runnerLoading.querySelector<HTMLInputElement>('[data-use-coding-harness]')!.click()
     await settle(runnerLoading, 2)
     expect(runnerLoading.querySelector('.k-inline-notification--error[role="alert"]')).toBeNull()
-    expect(runnerLoading.querySelector('[aria-labelledby=agent-create-execution-heading]')?.textContent).toContain('Loading machines…')
+    expect(runnerLoading.querySelector('[aria-labelledby=agent-create-execution-heading] [data-loading-visual]')).not.toBeNull()
     expect(runnerLoading.querySelector('.k-create-guidance')?.textContent).not.toContain('Join a Linux or macOS machine')
 
     const runnerErrorStore = makeStore(api)

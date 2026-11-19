@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { Bot, Gauge, RefreshCw, Settings } from 'lucide-vue-next'
 import Tabs, { type PortalTabItem } from './portalkit/Tabs.vue'
@@ -616,7 +617,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
 </script>
 
 <template>
-  <div v-if="!ctx" class="k-card agents-empty k-loading-reveal"><p class="muted" role="status">Connecting…</p></div>
+  <LoadingSkeleton v-if="!ctx" label="Connecting…" />
   <div v-else-if="!contextUsable" class="k-card agents-empty">
     <p class="muted" role="status">Select an organization and workspace in the sidebar to use your agents.</p>
   </div>

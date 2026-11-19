@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import { vFocusOnRecovery } from '../vue/noticeFocus'
 import InlineNotification from '../portalkit/InlineNotification.vue'
 import { containModalTab } from '../portalkit/modal-focus'
@@ -634,7 +635,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
           <X aria-hidden="true" />
         </button>
       </div>
-      <p v-if="templatesLoading" role="status">Loading templates…</p>
+      <LoadingSkeleton v-if="templatesLoading" label="Loading templates…" compact />
       <div v-else-if="templatesError" class="agents-stale" role="status">
         Could not load agent templates.
         <button class="k-btn k-btn--ghost" type="button" @click="loadTemplates">Retry</button>
@@ -651,9 +652,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
       Could not load model credentials. {{ credentials.error }}
       <button class="k-btn k-btn--ghost" type="button" :disabled="credentials.loading" @click="store.load('credentials')">Retry</button>
     </div>
-    <div v-else-if="!agents.hasSnapshot || !credentials.hasSnapshot" class="k-card agents-state agents-state-loading k-loading-reveal" role="status">
-      Loading existing agents and model credentials…
-    </div>
+    <LoadingSkeleton v-else-if="!agents.hasSnapshot || !credentials.hasSnapshot" label="Loading existing agents and model credentials…" />
 
     <template v-else>
       <div v-if="agents.error" class="agents-stale" role="status">
@@ -807,7 +806,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                 >
                   Could not load machines. {{ edgeSlice.error }}
                 </InlineNotification>
-                <div v-else-if="!edgeSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status">Loading machines…</div>
+                <LoadingSkeleton v-else-if="!edgeSlice.hasSnapshot" label="Loading machines…" compact />
                 <template v-else>
                   <InlineNotification
                     v-if="edgeSlice.error"

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
@@ -6,7 +7,6 @@ import DynamicForm from '../components/DynamicForm.vue'
 import { api, isContextChangedError } from '../api'
 import { createWritableValues } from '../createValues'
 import type { Template, ErrorResponse } from '../types'
-import { useDelayedLoading } from '../portalkit/useDelayedLoading'
 import { toast } from '../portalkit/toast'
 import { REASON_CLOUD_CREDENTIALS_MISSING, REASON_API_BINDING_MISSING, REASON_TENANT_MISSING } from '../types'
 
@@ -36,7 +36,6 @@ const loading = ref(true)
 const loaded = ref(false)
 const readError = ref<string | null>(null)
 const initialReadPending = computed(() => loading.value && !loaded.value && !readError.value)
-const showInitialLoading = useDelayedLoading(initialReadPending)
 const mutationError = ref<string | null>(null)
 const instanceNameFieldError = ref<string | null>(null)
 const submitting = ref(false)
@@ -180,18 +179,7 @@ async function submit() {
 <template>
   <section class="page k-create-page">
     <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="submitting" @click="emit('navigate', 'catalog')"><ArrowLeft :size="14" aria-hidden="true" /> Back to templates</button>
-    <div
-      v-if="initialReadPending"
-      class="page-loading-shell k-delayed-loading"
-      :role="showInitialLoading ? 'status' : undefined"
-      :aria-live="showInitialLoading ? 'polite' : undefined"
-      :aria-busy="showInitialLoading ? 'true' : undefined"
-      :aria-hidden="showInitialLoading ? undefined : 'true'"
-    >
-      <span>Loading template…</span>
-      <div class="shimmer page-loading-line page-loading-line-short" aria-hidden="true" />
-      <div class="shimmer page-loading-panel" aria-hidden="true" />
-    </div>
+    <LoadingSkeleton v-if="initialReadPending" label="Loading template…" />
     <div v-else-if="!template && readError" ref="retryNotice">
       <InlineNotification tone="error" action-label="Retry" action-busy-label="Retrying template…" :action-busy="loading" @action="retry">
         {{ readError }}

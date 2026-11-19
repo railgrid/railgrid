@@ -1,3 +1,4 @@
+import { loadingSkeletonMarkup } from './portalkit/loading-skeleton'
 import {
   createTilePoller,
   dashboardTileSemanticClass as k,
@@ -132,7 +133,7 @@ export class QuickstartDashboardTileElement extends HTMLElement {
     if (!this._loaded) {
       this.innerHTML = this._error
         ? `<div class="${k.error}" role="alert">Could not load greetings. ${escapeHTML(this._error)} <button class="k-dashboard-action" type="button" data-retry>Retry</button></div>`
-        : `<div class="${k.message}" role="status">Loading greetings…</div>`
+        : loadingSkeletonMarkup('Loading greetings…', { compact: true })
       this._bindRetry()
       return
     }

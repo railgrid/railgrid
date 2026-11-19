@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import { Loader2, Search, TriangleAlert, X } from 'lucide-vue-next'
@@ -192,7 +193,7 @@ watch([() => props.name, () => props.api, () => props.authorityEpoch], () => {
         @action="load"
       />
     </div>
-    <p v-if="loading && !catalogHasSnapshot" class="agents-state agents-state-loading" role="status"><Loader2 class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" /> Loading skills…</p>
+    <LoadingSkeleton v-if="loading && !catalogHasSnapshot" label="Loading skills…" />
     <p v-else-if="loading && catalogHasSnapshot" class="sr-only" role="status" aria-live="polite">Refreshing skills…</p>
     <ul v-if="catalogHasSnapshot && (filteredSkills.length || filteredMissingSkillIDs.length || filteredUnverifiedEnabledIDs.length)" class="agents-skill-activation__list" role="list" :aria-label="view === 'enabled' ? 'Enabled skills' : 'Available skills'">
       <li v-for="id in filteredUnverifiedEnabledIDs" :key="`unverified:${id}`" class="agents-skill-activation__row">

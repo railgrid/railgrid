@@ -337,12 +337,12 @@ describe('models view on an empty workspace', () => {
     secondStore.credentials.loaded = secondStore.credentials.hasSnapshot = true
     await view.setProps({ store: secondStore, api: second })
 
-    expect(view.element.textContent).toContain('Loading model catalog…')
+    expect(view.element.querySelector('[data-loading-visual]')).not.toBeNull()
     expect(view.element.textContent).not.toContain('$5.00')
     expect(view.element.textContent).not.toContain('$2 input · $8 output')
 
     await view.setProps({ modelsTab: 'usage' })
-    expect(view.element.textContent).toContain('Loading usage…')
+    expect(view.element.querySelector('[data-loading-visual]')).not.toBeNull()
     nextCatalog.resolve([])
     nextUsage.resolve(usageWithNulls)
     await settleVue()

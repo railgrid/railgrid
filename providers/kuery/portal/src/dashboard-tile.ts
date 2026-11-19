@@ -15,6 +15,7 @@
 //
 // Plain DOM using portalkit's framework-neutral dashboard tile semantics.
 
+import { loadingSkeletonMarkup } from './portalkit/loading-skeleton'
 import { ic } from './portalkit/icons'
 import {
   TILE_ROWS,
@@ -138,7 +139,7 @@ export class KueryDashboardTile extends HTMLElement {
 
   private _render(): void {
     if (this._loading && !this._loaded) {
-      this._commit(`<div class="${dashboardTileSemanticClass.message}" role="status" aria-live="polite" aria-atomic="true">Loading edges…</div>`)
+      this._commit(loadingSkeletonMarkup('Loading edges…', { compact: true }))
       return
     }
     if (this._error && !this._loaded) {

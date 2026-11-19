@@ -257,7 +257,7 @@ describe('agents dashboard tile refresh resilience', () => {
       ...(boundary === 'caller' ? { user: { userId: 'bob' } } : { workspaceUUID: 'other-workspace' }),
     }
     await settle(tile)
-    expect(text(tile)).toContain('Loading agents')
+    expect(tile.querySelector('[data-loading-visual]')).not.toBeNull()
     expect(text(tile)).not.toContain('1 agent')
 
     refresh.reject(new Error('forbidden'))
@@ -291,7 +291,7 @@ describe('agents dashboard tile refresh resilience', () => {
     }
     await settle(tile)
 
-    expect(text(tile)).toContain('Loading agents')
+    expect(tile.querySelector('[data-loading-visual]')).not.toBeNull()
     expect(text(tile)).not.toContain('alice-agent')
     expect(text(tile)).not.toContain('1 agent')
 
