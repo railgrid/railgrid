@@ -40,6 +40,14 @@ const router = useRouter()
 // remain authenticated while the target is intentionally empty.
 const hasPortalSession = computed(() => !!auth.token)
 
+// Keep an already-visible chooser mounted behind the loading screen. Its
+// navigation handler needs to receive the rejection when opening a workspace
+// fails. Remounting it starts its automatic workspace selection over again.
+const mountedChooserPath = computed<string | null>((previous) => {
+  if (route.name !== 'workspace-chooser' || !hasPortalSession.value) return null
+  return !scopeBlocked.value || previous === route.path ? route.path : null
+})
+
 // Keep the terminal singleton mounted so sessions survive navigation, but do
 // not expose its chrome on the standalone organization chooser.
 const hideTerminalDock = computed(
@@ -218,7 +226,10 @@ watch(
 <template>
   <div class="railgrid-workspace-viewport">
     <RouteContextState v-if="scopeBlocked" />
-    <router-view v-else :key="scopeKey" />
+    <router-view v-slot="{ Component }">
+      <component v-if="mountedChooserPath" :is="Component" :key="mountedChooserPath" v-show="!scopeBlocked" />
+      <component v-else-if="!scopeBlocked" :is="Component" :key="scopeKey" />
+    </router-view>
   </div>
   <InlineNotification
     v-if="tenant.error && showTenantErrorInline"
