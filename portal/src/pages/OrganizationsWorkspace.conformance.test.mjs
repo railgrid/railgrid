@@ -1557,7 +1557,7 @@ test('provider catalog and binding checks have finite loading, missing, error, a
   assert.match(providerFrame, /Failed to load provider catalog/)
   assert.match(providerFrame, /<InlineNotification\b[^>]*@action="retryCatalog"/)
   assert.match(providerFrame, /Provider <code class="font-mono text-text-secondary">\{\{ props\.providerName \}\}<\/code> is not available/)
-  assert.match(providerFrame, /Checking provider access&hellip;/)
+  assert.match(providerFrame, /<LoadingSkeleton v-else-if="bindingChecking && !accessHeld" label="Checking provider access…" tabs/)
   assert.match(providerFrame, /Could not check provider access/)
   assert.match(providerFrame, /<InlineNotification\b[^>]*@action="retryBindings"/)
   assert.match(providerFrame, /This provider does not publish a portal UI\./)

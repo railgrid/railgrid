@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 // Dashboard tile for App Studio, mounted by
 // <railgrid-dashboard-tile-app-studio> (see element.ts).
 //
@@ -164,7 +165,7 @@ watch(
       {{ hasSnapshot ? 'Could not refresh. Showing the last loaded data.' : 'Could not load projects.' }} {{ displayError }}
       <button type="button" class="k-btn k-btn--ghost k-btn--sm" :aria-disabled="retryPending || undefined" :aria-busy="retryPending || undefined" @click="retry">{{ retryPending ? 'Retrying…' : 'Retry' }}</button>
     </div>
-    <div v-if="loading && !hasSnapshot && !displayError" :class="tileClass.message" role="status" aria-live="polite">Loading projects&hellip;</div>
+    <LoadingSkeleton v-if="loading && !hasSnapshot && !displayError" label="Loading projects&hellip;" compact />
 
     <template v-if="hasSnapshot">
       <div :class="tileClass.stats">

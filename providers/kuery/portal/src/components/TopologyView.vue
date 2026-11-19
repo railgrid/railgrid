@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ChevronDown } from 'lucide-vue-next'
@@ -406,7 +407,7 @@ onBeforeUnmount(() => { loadGeneration += 1; fullscreenGeneration += 1; loadCont
         <button type="button" class="k-btn k-btn--ghost" @click="toggleFullscreen">{{ full ? 'Exit full screen' : 'Full screen' }}</button>
       </div>
     </template>
-    <div v-if="loading && !currentSnapshot && !error && !notEngaged" class="kuery-read-state" role="status">Building fleet topology…</div>
+    <LoadingSkeleton v-if="loading && !currentSnapshot && !error && !notEngaged" label="Building fleet topology…" />
     <div v-else-if="notEngaged && !currentSnapshot" class="kuery-read-state" role="status">
       <div class="kuery-error-copy">
         <span>Your Kubernetes edge is connected, but Kuery has not started syncing it yet.</span>

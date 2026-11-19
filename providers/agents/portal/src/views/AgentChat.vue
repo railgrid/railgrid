@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import type { QuestionReply } from '../types'
 import { PAGE_CONTEXT_MARKER } from '../pageContext'
 import { offerChatDraft, takeChatDraft } from '../chatHandoff'
@@ -3371,7 +3372,7 @@ defineExpose({
         :action-busy="sessionsLoading"
         @action="retrySessions"
       />
-      <p v-if="sessionsLoading && !sessionsHasSnapshot && !sessionsError" role="status">Loading chats…</p>
+      <LoadingSkeleton v-if="sessionsLoading && !sessionsHasSnapshot && !sessionsError" label="Loading chats…" compact />
       <p v-else-if="sessionsHasSnapshot && !filteredOverlayChats.length" class="muted" role="status">{{ overlayChatSearch ? 'No chats match your search.' : 'No chats yet. Start a new chat above.' }}</p>
       <div v-for="group in overlayChatGroups" :key="group.label" class="agents-overlay-chats__group"><h3>{{ group.label }}</h3>
       <div v-for="item in group.items" :key="item.id"><button type="button" class="agents-overlay-chats__row" :disabled="!!selectingSessionID" :aria-current="item.id === sessionID ? 'true' : undefined" @click="selectOverlayChat(item.id)">
@@ -3495,7 +3496,7 @@ defineExpose({
               />
 
             </template>
-            <p v-if="messagesLoading && !messagesHasSnapshot && !loadError" class="muted" role="status">Loading conversation…</p>
+            <LoadingSkeleton v-if="messagesLoading && !messagesHasSnapshot && !loadError" label="Loading conversation…" />
             <section v-if="messagesHasSnapshot && messages.length === 0" class="agents-chat-welcome" aria-label="Start a conversation">
               <h2>Start a conversation with {{ agent?.spec.displayName || name }}</h2>
               <p class="muted" role="status" aria-live="polite">{{ agent?.spec.description || 'Share a goal, ask a question, or explore what this agent can help you do.' }}</p>

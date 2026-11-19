@@ -25,7 +25,7 @@ test('uses host catalog chrome on landing routes and keeps project workbenches f
   assert.match(providerFrame, /providerRoutePath\.value === APP_STUDIO_MODELS_ROUTE/)
   assert.match(providerFrame, /providerRoutePath\.value\.startsWith\(`\$\{APP_STUDIO_MODELS_ROUTE\}\/`\)/)
   assert.match(providerFrame, /const isAppStudioWorkspaceRoute = computed\(\(\) => props\.providerName === 'app-studio' && !isAppStudioLandingRoute\.value\)/)
-  assert.match(providerFrame, /const isFullBleedProvider = computed\(\(\) =>\s*isAppStudioWorkspaceRoute\.value \|\|\s*\(providerFullBleedOverride\.value === true && accessAllowed\.value\),?\s*\)/)
+  assert.match(providerFrame, /const isFullBleedProvider = computed\(\(\) =>\s*isAppStudioWorkspaceRoute\.value \|\|\s*\(providerFullBleedOverride\.value === true && accessActive\.value\),?\s*\)/)
   assert.match(providerFrame, /<header v-if="catalogSettled && entry && !isFullBleedProvider"/)
   assert.match(app, /<h2[^>]*>Projects<\/h2>/)
   assert.doesNotMatch(app, />App Studio<\/h1>/)
@@ -46,12 +46,11 @@ test('keeps dashboard tile snapshots visible across background refresh failures'
 test('keeps the project index unpainted while loading and exposes settled first-run guidance', () => {
   assert.match(app, /const projectIndexRoutePending = computed\(\(\) =>[\s\S]*isProjectIndexRoute\.value[\s\S]*projects\.value\.length === 0[\s\S]*loading\.value \|\| !projectsLoaded\.value/)
 
-  const routeGateStart = app.indexOf('<div v-else-if="projectIndexRoutePending"')
+  const routeGateStart = app.indexOf('<LoadingSkeleton v-else-if="projectIndexRoutePending"')
   const landingStart = app.indexOf('<div v-else-if="!isBuilderVisible"', routeGateStart)
   assert.ok(routeGateStart >= 0 && landingStart > routeGateStart)
   const routeGate = app.slice(routeGateStart, landingStart)
-  assert.match(routeGate, /v-if="showProjectIndexRouteLoading"/)
-  assert.match(routeGate, /Loading App Studio…/)
+  assert.match(routeGate, /label="Loading App Studio…" tabs/)
   assert.doesNotMatch(routeGate, />Projects</)
 
   const emptyListStart = app.indexOf('if (visibleProjectList.length === 0)')
@@ -158,8 +157,8 @@ test('registers lightweight elements and defers page and tile implementations in
   assert.match(element, /return loadCurrentMount\('page'\)/)
   assert.match(element, /return loadCurrentMount\('tile'\)/)
   assert.doesNotMatch(element, /from 'vue'|App\.vue|DashboardTile\.vue/)
-  assert.match(element, /status\.setAttribute\('role', 'status'\)/)
-  assert.match(element, /status\.setAttribute\('aria-live', 'polite'\)/)
+  assert.match(element, /announcement\.setAttribute\('role', 'status'\)/)
+  assert.match(element, /announcement\.className = 'sr-only k-loading-skeleton__status'/)
   assert.match(pageElement, /element\.replaceChildren\(\)[\s\S]*element\.appendChild\(host\)/)
 })
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ArrowRight, Loader2 } from 'lucide-vue-next'
 import { authenticationApi as api, type ProjectAuthentication } from './authenticationApi'
@@ -282,10 +283,7 @@ onBeforeUnmount(() => { generation++ })
     :aria-busy="loading || saving || grantsLoading"
   >
 
-    <p v-if="loading" role="status" class="flex items-center gap-2 text-[12px] text-text-muted">
-      <Loader2 class="h-4 w-4 animate-spin" aria-hidden="true" />
-      Checking Railgrid Auth…
-    </p>
+    <LoadingSkeleton v-if="loading" label="Checking Railgrid Auth…" compact />
 
     <template v-else-if="state">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -385,9 +383,7 @@ onBeforeUnmount(() => { generation++ })
               </button>
             </form>
 
-            <div v-if="grantsLoading && !grantsError" role="status" class="flex items-center gap-2 text-[12px] text-text-muted">
-              <Loader2 class="h-4 w-4 animate-spin" aria-hidden="true" /> Loading sign-in approvals…
-            </div>
+            <LoadingSkeleton v-if="grantsLoading && !grantsError" label="Loading sign-in approvals…" compact />
             <div v-else-if="grantsError" class="grid justify-items-start gap-2" role="alert">
               <p class="text-[12px] leading-5 text-danger">Could not load Production sign-in approvals: {{ grantsError }}</p>
               <button ref="grantsRetry" type="button" class="k-btn" :aria-disabled="grantsLoading || saving" @click="loadGrants(true)">{{ grantsLoading ? 'Retrying…' : 'Retry' }}</button>

@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 68;
+  --railgrid-ui-core-version: 69;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -2059,6 +2059,53 @@ dialog.k-modal-overlay::backdrop { background: transparent; }
   from { opacity: 0; }
   to { opacity: 1; }
 }
+.k-loading-skeleton {
+  display: grid;
+  min-inline-size: 0;
+  gap: 16px;
+}
+.k-loading-skeleton__status {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.k-loading-skeleton__tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 6rem));
+  gap: 12px;
+  padding-block-end: 12px;
+  border-block-end: 1px solid var(--color-border-subtle);
+}
+.k-loading-skeleton__tabs > div {
+  block-size: 32px;
+  border-radius: 4px;
+}
+.k-loading-skeleton__heading {
+  inline-size: min(10rem, 100%);
+  block-size: 16px;
+  border-radius: 4px;
+}
+.k-loading-skeleton__panel {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+}
+.k-loading-skeleton__panel > div {
+  block-size: 28px;
+  border-radius: 4px;
+}
+.k-loading-skeleton--compact { gap: 8px; }
+.k-loading-skeleton--compact .k-loading-skeleton__heading { block-size: 12px; }
+.k-loading-skeleton--compact .k-loading-skeleton__panel { padding: 8px; }
+.k-loading-skeleton--compact .k-loading-skeleton__panel > div { block-size: 16px; }
 .k-table__loading-head,
 .k-table__loading-row {
   display: grid;

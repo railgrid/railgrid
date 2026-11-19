@@ -1,3 +1,4 @@
+import { loadingSkeletonMarkup } from './portalkit/loading-skeleton'
 import { createKubeClient, type KubeClient, type KubeObject, type KubeResourceRef } from './portalkit/kube'
 import { ic } from './portalkit/icons'
 import { providerFetch, type ProviderFetch } from './portalkit/tenant'
@@ -336,7 +337,11 @@ export class QuickstartElement extends HTMLElement {
 
   private _renderList(): string {
     if (!this._ctx?.tenant) return `<p class="quickstart-empty">Select a workspace to see its greetings.</p>`
-    if (!this._loaded) return `<p class="quickstart-empty" role="status">${this._readError ? 'Greetings could not be loaded. Retry the inventory read.' : 'Loading greetings…'}</p>`
+    if (!this._loaded) {
+      return this._readError
+        ? '<p class="quickstart-empty" role="status">Greetings could not be loaded. Retry the inventory read.</p>'
+        : loadingSkeletonMarkup('Loading greetings…')
+    }
     if (this._items.length === 0) return `
       <section class="k-first-run k-first-run--simple" aria-labelledby="quickstart-first-run-title">
         <div class="k-first-run__lead">

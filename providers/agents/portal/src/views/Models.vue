@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import snapshotSuffixPattern from '../model-snapshot-suffix.json'
 
 import { ArrowLeft, ArrowRight, Cpu, Loader2, Play, Plus, Trash2 } from 'lucide-vue-next'
@@ -511,7 +512,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
       <template v-if="credentialView">
       <template v-if="modelView">
       <div v-if="modelView && catalogError" ref="catalogWarning" data-catalog-warning><InlineNotification :tone="catalogHasSnapshot ? 'warning' : 'error'" :message="catalogHasSnapshot ? `Could not refresh the model catalog. Showing the last loaded catalog. ${catalogError}` : `Model catalog unavailable: ${catalogError}`" action-label="Retry" action-busy-label="Retrying catalog…" :action-busy="catalogLoading" @action="loadCatalog" /></div>
-      <div v-else-if="modelView && catalogLoading && !catalogHasSnapshot" class="k-loading-reveal muted" role="status">Loading model catalog…</div>
+      <LoadingSkeleton v-else-if="modelView && catalogLoading && !catalogHasSnapshot" label="Loading model catalog…" />
       <header class="k-resource-page__header" aria-labelledby="available-models-title">
         <div class="k-resource-page__heading"><h3 id="available-models-title" ref="availableModelsHeading" tabindex="-1" class="k-resource-page__title">Available models</h3><p class="k-resource-page__subtitle">Assign models to agents. Each model shows its provider connection or direct credential.</p></div>
         <div v-if="!setupNavigation" class="k-resource-page__header-side">
@@ -528,7 +529,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           </button>
         </template>
       </FirstRunGuide>
-      <div v-else-if="!setupNavigation && !credentials.loaded && !credentials.error" class="k-loading-reveal muted" role="status">Loading credentials…</div>
+      <LoadingSkeleton v-else-if="!setupNavigation && !credentials.loaded && !credentials.error" label="Loading credentials…" />
       <div v-if="credentials.error" ref="credentialsWarning">
         <InlineNotification :tone="credentials.hasSnapshot ? 'warning' : 'error'" :message="credentials.hasSnapshot ? `Showing the last successful results. ${credentials.error}` : credentials.error" action-label="Retry" action-busy-label="Retrying…" :action-busy="credentials.loading" @action="store.load('credentials')" />
       </div>

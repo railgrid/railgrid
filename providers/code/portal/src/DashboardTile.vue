@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 // Dashboard tile for the code provider, mounted by
 // <railgrid-dashboard-tile-code> (see element.ts).
 //
@@ -149,7 +150,7 @@ watch(
 <template>
   <div ref="rootRef" :class="tileClass.root" :aria-busy="loading || retryPending" tabindex="-1">
     <div v-if="displayError" :class="tileClass.error" :role="loaded ? 'status' : 'alert'" aria-live="polite">{{ loaded ? 'Could not refresh. Showing cached data.' : 'Could not load repositories.' }} {{ displayError }} <button type="button" class="k-dashboard-action" :aria-disabled="retryPending || undefined" :aria-busy="retryPending || undefined" @click="retry">{{ retryPending ? 'Retrying…' : 'Retry' }}</button></div>
-    <div v-if="loading && !loaded && !displayError" :class="tileClass.message" role="status" aria-live="polite">Loading repositories&hellip;</div>
+    <LoadingSkeleton v-if="loading && !loaded && !displayError" label="Loading repositories&hellip;" compact />
 
     <template v-if="loaded">
       <span v-if="loading && !displayError" class="sr-only" role="status" aria-live="polite">Updating repositories…</span>

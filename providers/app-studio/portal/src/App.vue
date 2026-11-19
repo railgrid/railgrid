@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import { portalHref } from './portalkit/navigation'
 import MarkdownIt from 'markdown-it'
 import { computed, defineAsyncComponent, h, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Component } from 'vue'
@@ -60,7 +61,6 @@ import LayoutSelector from './portalkit/LayoutSelector.vue'
 import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import ResourceTable from './portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
-import { useDelayedLoading } from './portalkit/useDelayedLoading'
 import { confirmDialog, confirmState } from './portalkit/confirm'
 import { readLayoutPreference, writeLayoutPreference, type LayoutMode } from './portalkit/layoutPreference'
 import { toast } from './portalkit/toast'
@@ -212,13 +212,13 @@ import NewProjectWizard from './NewProjectWizard.vue'
 const GitConnectionSettings = defineAsyncComponent({
   loader: () => import('./GitConnectionSettings.vue'),
   delay: 0,
-  loadingComponent: { render: () => h('div', { role: 'status' }, 'Loading repository settings…') },
+  loadingComponent: { render: () => h(LoadingSkeleton, { label: 'Loading repository settings…', compact: true }) },
   errorComponent: { render: () => h('div', { role: 'alert' }, 'Could not load repository settings. Reload this page to retry.') },
 })
 const ProjectAuthentication = defineAsyncComponent({
   loader: () => import('./ProjectAuthentication.vue'),
   delay: 0,
-  loadingComponent: { render: () => h('div', { role: 'status', class: 'text-[12px] text-text-muted' }, 'Loading authentication settings…') },
+  loadingComponent: { render: () => h(LoadingSkeleton, { label: 'Loading authentication settings…', compact: true }) },
   errorComponent: { render: () => h('div', { role: 'alert', class: 'text-[12px] text-danger' }, 'Could not load authentication settings. Reload this page to retry.') },
 })
 import { useProjectCreationSubmit } from './useProjectCreationSubmit'
@@ -266,20 +266,20 @@ const AIWorkbenchLauncher = defineAsyncComponent(() => import('./agentkit/AIWork
 const AssistantRichComposer = defineAsyncComponent({
   loader: () => import('./AssistantRichComposer.vue'),
   delay: 0,
-  loadingComponent: { render: () => h('div', { class: 'flex min-h-[132px] items-center px-4 text-[12px] text-text-muted', role: 'status' }, 'Loading composer…') },
+  loadingComponent: { render: () => h(LoadingSkeleton, { label: 'Loading composer…', compact: true }) },
   errorComponent: { render: () => h('div', { class: 'flex min-h-[132px] items-center px-4 text-[12px] text-danger', role: 'alert' }, 'Could not load the composer. Reload this page to retry.') },
 })
 // The Code tab loads on first open; its upload/preview tooling stays off the page path.
 const CodeExplorer = defineAsyncComponent({
   loader: () => import('./CodeExplorer.vue'),
-  delay: 200,
-  loadingComponent: { render: () => h('div', { role: 'status', class: 'px-4 py-3 text-[13px] text-text-muted' }, 'Loading workspace files…') },
+  delay: 0,
+  loadingComponent: { render: () => h(LoadingSkeleton, { label: 'Loading workspace files…', compact: true }) },
   errorComponent: { render: () => h('div', { role: 'alert', class: 'px-4 py-3 text-[13px] text-danger' }, 'Could not load the code explorer. Reload this page to retry.') },
 })
 const ModelsSettings = defineAsyncComponent({
   loader: () => import('./ModelsSettings.vue'),
   delay: 0,
-  loadingComponent: { render: () => h('div', { role: 'status' }, 'Loading model settings…') },
+  loadingComponent: { render: () => h(LoadingSkeleton, { label: 'Loading model settings…' }) },
   errorComponent: { render: () => h('div', { role: 'alert' }, 'Could not load model settings. Reload this page to retry.') },
 })
 import ProductionForm from './ProductionForm.vue'
@@ -2227,7 +2227,6 @@ const projectIndexRoutePending = computed(() =>
   projects.value.length === 0 &&
   (loading.value || !projectsLoaded.value),
 )
-const showProjectIndexRouteLoading = useDelayedLoading(projectIndexRoutePending)
 const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value ? '' : routeSegment.value))
 const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value)
 
@@ -10827,18 +10826,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     </div>
   </div>
 
-  <div v-else-if="projectIndexRoutePending" class="min-h-0 bg-surface text-text-primary">
-    <div
-      v-if="showProjectIndexRouteLoading"
-      class="k-delayed-loading flex min-h-[260px] items-center justify-center gap-2 text-[13px] text-text-muted"
-      role="status"
-      aria-live="polite"
-      aria-busy="true"
-    >
-      <Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
-      <span>Loading App Studio…</span>
-    </div>
-  </div>
+  <LoadingSkeleton v-else-if="projectIndexRoutePending" label="Loading App Studio…" tabs />
 
   <div v-else-if="!isBuilderVisible" class="min-h-0 bg-surface text-text-primary">
     <div class="flex min-h-full w-full flex-col gap-4">
@@ -11005,9 +10993,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </article>
           </div>
 
-          <div v-else-if="!projectsLoaded || loading" class="flex min-h-[260px] max-w-[520px] items-center justify-center rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center text-[13px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
-            Loading projects…
-          </div>
+          <LoadingSkeleton v-else-if="!projectsLoaded && !error" label="Loading projects…" />
           <div v-else-if="error" class="flex min-h-[260px] max-w-[520px] items-center justify-center rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center text-[13px] text-text-muted" role="status">
             Projects are unavailable. Use Retry above to load them again.
           </div>
@@ -11027,7 +11013,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           :row-interactive="(row) => !row.deleting"
           :row-aria-label="(row) => `Open project ${String(row.displayName || row.name)}`"
           :inline-empty="!!error || !!projectQuery.trim()"
-          :empty-text="!projectsLoaded || loading ? 'Loading projects…' : error ? 'Projects are unavailable.' : projectQuery.trim() ? 'No projects match this search.' : 'No projects yet.'"
+          :empty-text="error ? 'Projects are unavailable.' : projectQuery.trim() ? 'No projects match this search.' : 'No projects yet.'"
           @row-click="enterProjectTableRow"
         >
           <template #name="{ row }">
@@ -11162,10 +11148,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       <div class="text-[13px] font-semibold">
                         Import repository
                       </div>
-                      <div v-if="importRepositoriesLoading && !importRepositoriesHasSnapshot && !importRepositoriesError" class="grid gap-2" role="status" aria-busy="true">
-                        <div class="shimmer h-8 w-full rounded-md bg-surface" />
-                        <div class="text-[12px] text-text-secondary">Loading repositories…</div>
-                      </div>
+                      <LoadingSkeleton v-if="importRepositoriesLoading && !importRepositoriesHasSnapshot && !importRepositoriesError" label="Loading repositories…" compact />
                       <div v-if="importRepositoriesError" ref="importRepositoriesErrorNotice">
                         <InlineNotification
                           :tone="importRepositoriesHasSnapshot ? 'warning' : 'error'"
@@ -11514,14 +11497,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" />
             Updating conversation…
           </div>
-          <div v-if="conversationLoading" class="flex min-h-full items-center justify-center py-6" role="status" aria-live="polite" aria-busy="true">
-            <div class="w-full max-w-[720px] rounded-lg border border-border-subtle bg-surface-raised/70 p-4">
-              <div class="shimmer h-4 w-40 rounded bg-surface-overlay" />
-              <div class="mt-3 shimmer h-3 w-4/5 rounded bg-surface-overlay" />
-              <div class="mt-2 shimmer h-3 w-3/5 rounded bg-surface-overlay" />
-              <div class="mt-5 text-[12px] text-text-muted">Loading conversation history…</div>
-            </div>
-          </div>
+          <LoadingSkeleton v-if="conversationLoading" class="mx-auto w-full max-w-[720px] py-6" label="Loading conversation history…" />
           <div v-else-if="messages.length === 0 && !assistantThreadViewingOlderHistory && !assistantThreadOlderCursor && !assistantThreadOlderError" class="flex min-h-full items-center justify-center py-6">
             <div class="w-full max-w-[720px] rounded-lg border border-border-subtle bg-surface-raised/70 p-4">
               <div class="flex items-start gap-3">
@@ -11885,8 +11861,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </form>
       </template>
 
+      <LoadingSkeleton v-else-if="loading" class="p-6" label="Loading projects…" />
       <div v-else class="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-[13px] text-text-muted">
-        {{ loading ? 'Loading projects...' : 'Select or create a project.' }}
+        Select or create a project.
       </div>
           </section>
         </AIConversationLayout>
@@ -12024,9 +12001,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       </div>
 
       <template v-if="projectRouteLoading">
-        <div class="min-h-0 flex-1 overflow-auto p-4" role="status" aria-live="polite" aria-busy="true">
+        <LoadingSkeleton class="min-h-0 flex-1 overflow-auto p-4" label="Loading project workspace…">
           <div class="grid gap-3 rounded-lg border border-border-subtle bg-surface-raised/70 p-4">
-            <div class="shimmer h-4 w-36 rounded bg-surface-overlay" />
+            <div class="k-loading-shimmer h-4 w-36 rounded" />
             <div class="shimmer h-3 w-3/4 rounded bg-surface-overlay" />
             <div class="mt-2 grid gap-2">
               <div class="shimmer h-20 rounded-md bg-surface-overlay" />
@@ -12037,9 +12014,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <div class="shimmer h-12 rounded-md bg-surface-overlay" />
               <div class="shimmer h-12 rounded-md bg-surface-overlay" />
             </div>
-            <div class="text-[12px] text-text-muted">Loading project workspace…</div>
           </div>
-        </div>
+        </LoadingSkeleton>
       </template>
       <template v-else-if="projectRouteFailure">
         <div class="min-h-0 flex-1 overflow-auto p-4">
@@ -12310,9 +12286,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           :action-busy="providersLoading"
           @action="loadProviders"
         />
-        <p v-if="providersLoading" class="text-[12px] text-text-muted" role="status">
-          {{ providerCatalogLoaded ? 'Refreshing provider views…' : 'Loading provider views…' }}
-        </p>
+        <LoadingSkeleton v-if="providersLoading && !providerCatalogLoaded && !providerCatalogError" label="Loading provider views…" compact />
+        <span class="sr-only" role="status">{{ providersLoading && providerCatalogLoaded ? 'Refreshing provider views…' : '' }}</span>
         <ul v-if="filteredProviderTools.length" class="k-ai-launcher--rows" aria-label="Provider views">
           <li v-for="tool in filteredProviderTools" :key="tool.id">
             <button type="button" class="app-studio-touch-target k-ai-launcher__card" @click="openTool(tool)">
@@ -12328,7 +12303,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </button>
           </li>
         </ul>
-        <p v-else-if="!providersLoading && !providerCatalogError" class="border-t border-border-subtle py-4 text-[12px] text-text-muted" role="status">
+        <p v-else-if="providerCatalogLoaded && !providerCatalogError" class="border-t border-border-subtle py-4 text-[12px] text-text-muted" role="status">
           {{ providerQuery.trim() ? 'No provider views match your search.' : 'No provider views are available in this workspace.' }}
         </p>
         </AIWorkbenchPane>
@@ -12364,16 +12339,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <span>{{ providerCatalogError }}</span>
           <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadProviders">Retry</button>
         </div>
-        <div
+        <LoadingSkeleton
           v-else-if="!providerCatalogLoaded && providersLoading"
-          class="absolute inset-0 z-20 flex items-center justify-center bg-surface/90 text-[13px] text-text-muted"
-          role="status"
-          aria-live="polite"
-          aria-busy="true"
-        >
-          <Loader2 class="mr-2 h-4 w-4 animate-spin" :stroke-width="1.75" />
-          Loading provider catalog…
-        </div>
+          class="absolute inset-0 z-20 bg-surface/90 p-4"
+          label="Loading provider catalog…"
+        />
         <div
           v-else-if="providerCatalogError && !activeProviderTool"
           class="absolute inset-3 z-20 flex flex-col items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"
@@ -12382,17 +12352,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <span>{{ providerCatalogError }}</span>
           <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadProviders">Retry</button>
         </div>
-        <div
+        <LoadingSkeleton
           v-if="toolState === 'loading'"
-          class="absolute inset-0 z-10 flex items-center justify-center bg-surface/80 text-[13px] text-text-muted"
-          role="status"
-          aria-live="polite"
-          aria-busy="true"
-          aria-atomic="true"
-        >
-          <Loader2 class="mr-2 h-4 w-4 animate-spin" :stroke-width="1.75" aria-hidden="true" />
-          Loading {{ activeWorkbenchTab.title }}...
-        </div>
+          class="absolute inset-0 z-10 bg-surface/80 p-4"
+          :label="`Loading ${activeWorkbenchTab.title}…`"
+        />
         <div
           v-if="toolState === 'error'"
           class="absolute inset-3 z-10 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"

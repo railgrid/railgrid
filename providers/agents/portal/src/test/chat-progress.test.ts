@@ -267,7 +267,7 @@ describe('AgentChat loading and draft behavior', () => {
     })
     await settleVue(3, 1)
 
-    expect(text(view.element)).toContain('Loading conversation')
+    expect(view.element.querySelector('.agents-log [data-loading-visual]')).not.toBeNull()
     expect(text(view.element)).not.toContain('No messages yet')
 
     history.resolve([{ id: 'u1', role: 'user', content: 'Loaded' }])

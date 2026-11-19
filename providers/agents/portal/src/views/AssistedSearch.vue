@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import { Sparkles, X } from 'lucide-vue-next'
 import { computed, nextTick, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
@@ -158,7 +159,7 @@ function dismiss(): void {
       <p>Could not verify existing connections. {{ connectionSlice.error }}</p>
       <button ref="retryButton" class="k-btn k-btn--ghost secondary" type="button" :aria-disabled="connectionSlice.loading || undefined" :aria-busy="connectionSlice.loading || undefined" @click="retryConnections">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
     </div>
-    <div v-else-if="!connectionSlice.hasSnapshot" class="agents-panel k-card agents-route-panel k-loading-reveal" role="status"><p class="muted">Loading connections…</p></div>
+    <LoadingSkeleton v-else-if="!connectionSlice.hasSnapshot" label="Loading connections…" />
     <div v-else-if="configured" class="agents-panel k-card agents-route-panel">
       <div v-if="connectionSlice.error" class="agents-stale" role="status">Showing the last loaded connections. {{ connectionSlice.error }} <button ref="retryButton" class="k-dashboard-action" type="button" :aria-disabled="connectionSlice.loading || undefined" :aria-busy="connectionSlice.loading || undefined" @click="retryConnections">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button></div>
       <p ref="pageHeading" tabindex="-1" class="muted">Self-hosted search is already configured in this workspace.</p>

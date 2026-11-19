@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ArrowLeft, Globe2, Loader2, Plus, Server } from 'lucide-vue-next'
@@ -269,9 +270,7 @@ onUnmounted(() => {
         </button>
       </div>
     </InlineNotification>
-    <div v-if="loading" class="waiting" role="status" aria-live="polite">
-      <Loader2 :size="14" class="k-spin" aria-hidden="true" /> Loading service types and edges…
-    </div>
+    <LoadingSkeleton v-if="loading" label="Loading service types and edges…" />
 
     <FirstRunGuide
       v-else-if="!error && !readError && edges.length === 0"

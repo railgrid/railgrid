@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ArrowLeft, Loader2, Rocket, Server } from 'lucide-vue-next'
@@ -243,9 +244,7 @@ onUnmounted(() => {
     </header>
 
     <InlineNotification v-if="error" tone="error" :message="error" />
-    <div v-if="loading" class="waiting" role="status" aria-live="polite">
-      <Loader2 :size="14" class="k-spin" aria-hidden="true" /> Loading edges…
-    </div>
+    <LoadingSkeleton v-if="loading" label="Loading edges…" />
 
     <div v-else-if="edgeLoadError" class="k-create-surface">
       <div class="k-create-body">

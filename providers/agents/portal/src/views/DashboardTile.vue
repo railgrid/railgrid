@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { AlertTriangle, Bot, ChevronRight, Clock } from 'lucide-vue-next'
 import { ApiClient } from '../api'
@@ -154,7 +155,7 @@ defineExpose({ load, api, applyContext })
 </script>
 
 <template>
-  <div v-if="loading && !hasSnapshot && !error" class="agents-tile-msg" role="status" aria-live="polite">Loading agents…</div>
+  <LoadingSkeleton v-if="loading && !hasSnapshot && !error" label="Loading agents…" compact />
   <div v-else-if="error && !hasSnapshot" class="agents-tile-err" role="alert" aria-live="assertive">
     <span>Could not load agents. {{ error }}</span>
     <button class="k-btn k-btn--ghost secondary" type="button" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retryLoad">{{ loading ? 'Retrying…' : 'Retry' }}</button>

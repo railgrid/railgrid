@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import { Download, FileUp, Loader2, Package, Pencil, Plus, Trash2 } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
@@ -630,7 +631,7 @@ watch(() => props.createRoute, (creating) => {
               @action="retrySkillDetail"
             />
           </div>
-          <p v-if="detailLoading && !detail" class="agents-state agents-state-loading" role="status"><Loader2 class="k-spin" :size="14" :stroke-width="1.75" aria-hidden="true" /> Loading skill…</p>
+          <LoadingSkeleton v-if="detailLoading && !detail" label="Loading skill…" compact />
           <template v-else-if="detail">
             <div>
               <h3 class="mb-2 text-[13px] font-semibold">Instructions</h3>

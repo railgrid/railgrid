@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import { vFocusOnRecovery } from '../vue/noticeFocus'
 import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, ref, watch } from 'vue'
@@ -90,7 +91,7 @@ defineExpose({ loadUsage })
       >
         Usage unavailable: {{ usageError }}
       </InlineNotification>
-      <div v-else-if="!usageHasSnapshot" class="agents-dash-loading k-loading-reveal muted" role="status">Loading usage…</div>
+      <LoadingSkeleton v-else-if="!usageHasSnapshot" label="Loading usage…" />
       <template v-else-if="normalizedUsage">
         <InlineNotification
           v-if="usageError"

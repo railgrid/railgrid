@@ -115,20 +115,6 @@ details[open] > summary .landing-prompt-chevron {
   transform: none;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  :scope,
-  :scope *,
-  :scope *::before,
-  :scope *::after {
-    animation-delay: 0s !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    scroll-behavior: auto !important;
-    transition-delay: 0s !important;
-    transition-duration: 0.01ms !important;
-  }
-}
-
 /* Opt-in helpers for controls that need larger or persistently visible touch
    affordances without changing their compact pointer layout. */
 @media (hover: none), (any-pointer: coarse) {

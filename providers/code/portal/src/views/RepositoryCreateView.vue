@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
 import InlineNotification from '../portalkit/InlineNotification.vue'
 import { REMOTE_REPOSITORY_PATTERN, REPOSITORY_NAME_PATTERN } from '../repositoryIdentity'
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -297,9 +298,7 @@ onUnmounted(() => {
       <p class="k-create-description">{{ importing ? 'Add an existing GitHub repository to this workspace. Importing leaves its code and settings unchanged.' : 'Create a GitHub repository under the account or organization linked to your connection.' }}</p>
     </header>
 
-    <div v-if="(repositoryLoading && !repositoryLoaded) || (connectionsLoading && !connectionsLoaded)" class="panel k-card" role="status" aria-live="polite">
-      Loading repositories and connections…
-    </div>
+    <LoadingSkeleton v-if="(repositoryLoading && !repositoryLoaded) || (connectionsLoading && !connectionsLoaded)" label="Loading repositories and connections…" />
     <InlineNotification v-if="repositoryError" tone="error" action-label="Retry repositories" action-busy-label="Retrying repositories…" :action-busy="repositoryLoading" @action="loadRepositories(true)" :message="repositoryError" />
     <InlineNotification v-if="connectionsError" tone="error" action-label="Retry connections" action-busy-label="Retrying connections…" :action-busy="connectionsLoading" @action="loadConnections">{{ connectionsLoaded ? 'Showing the last loaded connections. ' : '' }}{{ connectionsError }}</InlineNotification>
     <div v-if="connectionsLoaded && !connectionChoices.length" class="panel k-card">

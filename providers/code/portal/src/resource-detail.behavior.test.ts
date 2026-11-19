@@ -142,9 +142,11 @@ vi.mock('./portalkit/ResourceTableDeleteButton.vue', async () => {
 import RepoDetailView from './views/RepoDetailView.vue'
 import ConnectionDetailView from './views/ConnectionDetailView.vue'
 import DashboardTile from './DashboardTile.vue'
+import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
 import repoSource from './views/RepoDetailView.vue?raw'
 import connectionSource from './views/ConnectionDetailView.vue?raw'
 import dashboardSource from './DashboardTile.vue?raw'
+import loadingSkeletonSource from './portalkit/LoadingSkeleton.vue?raw'
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -169,6 +171,7 @@ interface TreeNode {
   parent: TreeNode | null
   text?: string
   focus?(): void
+  closest?(): TreeNode | null
   setAttribute(name: string, value: string): void
   removeAttribute(name: string): void
 }
@@ -187,6 +190,7 @@ function createTreeElement(type: string): TreeNode {
     focus() {
       focusedNode = node
     },
+    closest() { return null },
     removeAttribute(name) {
       delete this.props[name]
     },
@@ -194,7 +198,9 @@ function createTreeElement(type: string): TreeNode {
   return node
 }
 
+const teleportBody = createTreeElement('body')
 const rendererOptions: RendererOptions<TreeNode, TreeNode> = {
+  querySelector: selector => selector === 'body' ? teleportBody : null,
   patchProp(node, key, _previous, next) {
     node.props[key] = next
   },
@@ -258,6 +264,7 @@ function compileClientRender(source: string, filename: string): (ctx: unknown, c
 ;(RepoDetailView as unknown as { render: unknown }).render = compileClientRender(repoSource, 'RepoDetailView.vue')
 ;(ConnectionDetailView as unknown as { render: unknown }).render = compileClientRender(connectionSource, 'ConnectionDetailView.vue')
 ;(DashboardTile as unknown as { render: unknown }).render = compileClientRender(dashboardSource, 'DashboardTile.vue')
+;(LoadingSkeleton as unknown as { render: unknown }).render = compileClientRender(loadingSkeletonSource, 'LoadingSkeleton.vue')
 
 function textContent(node: TreeNode): string {
   return node.text ?? node.children.map(textContent).join('')
@@ -731,7 +738,7 @@ describe('Code dashboard read state', () => {
       await settle()
       expect(instance.setupState.loaded).toBe(false)
       expect(instance.setupState.repositories).toEqual([])
-      expect(textContent(root)).toContain('Loading repositories')
+      expect(findNode(root, node => 'data-loading-visual' in node.props)).toBeDefined()
       replacement.resolve([])
       await settle()
       expect(instance.setupState.loaded).toBe(true)
