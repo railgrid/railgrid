@@ -1299,8 +1299,8 @@ export const api = {
     return (await loadLLMRegistry()).saveModelProviderConnection(ctx, body, expectedConnection)
   },
 
-  async deleteModelProviderConnection(ctx: RailgridContext | null, name: string): Promise<void> {
-    return (await loadLLMRegistry()).deleteModelProviderConnection(ctx, name)
+  async deleteModelProviderConnection(ctx: RailgridContext | null, name: string, uid?: string): Promise<void> {
+    return (await loadLLMRegistry()).deleteModelProviderConnection(ctx, name, uid)
   },
 
   async discoverModelProviderConnection(ctx: RailgridContext | null, name: string): Promise<ProjectLLMModelDiscovery> {
@@ -1351,8 +1351,8 @@ export const api = {
     return (await loadLLMRegistry()).patchLLMModel(ctx, modelID, body)
   },
 
-  async deleteLLMModel(ctx: RailgridContext | null, modelID: string): Promise<ProjectLLMSettings> {
-    return (await loadLLMRegistry()).deleteLLMModel(ctx, modelID)
+  async deleteLLMModel(ctx: RailgridContext | null, modelID: string, revisionID?: string): Promise<ProjectLLMSettings> {
+    return (await loadLLMRegistry()).deleteLLMModel(ctx, modelID, revisionID)
   },
 
   async setDefaultLLMModel(ctx: RailgridContext | null, modelID: string): Promise<ProjectLLMSettings> {
@@ -1456,8 +1456,10 @@ export const api = {
     ctx: RailgridContext | null,
     name: string,
     details: { displayName: string; description?: string },
+    uid: string,
   ): Promise<Project> {
     await projectKubeClient(ctx).patch(projectResource, name, {
+      metadata: { uid },
       spec: { displayName: details.displayName, description: details.description ?? '' },
     }, { type: 'merge' })
     return api.getProject(ctx, name)

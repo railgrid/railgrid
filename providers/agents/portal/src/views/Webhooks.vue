@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
+import { sameDeleteTarget, useTableDeletionFeedback } from '../vue/tableDeletion'
 import { vFocusOnRecovery } from '../vue/noticeFocus'
 // Webhooks: the workspace's inbound endpoints. A Webhook is one URL and one
 // delivery sink; any number of triggers (on any agent) route from it, each
@@ -10,12 +12,13 @@ import { vFocusOnRecovery } from '../vue/noticeFocus'
 // (#/webhooks), the create flow (#/create/webhook) and the detail page
 // (#/webhooks/<name>/edit) that holds the URL handoff, the routed triggers,
 // the delivery log, a sample sender and the settings.
-import { Check, Copy, Plus, Send, Trash2, Webhook as WebhookIcon } from 'lucide-vue-next'
+import { Copy, Plus, Send, Trash2, Webhook as WebhookIcon } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { confirmDialog } from '../portalkit/confirm'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
+import CopyValue from '../portalkit/CopyValue.vue'
 import InlineNotification from '../portalkit/InlineNotification.vue'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
 import FormSelect from '../portalkit/FormSelect.vue'
@@ -60,7 +63,7 @@ const SAMPLES: Record<string, { headers: string; body: string }> = {
   },
 }
 
-const copyURLButton = ref<HTMLElement | null>(null)
+const copyURLControl = ref<InstanceType<typeof CopyValue> | null>(null)
 const props = withDefaults(defineProps<{
   store: AppStore
   api: ApiClient
@@ -80,6 +83,7 @@ const emit = defineEmits<{
 }>()
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
+const deleteFeedback = useTableDeletionFeedback(() => props.store)
 
 const draftName = ref('')
 const draftSource = ref('webhook')
@@ -94,10 +98,7 @@ const retentionError = ref('')
 const editValuesFor = ref('')
 const busy = ref(false)
 const deletingName = ref('')
-const copied = ref(false)
-const copyError = ref('')
-let copyAttempt = 0
-let copyTimer: ReturnType<typeof setTimeout> | undefined
+let rowCopyAttempt = 0
 const sampleHeaders = ref('')
 const sampleBody = ref('')
 const sampleFor = ref('')
@@ -124,14 +125,12 @@ const editReadError = computed(() => {
   return slice.value.hasSnapshot ? slice.value.error : `Could not load this webhook. ${slice.value.error}`
 })
 const currentURL = computed(() => webhookURL(current.value))
-function resetCopy(): void {
-  copyAttempt++
-  if (copyTimer) clearTimeout(copyTimer)
-  copied.value = false
-  copyError.value = ''
-}
-watch([currentURL, () => props.editName, () => props.editRoute, () => props.authorityEpoch, () => props.store, () => props.api], resetCopy, { flush: 'sync' })
-onBeforeUnmount(resetCopy)
+const currentUID = computed(() => current.value?.metadata.uid)
+const copyScope = computed(() => [
+  props.editName, props.editRoute, props.authorityEpoch, props.store, props.api, currentUID.value,
+] as const)
+watch([currentURL, copyScope], () => { rowCopyAttempt++ }, { flush: 'sync' })
+onBeforeUnmount(() => { rowCopyAttempt++ })
 const currentInvalid = computed(() => current.value ? invalidCondition(current.value) : undefined)
 
 // routedTriggers are the triggers routing from the open webhook: the ones in
@@ -234,23 +233,15 @@ function followLink(event: MouseEvent, navigate: () => void): void {
   navigate()
 }
 
-async function copyURL(url: string, surface: 'detail' | 'row'): Promise<void> {
+async function copyRowURL(url: string): Promise<void> {
   if (!url) return
-  resetCopy()
-  const attempt = copyAttempt
+  const attempt = ++rowCopyAttempt
   const authority = captureAuthority()
   try {
     await navigator.clipboard.writeText(url)
-    if (attempt !== copyAttempt || !authorityIsCurrent(authority)) return
-    if (surface === 'row') toast('ok', 'Webhook URL copied.')
-    else {
-      copied.value = true
-      copyTimer = setTimeout(() => { copied.value = false }, 2000)
-    }
+    if (attempt === rowCopyAttempt && authorityIsCurrent(authority)) toast('ok', 'Webhook URL copied.')
   } catch {
-    if (attempt !== copyAttempt || !authorityIsCurrent(authority)) return
-    if (surface === 'row') toast('error', 'Could not copy. Check clipboard permission and try again.')
-    else copyError.value = 'Could not copy. Select the URL or try again.'
+    if (attempt === rowCopyAttempt && authorityIsCurrent(authority)) toast('error', 'Could not copy. Check clipboard permission and try again.')
   }
 }
 
@@ -328,8 +319,11 @@ async function save(): Promise<void> {
 }
 
 async function remove(name: string, fromDetail = false): Promise<void> {
-  if (deletingName.value) return
+  if (deletingName.value || (fromDetail && busy.value)) return
   const authority = captureAuthority()
+  const lookup = () => authority.store.webhooks.data.find(item => item.metadata.name === name)
+  const target = lookup()
+  if (!target || authority.store.isDeleting('webhooks', target)) return
   const routed = fromDetail
     ? routedTriggers.value.length
     : slice.value.data.find(item => item.metadata.name === name)?.status?.routes?.length ?? 0
@@ -341,15 +335,24 @@ async function remove(name: string, fromDetail = false): Promise<void> {
     danger: true,
     confirmLabel: 'Delete',
   })
-  if (!ok || !authorityIsCurrent(authority)) return
+  if (!ok || !authorityIsCurrent(authority) || deletingName.value) return
+  const current = lookup()
+  if (!sameDeleteTarget(target, current, item => item.metadata.uid) || !current ||
+      authority.store.isDeleting('webhooks', current)) return
   deletingName.value = name
   try {
     const done = await mutate(authority.store, {
-      run: async () => { await authority.api.deleteWebhook(name); return true },
-      success: 'Webhook deleted.',
-      failure: 'Delete failed',
+      run: async () => {
+        await authority.api.deleteWebhook(name, target.metadata.uid)
+        authority.store.acknowledgeDeletion('webhooks', target)
+        return true
+      },
+      success: 'Webhook deletion requested.',
+      failure: 'Delete failed', onFailure: () => !authorityIsCurrent(authority) || deleteFeedback.fail(name, 'webhook', name, 'The request failed.'),
       reload: ['webhooks', 'triggers'],
+      awaitReload: !fromDetail,
     })
+    if (done && authorityIsCurrent(authority)) deleteFeedback.clear(name)
     if (done && fromDetail && authorityIsCurrent(authority)) emit('navigate', { kind: 'menu', menu: 'webhooks' })
   } finally {
     deletingName.value = ''
@@ -440,26 +443,25 @@ function cancel(): void {
       <template v-if="current && editTitle !== current.metadata.name" #meta><code>{{ current.metadata.name }}</code></template>
       <template v-if="current" #status><span class="muted">{{ sourceLabel(current.spec.source) }}</span></template>
       <template v-if="current" #actions>
-        <button type="button" class="k-btn k-btn--ghost secondary" :disabled="!!deletingName || busy" :aria-busy="deletingName === current.metadata.name ? 'true' : undefined" @click="remove(current.metadata.name, true)"><Trash2 :stroke-width="1.75" aria-hidden="true" /> {{ deletingName === current.metadata.name ? 'Deleting…' : 'Delete' }}</button>
+        <button type="button" class="k-btn k-btn--ghost secondary"  :aria-disabled="!!deletingName || busy || store.isDeleting('webhooks', current) || undefined" :aria-busy="!!deletingName || store.isDeleting('webhooks', current) || undefined" @click="remove(current.metadata.name, true)"><Trash2 :stroke-width="1.75" aria-hidden="true" /> {{ deletingName === current.metadata.name ? 'Deleting…' : 'Delete' }}</button>
       </template>
       <template #body>
         <div v-if="!current" class="k-card agents-state agents-state-empty" role="status">
           Webhook “{{ editName }}” was not found in {{ slice.error ? 'the last loaded workspace snapshot' : 'this workspace' }}.
         </div>
         <div v-else class="agents-webhook-detail">
+          <ResourceDeleteFailure
+            v-if="editName && deleteFeedback.failures.value[editName]"
+            v-bind="deleteFeedback.failures.value[editName]"
+            retry-hint="Use Delete to try again."
+            @dismiss="deleteFeedback.clear(editName)"
+          />
           <InlineNotification v-if="currentInvalid" tone="warning" :message="currentInvalid.message || currentInvalid.reason" />
 
-          <section v-if="currentURL" class="k-card agents-secret-handoff agents-webhook-url" aria-label="Webhook URL">
-            <div>
-              <strong>Webhook URL</strong>
-              <code data-testid="webhook-url">{{ currentURL }}</code>
-              <span class="agents-hint">{{ current.spec.source === 'github' ? 'On GitHub, under Settings → Webhooks → Add webhook: Payload URL is this URL, Content type is application/json, Secret stays empty (the URL carries the token), and under “Let me select individual events” tick the events your triggers listen to. ' : 'POST JSON deliveries here. ' }}The URL embeds this webhook’s secret token; treat it like a password.</span>
-            </div>
-            <div class="agents-secret-handoff-actions">
-              <button ref="copyURLButton" type="button" class="k-btn k-btn--ghost" @click="copyURL(currentURL, 'detail')"><Check v-if="copied" aria-hidden="true" /><Copy v-else aria-hidden="true" /> {{ copied ? 'Copied' : 'Copy webhook URL' }}</button>
-            </div>
-            <span class="sr-only" role="status" aria-live="polite">{{ copied ? 'Webhook URL copied.' : '' }}</span>
-            <p v-if="copyError" class="agents-fielderr" role="alert">{{ copyError }}</p>
+          <section v-if="currentURL" class="k-card agents-webhook-url" aria-label="Webhook URL">
+            <strong>Webhook URL</strong>
+            <CopyValue ref="copyURLControl" :value="currentURL" :scope="copyScope" label="Copy webhook URL" select-all data-testid="webhook-url" />
+            <span class="agents-hint">{{ current.spec.source === 'github' ? 'On GitHub, under Settings → Webhooks → Add webhook: Payload URL is this URL, Content type is application/json, Secret stays empty (the URL carries the token), and under “Let me select individual events” tick the events your triggers listen to. ' : 'POST JSON deliveries here. ' }}The URL embeds this webhook’s secret token; treat it like a password.</span>
           </section>
           <InlineNotification
             v-else
@@ -467,7 +469,7 @@ function cancel(): void {
             action-label="Refresh"
             action-busy-label="Refreshing…"
             :action-busy="slice.loading"
-            v-focus-on-recovery="() => copyURLButton?.focus({ preventScroll: true })"
+            v-focus-on-recovery="() => copyURLControl?.focus({ preventScroll: true })"
             @action="store.load('webhooks')"
             message="The webhook URL has not been minted yet — the provider stamps it shortly after the webhook is created."
           />
@@ -529,6 +531,13 @@ function cancel(): void {
         <button class="k-btn k-btn--primary" type="button" @click="openCreate"><Plus :stroke-width="1.75" aria-hidden="true" /> New webhook</button>
       </div>
     </header>
+    <ResourceDeleteFailure
+      v-for="(failure, key) in deleteFeedback.failures.value"
+      :key="key"
+      v-bind="failure"
+      :return-focus="collectionHeading"
+      @dismiss="deleteFeedback.clear(String(key))"
+    />
     <div v-if="showFirstRun && slice.error" ref="firstRunWarning">
       <InlineNotification tone="warning" message="Webhooks could not be refreshed. Showing the last successful empty result." action-label="Retry" action-busy-label="Retrying…" :action-busy="slice.loading" @action="store.load('webhooks')" />
     </div>
@@ -560,10 +569,11 @@ function cancel(): void {
       @retry="store.load('webhooks')"
     >
       <template #name="{ row }">
-        <a class="k-btn k-btn--ghost k-table-resource-link" :href="hashFor({ kind: 'edit', resource: 'webhook', name: asWebhook(row).metadata.name })" :title="asWebhook(row).metadata.name" @click="followLink($event, () => openDetail(asWebhook(row)))">{{ asWebhook(row).spec.displayName || asWebhook(row).metadata.name }}</a>
+        <a v-if="!(deletingName === asWebhook(row).metadata.name || store.isDeleting('webhooks', asWebhook(row)))" class="k-btn k-btn--ghost k-table-resource-link" :href="hashFor({ kind: 'edit', resource: 'webhook', name: asWebhook(row).metadata.name })" :title="asWebhook(row).metadata.name" @click="followLink($event, () => openDetail(asWebhook(row)))">{{ asWebhook(row).spec.displayName || asWebhook(row).metadata.name }}</a>
+        <span v-else>{{ asWebhook(row).spec.displayName || asWebhook(row).metadata.name }}</span>
         <code v-if="asWebhook(row).spec.displayName" class="agents-resource-id">{{ asWebhook(row).metadata.name }}</code>
         <StatusBadge v-if="invalidCondition(asWebhook(row))" class="agents-badge" :status="invalidCondition(asWebhook(row))?.reason || 'Invalid'" tone="warning" :title="invalidCondition(asWebhook(row))?.message" />
-      </template>
+      <StatusBadge v-if="deletingName === asWebhook(row).metadata.name || store.isDeleting('webhooks', asWebhook(row))" status="Deleting" tone="warning" /></template>
       <template #source="{ row }">{{ row.sourceLabel }}</template>
       <template #routes="{ row }"><span class="muted">{{ row.routes }}</span></template>
       <template #lastDelivery="{ row }">
@@ -575,9 +585,9 @@ function cancel(): void {
         <span v-else class="muted">{{ row.lastDelivery }}</span>
       </template>
       <template #actions="{ row }">
-        <ResourceTableActionButton v-if="webhookURL(asWebhook(row))" :icon="Copy" :label="`Copy webhook URL for ${asWebhook(row).metadata.name}`" :disabled="!!deletingName" @click="copyURL(webhookURL(asWebhook(row)), 'row')" />
-        <ResourceTableEditButton :label="`Open webhook ${asWebhook(row).metadata.name}`" :disabled="!!deletingName" @click="openDetail(asWebhook(row))" />
-        <ResourceTableDeleteButton :label="`Delete webhook ${asWebhook(row).metadata.name}`" :busy-label="`Deleting webhook ${asWebhook(row).metadata.name}…`" :busy="deletingName === asWebhook(row).metadata.name" :disabled="!!deletingName" @click="remove(asWebhook(row).metadata.name)" />
+        <ResourceTableActionButton v-if="webhookURL(asWebhook(row))" :icon="Copy" :label="`Copy webhook URL for ${asWebhook(row).metadata.name}`" :disabled="!!deletingName || store.isDeleting('webhooks', asWebhook(row))" @click="copyRowURL(webhookURL(asWebhook(row)))" />
+        <ResourceTableEditButton :label="`Open webhook ${asWebhook(row).metadata.name}`" :disabled="!!deletingName || store.isDeleting('webhooks', asWebhook(row))" @click="openDetail(asWebhook(row))" />
+        <ResourceTableDeleteButton :label="`Delete webhook ${asWebhook(row).metadata.name}`" :busy-label="`Deleting webhook ${asWebhook(row).metadata.name}…`" :busy="deletingName === asWebhook(row).metadata.name || store.isDeleting('webhooks', asWebhook(row))" :disabled="!!deletingName" @click="remove(asWebhook(row).metadata.name)" />
       </template>
     </ResourceTable>
   </div>

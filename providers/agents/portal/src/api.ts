@@ -469,7 +469,7 @@ export class ApiClient {
   patchAgent = (name: string, body: AgentPatch): Promise<Agent> => this.resources.patchAgent(name, body)
   setAgentSkillEnabled = (name: string, skillID: string, enabled: boolean): Promise<Agent> =>
     this.resources.setAgentSkillEnabled(name, skillID, enabled)
-  deleteAgent = (name: string): Promise<void> => this.resources.deleteAgent(name)
+  deleteAgent = (name: string, uid?: string): Promise<void> => this.resources.deleteAgent(name, uid)
 
   // Library presentation reads Skill objects and the published provider catalog.
   getSkillLibrary = () => loadSkillLibrary(this.context())
@@ -575,7 +575,7 @@ export class ApiClient {
   listCredentials = (): Promise<Credential[]> => this.resources.listCredentials()
   renameCredential = (credential: Credential, displayName: string): Promise<Credential> => this.resources.renameCredential(credential, displayName)
   saveCredential = (body: CredentialWrite): Promise<Credential> => this.resources.saveCredential(body)
-  deleteCredential = (name: string): Promise<void> => this.resources.deleteCredential(name)
+  deleteCredential = (name: string, uid?: string): Promise<void> => this.resources.deleteCredential(name, uid)
   /**
    * testCredential runs one real chat round-trip against the saved credential.
    *
@@ -586,7 +586,7 @@ export class ApiClient {
    * run, which is where a model the endpoint lists but will not chat on
    * surfaces as a 404 in someone's chat window.
    */
-  deleteProviderConnection = (name: string): Promise<void> => this.resources.deleteProviderConnection(name)
+  deleteProviderConnection = (name: string, uid?: string): Promise<void> => this.resources.deleteProviderConnection(name, uid)
   testProviderConnection = (name: string, model?: string, signal?: AbortSignal): Promise<CredentialTestResult> =>
     this.sendProbeVerb(this.verb(MODELPROVIDERCONNECTIONS, name, 'test'), model ? { model } : undefined, signal)
   discoverProviderConnection = (name: string, signal?: AbortSignal): Promise<CredentialTestResult> =>
@@ -668,7 +668,7 @@ export class ApiClient {
   }
   patchConnection = (name: string, body: ConnectionWrite): Promise<Connection> =>
     this.resources.patchConnection(name, body)
-  deleteConnection = (name: string): Promise<void> => this.resources.deleteConnection(name)
+  deleteConnection = (name: string, uid?: string): Promise<void> => this.resources.deleteConnection(name, uid)
   testConnection = (name: string): Promise<unknown> =>
     this.sendVerb('POST', this.verb(CONNECTIONS, name, 'test'))
   enableInbound = (name: string): Promise<{ webhookURL: string; registered: boolean; note: string }> =>
@@ -690,12 +690,12 @@ export class ApiClient {
   listToolsets = (): Promise<Toolset[]> => this.resources.listToolsets()
   createToolset = (body: ToolsetWrite): Promise<Toolset> => this.resources.createToolset(body)
   patchToolset = (name: string, body: ToolsetWrite): Promise<Toolset> => this.resources.patchToolset(name, body)
-  deleteToolset = (name: string): Promise<void> => this.resources.deleteToolset(name)
+  deleteToolset = (name: string, uid?: string): Promise<void> => this.resources.deleteToolset(name, uid)
 
   listSchedules = (): Promise<Schedule[]> => this.resources.listSchedules()
   createSchedule = (body: ScheduleCreate): Promise<Schedule> => this.resources.createSchedule(body)
   patchSchedule = (name: string, body: SchedulePatch): Promise<Schedule> => this.resources.patchSchedule(name, body)
-  deleteSchedule = (name: string): Promise<void> => this.resources.deleteSchedule(name)
+  deleteSchedule = (name: string, uid?: string): Promise<void> => this.resources.deleteSchedule(name, uid)
   // Run-now is asynchronous: 202 + the runID to follow in Activity.
   runSchedule = (name: string): Promise<{ runID: string }> =>
     this.sendVerb('POST', this.verb(SCHEDULES, name, 'run'))
@@ -706,7 +706,7 @@ export class ApiClient {
   listTriggers = (): Promise<Trigger[]> => this.resources.listTriggers()
   createTrigger = (body: TriggerCreate): Promise<Trigger> => this.resources.createTrigger(body)
   patchTrigger = (name: string, body: TriggerPatch): Promise<Trigger> => this.resources.patchTrigger(name, body)
-  deleteTrigger = (name: string): Promise<void> => this.resources.deleteTrigger(name)
+  deleteTrigger = (name: string, uid?: string): Promise<void> => this.resources.deleteTrigger(name, uid)
   runTrigger = (name: string): Promise<{ runID: string }> =>
     this.sendVerb('POST', this.verb(TRIGGERS, name, 'run'))
   enableTrigger = (name: string): Promise<Trigger> =>
@@ -729,7 +729,7 @@ export class ApiClient {
   listWebhooks = (): Promise<Webhook[]> => this.resources.listWebhooks()
   createWebhook = (body: WebhookCreate): Promise<Webhook> => this.resources.createWebhook(body)
   patchWebhook = (name: string, body: WebhookPatch): Promise<Webhook> => this.resources.patchWebhook(name, body)
-  deleteWebhook = (name: string): Promise<void> => this.resources.deleteWebhook(name)
+  deleteWebhook = (name: string, uid?: string): Promise<void> => this.resources.deleteWebhook(name, uid)
   /**
    * The webhook's delivery sink: every authenticated POST to its URL, newest
    * first, with bodies previewed and each routed trigger's outcome. `outcome`

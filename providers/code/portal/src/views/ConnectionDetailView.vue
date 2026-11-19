@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
 import { portalHref } from '../portalkit/navigation'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { GitBranch, KeyRound, Link2, Plug, RefreshCw, User } from 'lucide-vue-next'
@@ -191,7 +192,7 @@ async function deleteConnection() {
     confirmLabel: 'Delete',
     danger: true,
   })
-  if (!ok || !mounted) return
+  if (!ok || !mounted || conn.value?.name !== current.name || conn.value?.uid !== current.uid || deleting.value) return
   const lock = operationKey('connection', current.name)
   if (!operations.acquire(lock, 'deleting')) return
   try {
@@ -315,6 +316,7 @@ onUnmounted(() => {
             </button>
             <ActionMenu
               label="More connection actions"
+              :busy="deleting" busy-label="Deleting connection…"
               :items="actionItems"
               :disabled="connectionActionBusy"
               @select="selectAction"
@@ -328,7 +330,7 @@ onUnmounted(() => {
 
         <template #body>
           <template v-if="conn">
-            <InlineNotification v-if="mutationError" tone="error" :title="`Could not delete connection ${name}`" :message="`${mutationError} Try again using the connection delete action.`" dismissible @dismiss="dismissMutationError" />
+            <ResourceDeleteFailure v-if="mutationError" :title="`Could not delete connection ${name}`" :message="mutationError" retry-hint="Use Delete to try again." @dismiss="dismissMutationError" />
             <InlineNotification v-if="deleting" tone="warning" message="Deleting this connection. The last successful snapshot remains visible until the hub confirms removal." />
 
             <div class="connection-detail__sections">

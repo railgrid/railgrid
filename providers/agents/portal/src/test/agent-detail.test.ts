@@ -502,20 +502,22 @@ describe('agent resource detail conformance', () => {
     expect(text(staleAgentMessage)).not.toContain('Showing the last loaded agent')
   })
 
-  it('keeps agent deletion in Config with confirmation, busy state, and navigation', async () => {
-    let finishDelete!: () => void
-    const deletion = new Promise<void>(resolve => { finishDelete = resolve })
-    const deleteAgent = vi.fn().mockImplementation(() => deletion)
-    const api = stubApi({ deleteAgent })
+  it('keeps agent deletion in Config with confirmation, inline recovery, and navigation', async () => {
+    let rejectDelete!: (error: Error) => void
+    const deletion = new Promise<void>((_, reject) => { rejectDelete = reject })
+    const deleteAgent = vi.fn().mockReturnValueOnce(deletion).mockResolvedValueOnce(undefined)
+    const agent = agentFixture('scout')
+    const api = stubApi({ deleteAgent, listAgents: async () => [agent] })
     const store = makeStore(api)
-    store.agents.data = [agentFixture('scout')]
+    store.agents.data = [agent]
     Object.assign(store.agents, { loaded: true, hasSnapshot: true })
     const mounted = await mountVue(AgentDetail, { store, api, name: 'scout', tab: 'config', authorityEpoch: 1 })
     const header = mounted.element.querySelector('.agents-chat-head')!
     const trigger = mounted.element.querySelector<HTMLButtonElement>('[aria-label="Delete agent"]')!
+    const section = trigger.closest('.agents-workbench-section')!
 
     expect(header.querySelector('[aria-label="More agent actions"]')).toBeNull()
-    expect(trigger.closest('.agents-workbench-section')?.querySelector('h3')?.textContent).toBe('Delete agent')
+    expect(section.querySelector('h3')?.textContent).toBe('Delete agent')
 
     trigger.click()
     await settleVue()
@@ -532,15 +534,27 @@ describe('agent resource detail conformance', () => {
     await settleVue()
 
     expect(deleteAgent).toHaveBeenCalledTimes(1)
-    expect(trigger.disabled).toBe(true)
+    expect(trigger.disabled).toBe(false)
+    expect(trigger.getAttribute('aria-disabled')).toBe('true')
     expect(trigger.getAttribute('aria-busy')).toBe('true')
     expect(text(trigger)).toContain('Deleting agent')
     trigger.click()
     expect(deleteAgent).toHaveBeenCalledTimes(1)
     expect(mounted.navigations).toEqual([])
 
-    finishDelete()
+    rejectDelete(new Error('deletion failed'))
+    await settleVue()
+    const failure = section.querySelector('[role="alert"]')
+    expect(text(failure)).toContain('Could not delete agent scout')
+    expect(trigger.getAttribute('aria-disabled')).toBeNull()
+    expect(mounted.navigations).toEqual([])
+
+    trigger.click()
+    await settleVue()
+    expect(confirmState.open).toBe(true)
+    resolveConfirm(true)
     await settleVue(6, 120)
+    expect(deleteAgent).toHaveBeenCalledTimes(2)
     expect(mounted.navigations).toEqual([{ kind: 'menu', menu: 'agents' }])
   })
 })

@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
+import { sameDeleteTarget, useTableDeletionFeedback } from '../vue/tableDeletion'
 import { vFocusOnRecovery } from '../vue/noticeFocus'
 import InlineNotification from '../portalkit/InlineNotification.vue'
 import { containModalTab } from '../portalkit/modal-focus'
@@ -137,6 +139,7 @@ const emit = defineEmits<{ navigate: [route: Route] }>()
 const runtime = useAgentsRuntime()
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
+const deleteFeedback = useTableDeletionFeedback(() => props.store)
 const editing = ref<string | null>(null)
 const draft = reactive<Draft>({ ...EMPTY })
 const nameError = ref('')
@@ -427,7 +430,12 @@ function statusText(row: Automation): string {
   return fired
 }
 
+function isDeleting(row: Automation): boolean {
+  return props.store.isDeleting(props.kind === 'schedule' ? 'schedules' : 'triggers', row)
+}
+
 function workbenchStatus(row: Automation, detail: string) {
+  if (isDeleting(row)) return { label: 'Deleting', tone: 'warning' as const, detail: '' }
   if (automationStatus(row)?.disabledReason) return { label: 'Disabled', tone: 'warning' as const, detail }
   const invalid = invalidCondition(row)
   if (invalid) return { label: 'Invalid', tone: 'warning' as const, detail: conditionText(invalid) }
@@ -717,6 +725,10 @@ async function del(name: string): Promise<void> {
   if (actionBusy.value) return
   const authority = captureAuthority()
   const kind = props.kind
+  const collection = kind === 'schedule' ? 'schedules' : 'triggers'
+  const lookup = () => authority.store[collection].data.find(item => item.metadata.name === name)
+  const target = lookup()
+  if (!target || authority.store.isDeleting(collection, target)) return
   const one = META[kind].one
   const confirmationLock = `confirm-delete:${name}`
   actionBusy.value = confirmationLock
@@ -730,13 +742,22 @@ async function del(name: string): Promise<void> {
       confirmLabel: 'Delete',
     })
     if (!ok || !authorityIsCurrent(authority) || kind !== props.kind) return
+    const current = lookup()
+    if (!sameDeleteTarget(target, current, item => item.metadata.uid) || !current ||
+        authority.store.isDeleting(collection, current)) return
     actionBusy.value = `delete:${name}`
-    await mutate(authority.store, {
-      run: () => kind === 'schedule' ? authority.api.deleteSchedule(name) : authority.api.deleteTrigger(name),
-      success: `${cap(one)} deleted.`,
-      failure: 'Delete failed',
-      reload: [kind === 'schedule' ? 'schedules' : 'triggers'],
+    const done = await mutate(authority.store, {
+      run: async () => {
+        await (kind === 'schedule' ? authority.api.deleteSchedule(name, target.metadata.uid) : authority.api.deleteTrigger(name, target.metadata.uid))
+        authority.store.acknowledgeDeletion(collection, target)
+        return true
+      },
+      success: `${cap(one)} deletion requested.`,
+      failure: 'Delete failed', onFailure: () => !authorityIsCurrent(authority) || deleteFeedback.fail(kind + ':' + name, one, name, 'The request failed.'),
+      reload: [collection],
+      awaitReload: true,
     })
+    if (done && authorityIsCurrent(authority)) deleteFeedback.clear(kind + ':' + name)
   } finally {
     if (actionBusy.value === confirmationLock || actionBusy.value === `delete:${name}`) actionBusy.value = ''
   }
@@ -825,6 +846,14 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
       ><Plus :stroke-width="1.75" aria-hidden="true" /> New {{ meta.one }}</button>
     </template>
 
+    <ResourceDeleteFailure
+      v-for="(failure, key) in deleteFeedback.failures.value"
+      v-show="String(key).startsWith(kind + ':')"
+      :key="key"
+      v-bind="failure"
+      :return-focus="createControl"
+      @dismiss="deleteFeedback.clear(String(key))"
+    />
     <div :class="{ 'agents-tablewrap': !workbench }">
       <ResourceTable
         :columns="columns"
@@ -872,7 +901,8 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         </template>
         <template #status="{ row }">
           <span class="muted">
-            <template v-if="automationStatus(row.resource as Automation)?.disabledReason"><StatusBadge class="agents-badge" status="Disabled" tone="warning" /> <ResourceTableExpandButton :data-automation-status-owner="statusOwner" :expanded="expandedStatus === row.name" :label="`Show status details for ${row.name}`" :expanded-label="`Hide status details for ${row.name}`" :controls="statusDetailsID(String(row.name))" @click="expandedStatus = expandedStatus === row.name ? null : String(row.name)" /></template>
+            <StatusBadge v-if="isDeleting(row.resource as Automation)" status="Deleting" tone="warning" />
+            <template v-else-if="automationStatus(row.resource as Automation)?.disabledReason"><StatusBadge class="agents-badge" status="Disabled" tone="warning" /> <ResourceTableExpandButton :data-automation-status-owner="statusOwner" :expanded="expandedStatus === row.name" :label="`Show status details for ${row.name}`" :expanded-label="`Hide status details for ${row.name}`" :controls="statusDetailsID(String(row.name))" @click="expandedStatus = expandedStatus === row.name ? null : String(row.name)" /></template>
             <template v-else-if="invalidCondition(row.resource as Automation)"><StatusBadge class="agents-badge" status="Invalid" tone="warning" /> <ResourceTableExpandButton :data-automation-status-owner="statusOwner" :expanded="expandedStatus === row.name" :label="`Show status details for ${row.name}`" :expanded-label="`Hide status details for ${row.name}`" :controls="statusDetailsID(String(row.name))" @click="expandedStatus = expandedStatus === row.name ? null : String(row.name)" /></template>
             <StatusBadge v-else-if="automationSpec(row.resource as Automation).suspend" class="agents-badge" status="paused" tone="muted" />
             <AutomationTimestampStatus v-else :kind="kind" :status="automationStatus(row.resource as Automation)" />
@@ -897,14 +927,14 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
             <ActionMenu
               :label="`More actions for ${row.name}`"
               :items="workbenchActions(row.resource as Automation)"
-              :disabled="!workbenchActive || !!actionBusy"
-              :busy="actionBusy === `enable:${row.name}` || actionBusy === `toggle:${row.name}` || actionBusy === `delete:${row.name}`"
-              :busy-label="`Updating ${row.name}…`"
+              :disabled="!workbenchActive || (!!actionBusy && actionBusy !== `confirm-delete:${row.name}`)"
+              :busy="actionBusy === `enable:${row.name}` || actionBusy === `toggle:${row.name}` || actionBusy === `delete:${row.name}` || isDeleting(row.resource as Automation)"
+              :busy-label="actionBusy === `delete:${row.name}` || isDeleting(row.resource as Automation) ? `Deleting ${meta.one} ${row.name}…` : `Updating ${row.name}…`"
               @select="selectWorkbenchAction(row.resource as Automation, $event)"
             />
           </template>
           <template v-else>
-            <ActionMenu :label="`More actions for ${row.name}`" :items="rowActions(row.resource as Automation)" :disabled="!!actionBusy" :busy="!!actionBusy && actionBusy.endsWith(`:${row.name}`)" :busy-label="`Updating ${row.name}…`" @select="selectRowAction(row.resource as Automation, $event)" />
+            <ActionMenu :label="`More actions for ${row.name}`" :items="rowActions(row.resource as Automation)" :disabled="!!actionBusy" :busy="(!!actionBusy && actionBusy.endsWith(`:${row.name}`)) || isDeleting(row.resource as Automation)" :busy-label="actionBusy === `delete:${row.name}` || isDeleting(row.resource as Automation) ? `Deleting ${meta.one} ${row.name}…` : `Updating ${row.name}…`" @select="selectRowAction(row.resource as Automation, $event)" />
           </template>
         </template>
       </ResourceTable>

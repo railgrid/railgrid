@@ -360,6 +360,7 @@ export function isJSONObject(text: string): boolean {
  */
 export interface Credential {
   uid?: string
+  deleting?: boolean
   generation?: number
   connectionRef?: string
   connectionName?: string
@@ -395,7 +396,7 @@ export function credentialUnavailable(credential: Credential | undefined): boole
 }
 
 export interface Schedule {
-  metadata: { name: string }
+  metadata: { name: string; uid?: string; deletionTimestamp?: string }
   spec: {
     agentRef: string
     type: string
@@ -411,7 +412,7 @@ export interface Schedule {
 }
 
 export interface Trigger {
-  metadata: { name: string; uid?: string }
+  metadata: { name: string; uid?: string; deletionTimestamp?: string }
   spec: {
     agentRef: string
     // webhookRef names the workspace Webhook this trigger routes from. One
@@ -453,7 +454,7 @@ export type WebhookSource = 'webhook' | 'github'
  * the sender once however many agents react to what it sends.
  */
 export interface Webhook {
-  metadata: { name: string; uid?: string }
+  metadata: { name: string; uid?: string; deletionTimestamp?: string }
   spec: {
     // source says who sends: `github` makes the trigger form offer GitHub's
     // event catalog, `webhook` is any sender that POSTs JSON.
@@ -589,7 +590,7 @@ export interface TriggerReplayResult {
 }
 
 export interface Connection {
-  metadata: { name: string }
+  metadata: { name: string; uid?: string; deletionTimestamp?: string }
   // config carries the type-specific non-secret settings the backend stores on
   // spec.config — for websearch it is {provider: "searxng"|"brave"}, which is
   // what tells the UI a connection is the self-hosted flavour.
@@ -633,7 +634,7 @@ export interface Edge {
 }
 
 export interface Toolset {
-  metadata: { name: string }
+  metadata: { name: string; uid?: string; deletionTimestamp?: string }
   spec: { displayName?: string; description?: string; families?: string[]; connections?: string[]; requireApproval?: string[] }
   status?: { usedBy?: number }
 }

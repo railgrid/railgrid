@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.patterns.resource-reads","title":"Resource reads and background refresh","kind":"pattern","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"PortalKit ResourcePage, ResourceTable, and page-state.ts own the shared read lifecycle; callers own fetching."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/patterns/resource-reads.md#resource-reads-and-background-refresh","role":"design"},{"path":"provider-sdk/portalkit/page-state.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourcePage.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTable.vue","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.components.resource-page","relation":"see-also"},{"id":"design.components.resource-table","relation":"see-also"},{"id":"design.components.resource-table-actions","relation":"related"},{"id":"design.components.status-badge","relation":"related"},{"id":"design.components.portalkit-support","relation":"see-also"},{"id":"design.foundations.recipes","relation":"prerequisite"},{"id":"design.quality.ui-conformance","relation":"see-also"}]}
+{"schema":1,"id":"design.patterns.resource-reads","title":"Resource reads and background refresh","kind":"pattern","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"PortalKit ResourcePage, ResourceTable, and page-state.ts own the shared read lifecycle; callers own fetching."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/patterns/resource-reads.md#resource-reads-and-background-refresh","role":"design"},{"path":"provider-sdk/portalkit/refresh.ts","role":"implementation"},{"path":"provider-sdk/portalkit/page-state.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourcePage.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTable.vue","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."},{"kind":"browser","ref":"Edge Service and App Studio project detail refresh fixtures","status":"passing","evidence":"Chromium at 1280px light and 390px dark verified that each detail recovers automatically from a failed background read and keeps its last snapshot. Edge Service also retained an unsaved port change. These fixtures use mocked APIs."}]},"relatedDocuments":[{"id":"design.components.resource-page","relation":"see-also"},{"id":"design.components.resource-table","relation":"see-also"},{"id":"design.components.resource-table-actions","relation":"related"},{"id":"design.components.status-badge","relation":"related"},{"id":"design.components.portalkit-support","relation":"see-also"},{"id":"design.foundations.recipes","relation":"prerequisite"},{"id":"design.quality.ui-conformance","relation":"see-also"}]}
 ---
 
 # Resource reads and background refresh
@@ -21,10 +21,43 @@ identity invalidation fences stale results. Token rotation alone is not an
 identity change. Reset snapshots only when tenant, user, or resource identity
 changes. Stop or unmount cancels the timer and queued work.
 
-Use a slower cadence for stable resources (current providers use about 30s) and
-a faster provider-appropriate cadence for unsettled or error states. Keep state
-ownership in canonical `ResourcePage`, `ResourceTable`, and `page-state.ts`;
-edit canonical sources first, then run `make sync-portalkit`.
+## Provider refresh contract
+
+Import the framework-neutral helpers from `src/portalkit/refresh.ts`. PortalKit
+distributes them to every provider. Give each independently loaded collection
+or instance one owner for its requests and its last successful snapshot.
+An instance backed by an already refreshed store uses that store's snapshot.
+
+- Route initial loads, Refresh, Retry, and change notifications through
+  `createLatestRefreshController`. Check `isCurrent(requestID)` before
+  committing rows, errors, and loading state.
+- After a successful write, call `invalidate()`, discard any cached complete
+  list and pending navigation cursor, and request an immediate foreground read.
+  A DELETE can be accepted while a finalizer still owns the object. Show the
+  terminating state until a fresh read confirms removal. A rejected delete
+  leaves the row available and shows the failure.
+- Schedule background reconciliation with `createAdaptiveRefreshTimer`.
+  The stable default is 30 seconds. Use a shorter delay while a resource is
+  changing. Schedule again after a read settles, including after a failure.
+  An armed timer also wakes when the tab becomes visible or the browser comes
+  online. Cancel when a route is deactivated and call `stop()` on teardown.
+  Event streams can request earlier reads. Detail refreshes keep unsaved
+  form values and update the observations around them. A same-name resource
+  with a different UID requires a fresh review before writes can resume.
+  Bind writes to the reviewed UID at the API boundary.
+- For paginated Kubernetes lists, keep one `createResourcePageReader()` per
+  table. Call its `navigate(cursor)` method when the user chooses a page. The reader consumes the
+  supplied cursor for navigation. A refresh starts a fresh list and walks to
+  the displayed page, stopping earlier if the collection shrank. Reusing a
+  continuation token for refresh would return the pre-mutation snapshot.
+  Beyond page three, the reader allows a background walk after 30 seconds per
+  three pages, rounded up. Manual and post-mutation refreshes run immediately.
+- Limit automatic requests to resource reads. Running a saved query, starting
+  a job, and repeating a mutation require their own user intent. Workflow
+  streams can retain their own progress and reconnect behavior.
+
+Edit the canonical helpers under `provider-sdk/portalkit/`, then run
+`make sync-portalkit`. The shared table and page render the read state.
 
 Adoption is lossless. Before moving a resource, inventory every legacy field,
 custom workflow/action/editor/table, read or mutation state (including stale and

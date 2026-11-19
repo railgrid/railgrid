@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
+import { sameDeleteTarget, useTableDeletionFeedback } from '../vue/tableDeletion'
 import { AlertCircle, ArrowLeft, Check, Link, Megaphone, Plug, Plus, Send, Shuffle, Wrench } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, ref, watch, type Component } from 'vue'
 import type { ApiClient } from '../api'
@@ -41,6 +43,8 @@ const emit = defineEmits<{
 }>()
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
+const deleteFeedback = useTableDeletionFeedback(() => props.store)
+const collectionHeading = ref<HTMLElement | null>(null)
 const connMode = ref('')
 const reviewing = ref(false)
 const choosingType = ref(false)
@@ -200,13 +204,31 @@ async function saveEdit(item: Connection): Promise<void> {
 async function remove(name: string): Promise<void> {
   if (actionBusy.value || deletePendingName.value || deletingName.value) return
   const authority = captureAuthority()
+  const lookup = () => authority.store.connections.data.find(item => item.metadata.name === name)
+  const target = lookup()
+  if (!target || authority.store.isDeleting('connections', target)) return
   deletePendingName.value = name
-  const ok = await confirmDialog({ title: `Delete connection “${name}”?`, danger: true, confirmLabel: 'Delete' })
+  const ok = await confirmDialog({ title: `Delete connection “${name}”?`, message: 'Agents using this connection will lose access through it.', danger: true, confirmLabel: 'Delete' })
   deletePendingName.value = ''
   if (!ok || !authorityIsCurrent(authority) || actionBusy.value || deletingName.value) return
+  const current = lookup()
+  if (!sameDeleteTarget(target, current, item => item.metadata.uid) || !current ||
+      authority.store.isDeleting('connections', current)) return
   deletingName.value = name
   try {
-    await mutate(authority.store, { run: () => authority.api.deleteConnection(name), success: 'Connection deleted.', failure: 'Delete failed', reload: ['connections'] })
+    const done = await mutate(authority.store, {
+      run: async () => {
+        await authority.api.deleteConnection(name, target.metadata.uid)
+        authority.store.acknowledgeDeletion('connections', target)
+        return true
+      },
+      success: 'Connection deletion requested.',
+      failure: 'Delete failed',
+      onFailure: () => !authorityIsCurrent(authority) || deleteFeedback.fail(name, 'connection', name, 'The request failed.'),
+      reload: ['connections'],
+      awaitReload: true,
+    })
+    if (done && authorityIsCurrent(authority)) deleteFeedback.clear(name)
   } finally {
     deletingName.value = ''
   }
@@ -363,7 +385,7 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
     <ResourcePage :title="COLLECTION_TITLE" variant="collection" :aria-label="COLLECTION_TITLE">
       <template #header>
         <div class="k-resource-page__heading">
-          <h1 class="k-resource-page__title" tabindex="-1" data-connections-heading>{{ COLLECTION_TITLE }}</h1>
+          <h1 class="k-resource-page__title" ref="collectionHeading" tabindex="-1" data-connections-heading>{{ COLLECTION_TITLE }}</h1>
           <p class="k-resource-page__subtitle">Connections give agents reusable access to external systems.</p>
         </div>
         <div v-if="!showFirstRun" class="k-resource-page__header-side">
@@ -374,6 +396,13 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
       </template>
       <div class="agents-panel">
         <SecretHandoff v-if="slackRequestURL" :value="slackRequestURL" label="Slack request URL" copy-label="Copy Slack request URL" @cleared="slackRequestURL = ''" />
+        <ResourceDeleteFailure
+          v-for="(failure, key) in deleteFeedback.failures.value"
+          :key="key"
+          v-bind="failure"
+          :return-focus="collectionHeading"
+          @dismiss="deleteFeedback.clear(String(key))"
+        />
         <template v-if="showFirstRun">
           <div v-if="connections.error" class="agents-stale" role="status">
             <AlertCircle aria-hidden="true" /> Showing the last loaded connections. {{ connections.error }}
@@ -382,11 +411,11 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
           <FirstRunGuide title="Connect tools and channels" description="Add reusable access to an external system once, then grant it to agents directly or through a toolset." primary-label="Create connection" :steps="[]"><template #icon><Plug :stroke-width="1.75" aria-hidden="true" /></template><template #actions><a class="k-btn k-btn--primary" :href="hashFor({ kind: 'create', resource: 'connection' })" @click="followLink($event, openCreate)">Create connection <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template></FirstRunGuide>
         </template>
         <ResourceTable v-else :columns="[{ key: 'name', label: 'Name', primary: true }, { key: 'kind', label: 'Kind' }, { key: 'type', label: 'Type' }, { key: 'endpoint', label: 'Endpoint / channel' }, { key: 'actions', label: '', ariaLabel: 'Actions' }]" :rows="rows" row-key="id" aria-label="Connections" :loaded="connections.hasSnapshot" :loading="connections.loading" :error="connections.error" :stale="connections.hasSnapshot && !!connections.error" retryable searchable search-placeholder="Search connections…" :search-keys="['name', 'type', 'endpoint']" :filters="filters" paginated :interactive="false" @retry="store.load('connections')">
-          <template #name="{ row }"><a v-if="!actionBusy && !deletePendingName && !deletingName" class="k-btn k-btn--ghost k-table-resource-link" :href="hashFor({ kind: 'edit', resource: 'connection', name: asConnection(row).metadata.name })" :title="asConnection(row).metadata.name" @click="followLink($event, () => openEdit(asConnection(row)))">{{ asConnection(row).spec.displayName || asConnection(row).metadata.name }}</a><span v-else class="agents-resource-name" :title="asConnection(row).metadata.name">{{ asConnection(row).spec.displayName || asConnection(row).metadata.name }}</span><code v-if="asConnection(row).spec.displayName" class="agents-resource-id">{{ asConnection(row).metadata.name }}</code><span v-if="asConnection(row).status?.webhookPath" class="agents-inbound-on" aria-label="Inbound enabled" data-k-tip="Inbound enabled"><Shuffle :stroke-width="1.75" aria-hidden="true" /></span><span v-if="asConnection(row).status?.oauthConnected" class="agents-inbound-on" aria-label="OAuth connected" data-k-tip="OAuth connected"><Link :stroke-width="1.75" aria-hidden="true" /></span></template>
+          <template #name="{ row }"><a v-if="!actionBusy && !deletePendingName && !deletingName && !store.isDeleting('connections', asConnection(row))" class="k-btn k-btn--ghost k-table-resource-link" :href="hashFor({ kind: 'edit', resource: 'connection', name: asConnection(row).metadata.name })" :title="asConnection(row).metadata.name" @click="followLink($event, () => openEdit(asConnection(row)))">{{ asConnection(row).spec.displayName || asConnection(row).metadata.name }}</a><span v-else class="agents-resource-name" :title="asConnection(row).metadata.name">{{ asConnection(row).spec.displayName || asConnection(row).metadata.name }}</span><code v-if="asConnection(row).spec.displayName" class="agents-resource-id">{{ asConnection(row).metadata.name }}</code><span v-if="asConnection(row).status?.webhookPath" class="agents-inbound-on" aria-label="Inbound enabled" data-k-tip="Inbound enabled"><Shuffle :stroke-width="1.75" aria-hidden="true" /></span><span v-if="asConnection(row).status?.oauthConnected" class="agents-inbound-on" aria-label="OAuth connected" data-k-tip="OAuth connected"><Link :stroke-width="1.75" aria-hidden="true" /></span><StatusBadge v-if="deletingName === asConnection(row).metadata.name || store.isDeleting('connections', asConnection(row))" status="Deleting" tone="warning" /></template>
           <template #kind="{ row }"><span class="k-badge k-badge--muted k-badge--label agents-badge"><component :is="categoryIcons[connCategory(asConnection(row).spec.type)]" :size="12" :stroke-width="1.75" aria-hidden="true" /> {{ CATEGORY_META[connCategory(asConnection(row).spec.type)].label }}</span></template>
           <template #type="{ row }"><span class="k-badge k-badge--muted k-badge--label agents-badge">{{ connShape(asConnection(row)).typeLabel }}</span></template>
           <template #endpoint="{ row }"><span class="agents-resource-endpoint" :title="endpoint(asConnection(row))">{{ endpoint(asConnection(row)) || '—' }}</span><StatusBadge v-if="needsInstance(asConnection(row))" class="agents-badge" status="needs an instance" tone="warning" title="Edit this connection and name the searxng instance it should search through" /><StatusBadge v-if="wiring(asConnection(row)) === 'unwired'" class="agents-badge" status="not wired to an agent" tone="warning" title="No agent has been granted this tool — add it under Tools in the agent's Config" /><StatusBadge v-else-if="wiring(asConnection(row)) === 'unknown'" class="agents-badge" status="wiring unknown" tone="muted" title="Agent or toolset assignments are unavailable" /></template>
-          <template #actions="{ row }"><ResourceTableEditButton :label="`Edit connection ${asConnection(row).metadata.name}`" :disabled="!!actionBusy || !!deletePendingName || !!deletingName" @click="openEdit(asConnection(row))" /><ResourceTableActionButton v-if="connCategory(asConnection(row).spec.type) === 'channel'" :icon="Send" tone="accent" :label="`Send a test message via ${asConnection(row).metadata.name}`" :busy-label="`Sending a test message via ${asConnection(row).metadata.name}…`" :busy="actionBusy === `test:${asConnection(row).metadata.name}`" :disabled="!!actionBusy || !!deletePendingName || !!deletingName" @click="test(asConnection(row).metadata.name)" /><ResourceTableActionButton v-if="connCategory(asConnection(row).spec.type) === 'channel'" :icon="Shuffle" :label="`${asConnection(row).status?.webhookPath ? 'Re-enable' : 'Enable'} inbound chat for ${asConnection(row).metadata.name}`" :busy-label="`${asConnection(row).status?.webhookPath ? 'Re-enabling' : 'Enabling'} inbound chat for ${asConnection(row).metadata.name}…`" :busy="actionBusy === `inbound:${asConnection(row).metadata.name}`" :disabled="!!actionBusy || !!deletePendingName || !!deletingName" @click="enableInbound(asConnection(row).metadata.name)" /><ResourceTableActionButton v-if="asConnection(row).spec.auth === 'oauth'" :icon="Link" tone="accent" :label="`${asConnection(row).status?.oauthConnected ? 'Reconnect' : 'Connect'} OAuth for ${asConnection(row).metadata.name}`" :busy-label="`${asConnection(row).status?.oauthConnected ? 'Reconnecting' : 'Connecting'} OAuth for ${asConnection(row).metadata.name}…`" :busy="actionBusy === `oauth:${asConnection(row).metadata.name}`" :disabled="!!actionBusy || !!deletePendingName || !!deletingName" @click="oauth(asConnection(row).metadata.name)" /><ResourceTableDeleteButton :label="`Delete connection ${asConnection(row).metadata.name}`" :busy-label="`Deleting connection ${asConnection(row).metadata.name}…`" :busy="deletingName === asConnection(row).metadata.name" :disabled="!!actionBusy || !!deletePendingName || !!deletingName" @click="remove(asConnection(row).metadata.name)" /></template>
+          <template #actions="{ row }"><ResourceTableEditButton :label="`Edit connection ${asConnection(row).metadata.name}`" :disabled="!!actionBusy || !!deletePendingName || !!deletingName || store.isDeleting('connections', asConnection(row))" @click="openEdit(asConnection(row))" /><ResourceTableActionButton v-if="connCategory(asConnection(row).spec.type) === 'channel'" :icon="Send" tone="accent" :label="`Send a test message via ${asConnection(row).metadata.name}`" :busy-label="`Sending a test message via ${asConnection(row).metadata.name}…`" :busy="actionBusy === `test:${asConnection(row).metadata.name}`" :disabled="!!actionBusy || !!deletePendingName || !!deletingName || store.isDeleting('connections', asConnection(row))" @click="test(asConnection(row).metadata.name)" /><ResourceTableActionButton v-if="connCategory(asConnection(row).spec.type) === 'channel'" :icon="Shuffle" :label="`${asConnection(row).status?.webhookPath ? 'Re-enable' : 'Enable'} inbound chat for ${asConnection(row).metadata.name}`" :busy-label="`${asConnection(row).status?.webhookPath ? 'Re-enabling' : 'Enabling'} inbound chat for ${asConnection(row).metadata.name}…`" :busy="actionBusy === `inbound:${asConnection(row).metadata.name}`" :disabled="!!actionBusy || !!deletePendingName || !!deletingName || store.isDeleting('connections', asConnection(row))" @click="enableInbound(asConnection(row).metadata.name)" /><ResourceTableActionButton v-if="asConnection(row).spec.auth === 'oauth'" :icon="Link" tone="accent" :label="`${asConnection(row).status?.oauthConnected ? 'Reconnect' : 'Connect'} OAuth for ${asConnection(row).metadata.name}`" :busy-label="`${asConnection(row).status?.oauthConnected ? 'Reconnecting' : 'Connecting'} OAuth for ${asConnection(row).metadata.name}…`" :busy="actionBusy === `oauth:${asConnection(row).metadata.name}`" :disabled="!!actionBusy || !!deletePendingName || !!deletingName || store.isDeleting('connections', asConnection(row))" @click="oauth(asConnection(row).metadata.name)" /><ResourceTableDeleteButton :label="`Delete connection ${asConnection(row).metadata.name}`" :busy-label="`Deleting connection ${asConnection(row).metadata.name}…`" :busy="deletingName === asConnection(row).metadata.name || store.isDeleting('connections', asConnection(row))" :disabled="!!actionBusy || (!!deletePendingName && deletePendingName !== asConnection(row).metadata.name) || !!deletingName" @click="remove(asConnection(row).metadata.name)" /></template>
         </ResourceTable>
         <AssistedSearch :store="store" :api="api" @navigate="emit('navigate', $event)" />
       </div>

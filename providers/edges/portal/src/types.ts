@@ -231,6 +231,7 @@ export interface WorkloadEdgeStatus {
 // (authSecretRef) to make one Ready.
 export interface EdgeService {
   name: string
+  uid?: string
   edgeName: string
   edgeKind?: string // LinuxServer | MacOSServer | KubernetesCluster
   targetNamespace?: string // kube edges only

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import vm from 'node:vm'
+import { createLatestRefreshController } from './portalkit/refresh.ts'
 import ts from 'typescript'
 
 const source = await readFile(new URL('./element.ts', import.meta.url), 'utf8')
@@ -22,7 +23,7 @@ function harness(client, render = false) {
   const exports = {}
   vm.runInNewContext(javascript, {
     exports, HTMLElement: class { querySelector() { return null } querySelectorAll() { return [] } dispatchEvent() { return true } },
-    require: name => name.endsWith('/toastFallback') ? { mountToastFallback: () => () => {} } : name.endsWith('/kube') ? { createKubeClient: options => client(options) }
+    require: name => name.endsWith('/refresh') ? { createLatestRefreshController, createAdaptiveRefreshTimer: () => ({ cancel() {}, stop() {}, schedule() {} }) } : name.endsWith('/toastFallback') ? { mountToastFallback: () => () => {} } : name.endsWith('/kube') ? { createKubeClient: options => client(options) }
       : name.endsWith('/tenant') ? { providerFetch: ctx => ctx.fetch } : name.endsWith('/toast') ? { toast: () => {} }
       : name.endsWith('/loading-skeleton') ? loadingSkeletonModule : { ic: () => '' },
     Set, Map, Date, CustomEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init) } },
@@ -81,6 +82,23 @@ test('retry keeps the previous error and snapshot until the read succeeds', asyn
   pending.resolve({ items: [] })
   await retry
   assert.doesNotMatch(element.innerHTML, /offline/)
+})
+
+test('a background list read leaves an open create form in place', async () => {
+  let pending = null
+  const element = harness(() => ({ list: () => pending?.promise ?? Promise.resolve({ items: [] }) }), true)
+  element.railgridContext = context('tenant')
+  await flush()
+  pending = deferred()
+  const read = element._load('background')
+  element.railgridContext = { ...context('tenant'), subPath: 'create/greeting' }
+  let renders = 0
+  element._render = () => { renders++ }
+
+  pending.resolve({ items: [{ metadata: { name: 'new-greeting' } }] })
+  await read
+  assert.equal(renders, 0)
+  assert.equal(element._items[0].metadata.name, 'new-greeting')
 })
 
 test('legacy credential changes fence authority while same-user host fetch replacements preserve drafts', async () => {

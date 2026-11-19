@@ -123,10 +123,6 @@ railgrid-provider-agents .agents-run-inspector { border: 0; border-inline-start:
 railgrid-provider-agents .agents-run-inspector-toggle { padding-inline: 0; }
 railgrid-provider-agents .agents-run-inspector-section { padding: 16px 0; }
 railgrid-provider-agents .agents-run-inspector .agents-runmeta { padding: 0; border: 0; gap: 16px; }
-railgrid-provider-agents .agents-run-id { display: flex; align-items: start; gap: 6px; }
-railgrid-provider-agents .agents-run-id > span { min-width: 0; flex: 1; }
-railgrid-provider-agents .agents-copy-feedback { color: var(--color-text-secondary); font-size: 11px; }
-railgrid-provider-agents .agents-copy-feedback--error { color: var(--color-danger); }
 railgrid-provider-agents .agents-run-request { margin: 0; }
 railgrid-provider-agents .agents-run-request-label { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 8px; }
 railgrid-provider-agents .agents-run-request-preview { margin: 0; color: var(--color-text-secondary); font-size: 12px; font-weight: 400; line-height: 1.6; overflow-wrap: anywhere; }

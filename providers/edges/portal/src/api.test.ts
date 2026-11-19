@@ -497,7 +497,7 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       : response(call.body, 201))
 
     await createKubeEdgeService({ name: 'svc', edgeName: 'edge-a', serviceType: 'generic', targetNamespace: 'default', targetName: 'backend', scheme: 'http', port: 8080, instructions: 'help' })
-    await deleteEdgeService('svc')
+    await deleteEdgeService('svc', 'uid-svc')
     await createWorkload({ name: 'workload', image: 'nginx:latest', replicas: 2, strategy: 'Spread', selector: { env: 'dev' } })
     await deleteWorkload('workload')
 
@@ -513,7 +513,7 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       metadata: { name: 'svc', labels: { 'edges.railgrid.ai/edge': 'edge-a' } },
       spec: { edgeRef: { kind: 'KubernetesCluster', name: 'edge-a' }, targetRef: { namespace: 'default', name: 'backend' }, port: 8080, scheme: 'http', instructions: 'help' },
     })
-    expect(calls[1]?.body).toMatchObject({ kind: 'DeleteOptions' })
+    expect(calls[1]?.body).toMatchObject({ kind: 'DeleteOptions', preconditions: { uid: 'uid-svc' } })
     expect(calls[2]?.body).toMatchObject({
       apiVersion: 'edges.railgrid.ai/v1alpha1',
       kind: 'Workload',
@@ -562,8 +562,8 @@ describe('unchanged edge fleet and CRUD contracts', () => {
     const calls = route((call) => response({ ...service('svc'), spec: (call.body as { spec: unknown }).spec }))
 
     await updateEdgeServiceInstructions('svc', 'talk to me')
-    await updateEdgeService('svc', { serviceType: 'generic', scheme: 'https', port: 443, host: '10.0.0.5', instructions: 'x', targetMode: 'host' })
-    await updateEdgeService('svc', { serviceType: 'generic', scheme: 'http', port: 80, targetNamespace: '', targetName: 'backend', targetMode: 'kube' })
+    await updateEdgeService('svc', { serviceType: 'generic', scheme: 'https', port: 443, host: '10.0.0.5', instructions: 'x', targetMode: 'host' }, 'uid-svc')
+    await updateEdgeService('svc', { serviceType: 'generic', scheme: 'http', port: 80, targetNamespace: '', targetName: 'backend', targetMode: 'kube' }, 'uid-svc')
 
     expect(calls.map((call) => [call.method, call.path, call.contentType])).toEqual([
       ['PATCH', `${SERVICES}/svc`, 'application/merge-patch+json'],
@@ -571,17 +571,17 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       ['PATCH', `${SERVICES}/svc`, 'application/merge-patch+json'],
     ])
     expect(calls[0]?.body).toEqual({ spec: { instructions: 'talk to me' } })
-    expect(calls[1]?.body).toEqual({ spec: { type: 'generic', scheme: 'https', port: 443, instructions: 'x', host: '10.0.0.5', targetRef: null } })
-    expect(calls[2]?.body).toEqual({ spec: { type: 'generic', scheme: 'http', port: 80, instructions: '', host: '', targetRef: { namespace: 'default', name: 'backend' } } })
+    expect(calls[1]?.body).toEqual({ metadata: { uid: 'uid-svc' }, spec: { type: 'generic', scheme: 'https', port: 443, instructions: 'x', host: '10.0.0.5', targetRef: null } })
+    expect(calls[2]?.body).toEqual({ metadata: { uid: 'uid-svc' }, spec: { type: 'generic', scheme: 'http', port: 80, instructions: '', host: '', targetRef: { namespace: 'default', name: 'backend' } } })
   })
 
   it('connects a service by applying the credential Secret then patching authSecretRef', async () => {
     const calls = route((call) => response(call.body))
 
-    await connectEdgeService('ha', 'long-lived-token')
+    await connectEdgeService('ha', 'long-lived-token', 'uid-ha')
 
     expect(calls.map((call) => [call.method, call.path, call.contentType])).toEqual([
-      ['PATCH', '/clusters/workspace/api/v1/namespaces/railgrid-system/secrets/railgrid-edges-svc-ha', 'application/apply-patch+yaml'],
+      ['PATCH', '/clusters/workspace/api/v1/namespaces/railgrid-system/secrets/railgrid-edges-svc-uid-ha', 'application/apply-patch+yaml'],
       ['PATCH', `${SERVICES}/ha`, 'application/merge-patch+json'],
     ])
     expect(calls[0]?.query).toMatchObject({ fieldManager: 'railgrid-edges-portal', force: 'true' })
@@ -594,14 +594,15 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       // sees it and nothing else would stamp the label — and an unlabelled
       // token is one the validation reconciler cannot read.
       metadata: {
-        name: 'railgrid-edges-svc-ha',
+        name: 'railgrid-edges-svc-uid-ha',
         namespace: 'railgrid-system',
         labels: { 'railgrid.ai/owner': 'edges' },
+        ownerReferences: [{ apiVersion: 'edges.railgrid.ai/v1alpha1', kind: 'Service', name: 'ha', uid: 'uid-ha' }],
       },
       type: 'Opaque',
       stringData: { token: 'long-lived-token' },
     })
-    expect(calls[1]?.body).toEqual({ spec: { authSecretRef: { name: 'railgrid-edges-svc-ha', namespace: 'railgrid-system' } } })
+    expect(calls[1]?.body).toEqual({ metadata: { uid: 'uid-ha' }, spec: { authSecretRef: { name: 'railgrid-edges-svc-uid-ha', namespace: 'railgrid-system' } } })
   })
 
   it('reads one service or workload directly and distinguishes an authoritative not-found', async () => {

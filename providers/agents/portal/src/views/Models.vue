@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
+import { sameDeleteTarget, useTableDeletionFeedback } from '../vue/tableDeletion'
 import snapshotSuffixPattern from '../model-snapshot-suffix.json'
 
 import { ArrowLeft, ArrowRight, Cpu, Loader2, Play, Plus, Trash2 } from 'lucide-vue-next'
@@ -64,6 +66,7 @@ const modelView = computed(() => props.setupNavigation || activeTab.value === 'm
 const credentialView = computed(() => modelView.value || connectionView.value)
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
+const deleteFeedback = useTableDeletionFeedback(() => props.store)
 const catalog = ref<ModelInfo[]>([])
 const catalogError = ref<string | null>(null)
 const catalogHasSnapshot = ref(false)
@@ -147,6 +150,7 @@ function credentialAction(name: string, connection = false): CredentialAction | 
 // looked yet, which is a different statement from "looked and it is broken" —
 // so it reads as "Checking…", not as a failure.
 function statusLabel(credential: Credential): string {
+  if (props.store.isDeleting('credentials', credential)) return 'Deleting'
   if (harnessCredential(credential)) {
     if (credential.ready === true) return 'Credential checked'
     if (credential.ready === false) return 'Needs attention'
@@ -311,16 +315,41 @@ async function testCredential(name: string): Promise<void> {
   }
 }
 async function remove(name: string, connection = false): Promise<void> {
+  if (credentialIsBusy(name, connection)) return
+  const authority = captureAuthority()
+  const key = credentialStateKey(name, connection)
+  const lookup = () => authority.store.credentials.data.find(item => item.name === name && providerConnectionCredential(item) === connection)
+  const target = lookup()
+  if (!target || authority.store.isDeleting('credentials', target)) return
+  const label = credentialLabel(target)
+  const ok = await confirmDialog({
+    title: `Delete credential “${label}”?`,
+    message: 'Agents using it will need reassigning.',
+    danger: true,
+    confirmLabel: 'Delete',
+  })
+  if (!ok || !authorityIsCurrent(authority)) return
+  const current = lookup()
+  if (!sameDeleteTarget(target, current, item => item.uid) || !current ||
+      authority.store.isDeleting('credentials', current)) return
   await withCredentialAction(name, 'deleting', async () => {
-    const authority = captureAuthority()
-    const ok = await confirmDialog({ title: `Delete credential “${labelForName(name, connection)}”?`, message: 'Agents using it will need reassigning.', danger: true, confirmLabel: 'Delete' })
-    if (!ok || !authorityIsCurrent(authority)) return
     invalidateProbe(name, connection)
-    const result = await mutate(authority.store, { run: async () => {
-      await (connection ? authority.api.deleteProviderConnection(name) : authority.api.deleteCredential(name))
-      return true
-    }, success: 'Credential deleted.', failure: 'Delete failed', reload: ['credentials'] })
-    if (result && authorityIsCurrent(authority)) clearProbeState(name, connection)
+    const result = await mutate(authority.store, {
+      run: async () => {
+        await (connection ? authority.api.deleteProviderConnection(name, target.uid) : authority.api.deleteCredential(name, target.uid))
+        authority.store.acknowledgeDeletion('credentials', target)
+        return true
+      },
+      success: 'Credential deletion requested.',
+      failure: 'Delete failed',
+      onFailure: () => !authorityIsCurrent(authority) || deleteFeedback.fail(key, 'credential', label, 'The request failed.'),
+      reload: ['credentials'],
+      awaitReload: true,
+    })
+    if (result && authorityIsCurrent(authority)) {
+      deleteFeedback.clear(key)
+      clearProbeState(name, connection)
+    }
   }, connection)
 }
 function clearTest(name: string, connection = false): void { const next = new Map(tested.value); next.delete(credentialStateKey(name, connection)); tested.value = next }
@@ -510,6 +539,13 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
       </header>
       <Tabs v-if="!setupNavigation" class="k-tabs--compact agents-models-tabs" :tabs="modelTabs" :active="activeTab" aria-label="Model management" @select="selectModelTab" />
       <template v-if="credentialView">
+      <ResourceDeleteFailure
+        v-for="(failure, key) in deleteFeedback.failures.value"
+        :key="key"
+        v-bind="failure"
+        :return-focus="modelView ? availableModelsHeading : providerConnectionsHeading"
+        @dismiss="deleteFeedback.clear(String(key))"
+      />
       <template v-if="modelView">
       <div v-if="modelView && catalogError" ref="catalogWarning" data-catalog-warning><InlineNotification :tone="catalogHasSnapshot ? 'warning' : 'error'" :message="catalogHasSnapshot ? `Could not refresh the model catalog. Showing the last loaded catalog. ${catalogError}` : `Model catalog unavailable: ${catalogError}`" action-label="Retry" action-busy-label="Retrying catalog…" :action-busy="catalogLoading" @action="loadCatalog" /></div>
       <LoadingSkeleton v-else-if="modelView && catalogLoading && !catalogHasSnapshot" label="Loading model catalog…" />
@@ -586,7 +622,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
         <template #actions="{ row: { credential } }">
           <ResourceTableEditButton :label="`Edit ${credentialLabel(credential)}`" :disabled="credentialIsBusy(credential.name)" @click="toggleEdit(credential)" />
           <ResourceTableActionButton v-if="credential.model?.trim()" :icon="Play" :label="`Test connection for ${credentialLabel(credential)}`" :busy="testing.has(credentialStateKey(credential.name))" :disabled="credentialIsBusy(credential.name)" @click="testCredential(credential.name)" />
-          <ResourceTableDeleteButton data-model-delete :label="`Delete ${credentialLabel(credential)}`" :busy-label="`Deleting ${credentialLabel(credential)}…`" :busy="credentialAction(credential.name) === 'deleting'" :disabled="credentialIsBusy(credential.name)" @click="remove(credential.name)" />
+          <ResourceTableDeleteButton data-model-delete :label="`Delete ${credentialLabel(credential)}`" :busy-label="`Deleting ${credentialLabel(credential)}…`" :busy="credentialAction(credential.name) === 'deleting' || store.isDeleting('credentials', credential)" :disabled="credentialIsBusy(credential.name)" @click="remove(credential.name)" />
         </template>
         <template v-if="setupNavigation" #after-row="{ row, columnCount }">
           <tr v-if="expandedModel === row.id" :id="`${modelDetailsPrefix}-${row.id}`">
@@ -658,7 +694,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           <template #actions="{ row }">
             <ResourceTableActionButton v-if="providerConnectionCredential(connectionCredential(row))" :icon="Plus" :label="`Add model to ${row.name}`" :disabled="credentialIsBusy(connectionCredential(row).name, true)" @click="addModel(connectionCredential(row).name)" />
             <ResourceTableEditButton :label="providerConnectionCredential(connectionCredential(row)) ? `Edit provider connection ${row.name}` : `Edit ${row.name} harness identity`" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="toggleEdit(connectionCredential(row))" />
-            <ResourceTableDeleteButton :label="providerConnectionCredential(connectionCredential(row)) ? `Delete provider connection ${row.name}` : `Delete ${row.name} harness identity`" :busy-label="providerConnectionCredential(connectionCredential(row)) ? `Deleting provider connection ${row.name}…` : `Deleting ${row.name} harness identity…`" :busy="credentialAction(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row))) === 'deleting'" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="remove(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" />
+            <ResourceTableDeleteButton :label="providerConnectionCredential(connectionCredential(row)) ? `Delete provider connection ${row.name}` : `Delete ${row.name} harness identity`" :busy-label="providerConnectionCredential(connectionCredential(row)) ? `Deleting provider connection ${row.name}…` : `Deleting ${row.name} harness identity…`" :busy="credentialAction(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row))) === 'deleting' || store.isDeleting('credentials', connectionCredential(row))" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="remove(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" />
           </template>
           <template #status="{ row }">
             <StatusBadge :status="String(row.status)" :tone="row.statusTone as 'success' | 'danger' | 'muted'" />

@@ -5,8 +5,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch }
 import {
   ChevronDown,
   Circle,
-  Check,
-  Copy,
   LoaderCircle,
   RefreshCw,
   Wrench,
@@ -17,13 +15,14 @@ import DOMPurify from 'dompurify'
 import { ApiError, type ApiClient } from '../api'
 import { hashFor, type Route } from '../router'
 import type { AppStore, ServerEvent } from '../store'
-import type { ResourceRefreshMode } from '../portalkit/page-state'
+import { createAdaptiveRefreshTimer, type ResourceRefreshMode } from '../portalkit/refresh'
 import AIActivityFeed from '../agentkit/AIActivityFeed.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
 import { toolCommand, toolCommandActivity, toolOutcome, toolOutcomeLabel } from '../toolExecution'
 import type { AITurnProgressStatus } from '../agentkit/conversation'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
+import CopyValue from '../portalkit/CopyValue.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import {
   fmtDuration,
@@ -94,7 +93,7 @@ const resolvingDecision = ref<'approve' | 'deny' | 'answer' | ''>('')
 const pendingQuestion = computed(() => run.value?.phase === 'PendingApproval' && run.value.pending?.kind === 'question')
 const cancellingRuns = ref(new Set<string>())
 const now = ref(Date.now())
-let pollHandle = 0
+const livePoll = createAdaptiveRefreshTimer(() => { void load('background') }, () => 3_000)
 let tickHandle = 0
 let requestGeneration = 0
 let activeRead: { queued?: ResourceRefreshMode; promise?: Promise<void> } | null = null
@@ -198,9 +197,8 @@ const asChild = (row: Record<string, unknown>): RunSummary => row.child as RunSu
 const childAriaLabel = (row: Record<string, unknown>): string => `Open run ${asChild(row).id}`
 
 function stopLive(): void {
-  if (pollHandle) window.clearInterval(pollHandle)
+  livePoll.cancel()
   if (tickHandle) window.clearInterval(tickHandle)
-  pollHandle = 0
   tickHandle = 0
 }
 
@@ -209,7 +207,7 @@ function syncLive(current: Run | null): void {
     stopLive()
     return
   }
-  if (!pollHandle) pollHandle = window.setInterval(() => void load('background'), 3000)
+  livePoll.schedule()
   if (!tickHandle) tickHandle = window.setInterval(() => { now.value = Date.now() }, 1000)
 }
 
@@ -507,28 +505,7 @@ function navigateForFailure(target: FailureRecoveryTarget): void {
   if (agentName) emit('navigate', { kind: 'agent', name: agentName, tab: 'config' })
 }
 
-const copyState = ref<'idle' | 'copied' | 'error'>('idle')
-let copyTimer: ReturnType<typeof setTimeout> | undefined
-let copyGeneration = 0
-
-function resetCopyState(): void {
-  copyGeneration += 1
-  clearTimeout(copyTimer)
-  copyState.value = 'idle'
-}
-
-async function copyRunID(): Promise<void> {
-  resetCopyState()
-  const generation = copyGeneration
-  try {
-    await navigator.clipboard.writeText(props.runId)
-    if (generation !== copyGeneration) return
-    copyState.value = 'copied'
-    copyTimer = setTimeout(() => { copyState.value = 'idle' }, 2000)
-  } catch {
-    if (generation === copyGeneration) copyState.value = 'error'
-  }
-}
+const runScope = computed(() => [props.store, props.api, props.runId, props.embeddedAgent, props.authorityEpoch] as const)
 
 function goBack(): void {
   emit('navigate', backRoute.value)
@@ -538,9 +515,8 @@ onMounted(() => {
   bindStore(props.store)
   void load()
 })
-watch(() => [props.store, props.api, props.runId, props.embeddedAgent, props.authorityEpoch] as const, () => {
+watch(runScope, () => {
   bindStore(props.store)
-  resetCopyState()
   requestGeneration += 1
   activeRead = null
   resolvingInboxID.value = ''
@@ -561,12 +537,12 @@ watch(() => [props.store, props.api, props.runId, props.embeddedAgent, props.aut
 }, { flush: 'post' })
 onUpdated(() => { void nextTick(() => { if (root.value) attachCodeCopy(root.value) }) })
 onBeforeUnmount(() => {
-  resetCopyState()
   boundStore?.removeEventListener('server', onServerEvent as EventListener)
   boundStore = null
   requestGeneration += 1
   activeRead = null
   stopLive()
+  livePoll.stop()
 })
 </script>
 
@@ -773,8 +749,7 @@ onBeforeUnmount(() => {
                 <div class="agents-runmeta">
                   <div class="agents-runmeta-cell">
                     <span class="agents-runmeta-k">run ID</span>
-                    <span class="agents-runmeta-v agents-run-id"><span>{{ run.id }}</span><button class="k-icon-action" type="button" :aria-label="copyState === 'copied' ? 'Run ID copied' : 'Copy run ID'" :data-k-tip="copyState === 'copied' ? 'Copied' : 'Copy run ID'" @click="copyRunID"><Check v-if="copyState === 'copied'" :size="14" :stroke-width="1.75" aria-hidden="true" /><Copy v-else :size="14" :stroke-width="1.75" aria-hidden="true" /></button></span>
-                    <span class="agents-copy-feedback" :class="{ 'agents-copy-feedback--error': copyState === 'error' }" role="status" aria-live="polite">{{ copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Could not copy. Select the run ID to copy it.' : '' }}</span>
+                    <CopyValue class="agents-run-id" :value="run.id" :scope="runScope" label="Copy run ID" />
                   </div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">agent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'agent', name: run.agent, tab: 'chat' })">{{ run.agent }}</button></span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">trigger</span><span class="agents-runmeta-v"><span class="mono">{{ run.trigger }}</span> <span class="muted">({{ run.class }})</span></span></div>

@@ -51,6 +51,6 @@ describe('repository deletion presentation', () => {
 
   it('keeps list and detail deletes behind the shared presentation confirmation', () => {
     expect(collectionSource).toMatch(/const ok = await confirmDialog\(repositoryDeletionPresentation\(repository\)\.confirmation\)[\s\S]*?if \(!ok \|\| !mounted\) return[\s\S]*?await api\.deleteRepository\(repository\)/)
-    expect(detailSource).toMatch(/const ok = await confirmDialog\(repositoryDeletionPresentation\(current\)\.confirmation\)[\s\S]*?if \(!ok \|\| !mounted\) return[\s\S]*?await api\.deleteRepository\(current\)/)
+    expect(detailSource).toMatch(/const ok = await confirmDialog\(repositoryDeletionPresentation\(current\)\.confirmation\)[\s\S]*?if \(!ok \|\| !mounted \|\| repo\.value\?\.name !== current\.name \|\| repo\.value\?\.uid !== current\.uid [^\n]*\) return[\s\S]*?await api\.deleteRepository\(current\)/)
   })
 })

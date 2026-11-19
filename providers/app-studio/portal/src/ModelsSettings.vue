@@ -4,6 +4,7 @@ import { computed, nextTick, ref, useId, watch } from 'vue'
 import { ArrowLeft, ArrowRight, Check, Cpu, Loader2, Play, Plus, RefreshCw, Star } from 'lucide-vue-next'
 import ResourceTableEditButton from './portalkit/ResourceTableEditButton.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
+import ResourceDeleteFailure from './portalkit/ResourceDeleteFailure.vue'
 import ResourceTableActionButton from './portalkit/ResourceTableActionButton.vue'
 import ResourceTable from './portalkit/ResourceTable.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
@@ -60,6 +61,8 @@ const props = withDefaults(defineProps<{
   loading: boolean
   loadError: string | null
   saving: boolean
+  deletingRow?: { kind: 'model' | 'connection'; id: string } | null
+  deleteFailures?: Record<string, { kind: 'model' | 'connection'; title: string; message: string }>
   actionError: string | null
   editorOpen: boolean
   creationRoute: boolean
@@ -111,6 +114,7 @@ const emit = defineEmits<{
   save: []
   testSaved: [modelID: string]
   delete: [modelID: string]
+  dismissDeleteFailure: [key: string]
   setDefault: [modelID: string]
   selectConnection: [connectionRef: string]
   discoverConnection: [connectionRef: string]
@@ -129,6 +133,7 @@ const setupTabs = [
   { id: 'models', label: 'Models' },
   { id: 'usage', label: 'Usage & cost' },
 ]
+const availableModelsHeading = ref<HTMLElement | null>(null)
 const providerConnectionsHeading = ref<HTMLHeadingElement | null>(null)
 const settingsRoot = ref<HTMLElement | null>(null)
 function focusAfterRecovery(kind: 'models' | 'connections') {
@@ -205,7 +210,7 @@ const connectionTableRows = computed(() => connectionRows.value.map(connection =
   const discoveryReason = connection.conditions?.find(condition => condition.type === 'Reachable'
     && condition.status === 'Unknown')?.reason
   const explicitDiscoveryRequired = discoveryReason === 'ExplicitDiscoveryRequired'
-  const status = connection.activationPending ? 'Changes pending' : connection.ready
+  const status = connection.deleting ? 'Deleting' : connection.activationPending ? 'Changes pending' : connection.ready
     ? 'Ready'
     : connection.secretResolved === false
       ? 'Credential missing'
@@ -214,7 +219,7 @@ const connectionTableRows = computed(() => connectionRows.value.map(connection =
         : explicitDiscoveryRequired
           ? 'Not verified'
           : 'Checking'
-  const tone = connection.activationPending ? 'warning' as const : connection.ready ? 'success' as const
+  const tone = connection.deleting || connection.activationPending ? 'warning' as const : connection.ready ? 'success' as const
     : connection.secretResolved === false || connection.reachable === false ? 'danger' as const
       : 'warning' as const
   return {
@@ -735,6 +740,14 @@ watch(
 
     <InlineNotification v-if="loadError" data-model-recovery="models" :tone="settings ? 'warning' : 'error'" :message="settings ? `Models could not be refreshed. Showing the last successful result. ${loadError}` : loadError" action-label="Retry" :action-busy="loading" action-busy-label="Retrying models…" @action="emit('retry')" />
     <InlineNotification v-if="actionError" tone="error" :message="actionError" />
+    <ResourceDeleteFailure
+      v-for="(failure, key) in deleteFailures"
+      :key="key"
+      :title="failure.title"
+      :message="failure.message"
+      :return-focus="failure.kind === 'connection' ? providerConnectionsHeading : availableModelsHeading"
+      @dismiss="emit('dismissDeleteFailure', String(key))"
+    />
 
     <LoadingSkeleton v-if="onboarding && connectionsLoading && !connectionsError && !connectionRef && !connectionEditorOpen" label="Loading provider connections…" compact />
     <InlineNotification
@@ -819,7 +832,7 @@ watch(
     <template v-else-if="!editorOpen && !creationRoute">
       <header class="k-resource-page__header">
         <div class="k-resource-page__heading">
-          <h3 class="k-resource-page__title" tabindex="-1">Available models</h3>
+          <h3 ref="availableModelsHeading" class="k-resource-page__title" tabindex="-1">Available models</h3>
           <p class="k-resource-page__subtitle">Use models in projects. Each model shows its provider connection or direct credential.</p>
         </div>
         <div v-if="!showFirstRun" class="k-resource-page__actions">
@@ -876,7 +889,13 @@ watch(
             <ResourceTableEditButton :label="`Edit ${saved.name}`" :disabled="saving" @click="emit('openEditor', saved.id)" />
             <ResourceTableActionButton :icon="Play" :label="`Test connection for ${saved.name}`" :disabled="saving || !saved.configured" :busy="modelTests?.[saved.id]?.state === 'Testing…'" @click="emit('testSaved', saved.id)" />
             <ResourceTableActionButton v-if="!saved.default" :icon="Star" :label="`Make ${saved.name} default`" :disabled="saving || !saved.configured" @click="emit('setDefault', saved.id)" />
-            <ResourceTableDeleteButton :label="`Delete ${saved.name}`" :disabled="saving" @click="emit('delete', saved.id)" />
+            <ResourceTableDeleteButton
+              :label="`Delete model ${saved.name}`"
+              :busy-label="`Deleting model ${saved.name}…`"
+              :busy="deletingRow?.kind === 'model' && deletingRow.id === saved.id"
+              :disabled="saving"
+              @click="emit('delete', saved.id)"
+            />
           </template>
         </ModelCollection>
         <template v-else-if="settings && !loadError && !showFirstRun && !showFirstModel">
@@ -919,7 +938,13 @@ watch(
           <template #actions="{ row }">
             <ResourceTableActionButton :icon="Plus" :label="`Add model using ${row.name}`" :disabled="saving || connectionBusy || modelLimitReached || connectionFromTableRow(row).deleting" @click="addModelFor(connectionFromTableRow(row))" />
             <ResourceTableEditButton :label="`Edit provider connection ${row.name}`" :disabled="saving || connectionBusy || connectionFromTableRow(row).deleting" @click="openConnectionEditor(connectionFromTableRow(row))" />
-            <ResourceTableDeleteButton :label="`Delete provider connection ${row.name}`" :disabled="saving || connectionBusy || connectionBindingCount(row) > 0 || connectionFromTableRow(row).deleting" @click="emit('deleteConnection', connectionFromTableRow(row))" />
+            <ResourceTableDeleteButton
+              :label="`Delete provider connection ${row.name}`"
+              :busy-label="`Deleting provider connection ${row.name}…`"
+              :busy="(deletingRow?.kind === 'connection' && deletingRow.id === connectionFromTableRow(row).name) || connectionFromTableRow(row).deleting"
+              :disabled="saving || connectionBusy || connectionBindingCount(row) > 0"
+              @click="emit('deleteConnection', connectionFromTableRow(row))"
+            />
           </template>
         </ResourceTable>
         <template v-else-if="connectionsLoaded && !connectionsError && !showFirstRun">

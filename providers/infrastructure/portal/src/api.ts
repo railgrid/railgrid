@@ -546,7 +546,7 @@ async function enrichInstances(items: Instance[], templates: Template[]): Promis
   )
 }
 
-async function listInstancesPage(options: InstanceListOptions = {}): Promise<InstanceListPage> {
+async function listInstancesPage(options: InstanceListOptions = {}, enrichment: 'always' | 'last-page' = 'always'): Promise<InstanceListPage> {
   const expectedContext = requestContext()
   const raw = await fetchInstancePage(options)
   const items = raw.items.map(instanceFromObj)
@@ -554,7 +554,7 @@ async function listInstancesPage(options: InstanceListOptions = {}): Promise<Ins
   // and prevents a page's template view from triggering reads for other pages.
   // An empty page needs no catalog: this also keeps the unbound-workspace
   // read (an empty list) from tripping over a missing Templates binding.
-  if (items.length > 0) {
+  if (items.length > 0 && (enrichment === 'always' || !raw.continue)) {
     const templates = await getTemplates()
     await enrichInstances(items, templates)
   }
@@ -636,8 +636,8 @@ export const api = {
     return instanceFromObj(created)
   },
 
-  async listInstancesPage(options: InstanceListOptions = {}): Promise<InstanceListPage> {
-    return listInstancesPage(options)
+  async listInstancesPage(options: InstanceListOptions = {}, enrichment: 'always' | 'last-page' = 'always'): Promise<InstanceListPage> {
+    return listInstancesPage(options, enrichment)
   },
 
   /**
@@ -685,9 +685,9 @@ export const api = {
     return instanceFromObj(found)
   },
 
-  async deleteInstance(name: string): Promise<void> {
+  async deleteInstance(name: string, uid?: string): Promise<void> {
     const expectedContext = requestContext()
-    await withKube(client => client.delete(INSTANCES, name))
+    await withKube(client => client.delete(INSTANCES, name, uid ? { preconditions: { uid } } : undefined))
     assertCurrentContext(expectedContext)
   },
 }

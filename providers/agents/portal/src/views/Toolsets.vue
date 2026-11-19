@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import StatusBadge from '../portalkit/StatusBadge.vue'
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
+import { sameDeleteTarget, useTableDeletionFeedback } from '../vue/tableDeletion'
 import { ArrowLeft, Package, Plus } from 'lucide-vue-next'
 import { computed, nextTick, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
@@ -42,6 +45,7 @@ const emit = defineEmits<{
 }>()
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
+const deleteFeedback = useTableDeletionFeedback(() => props.store)
 const editValuesFor = ref('')
 const draftName = ref('')
 const draftDisplay = ref('')
@@ -188,11 +192,29 @@ async function save(): Promise<void> {
 async function remove(name: string): Promise<void> {
   if (deletingName.value) return
   const authority = captureAuthority()
+  const lookup = () => authority.store.toolsets.data.find(item => item.metadata.name === name)
+  const target = lookup()
+  if (!target || authority.store.isDeleting('toolsets', target)) return
   const ok = await confirmDialog({ title: `Delete toolset “${name}”?`, message: 'Agents linking it will lose those tools.', danger: true, confirmLabel: 'Delete' })
   if (!ok || !authorityIsCurrent(authority)) return
+  const current = lookup()
+  if (!sameDeleteTarget(target, current, item => item.metadata.uid) || !current ||
+      authority.store.isDeleting('toolsets', current)) return
   deletingName.value = name
   try {
-    await mutate(authority.store, { run: () => authority.api.deleteToolset(name), success: 'Toolset deleted.', failure: 'Delete failed', reload: ['toolsets'] })
+    const done = await mutate(authority.store, {
+      run: async () => {
+        await authority.api.deleteToolset(name, target.metadata.uid)
+        authority.store.acknowledgeDeletion('toolsets', target)
+        return true
+      },
+      success: 'Toolset deletion requested.',
+      failure: 'Delete failed',
+      onFailure: () => !authorityIsCurrent(authority) || deleteFeedback.fail(name, 'toolset', name, 'The request failed.'),
+      reload: ['toolsets'],
+      awaitReload: true,
+    })
+    if (done && authorityIsCurrent(authority)) deleteFeedback.clear(name)
   } finally {
     deletingName.value = ''
   }
@@ -348,6 +370,13 @@ function cancelCreate(): void {
         </div>
       </div>
     </template>
+    <ResourceDeleteFailure
+      v-for="(failure, key) in deleteFeedback.failures.value"
+      :key="key"
+      v-bind="failure"
+      :return-focus="collectionHeading"
+      @dismiss="deleteFeedback.clear(String(key))"
+    />
     <div class="agents-panel">
       <template v-if="showFirstRun">
         <div v-if="slice.error" ref="firstRunWarning" data-toolsets-first-run-warning>
@@ -402,10 +431,10 @@ function cancelCreate(): void {
         ><template #icon><Package :stroke-width="1.75" aria-hidden="true" /></template></FirstRunGuide>
       </template>
       <ResourceTable v-else :columns="[{ key: 'name', label: 'Name', primary: true }, { key: 'tools', label: 'Tools' }, { key: 'usedBy', label: 'Used by' }, { key: 'actions', label: '', ariaLabel: 'Actions' }]" :rows="rows" row-key="id" aria-label="Toolsets" :loaded="slice.hasSnapshot" :loading="slice.loading" :error="slice.error" :stale="slice.hasSnapshot && !!slice.error" retryable searchable search-placeholder="Search toolsets…" :search-keys="['name', 'tools']" :filters="filters" :filter-values="tableFilters" paginated :interactive="false" @update:filter-values="tableFilters = $event" @retry="store.load('toolsets')">
-        <template #name="{ row }"><span class="agents-resource-name" :title="asToolset(row).metadata.name">{{ asToolset(row).spec.displayName || asToolset(row).metadata.name }}</span><code v-if="asToolset(row).spec.displayName" class="agents-resource-id">{{ asToolset(row).metadata.name }}</code></template>
+        <template #name="{ row }"><span class="agents-resource-name" :title="asToolset(row).metadata.name">{{ asToolset(row).spec.displayName || asToolset(row).metadata.name }}</span><code v-if="asToolset(row).spec.displayName" class="agents-resource-id">{{ asToolset(row).metadata.name }}</code><StatusBadge v-if="deletingName === asToolset(row).metadata.name || store.isDeleting('toolsets', asToolset(row))" status="Deleting" tone="warning" /></template>
         <template #tools="{ row }"><span v-if="asToolset(row).spec.connections?.length || asToolset(row).spec.families?.includes('visualization')" class="agents-resource-tags"><span v-if="asToolset(row).spec.families?.includes('visualization')" class="k-badge k-badge--muted k-badge--label agents-badge">Visualize data</span><span v-for="connection in asToolset(row).spec.connections" :key="connection">{{ connection }}</span></span><span v-else class="muted">—</span></template>
         <template #usedBy="{ row }"><span class="muted" :title="usedBy(asToolset(row).metadata.name) === null ? 'Agent assignments are unavailable' : undefined">{{ row.usedBy }}</span></template>
-        <template #actions="{ row }"><ResourceTableEditButton :label="`Edit toolset ${asToolset(row).metadata.name}`" :disabled="!!deletingName" @click="openEdit(asToolset(row))" /><ResourceTableDeleteButton :label="`Delete toolset ${asToolset(row).metadata.name}`" :busy-label="`Deleting toolset ${asToolset(row).metadata.name}…`" :busy="deletingName === asToolset(row).metadata.name" :disabled="!!deletingName" @click="remove(asToolset(row).metadata.name)" /></template>
+        <template #actions="{ row }"><ResourceTableEditButton :label="`Edit toolset ${asToolset(row).metadata.name}`" :disabled="!!deletingName || store.isDeleting('toolsets', asToolset(row))" @click="openEdit(asToolset(row))" /><ResourceTableDeleteButton :label="`Delete toolset ${asToolset(row).metadata.name}`" :busy-label="`Deleting toolset ${asToolset(row).metadata.name}…`" :busy="deletingName === asToolset(row).metadata.name || store.isDeleting('toolsets', asToolset(row))" :disabled="!!deletingName" @click="remove(asToolset(row).metadata.name)" /></template>
       </ResourceTable>
     </div>
   </ResourcePage>

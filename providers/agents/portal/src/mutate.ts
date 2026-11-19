@@ -27,6 +27,8 @@ export interface MutateOptions<T> {
   // reload names the store slices to refresh once the write lands, so the
   // authoritative server state replaces the optimistic guess.
   reload?: SliceKey[]
+  // Keep a row action busy until its replacement snapshot has been fetched.
+  awaitReload?: boolean
   // action attaches a follow-up button to the success toast (e.g. "View run").
   action?: { label: string; run: () => void }
 }
@@ -46,7 +48,8 @@ export async function mutate<T>(store: AppStore, opts: MutateOptions<T>): Promis
     // surface its toast or issue new reads through its retired client.
     if (store.isRetired()) return undefined
     if (opts.success) toast('ok', opts.success, opts.action)
-    for (const key of opts.reload || []) void store.load(key)
+    const reads = opts.reload?.map(key => store.load(key)) ?? []
+    if (opts.awaitReload) await Promise.all(reads)
     return res
   } catch (e) {
     if (store.isRetired()) return undefined

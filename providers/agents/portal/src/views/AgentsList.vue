@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
+import { useTableDeletionFeedback } from '../vue/tableDeletion'
 import { computed, nextTick, onMounted, ref, useId, watch } from 'vue'
-import { AlertCircle, Bot, Megaphone, Plus, Search } from 'lucide-vue-next'
+import { AlertCircle, Bot, History, Megaphone, Plus, Search } from 'lucide-vue-next'
 import AgentTemplateCards from '../components/AgentTemplateCards.vue'
 import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
+import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableFilter from '../portalkit/ResourceTableFilter.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
@@ -23,6 +27,8 @@ import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 const props = defineProps<{ store: AppStore; api: ApiClient; assistantSettings?: boolean }>()
 const emit = defineEmits<{ navigate: [route: Route] }>()
 const cardDescriptionID = useId()
+const deletingAgent = ref('')
+watch(() => props.store, () => { deletingAgent.value = '' }, { flush: 'sync' })
 const agentActions: readonly ActionMenuItem[] = [
   { id: 'runs', label: 'View runs' },
   { id: 'delete', label: 'Delete agent', tone: 'danger' },
@@ -34,6 +40,7 @@ const filterValues = ref<TableFilterState>({ backendType: '', configuration: '' 
 watch(layout, value => writeLayoutPreference(layoutPreferenceKey, value))
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
+const deleteFeedback = useTableDeletionFeedback(() => props.store)
 
 // Refresh the view when the store updates its plain resource slice.
 const agents = computed(() => { revision.value; return { ...props.store.agents } })
@@ -72,22 +79,37 @@ function navigate(route: Route): void { emit('navigate', route) }
 async function selectAgentAction(name: string, action: string): Promise<void> {
   if (action === 'runs') navigate({ kind: 'agent', name, tab: 'runs' })
   if (action !== 'delete') return
+  if (deletingAgent.value) return
   const authority = captureAuthority()
+  const agent = authority.store.agent(name)
+  if (!agent) return
+  const label = agent.spec?.displayName || name
+  const key = agent.metadata.uid ?? name
   // Let the menu return focus to its trigger before the dialog captures it.
   await nextTick()
-  if (!authorityIsCurrent(authority)) return
+  if (!authorityIsCurrent(authority) || deletingAgent.value) return
   const ok = await confirmDialog({
-    title: `Delete agent “${name}”?`,
+    title: `Delete agent “${label}”?`,
     message: 'This also deletes its chat history.',
     danger: true,
-    confirmLabel: 'Delete',
+    confirmLabel: 'Delete agent',
   })
-  if (!ok || !authorityIsCurrent(authority)) return
-  await mutate(authority.store, {
-    run: () => authority.store.deleteAgent(name),
-    success: `Agent “${name}” deleted.`,
-    failure: 'Delete failed',
-  })
+  const current = authority.store.agent(name)
+  if (!ok || !authorityIsCurrent(authority) || deletingAgent.value || !current ||
+      (agent.metadata.uid ? current.metadata.uid !== agent.metadata.uid : current !== agent)) return
+
+  deletingAgent.value = name
+  try {
+    const done = await mutate(authority.store, {
+      run: async () => { await authority.store.deleteAgent(name, agent.metadata.uid); return true },
+      success: `Agent deletion requested for ${label}.`,
+      failure: 'Delete failed',
+      onFailure: () => !authorityIsCurrent(authority) || deleteFeedback.fail(key, 'agent', label, 'The request failed.'),
+    })
+    if (done && authorityIsCurrent(authority)) deleteFeedback.clear(key)
+  } finally {
+    if (authorityIsCurrent(authority)) deletingAgent.value = ''
+  }
 }
 
 function scheduleCount(agent: Agent): number {
@@ -168,6 +190,10 @@ const cardEmptyText = computed(() => query.value.trim() && hasFilters.value
   ? 'No agents match your search and filters.'
   : hasFilters.value ? 'No agents match your filters.' : 'No agents match your search.')
 const cardSearch = ref<HTMLInputElement | null>(null)
+const collectionRef = ref<InstanceType<typeof ResourcePage> | null>(null)
+function deletionFocus() {
+  return collectionRef.value?.$el.querySelector('.k-resource-page__title') as HTMLElement | null
+}
 function clearCardConstraints(): void {
   query.value = ''
   filterValues.value = { backendType: '', configuration: '' }
@@ -175,12 +201,13 @@ function clearCardConstraints(): void {
 }
 
 function openAgentRow(row: Record<string, unknown>): void {
+  if (deletingAgent.value === row.resourceName) return
   navigate({ kind: 'agent', name: String(row.resourceName), tab: 'chat' })
 }
 </script>
 
 <template>
-  <ResourcePage title="Agents" variant="collection">
+  <ResourcePage title="Agents" ref="collectionRef" variant="collection">
     <template #actions>
       <a v-if="assistantSettings" class="k-btn k-btn--text" :href="hashFor({ kind: 'menu', menu: 'agents', assistantSettings: true })">Workspace assistant settings</a>
       <button v-if="!showAgentCards" class="k-btn k-btn--primary" type="button" @click="navigate({ kind: 'create', resource: 'agent' })">
@@ -188,6 +215,13 @@ function openAgentRow(row: Record<string, unknown>): void {
       </button>
     </template>
     <div class="agents-menu">
+    <ResourceDeleteFailure
+      v-for="(failure, key) in deleteFeedback.failures.value"
+      :key="key"
+      v-bind="failure"
+      :return-focus="deletionFocus()"
+      @dismiss="deleteFeedback.clear(String(key))"
+    />
     <div v-if="agents.error && !agents.hasSnapshot" class="k-card agents-state agents-state-error" role="alert">
       <AlertCircle aria-hidden="true" />
       <span>{{ agents.error }}</span>
@@ -244,6 +278,9 @@ function openAgentRow(row: Record<string, unknown>): void {
             </a>
             <ActionMenu
               class="agents-card-menu"
+              :disabled="!!deletingAgent"
+              :busy="deletingAgent === row.resourceName"
+              :busy-label="`Deleting agent ${row.name}…`"
               :label="`More actions for ${row.name}`"
               :items="agentActions"
               @select="action => selectAgentAction(row.resourceName, action)"
@@ -280,10 +317,15 @@ function openAgentRow(row: Record<string, unknown>): void {
         :page-size-options="[25, 50, 100]"
         interactive
         :row-aria-label="row => `Open agent ${String(row.name)}`"
+        :row-interactive="row => deletingAgent !== row.resourceName"
         @row-click="openAgentRow"
       >
         <template #name="{ row }">
-          <a class="k-table-resource-link" tabindex="-1" :href="hashFor({ kind: 'agent', name: String(row.resourceName), tab: 'chat' })">{{ row.name }}</a>
+          <template v-if="deletingAgent === row.resourceName">
+            <span>{{ row.name }}</span>
+            <StatusBadge status="Deleting" tone="warning" />
+          </template>
+          <a v-else class="k-table-resource-link" tabindex="-1" :href="hashFor({ kind: 'agent', name: String(row.resourceName), tab: 'chat' })">{{ row.name }}</a>
         </template>
         <template #backend="{ row }">
           <div v-if="row.blocker" class="agents-backend-blocker">
@@ -293,10 +335,18 @@ function openAgentRow(row: Record<string, unknown>): void {
           <span v-else>{{ row.backend }}</span>
         </template>
         <template #actions="{ row }">
-          <ActionMenu
-            :label="`More actions for ${row.name}`"
-            :items="agentActions"
-            @select="action => selectAgentAction(String(row.resourceName), action)"
+          <ResourceTableActionButton
+            :icon="History"
+            :label="`View runs for ${row.name}`"
+            :disabled="!!deletingAgent"
+            @click="selectAgentAction(String(row.resourceName), 'runs')"
+          />
+          <ResourceTableDeleteButton
+            :label="`Delete agent ${row.name}`"
+            :busy-label="`Deleting agent ${row.name}…`"
+            :busy="deletingAgent === row.resourceName"
+            :disabled="!!deletingAgent"
+            @click="selectAgentAction(String(row.resourceName), 'delete')"
           />
         </template>
       </ResourceTable>

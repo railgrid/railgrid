@@ -5,6 +5,7 @@ import {
   STABLE_REFRESH_MS,
   createAdaptiveRefreshTimer,
   createLatestRefreshController,
+  createServiceDeletions,
 } from './refresh'
 
 function deferred() {
@@ -16,6 +17,22 @@ function deferred() {
 }
 
 describe('edge refresh coordination', () => {
+  it('preserves a Service deletion across stale and partial pages and clears it on authoritative removal or replacement', () => {
+    const original = { name: 'service', uid: 'original' }
+    const replacement = { name: 'service', uid: 'replacement' }
+    const deletions = createServiceDeletions()
+    deletions.acknowledge(original.name, original.uid)
+    deletions.reconcile([original], true)
+    deletions.reconcile([], false)
+    expect(deletions.has(original)).toBe(true)
+    expect(deletions.has(replacement)).toBe(false)
+    deletions.reconcile([replacement], false)
+    expect(deletions.has(original)).toBe(false)
+    deletions.acknowledge(replacement.name, replacement.uid)
+    deletions.reconcile([], true)
+    expect(deletions.has(replacement)).toBe(false)
+  })
+
   it('lets an active snapshot commit and coalesces newer work with foreground priority', async () => {
     const first = deferred()
     const second = deferred()

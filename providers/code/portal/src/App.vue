@@ -222,7 +222,14 @@ function completeConnectionPrerequisite(success: boolean, connectionName?: strin
           @create-connection="startRepositoryConnection"
         />
         <ConnectionDetailView v-if="route.page === 'connections' && route.connection" :key="`${viewGeneration}:connection:${route.connection}`" :name="route.connection" :deletions="deletions" @back="navigate('connections')" />
-        <RepoDetailView v-if="route.repo" :key="`${viewGeneration}:repository:${route.repo}`" :name="route.repo" :deletions="deletions" @back="navigate('repositories')" />
+        <RepoDetailView
+          v-if="route.repo"
+          :key="`${viewGeneration}:repository:${route.repo}`"
+          :name="route.repo"
+          :deletions="deletions"
+          @back="navigate('repositories')"
+          @deleted="navigate('repositories', { replace: true })"
+        />
         <PackagesView v-if="route.page === 'packages'" :key="`${viewGeneration}:packages`" @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
 
         <!-- Keep collection-local query/filter/page/scroll state while a routed

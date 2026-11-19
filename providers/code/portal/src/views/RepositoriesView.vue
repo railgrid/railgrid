@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
+import { createResourcePageReader } from '../portalkit/refresh'
 import ActionMenu from '../portalkit/ActionMenu.vue'
-import { computed, nextTick, onActivated, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { ArrowRight, ExternalLink, GitBranch, Link2 } from 'lucide-vue-next'
 import { api } from '../api'
 import { codeFirstRunModel, type CodeJourneyAction } from '../journey'
@@ -53,7 +55,7 @@ const deletionScope = 'repository'
 const repos = ref<Repository[]>([])
 const connections = ref<Connection[]>([])
 const error = ref<string | null>(null)
-const mutationErrors = ref<Record<string, { name: string; message: string }>>({})
+const mutationErrors = ref<Record<string, { title: string; message: string }>>({})
 const loading = ref(false)
 const loaded = ref(false)
 const repositoryMode = ref<RepositoryPaginationMode>('server')
@@ -61,6 +63,7 @@ const repositoryPage = ref(1)
 const repositoryPageSize = ref(REPOSITORY_PAGE_SIZE)
 const repositoryQuery = ref('')
 const repositoryFiltersValue = ref<RepositoryFilterValues>(cloneRepositoryFilters(EMPTY_REPOSITORY_FILTERS))
+const pageReader = createResourcePageReader()
 const repositoryCursor = ref<string | null>(null)
 const repositoryPageInfo = ref<ReturnType<typeof toRepositoryPageInfo> | null>(null)
 const repositoryFullRead = createFullListReadCoordinator(() => api.listRepositories())
@@ -136,6 +139,7 @@ function followRepositoryCreateLink(event: MouseEvent, mode: 'create' | 'import'
 const repositoryFilterDefinitions = computed(() => repositoryFilters(connections.value))
 
 let mounted = false
+let active = false
 let repoRefresh!: LatestRefreshController
 let connectionRefresh!: LatestRefreshController
 let forceRepositoryFullRead = false
@@ -145,7 +149,7 @@ const poller = createAdaptiveRefreshTimer(() => load('background'), () => {
   if (!loaded.value || !connectionsLoaded.value || error.value || connectionsError.value) return FAST_REFRESH_MS
   const repositoryPending = repos.value.some(repository => {
     const status = repositoryStatus(repository)
-    return status === 'pending' || status === 'Deleting'
+    return status === 'pending' || isDeleting(repository)
   })
   const connectionPending = connections.value.some(connection => (
     !!connection.deletionTimestamp || !connection.validated || (
@@ -162,6 +166,7 @@ function errMessage(e: unknown): string {
 }
 
 function loadRepositories(mode: ResourceRefreshMode = 'foreground', forceFullRead = repositoryMode.value === 'client') {
+  if (!active) return
   if (forceFullRead) forceRepositoryFullRead = true
   if (mode === 'foreground') {
     repositoryRefreshMode.value = 'foreground'
@@ -171,6 +176,7 @@ function loadRepositories(mode: ResourceRefreshMode = 'foreground', forceFullRea
 }
 
 function loadConnections(mode: ResourceRefreshMode = 'foreground') {
+  if (!active) return
   if (mode === 'foreground') {
     connectionsRefreshMode.value = 'foreground'
     connectionsLoading.value = true
@@ -218,7 +224,7 @@ function currentRepositoryRequest(): RepositoryRequest {
 
 function repositoryRequestIsCurrent(requestID: number, request: RepositoryRequest): boolean {
   const current = currentRepositoryRequest()
-  return repoRefresh.isCurrent(requestID) &&
+  return active && repoRefresh.isCurrent(requestID) &&
     current.mode === request.mode &&
     current.active === request.active &&
     current.page === request.page &&
@@ -254,6 +260,7 @@ function handleRepositoryChange(change: ResourceTableChange): void {
   repositoryQuery.value = next.query
   repositoryFiltersValue.value = next.filters
   repositoryCursor.value = next.cursor
+  pageReader.navigate(change.reason === 'page' ? repositoryCursor.value : null)
   repositoryPageInfo.value = null
 
   if (!hasActiveRepositoryFilters(next.query, next.filters)) {
@@ -325,15 +332,24 @@ async function remove(row: Record<string, unknown>) {
     toast('info', repository.retainsRemote === true
       ? `Repository registration removal requested for ${repository.name}.`
       : `Repository deletion requested for ${repository.name}.`)
+    repoRefresh.invalidate()
+    repositoryFullRead.clear()
+    pageReader.navigate(null)
     loadRepositories()
   } catch (e) {
-    if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged') mutationErrors.value = { ...mutationErrors.value, [`${repository.name}:${repository.uid || ""}`]: { name: repository.name, message: errMessage(e) } }
+    if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged') mutationErrors.value = { ...mutationErrors.value, [`${repository.name}:${repository.uid || ""}`]: {
+      title: repository.retainsRemote
+        ? `Could not remove registration for ${repository.repo || repository.name}`
+        : `Could not delete repository ${repository.repo || repository.name}`,
+      message: errMessage(e),
+    } }
   } finally {
     operations.release(lock)
   }
 }
 
 repoRefresh = createLatestRefreshController(async (requestID, mode) => {
+  if (!active) return
   repositoryRefreshMode.value = mode
   const request = currentRepositoryRequest()
   const forceFullRead = forceRepositoryFullRead
@@ -352,7 +368,7 @@ repoRefresh = createLatestRefreshController(async (requestID, mode) => {
       // this particular request was superseded, so the newest query can apply
       // it without starting another walk.
       const hasCurrentAuthority = repositoryFullRead.peek() !== null
-      if (mounted && hasCurrentAuthority) {
+      if (active && repoRefresh.isCurrent(requestID) && hasCurrentAuthority) {
         next.filter(item => item.deletionTimestamp).forEach(item => props.deletions.acknowledge(deletionScope, item.name, item.uid))
         props.deletions.reconcile(deletionScope, next)
       }
@@ -362,7 +378,7 @@ repoRefresh = createLatestRefreshController(async (requestID, mode) => {
         // is in flight. Promote only if the current state is still active;
         // never expose the complete rows through server-mode filtering.
         const current = currentRepositoryRequest()
-        if (mounted && hasCurrentAuthority && current.active && repositoryMode.value === 'server') {
+        if (active && repoRefresh.isCurrent(requestID) && hasCurrentAuthority && current.active && repositoryMode.value === 'server') {
           repos.value = next
           repositoryMode.value = 'client'
           repositoryPage.value = 1
@@ -380,13 +396,12 @@ repoRefresh = createLatestRefreshController(async (requestID, mode) => {
       repositoryCursor.value = null
       repositoryPageInfo.value = null
     } else {
-      const next = await api.listRepositoriesPage({
-        limit: request.pageSize,
-        ...(request.cursor ? { continue: request.cursor } : {}),
-      })
-      if (!repositoryRequestIsCurrent(requestID, request)) return
+      const snapshot = await pageReader.read(request, options => api.listRepositoriesPage(options), () => repositoryRequestIsCurrent(requestID, request), mode)
+      if (!snapshot || !repositoryRequestIsCurrent(requestID, request)) return
+      const next = snapshot.result
       repos.value = next.items
-      repositoryCursor.value = request.cursor
+      repositoryPage.value = snapshot.page
+      repositoryCursor.value = snapshot.cursor
       const nextPageInfo = toRepositoryPageInfo(next.continue)
       repositoryPageInfo.value = nextPageInfo
       // Even a terminal server page remains server-owned until a query/filter
@@ -395,8 +410,8 @@ repoRefresh = createLatestRefreshController(async (requestID, mode) => {
       // without changing pagination mode.
       next.items.filter(item => item.deletionTimestamp).forEach(item => props.deletions.acknowledge(deletionScope, item.name, item.uid))
       if (isCompleteFirstCursorPage({
-        page: request.page,
-        cursor: request.cursor,
+        page: snapshot.page,
+        cursor: snapshot.cursor,
         pageInfo: nextPageInfo,
       })) props.deletions.reconcile(deletionScope, next.items)
     }
@@ -404,11 +419,11 @@ repoRefresh = createLatestRefreshController(async (requestID, mode) => {
     restoreWarningFocus(repositoryWarning.value)
     error.value = null
   } catch (e) {
-    if (!repoRefresh.isCurrent(requestID)) return
+    if (!active || !repoRefresh.isCurrent(requestID)) return
     const err = e as ErrorResponse
     error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
   } finally {
-    if (repoRefresh.isCurrent(requestID)) {
+    if (active && repoRefresh.isCurrent(requestID)) {
       loading.value = false
       poller.schedule()
     }
@@ -416,11 +431,12 @@ repoRefresh = createLatestRefreshController(async (requestID, mode) => {
 })
 
 connectionRefresh = createLatestRefreshController(async (requestID, mode) => {
+  if (!active) return
   connectionsRefreshMode.value = mode
   connectionsLoading.value = true
   try {
     const next = await api.listConnections()
-    if (!connectionRefresh.isCurrent(requestID)) return
+    if (!active || !connectionRefresh.isCurrent(requestID)) return
     connections.value = next
     next.filter(item => item.deletionTimestamp).forEach(item => props.deletions.acknowledge('connection', item.name, item.uid))
     props.deletions.reconcile('connection', next)
@@ -428,26 +444,39 @@ connectionRefresh = createLatestRefreshController(async (requestID, mode) => {
     restoreWarningFocus(connectionWarning.value)
     connectionsError.value = null
   } catch (e) {
-    if (!connectionRefresh.isCurrent(requestID)) return
+    if (!active || !connectionRefresh.isCurrent(requestID)) return
     const err = e as ErrorResponse
     connectionsError.value = err.reason === 'TenantMissing' ? null : errMessage(e)
   } finally {
-    if (connectionRefresh.isCurrent(requestID)) {
+    if (active && connectionRefresh.isCurrent(requestID)) {
       connectionsLoading.value = false
       poller.schedule()
     }
   }
 })
 
-onMounted(() => {
-  mounted = true
-})
 onActivated(() => {
+  mounted = true
+  active = true
+  // Preserve table controls and the visible snapshot while reading afresh.
+  // An in-flight read or cursor from before a detail write cannot reconcile it.
+  repoRefresh.invalidate()
+  connectionRefresh.invalidate()
+  repositoryFullRead.clear()
+  pageReader.navigate(null)
   load()
   poller.schedule()
+  void nextTick(() => {
+    if (active && document.activeElement === document.body) pageTitle.value?.focus({ preventScroll: true })
+  })
+})
+onDeactivated(() => {
+  active = false
+  poller.cancel()
 })
 onUnmounted(() => {
   mounted = false
+  active = false
   poller.stop()
   repoRefresh.stop()
   connectionRefresh.stop()
@@ -471,7 +500,7 @@ onUnmounted(() => {
       <InlineNotification :tone="connectionsLoaded ? 'warning' : 'error'" :message="connectionsLoaded ? 'Connections could not be refreshed. Showing the last successful connection choices.' : 'Connections could not be loaded.'" action-label="Retry connections" action-busy-label="Retrying connections…" :action-busy="connectionsLoading" @action="loadConnections()" />
     </div>
     <span v-else-if="connectionsLoading && connectionsLoaded" class="sr-only" role="status" aria-live="polite">Updating connections…</span>
-    <InlineNotification v-for="(failure, key) in mutationErrors" :key="key" tone="error" :title="`Could not delete repository ${failure.name}`" :message="`${failure.message} Try again using the repository delete action.`" dismissible @dismiss="dismissMutationError(String(key))" />
+    <ResourceDeleteFailure v-for="(failure, key) in mutationErrors" :key="key" :title="failure.title" :message="failure.message" @dismiss="dismissMutationError(String(key))" />
     <div v-if="showFirstRun && error" ref="repositoryWarning">
       <InlineNotification tone="warning" message="Repositories could not be refreshed. Showing the last successful empty result." action-label="Retry repositories" action-busy-label="Retrying repositories…" :action-busy="loading" @action="loadRepositories()" />
     </div>

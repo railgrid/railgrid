@@ -252,6 +252,25 @@ describe('create-result adoption refresh races', () => {
   })
 })
 
+it('retains an accepted table deletion through stale and failed reads, and releases a replacement UID', async () => {
+  const item = { metadata: { name: 'shared', uid: 'old' }, spec: {} }
+  const replacement = { ...item, metadata: { ...item.metadata, uid: 'new' } }
+  const api = stubApi({ listToolsets: vi.fn()
+    .mockResolvedValueOnce([item])
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce([replacement]) })
+  const store = makeStore(api)
+  store.toolsets.data = [item]
+  store.acknowledgeDeletion('toolsets', item)
+  await store.load('toolsets')
+  expect(store.isDeleting('toolsets', store.toolsets.data[0]!)).toBe(true)
+  await store.load('toolsets')
+  expect(store.isDeleting('toolsets', store.toolsets.data[0]!)).toBe(true)
+  await store.load('toolsets')
+  expect(store.isDeleting('toolsets', item)).toBe(false)
+  expect(store.isDeleting('toolsets', store.toolsets.data[0]!)).toBe(false)
+})
+
 describe('agent deletion refresh races', () => {
   it('keeps a deleted agent out through stale and finalizing snapshots and allows a replacement', async () => {
     const deleted: Agent = { metadata: { name: 'scout', uid: 'old-uid' }, spec: {} }

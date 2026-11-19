@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
 import { ArrowRight, Link2 } from 'lucide-vue-next'
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
@@ -165,6 +166,7 @@ async function remove(row: Record<string, unknown>) {
     clearMutationError(`${connection.name}:${connection.uid || ""}`)
     props.deletions.acknowledge(deletionScope, connection.name, connection.uid)
     toast('info', `Connection deletion requested for ${connection.name}.`)
+    refresh.invalidate()
     load()
   } catch (e) {
     if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged') mutationErrors.value = { ...mutationErrors.value, [`${connection.name}:${connection.uid || ""}`]: { name: connection.name, message: errMessage(e) } }
@@ -241,7 +243,7 @@ onUnmounted(() => {
       Tip: a platform admin can enable one-click “Connect with GitHub” by configuring the provider’s GitHub OAuth app.
     </p>
 
-    <InlineNotification v-for="(failure, key) in mutationErrors" :key="key" tone="error" :title="`Could not delete connection ${failure.name}`" :message="`${failure.message} Try again using the connection delete action.`" dismissible @dismiss="dismissMutationError(String(key))" />
+    <ResourceDeleteFailure v-for="(failure, key) in mutationErrors" :key="key" :title="`Could not delete connection ${failure.name}`" :message="failure.message" @dismiss="dismissMutationError(String(key))" />
     <div v-if="showFirstRun && error" ref="firstRunWarning">
       <InlineNotification tone="warning" message="Connections could not be refreshed. Showing the last successful empty result." action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="load()" />
     </div>

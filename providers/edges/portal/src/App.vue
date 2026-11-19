@@ -18,6 +18,7 @@ import {
   STABLE_REFRESH_MS,
   createAdaptiveRefreshTimer,
   createLatestRefreshController,
+  createServiceDeletions,
   type ResourceRefreshMode,
 } from './refresh'
 import { edgeTypeLabel, type Edge, type EdgeType, type RailgridContext, type ErrorResponse } from './types'
@@ -43,6 +44,7 @@ const props = defineProps<{ ctx: RailgridContext | null }>()
 // return to the same page and no stale local overlay can capture the UI.
 const route = computed<EdgeRoute>(() => parseSubPath(props.ctx?.subPath))
 const view = computed(() => route.value.page)
+const serviceDeletions = createServiceDeletions()
 
 const edgeRouteTabs = computed(() => ([
   { id: 'edges', label: 'Edges', icon: Server },
@@ -184,6 +186,7 @@ async function onDelete(edge: Edge) {
     if (contextGeneration.value !== expectedContextGeneration) return
     dismissDeleteFailure(`${edge.type}/${edge.name}`)
     toast('info', `${label} edge deletion requested for ${edge.name}.`)
+    edgeRefresh.invalidate()
     await refresh()
   } catch (e) {
     if (contextGeneration.value === expectedContextGeneration && !isContextChangedError(e)) {
@@ -210,6 +213,7 @@ watch(
     setTenant(tenant ?? null)
     if (authorityChanged) {
       contextGeneration.value += 1
+      serviceDeletions.clear()
       edgeRefresh.invalidate()
       edges.value = []
       firstLoadDone.value = false
@@ -287,6 +291,7 @@ onUnmounted(() => {
       v-if="route.page === 'services' && route.service"
       :key="`service-detail:${contextGeneration}:${route.service}`"
       :selected-name="route.service"
+      :deletions="serviceDeletions"
       @navigate="onServiceNavigate"
     />
     <!-- Keep collection instances alive while a route-owned create/detail page
@@ -297,6 +302,7 @@ onUnmounted(() => {
       <Services
         v-if="route.page === 'services' && !route.service && !route.create"
         :key="`services:${contextGeneration}`"
+        :deletions="serviceDeletions"
         @navigate="onServiceNavigate"
         @create="navigate('create/service')"
         @connect-edge="connectEdgeFrom('create/service', { cancelPath: 'services' })"

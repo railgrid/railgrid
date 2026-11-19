@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { createResourcePageReader } from '../portalkit/refresh'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { CornerDownRight, ExternalLink } from 'lucide-vue-next'
 import { api } from '../api'
@@ -49,6 +50,7 @@ const packagePage = ref(1)
 const packagePageSize = ref(PACKAGE_PAGE_SIZE)
 const packageQuery = ref('')
 const packageFilters = ref<PackageFilterValues>(clonePackageFilters(EMPTY_PACKAGE_FILTERS))
+const pageReader = createResourcePageReader()
 const packageCursor = ref<string | null>(null)
 const pageInfo = ref<PackagePageInfo | null>(null)
 const packageFullRead = createFullListReadCoordinator(() => api.listAllPackages())
@@ -186,13 +188,12 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
       packageCursor.value = null
       pageInfo.value = null
     } else {
-      const next = await api.listAllPackagesPage({
-        limit: request.pageSize,
-        ...(request.cursor ? { continue: request.cursor } : {}),
-      })
-      if (!packageRequestIsCurrent(requestID, request)) return
+      const snapshot = await pageReader.read(request, options => api.listAllPackagesPage(options), () => packageRequestIsCurrent(requestID, request), mode)
+      if (!snapshot || !packageRequestIsCurrent(requestID, request)) return
+      const next = snapshot.result
       packages.value = next.items
-      packageCursor.value = request.cursor
+      packagePage.value = snapshot.page
+      packageCursor.value = snapshot.cursor
       const nextPageInfo = toPackagePageInfo(next.continue)
       pageInfo.value = nextPageInfo
       // Keep server ownership until an active query/filter asks to reuse this
@@ -237,6 +238,7 @@ function handlePackageChange(change: ResourceTableChange) {
   packageQuery.value = next.query
   packageFilters.value = next.filters
   packageCursor.value = next.cursor
+  pageReader.navigate(change.reason === 'page' ? packageCursor.value : null)
   pageInfo.value = null
 
   if (!hasActivePackageFilters(next.query, next.filters)) {

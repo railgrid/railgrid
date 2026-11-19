@@ -58,9 +58,8 @@ describe('Edges portal conformance', () => {
     }
 
     expect(edgeCollection).toMatch(/ResourceTableDeleteButton/)
-    expect(services).toMatch(/<ActionMenu :label="`More actions for service/)
-    expect(services).toMatch(/id: 'edit', label: 'Edit service'/)
-    expect(services).toMatch(/id: 'delete', label: 'Delete service', tone: 'danger'/)
+    expect(services).toMatch(/<ResourceTableEditButton :label="'Edit service ' \+ row.name"/)
+    expect(services).toMatch(/<ResourceTableDeleteButton\s+:label="'Delete service ' \+ row.name"/)
     expect(workloads).toMatch(/ResourceTableDeleteButton/)
     expect(workloads).toMatch(/const workloadDetailsPrefix = `edges-workload-details-\$\{useId\(\)\}`/)
     expect(workloads).toMatch(/<ResourceTableExpandButton[\s\S]*:expanded="expanded === row\.name"[\s\S]*:controls="`\$\{workloadDetailsPrefix\}-\$\{String\(row\.name\)\}`"[\s\S]*@click="toggle\(String\(row\.name\)\)"/)

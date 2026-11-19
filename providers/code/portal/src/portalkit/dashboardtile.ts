@@ -16,6 +16,7 @@
 // Deliberately plain TypeScript, like the rest of portalkit: it is synced into
 // vanilla-TS and Vue portals alike, so it must not import a framework.
 
+import { createAdaptiveRefreshTimer, createLatestRefreshController, STABLE_REFRESH_MS } from './refresh'
 import type { ProviderFetch } from './tenant'
 
 // tileClass is the ONE visual vocabulary every dashboard tile renders with.
@@ -123,7 +124,7 @@ export interface TileContext {
 
 // TILE_POLL_MS matches the console's own list cadence. Anything tighter spends
 // hub round trips on a card users glance at.
-export const TILE_POLL_MS = 30000
+export const TILE_POLL_MS = STABLE_REFRESH_MS
 
 // TILE_ROWS is the row cap every tile shares so the dashboard grid stays even.
 export const TILE_ROWS = 4
@@ -224,42 +225,26 @@ export interface TilePoller {
 // the tile showing its empty state until the next interval — or forever, if
 // the context never changes again.
 export function createTilePoller(load: () => Promise<void>, intervalMs = TILE_POLL_MS): TilePoller {
-  let handle: ReturnType<typeof setInterval> | null = null
-  let inFlight = false
-  let queued = false
   let stopped = false
-
-  const run = () => {
-    if (stopped) return
-    if (inFlight) {
-      queued = true
-      return
-    }
-    inFlight = true
-    void load().finally(() => {
-      inFlight = false
-      if (queued && !stopped) {
-        queued = false
-        run()
-      }
-    })
-  }
+  const refresh = createLatestRefreshController(() => stopped ? Promise.resolve() : load())
+  const timer = createAdaptiveRefreshTimer(() => {
+    void refresh.request('background')
+    if (!stopped) timer.schedule()
+  }, () => intervalMs)
 
   return {
     start() {
       stopped = false
-      run()
-      if (handle === null) handle = setInterval(run, intervalMs)
+      void refresh.request()
+      timer.schedule()
     },
     stop() {
       stopped = true
-      queued = false
-      if (handle !== null) {
-        clearInterval(handle)
-        handle = null
-      }
+      timer.cancel()
     },
-    refresh: run,
+    refresh() {
+      if (!stopped) void refresh.request()
+    },
   }
 }
 

@@ -74,13 +74,13 @@ describe('Service detail narrow-screen regressions', () => {
   it('keeps deletion status visible and politely announced after the menu closes', () => {
     expect(serviceEdit).toMatch(/const deleting = ref\(false\)/)
     expect(serviceEdit).toMatch(/if \(deleting\.value\) return 'Deleting'/)
-    expect(serviceEdit).toMatch(/<p v-if="deleting" class="waiting" role="status" aria-live="polite">Deleting this service\./)
+    expect(serviceEdit).toMatch(/<p v-if="deleting" class="waiting" role="status" aria-live="polite">Requesting deletion of this service…/)
     expect(serviceEdit).toMatch(/import ActionMenu, \{ type ActionMenuItem \} from '\.\/portalkit\/ActionMenu\.vue'/)
-    expect(serviceEdit).toContain("busy: deleting.value")
+    expect(serviceEdit).toContain("busy: deletionInProgress.value")
     expect(serviceEdit).toMatch(/<ActionMenu[\s\S]*label="More service actions"[\s\S]*@select="selectAction"/)
-    expect(serviceEdit).toMatch(/deleting\.value = true[\s\S]*await deleteEdgeService\(name\)[\s\S]*emit\('deleted'\)/)
+    expect(serviceEdit).toMatch(/deleting\.value = true[\s\S]*await deleteEdgeService\(name, uid\)[\s\S]*emit\('deleted', \{ name, uid \}\)/)
     expect(serviceEdit).toMatch(/deleteError\.value = errorMessage\(error, 'Delete failed'\)[\s\S]*deleting\.value = false/)
-    expect(serviceEdit).toMatch(/<InlineNotification v-if="deleteError" tone="error" title="Could not delete service"/)
+    expect(serviceEdit).toMatch(/<ResourceDeleteFailure v-if="deleteError" :title="`Could not delete service \$\{currentName\}`"/)
   })
 
   it('uses the provider UI route as the service backlink fallback', () => {
