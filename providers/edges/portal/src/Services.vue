@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted, onActivated, watch } from 'vue'
+import ResourceDeleteFailure from './portalkit/ResourceDeleteFailure.vue'
+import { createResourcePageReader } from './portalkit/refresh'
+import { ref, computed, nextTick, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
 import { ArrowRight, RefreshCw, Plus, Check, Plug, Server } from 'lucide-vue-next'
 import {
   listServices, listServicesPage, deleteEdgeService, listEdges,
@@ -13,7 +15,8 @@ import { edgeConnectPath, serviceCreatePath, serviceDetailPath } from './routes'
 import { serviceTarget } from './serviceTarget'
 import { toast } from './portalkit/toast'
 import ResourceTable from './portalkit/ResourceTable.vue'
-import ActionMenu from './portalkit/ActionMenu.vue'
+import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
+import ResourceTableEditButton from './portalkit/ResourceTableEditButton.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import ServiceEdit from './ServiceEdit.vue'
@@ -25,10 +28,13 @@ import {
   STABLE_REFRESH_MS,
   createAdaptiveRefreshTimer,
   createLatestRefreshController,
+  createServiceDeletions,
   type ResourceRefreshMode,
+  type ServiceDeletions,
 } from './refresh'
 
-const props = defineProps<{ selectedName?: string | null }>()
+const props = defineProps<{ selectedName?: string | null; deletions?: ServiceDeletions }>()
+const deletions = props.deletions ?? createServiceDeletions()
 const emit = defineEmits<{
   navigate: [name: string | null, options?: { replace?: boolean }]
   create: []
@@ -89,7 +95,7 @@ const serviceRows = computed<Array<Record<string, unknown>>>(() => services.valu
   edgeName: service.edgeName || '—',
   typeLabel: catalogFor(service.serviceType)?.displayName || service.serviceType || '—',
   target: serviceTarget(service),
-  status: service.phase || 'Pending',
+  status: isDeleting(service) ? 'Deleting' : service.phase || 'Pending',
   credentials: credentialLabel(service),
   actions: '',
 })))
@@ -141,6 +147,7 @@ const tablePage = ref(1)
 const tablePageSize = ref(10)
 const tableQuery = ref('')
 const filterValues = ref<ServiceFilterValues>({ edgeName: '', typeLabel: '', status: '' })
+const pageReader = createResourcePageReader()
 const tableCursor = ref<string | null>(null)
 const tablePageInfo = ref<TablePageInfo | null>(null)
 // Client-side filtering is authoritative only after a complete, query-
@@ -184,7 +191,12 @@ const serviceFilters = computed<TableFilterDefinition[]>(() => {
 // table/search/pagination state local, and only retain a row snapshot as an
 // optimistic seed while ServiceEdit performs its exact getService read.
 const editing = ref<EdgeService | null>(null)
+function isDeleting(service: EdgeService) {
+  return service.phase === 'Deleting' || deletingService.value === service.name || deletions.has(service)
+}
+
 function openEdit(s: EdgeService) {
+  if (isDeleting(s)) return
   editing.value = s
   emit('navigate', s.name)
 }
@@ -209,21 +221,27 @@ watch(() => props.selectedName, syncRouteSelection, { immediate: true })
 // After a save in the edit page, refresh the list and re-seed the open page
 // from the fresh object so table joins/status remain current. ServiceEdit also
 // refreshes its exact snapshot, so this does not depend on the visible cursor.
+function refreshAfterWrite() {
+  serviceRefresh.invalidate()
+  pageReader.navigate(null)
+  return refresh('foreground', true)
+}
+
 async function onEditSaved() {
   const name = props.selectedName ?? editing.value?.name
-  await refresh('foreground', true)
+  await refreshAfterWrite()
   if (name) editing.value = services.value.find((s) => s.name === name) ?? editing.value
 }
 
-async function onEditDeleted() {
-  const name = props.selectedName ?? editing.value?.name
-  await refresh('foreground', true)
-  if (name && props.selectedName === name) closeEdit(true)
+function onEditDeleted(target: { name: string; uid: string }) {
+  deletions.acknowledge(target.name, target.uid)
+  closeEdit(true)
 }
 
 type ServiceTableRequest = Omit<TableRequestState, 'filters'> & { filters: ServiceFilterValues }
 
 let stopped = false
+let viewActive = true
 let clientReadToken = 0
 let forceNextCompleteRead = false
 
@@ -246,7 +264,7 @@ function currentServiceRequest(): ServiceTableRequest {
 
 function serviceRequestIsCurrent(requestID: number, request: ServiceTableRequest): boolean {
   const current = currentServiceRequest()
-  return !stopped && serviceRefresh.isCurrent(requestID) && sameTableRequest(current, request)
+  return viewActive && !stopped && serviceRefresh.isCurrent(requestID) && sameTableRequest(current, request)
 }
 
 // A complete client read is query-independent. Query/filter-only changes are
@@ -255,7 +273,7 @@ function serviceRequestIsCurrent(requestID: number, request: ServiceTableRequest
 // this guard through the stable request dimensions below.
 function serviceClientReadIsCurrent(requestID: number, request: ServiceTableRequest, readGeneration: number): boolean {
   const current = currentServiceRequest()
-  return !stopped && serviceRefresh.isCurrent(requestID) && tableMode.value === 'client' &&
+  return viewActive && !stopped && serviceRefresh.isCurrent(requestID) && tableMode.value === 'client' &&
     current.active && current.page === request.page &&
     current.pageSize === request.pageSize && current.cursor === request.cursor &&
     completeServiceRead.generation() === readGeneration && clientAuthorityReady.value === false
@@ -265,12 +283,13 @@ const poller = createAdaptiveRefreshTimer(() => {
   void refresh('background')
 }, () => {
   if (!loaded.value || error.value) return FAST_REFRESH_MS
-  const unsettledService = services.value.some(service => (service.phase || 'Pending').toLowerCase() !== 'ready')
+  const unsettledService = services.value.some(service => isDeleting(service) || (service.phase || 'Pending').toLowerCase() !== 'ready')
   const unsettledEdge = edges.value.some(edge => !edge.connected || ['pending', 'provisioning', 'deleting'].includes((edge.phase || '').toLowerCase()))
   return unsettledService || unsettledEdge ? FAST_REFRESH_MS : STABLE_REFRESH_MS
 })
 
 const serviceRefresh = createLatestRefreshController(async (requestID, mode) => {
+  if (!viewActive) return
   const readToken = ++clientReadToken
   const request = currentServiceRequest()
   const wasClientAuthorityReady = clientAuthorityReady.value
@@ -320,6 +339,7 @@ const serviceRefresh = createLatestRefreshController(async (requestID, mode) => 
         return
       }
       services.value = nextServices
+      deletions.reconcile(nextServices, true)
       currentSnapshot.value = true
       edges.value = nextEdges
       tableMode.value = 'client'
@@ -329,18 +349,21 @@ const serviceRefresh = createLatestRefreshController(async (requestID, mode) => 
       clientAuthorityReady.value = true
     } else {
       const [nextPage, nextEdges] = await Promise.all([
-        listServicesPage({
-          limit: request.pageSize,
-          ...(request.cursor ? { continue: request.cursor } : {}),
-        }),
+        pageReader.read(request, options => listServicesPage(options), () => serviceRequestIsCurrent(requestID, request), mode),
         edgeRead.read(),
       ])
-      if (!serviceRequestIsCurrent(requestID, request)) return
-      services.value = nextPage.items
+      if (!nextPage || !serviceRequestIsCurrent(requestID, request)) return
+      services.value = nextPage.result.items
       currentSnapshot.value = true
       edges.value = nextEdges
-      tableCursor.value = request.cursor
-      tablePageInfo.value = makeTablePageInfo(nextPage.continue)
+      tablePage.value = nextPage.page
+      tableCursor.value = nextPage.cursor
+      tablePageInfo.value = makeTablePageInfo(nextPage.result.continue)
+      deletions.reconcile(nextPage.result.items, isCompleteFirstCursorPage({
+        page: nextPage.page,
+        cursor: nextPage.cursor,
+        pageInfo: tablePageInfo.value,
+      }))
     }
     loaded.value = true
     error.value = null
@@ -360,7 +383,7 @@ const serviceRefresh = createLatestRefreshController(async (requestID, mode) => 
   } finally {
     if (clientReadToken === readToken) clientReadPending.value = false
     if (!stopped && serviceRefresh.isCurrent(requestID)) loading.value = false
-    poller.schedule()
+    if (viewActive) poller.schedule()
   }
 })
 
@@ -398,6 +421,7 @@ function handleServiceTableChange(change: ResourceTableChange) {
   tablePageSize.value = change.pageSize
   tableQuery.value = change.query
   tableCursor.value = change.cursor
+  pageReader.navigate(change.reason === 'page' ? tableCursor.value : null)
   tablePageInfo.value = null
 
   const active = hasActiveTableFilters(tableQuery.value, filterValues.value)
@@ -453,17 +477,20 @@ function handleServiceTableChange(change: ResourceTableChange) {
 }
 
 async function onDelete(s: EdgeService) {
-  if (deletingService.value) return
+  const uid = s.uid
+  if (!uid || deletingService.value || isDeleting(s)) return
   if (!(await confirmDialog({ title: 'Delete service', message: `"${s.name}" will be deleted, and its MCP tools will no longer be available.`, danger: true, confirmLabel: 'Delete service' }))) return
-  if (deletingService.value || stopped) return
+  const current = services.value.find(service => service.name === s.name)
+  if (deletingService.value || stopped || !current || current.uid !== uid || isDeleting(current)) return
   deletingService.value = s.name
   try {
-    await deleteEdgeService(s.name)
+    await deleteEdgeService(s.name, uid)
     if (stopped) return
+    deletions.acknowledge(s.name, uid)
     clearDeleteFailure(s.name)
     toast('info', `Service deletion requested for ${s.name}.`)
     const focusedAction = typeof document !== 'undefined' ? document.activeElement : null
-    await refresh('foreground', true)
+    await refreshAfterWrite()
     await nextTick()
     if (focusedAction && !focusedAction.isConnected && document.activeElement === document.body) servicesHeading.value?.focus()
   } catch (e) {
@@ -501,7 +528,13 @@ onMounted(() => {
 // Revalidate on return so a successful mutation is visible without discarding
 // the user's query, filters, cursor, or page state.
 onActivated(() => {
-  if (!stopped) void refresh('foreground', true)
+  if (viewActive) return
+  viewActive = true
+  if (!stopped) void refreshAfterWrite()
+})
+onDeactivated(() => {
+  viewActive = false
+  poller.cancel()
 })
 onUnmounted(() => {
   stopped = true
@@ -545,7 +578,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
       </div>
     </header>
 
-    <InlineNotification v-for="(failure, key) in deleteFailures" :key="key" class="services-delete-error" tone="error" :title="`Could not delete ${failure.name}`" :message="`${failure.message} Try again from the service's action menu.`" dismissible @dismiss="dismissDeleteFailure(String(key))" />
+    <ResourceDeleteFailure v-for="(failure, key) in deleteFailures" :key="key" class="services-delete-error" :title="`Could not delete service ${failure.name}`" :message="failure.message" @dismiss="dismissDeleteFailure(String(key))" />
     <InlineNotification v-if="showFirstRun && error" tone="error" :announce="refreshMode === 'background' ? 'polite' : 'assertive'" title="Could not refresh services" :message="`Showing the last successful result. ${error}`" action-label="Retry" action-busy-label="Retrying…" :action-busy="loading" @action="retryFirstRun" />
     <FirstRunGuide
       v-if="showFirstRun"
@@ -587,11 +620,13 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
         empty-text="No services yet. Create one to expose its tools through MCP."
         @retry="refresh"
         @change="handleServiceTableChange"
+        :row-interactive="row => row.status !== 'Deleting'"
         @row-click="(row) => openEdit(row as unknown as EdgeService)"
       >
         <template #name="{ value, row }">
           <span class="service-name">
-            <a class="k-btn k-btn--ghost k-table-resource-link" :href="portalHref(`/ui/providers/edges/${serviceDetailPath(String(row.name))}`)" @click.stop="openServiceLink($event, row as unknown as EdgeService)">{{ value }}</a>
+            <span v-if="row.status === 'Deleting'">{{ value }}</span>
+            <a v-else class="k-btn k-btn--ghost k-table-resource-link" :href="portalHref(`/ui/providers/edges/${serviceDetailPath(String(row.name))}`)" @click.stop="openServiceLink($event, row as unknown as EdgeService)">{{ value }}</a>
             <span class="service-mobile-status"><StatusBadge :status="String(row.status)" /></span>
           </span>
         </template>
@@ -600,7 +635,18 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
         <template #target="{ value }"><span class="mono muted">{{ value }}</span></template>
         <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
         <template #credentials="{ row }"><span :class="['credentials-status', row.hasCredentials ? 'credentials-status--configured' : 'muted']"><Check v-if="row.hasCredentials" :size="16" class="ok-check" aria-hidden="true" /><span>{{ row.credentials }}</span></span></template>
-        <template #actions="{ row }"><ActionMenu :label="`More actions for service ${String(row.name)}`" :busy="deletingService === row.name" :busy-label="`Deleting service ${String(row.name)}…`" :disabled="!!deletingService && deletingService !== row.name" :items="[{ id: 'edit', label: 'Edit service' }, { id: 'delete', label: 'Delete service', tone: 'danger' }]" @select="(action) => action === 'edit' ? openEdit(row as unknown as EdgeService) : onDelete(row as unknown as EdgeService)" /></template>
+        <template #actions="{ row }">
+          <div class="row-actions">
+            <ResourceTableEditButton :label="'Edit service ' + row.name" :disabled="!!deletingService || row.status === 'Deleting'" @click="openEdit(row as unknown as EdgeService)" />
+            <ResourceTableDeleteButton
+              :label="'Delete service ' + row.name"
+              :busy-label="'Deleting service ' + row.name + '…'"
+              :busy="row.status === 'Deleting'"
+              :disabled="!!deletingService || !row.uid"
+              @click="onDelete(row as unknown as EdgeService)"
+            />
+          </div>
+        </template>
       </ResourceTable>
     </div>
   </div>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { createAdaptiveRefreshTimer, type ResourceRefreshMode } from '../portalkit/refresh'
 import InlineNotification from '../portalkit/InlineNotification.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ChevronDown } from 'lucide-vue-next'
@@ -13,7 +14,7 @@ import { age, edgeName, isNoEngagedEdgesError, resourceLabel, safeHTTPStatus, us
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import type { ResourceTableChange, TableFilterDefinition } from '../portalkit/table'
 
-const props = defineProps<{ context: RailgridContext | null; edges: string[]; savedView: string }>()
+const props = defineProps<{ active: boolean; context: RailgridContext | null; edges: string[]; savedView: string }>()
 const emit = defineEmits<{ inspect: [row: ObjectResult] }>()
 const context = computed(() => props.context)
 const { api } = useKueryApi(context, computed(() => props.savedView))
@@ -58,8 +59,13 @@ function applyFacetFilters(): void {
   void load()
 }
 
-async function load(): Promise<void> {
+const refreshMode = ref<ResourceRefreshMode>('foreground')
+const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
+const poll = createAdaptiveRefreshTimer(() => { void load('background') })
+
+async function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
   if (!api.value) return
+  poll.cancel()
   controller?.abort()
   const currentController = new AbortController()
   controller = currentController
@@ -67,10 +73,11 @@ async function load(): Promise<void> {
   pager.value = begun.state
   const request = begun.request
   const requestKey = queryKey(pager.value.page, request)
+  refreshMode.value = mode
   loading.value = true
   try {
     const page = await api.value.inventoryPage({ pageSize: request.pageSize, cursor: request.cursor, count: true, filters: request.filters }, { signal: currentController.signal })
-    if (!isCurrentInventoryRequest(pager.value, request.id)) return
+    if (currentController.signal.aborted || !isCurrentInventoryRequest(pager.value, request.id)) return
     pager.value = applyInventoryPage(pager.value, request.id, page)
     rows.value = page.objects.map((object, index) => ({
       _object: object,
@@ -83,7 +90,7 @@ async function load(): Promise<void> {
     snapshotKey.value = requestKey
     error.value = ''; errorStatus.value = null; notEngaged.value = false
   } catch (reason) {
-    if (!isCurrentInventoryRequest(pager.value, request.id)) return
+    if (currentController.signal.aborted || !isCurrentInventoryRequest(pager.value, request.id)) return
     if (isNoEngagedEdgesError(reason)) {
       error.value = ''; errorStatus.value = null
       notEngaged.value = true
@@ -94,7 +101,10 @@ async function load(): Promise<void> {
     errorStatus.value = safeHTTPStatus(reason)
     notEngaged.value = false
   } finally {
-    if (controller === currentController && isCurrentInventoryRequest(pager.value, request.id)) loading.value = false
+    if (controller === currentController && isCurrentInventoryRequest(pager.value, request.id)) {
+      loading.value = false
+      if (props.active) poll.schedule()
+    }
   }
 }
 
@@ -105,7 +115,7 @@ function change(change: ResourceTableChange): void {
 }
 
 async function retrySync(): Promise<void> {
-  if (loading.value) return
+  if (foregroundLoading.value) return
   const focused = typeof document === 'undefined' ? null : document.activeElement
   await load()
   await nextTick()
@@ -126,7 +136,15 @@ watch(
   ([kind, namespace]) => { kindInput.value = kind; namespaceInput.value = namespace },
   { immediate: true },
 )
-onBeforeUnmount(() => controller?.abort())
+watch(() => props.active, active => {
+  if (active) void load('background')
+  else poll.cancel()
+})
+onBeforeUnmount(() => {
+  poll.stop()
+  controller?.abort()
+  controller = null
+})
 </script>
 
 <template>
@@ -137,10 +155,10 @@ onBeforeUnmount(() => controller?.abort())
         <span>Your Kubernetes edge is connected, but Kuery has not started syncing it yet.</span>
         <span class="meta">This can take a moment. If it continues, ask a workspace admin to confirm Kuery and Edges are enabled here.</span>
       </div>
-      <button type="button" class="k-btn k-btn--ghost" :aria-disabled="loading || undefined" :aria-busy="loading || undefined" @click="retrySync">{{ loading ? 'Checking…' : 'Check again' }}</button>
+      <button type="button" class="k-btn k-btn--ghost" :aria-disabled="foregroundLoading || undefined" :aria-busy="foregroundLoading || undefined" @click="retrySync">{{ foregroundLoading ? 'Checking…' : 'Check again' }}</button>
     </div>
     <template v-else>
-      <InlineNotification v-if="notEngaged" tone="warning" action-label="Check again" action-busy-label="Checking…" :action-busy="loading" @action="retrySync" :message="currentSnapshot ? 'The last inventory result is still shown, but Kuery is not currently syncing an edge in this workspace.' : 'Kuery is not currently syncing an edge in this workspace. Results for this query are unavailable.'" />
+      <InlineNotification v-if="notEngaged" tone="warning" action-label="Check again" action-busy-label="Checking…" :action-busy="foregroundLoading" @action="retrySync" :message="currentSnapshot ? 'The last inventory result is still shown, but Kuery is not currently syncing an edge in this workspace.' : 'Kuery is not currently syncing an edge in this workspace. Results for this query are unavailable.'" />
       <form class="kuery-toolbar kuery-inventory-filters" aria-label="Filter fleet inventory" @submit.prevent="applyFacetFilters">
         <label>
           <span>Kind</span>
@@ -155,11 +173,11 @@ onBeforeUnmount(() => controller?.abort())
       <ResourceTable
         class="kuery-inventory-table"
         :columns="columns" :rows="currentSnapshot ? rows : []" row-key="_key" aria-label="Fleet inventory" :loaded="loaded" :loading="loading"
-        :results-unavailable="loaded && !currentSnapshot" refresh-mode="foreground" :error="error" :stale="currentSnapshot && (!!error || notEngaged)" retryable searchable search-placeholder="Exact resource name…"
+        :results-unavailable="loaded && !currentSnapshot" :refresh-mode="refreshMode" :error="error" :stale="currentSnapshot && (!!error || notEngaged)" retryable searchable search-placeholder="Exact resource name…"
         :filters="filters" pagination-mode="server" :page="pager.page" :page-size="pager.pageSize" :page-size-options="[25, 50, 100]"
         :query="pager.query" :filter-values="pager.filters" :cursor="pager.cursor" :page-info="pager.pageInfo"
         empty-text="No synced objects. Connect an edge, then retry." combined-filter-empty-text="No objects match the exact search and selected filters."
-        :row-aria-label="row => `Inspect ${resourceLabel(row._object as ObjectResult)}`" @change="change" @row-click="inspect" @retry="load"
+        :row-aria-label="row => `Inspect ${resourceLabel(row._object as ObjectResult)}`" @change="change" @row-click="inspect" @retry="load()"
       >
         <template #edge="{ row }"><code>{{ row.edge }}</code></template>
         <template #name="{ row }"><span class="name">{{ row.name }}</span></template>

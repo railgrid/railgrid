@@ -255,6 +255,45 @@ describe('agents list layouts', () => {
     expect(restored.element.querySelector('.k-table__table')).not.toBeNull()
   })
 
+  it('keeps a failed row and its retry instructions visible until deletion succeeds', async () => {
+    localStorage.setItem(AGENTS_LAYOUT_PREFERENCE_KEY, 'list')
+    let complete!: () => void
+    const deleteAgent = vi.fn()
+      .mockRejectedValueOnce(new Error('Failed to delete'))
+      .mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve }))
+    const scout = agentFixture('scout')
+    scout.metadata.uid = 'scout-uid'
+    const ranger = agentFixture('ranger')
+    const api = stubApi({ deleteAgent, listAgents: vi.fn().mockResolvedValue([ranger]) })
+    const store = makeStore(api)
+    Object.assign(store.agents, { data: [scout, ranger], loaded: true, hasSnapshot: true })
+    const mounted = await mountVue(AgentsList, { store, api })
+
+    const selectDelete = async () => {
+      const button = mounted.element.querySelector<HTMLButtonElement>('button[aria-label="Delete agent scout"]')!
+      button.click()
+      await settleVue()
+      expect(confirmState.title).toBe('Delete agent “scout”?')
+      resolveConfirm(true)
+      await settleVue()
+    }
+    // The first rejected write leaves the server list intact.
+    vi.mocked(api.listAgents).mockResolvedValueOnce([scout, ranger])
+    await selectDelete()
+    const failure = () => mounted.element.querySelector('.k-inline-notification--error')
+    expect(text(failure())).toContain('Could not delete agent scout')
+    expect(text(failure())).toContain('Try again using the row action.')
+    await selectDelete()
+    expect(mounted.element.querySelector('button[aria-label="Deleting agent scout…"]')?.getAttribute('aria-busy')).toBe('true')
+    expect(failure()).not.toBeNull()
+
+    complete()
+    await settleVue(12)
+    expect(failure()).toBeNull()
+    expect(mounted.element.querySelector('button[aria-label="Delete agent scout"]')).toBeNull()
+    expect(mounted.element.querySelector('button[aria-label="Delete agent ranger"]')).not.toBeNull()
+  })
+
   it('uses one shared query across cards and the built-in table search', async () => {
     localStorage.setItem(AGENTS_LAYOUT_PREFERENCE_KEY, 'list')
     const api = stubApi()
@@ -269,13 +308,10 @@ describe('agents list layouts', () => {
     await settleVue()
     expect(mounted.navigations).toEqual([{ kind: 'agent', name: 'scout', tab: 'chat' }])
     expect(row.querySelector('a')?.getAttribute('href')).toBe('#/agents/scout/chat')
-    expect(row.querySelectorAll('button')).toHaveLength(1)
-    row.querySelector<HTMLButtonElement>('button[aria-label="More actions for scout"]')!.click()
-    await settleVue()
-    const actions = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
-    expect(actions.map(text)).toEqual(['View runs', 'Delete agent'])
+    expect(row.querySelectorAll('button')).toHaveLength(2)
+    expect(row.querySelector('button[aria-label="Delete agent scout"]')).not.toBeNull()
     expect(mounted.navigations).toHaveLength(1)
-    actions[0].click()
+    row.querySelector<HTMLButtonElement>('button[aria-label="View runs for scout"]')!.click()
     expect(mounted.navigations.at(-1)).toEqual({ kind: 'agent', name: 'scout', tab: 'runs' })
 
     const search = mounted.element.querySelector<HTMLInputElement>('.k-table__search-input')!

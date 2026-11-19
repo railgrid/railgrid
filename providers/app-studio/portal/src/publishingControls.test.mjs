@@ -88,6 +88,7 @@ test('keeps unsaved project details through same-project refreshes and save ackn
     const selected = ref(initialProject)
     const settingsProject = selected
     const showSettings = { value: true }
+    const projectDetailReplaced = { value: false }
     const productionSurfaceActive = { value: false }
     const activeWorkbenchTab = ref({ kind: 'settings' })
     const resetReleaseTransitionTracking = () => {}
@@ -106,18 +107,27 @@ test('keeps unsaved project details through same-project refreshes and save ackn
     ${watcher}
     ${surfaceWatcher}
     ${editor}
-    return { selected, activeWorkbenchTab, projectSettingsName, projectSettingsDescription, projectSettingsSaving, saveProjectSettings }
+    return { selected, activeWorkbenchTab, projectSettingsName, projectSettingsDescription, projectSettingsSaving, projectDetailReplaced, saveProjectSettings }
   `)
   const initialProject = { name: 'demo', uid: 'project-1', displayName: 'Original', description: 'Before refresh' }
   let acknowledge
-  const editorState = createFixture(initialProject, () => new Promise(resolve => { acknowledge = resolve }), ref, watch)
+  const writes = []
+  const editorState = createFixture(initialProject, (...args) => {
+    writes.push(args)
+    return new Promise(resolve => { acknowledge = resolve })
+  }, ref, watch)
   editorState.projectSettingsName.value = 'Draft'
   editorState.selected.value = { ...initialProject, description: 'After refresh' }
   await nextTick()
   assert.equal(editorState.projectSettingsName.value, 'Draft')
   assert.equal(editorState.projectSettingsDescription.value, 'After refresh')
 
+  editorState.projectDetailReplaced.value = true
+  await editorState.saveProjectSettings()
+  assert.equal(writes.length, 0)
+  editorState.projectDetailReplaced.value = false
   const save = editorState.saveProjectSettings()
+  assert.equal(writes[0][3], initialProject.uid)
   editorState.projectSettingsName.value = 'Original'
   acknowledge({ ...editorState.selected.value, displayName: 'Draft' })
   await save
@@ -144,7 +154,7 @@ test('keeps unsaved project details through same-project refreshes and save ackn
 })
 
 test('defers project controls until the restored Settings, Publishing, or History host exists', () => {
-  assert.match(app, /<Teleport defer :to="projectControlSurfaceTarget">/)
+  assert.match(app, /<Teleport v-if="!projectDetailReplaced" defer :to="projectControlSurfaceTarget">/)
   assert.match(app, /if \(publishingInWorkbench\.value\) return '#app-studio-publishing-host'/)
   assert.match(app, /if \(historyInWorkbench\.value\) return '#app-studio-history-host'/)
   assert.match(app, /if \(settingsInWorkbench\.value\) return '#app-studio-project-settings-host'/)

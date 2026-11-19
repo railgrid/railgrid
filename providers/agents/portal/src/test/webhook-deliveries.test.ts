@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ServerEvent } from '../store'
 import type { Trigger, TriggerFilterVerdict, Webhook, WebhookDelivery } from '../types'
+import { resolveConfirm } from '../portalkit/confirm'
 import { clearToasts } from '../ui/toast'
 import Automation from '../views/Automation.vue'
 import TriggerFilterTester from '../views/TriggerFilterTester.vue'
@@ -204,6 +205,29 @@ describe('WebhookDeliveryLog.vue', () => {
 })
 
 describe('Webhooks.vue', () => {
+  it('returns to Webhooks on DELETE acceptance while the list read is still pending', async () => {
+    let finishRead!: (items: Webhook[]) => void
+    const listWebhooks = vi.fn(() => new Promise<Webhook[]>(resolve => { finishRead = resolve }))
+    const deleteWebhook = vi.fn().mockResolvedValue(undefined)
+    const api = stubApi({ deleteWebhook, listWebhooks, listWebhookDeliveries: async () => ({ items: [], retention: 10 }) })
+    const store = makeStore(api)
+    store.webhooks.data = [webhook]
+    store.webhooks.hasSnapshot = store.webhooks.loaded = true
+    const view = await mount(Webhooks, { store, api, editRoute: true, editName: webhook.metadata.name })
+
+    button(view.element, 'Delete').click()
+    await settleVue()
+    resolveConfirm(true)
+    await settleVue()
+
+    expect(deleteWebhook).toHaveBeenCalledWith(webhook.metadata.name, webhook.metadata.uid)
+    expect(listWebhooks).toHaveBeenCalledOnce()
+    expect(store.isDeleting('webhooks', webhook)).toBe(true)
+    expect(view.navigations).toEqual([{ kind: 'menu', menu: 'webhooks' }])
+    finishRead([webhook])
+    await settleVue()
+  })
+
   it('keeps the confirmed empty snapshot alongside refresh errors', async () => {
     let reject!: (error: Error) => void
     const listWebhooks = vi.fn(() => new Promise<Webhook[]>((_resolve, fail) => { reject = fail }))

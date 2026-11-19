@@ -41,9 +41,8 @@ describe('Infrastructure composition contracts', () => {
 
   it('keeps booleans and compact disclosure controls on shared recipes', () => {
     expect(dynamicForm).toContain('class="k-checkbox"')
-    expect(viewValue).toContain('k-icon-action')
-    expect(viewValue).toContain(':data-k-tip=')
-    expect(viewValue).not.toContain(':title=')
+    expect(viewValue).toContain('<CopyValue v-else-if="value.type === \'code\'"')
+    expect(viewValue).not.toContain('<button')
     expect(dynamicForm).toContain('class="k-icon-action dynform-map-remove"')
     expect(dynamicForm).toContain(':data-k-tip=')
     expect(templateCard).toContain('class="exposure-note"')

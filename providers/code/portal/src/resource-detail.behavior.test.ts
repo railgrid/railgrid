@@ -147,6 +147,8 @@ import repoSource from './views/RepoDetailView.vue?raw'
 import connectionSource from './views/ConnectionDetailView.vue?raw'
 import dashboardSource from './DashboardTile.vue?raw'
 import loadingSkeletonSource from './portalkit/LoadingSkeleton.vue?raw'
+import ResourceDeleteFailure from './portalkit/ResourceDeleteFailure.vue'
+import deleteFailureSource from './portalkit/ResourceDeleteFailure.vue?raw'
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -265,6 +267,7 @@ function compileClientRender(source: string, filename: string): (ctx: unknown, c
 ;(ConnectionDetailView as unknown as { render: unknown }).render = compileClientRender(connectionSource, 'ConnectionDetailView.vue')
 ;(DashboardTile as unknown as { render: unknown }).render = compileClientRender(dashboardSource, 'DashboardTile.vue')
 ;(LoadingSkeleton as unknown as { render: unknown }).render = compileClientRender(loadingSkeletonSource, 'LoadingSkeleton.vue')
+;(ResourceDeleteFailure as unknown as { render: unknown }).render = compileClientRender(deleteFailureSource, 'ResourceDeleteFailure.vue')
 
 function textContent(node: TreeNode): string {
   return node.text ?? node.children.map(textContent).join('')
@@ -574,8 +577,8 @@ describe('mounted resource deletion state', () => {
     })
     expect(findNode(root, node => node.props.role === 'menu')).toBeUndefined()
     expect(textContent(root)).toContain('orders')
-    expect(textContent(root)).toContain('Deleting this repository.')
-    expect(findNode(root, node => node.props.role === 'status' && node.props['aria-live'] === 'polite' && textContent(node).includes('Deleting this repository.'))).toBeDefined()
+    expect(textContent(root)).toContain('Requesting repository deletion…')
+    expect(findNode(root, node => node.props.role === 'status' && node.props['aria-live'] === 'polite' && textContent(node).includes('Requesting repository deletion…'))).toBeDefined()
     expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More repository actions')?.props.disabled).toBe(true)
 
     // What api.ts surfaces for a non-Status kcp failure (a KubeError mapped to
@@ -583,7 +586,7 @@ describe('mounted resource deletion state', () => {
     deleteRequest.reject({ reason: 'HTTPError', message: '500: delete failed' })
     await settle()
 
-    expect(textContent(root)).not.toContain('Deleting this repository.')
+    expect(textContent(root)).not.toContain('Requesting repository deletion…')
     expect(textContent(root)).toContain('HTTPError: 500: delete failed')
     expect(textContent(root)).toContain('Could not delete repository orders')
     mocks.confirmDialog.mockResolvedValueOnce(false)
@@ -595,6 +598,27 @@ describe('mounted resource deletion state', () => {
     expect(textContent(root)).toContain('orders')
     expect(findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Refresh')?.props.disabled).toBe(false)
     expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More repository actions')?.props.disabled).toBe(false)
+    app.unmount()
+  })
+
+  it('hands an accepted repository deletion to the collection before any detail reread', async () => {
+    const request = deferred<void>()
+    const deletions = createResourceDeletions()
+    mocks.api.deleteRepository.mockReturnValue(request.promise)
+    const deleted = vi.fn(() => expect(deletions.has('repository', repository.name, repository.uid)).toBe(true))
+    const { app, root } = mount(RepoDetailView, { name: repository.name, deletions, onDeleted: deleted })
+    await settle()
+
+    click(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More repository actions')!)
+    await settle()
+    click(findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Delete repository')!)
+    await settle()
+    expect(deleted).not.toHaveBeenCalled()
+
+    request.resolve()
+    await settle()
+    expect(deleted).toHaveBeenCalledOnce()
+    expect(mocks.api.getRepository).toHaveBeenCalledOnce()
     app.unmount()
   })
 

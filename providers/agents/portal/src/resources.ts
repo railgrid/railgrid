@@ -971,9 +971,9 @@ export class Resources {
     }, () => this.client(context, bounded))
   }
 
-  deleteAgent = (name: string): Promise<void> =>
+  deleteAgent = (name: string, uid?: string): Promise<void> =>
     this.run(async (client) => {
-      await client.delete(AGENTS, name)
+      await client.delete(AGENTS, name, uid ? { preconditions: { uid } } : undefined)
     })
 
   /**
@@ -1092,9 +1092,9 @@ export class Resources {
       return client.patch<Schedule & KubeObject>(SCHEDULES, name, { spec }, { type: 'merge' })
     })
 
-  deleteSchedule = (name: string): Promise<void> =>
+  deleteSchedule = (name: string, uid?: string): Promise<void> =>
     this.run(async (client) => {
-      await client.delete(SCHEDULES, name)
+      await client.delete(SCHEDULES, name, uid ? { preconditions: { uid } } : undefined)
     })
 
   // ---- triggers ------------------------------------------------------------
@@ -1142,9 +1142,9 @@ export class Resources {
       return client.patch<Trigger & KubeObject>(TRIGGERS, name, { spec }, { type: 'merge' })
     })
 
-  deleteTrigger = (name: string): Promise<void> =>
+  deleteTrigger = (name: string, uid?: string): Promise<void> =>
     this.run(async (client) => {
-      await client.delete(TRIGGERS, name)
+      await client.delete(TRIGGERS, name, uid ? { preconditions: { uid } } : undefined)
     })
 
   // ---- webhooks ------------------------------------------------------------
@@ -1195,9 +1195,9 @@ export class Resources {
       return client.patch<Webhook & KubeObject>(WEBHOOKS, name, { spec }, { type: 'merge' })
     })
 
-  deleteWebhook = (name: string): Promise<void> =>
+  deleteWebhook = (name: string, uid?: string): Promise<void> =>
     this.run(async (client) => {
-      await client.delete(WEBHOOKS, name)
+      await client.delete(WEBHOOKS, name, uid ? { preconditions: { uid } } : undefined)
     })
 
   // ---- toolsets ------------------------------------------------------------
@@ -1233,9 +1233,9 @@ export class Resources {
       return client.patch<Toolset & KubeObject>(TOOLSETS, name, { spec }, { type: 'merge' })
     })
 
-  deleteToolset = (name: string): Promise<void> =>
+  deleteToolset = (name: string, uid?: string): Promise<void> =>
     this.run(async (client) => {
-      await client.delete(TOOLSETS, name)
+      await client.delete(TOOLSETS, name, uid ? { preconditions: { uid } } : undefined)
     })
 
   // ---- connections ---------------------------------------------------------
@@ -1356,9 +1356,9 @@ export class Resources {
       return out
     })
 
-  deleteConnection = (name: string): Promise<void> =>
+  deleteConnection = (name: string, uid?: string): Promise<void> =>
     this.run(async (client) => {
-      await client.delete(CONNECTIONS, name)
+      await client.delete(CONNECTIONS, name, uid ? { preconditions: { uid } } : undefined)
       // Best-effort, and in this order: an orphaned Connection with no
       // credential is worse than an orphaned Secret, which the next create of
       // the same name overwrites anyway.
@@ -1930,18 +1930,19 @@ export class Resources {
    * Connection deletion delegates key lifetime to the connection finalizer.
    * Model deletion delegates Secret cleanup to Kubernetes owner references.
    */
-  deleteProviderConnection = (name: string): Promise<void> =>
+  deleteProviderConnection = (name: string, uid?: string): Promise<void> =>
     this.run(async client => {
       const models = await client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS)
       if (models.some(item => item.spec?.connectionRef === name)) throw validationError('Remove or reassign the models using this provider connection before deleting it.')
-      await client.delete(MODELPROVIDERCONNECTIONS, name)
+      await client.delete(MODELPROVIDERCONNECTIONS, name, uid ? { preconditions: { uid } } : undefined)
     })
 
-  deleteCredential = (name: string): Promise<void> =>
+  deleteCredential = (name: string, expectedUID?: string): Promise<void> =>
     this.run(async (client) => {
       let existing: KubeModelCredential & KubeObject
       try { existing = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name) }
       catch (error) { if (isKubeNotFound(error)) return; throw error }
+      if (expectedUID && existing.metadata.uid !== expectedUID) throw new ResourceError(409, 'Conflict', 'The credential changed. Refresh before deleting it.')
       if (!existing.spec?.connectionRef) {
         if (existing.metadata.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true' && !existing.metadata.finalizers?.includes(CREDENTIAL_SECRET_PROTECTION)) {
           const uid = existing.metadata.uid
@@ -1965,7 +1966,7 @@ export class Resources {
 
 /** KubeModelCredential is the object as kcp stores it. */
 interface KubeModelCredential {
-  metadata?: { name?: string; uid?: string; generation?: number; annotations?: Record<string, string> }
+  metadata?: { name?: string; uid?: string; generation?: number; annotations?: Record<string, string>; deletionTimestamp?: string }
   spec?: {
     default?: boolean
     connectionRef?: string
@@ -2006,6 +2007,7 @@ function credentialView(object: KubeModelCredential, isConnection = false): Cred
     uid: object.metadata?.uid,
     generation: object.metadata?.generation,
     ...(isConnection ? { isConnection: true } : {}),
+    ...(object.metadata?.deletionTimestamp ? { deleting: true } : {}),
     ...(object.spec?.connectionRef ? { connectionRef: object.spec.connectionRef } : {}),
     ...(object.metadata?.annotations?.['agents.railgrid.ai/display-name'] ? { displayName: object.metadata.annotations['agents.railgrid.ai/display-name'] } : {}),
     provider: object.spec?.provider ?? '',

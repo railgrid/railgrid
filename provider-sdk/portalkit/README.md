@@ -15,6 +15,9 @@ and Quickstart share the Vue toast transport and host with the rest of the porta
   `describedby` properties; it emits one bubbling `change` event whose `detail`
   is the selected value. Its viewport-positioned listbox is portalled to
   `document.body`.
+- `refresh.ts` coordinates foreground reads, background reconciliation, and
+  fresh Kubernetes list pages. Use it for provider resource tables and tiles.
+  [Provider refresh contract](../../docs/design/patterns/resource-reads.md#provider-refresh-contract)
 - `resource-table-filter.ts` — framework-neutral finite-select resource facet.
   Set `label`, `allLabel`, `options`, and `value`; it emits the same bubbling
   string-valued `change` contract. Searchable resource-reference facets remain

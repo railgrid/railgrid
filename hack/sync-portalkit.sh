@@ -18,7 +18,7 @@ TS_SRC="$ROOT/provider-sdk/portalkit"
 TS_PORTALS=(
   "providers/quickstart/portal"
 )
-TS_FILES=(document-id.ts modal-focus.ts modal-popup.ts page-context.ts agent-context.ts navigation.ts dashboardtile.ts railgrid-ui.css form-select.ts icons.ts kube.ts loading-skeleton.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts tooltip.ts)
+TS_FILES=(refresh.ts page-state.ts document-id.ts modal-focus.ts modal-popup.ts page-context.ts agent-context.ts navigation.ts dashboardtile.ts railgrid-ui.css form-select.ts icons.ts kube.ts loading-skeleton.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts tooltip.ts)
 
 # Vue SFC portals + files.
 VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
@@ -31,7 +31,7 @@ VUE_PORTALS=(
   "providers/infrastructure/portal"
   "providers/kuery/portal"
 )
-VUE_FILES=(ActionMenu.vue confirm.ts ConditionsPanel.vue ConfirmDialog.vue CreateGuidance.vue FirstRunGuide.vue FormSelect.vue InlineNotification.vue LayoutSelector.vue LoadingSkeleton.vue layoutPreference.ts ResourceBackLink.vue ResourceBoard.vue ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue ResourceTableFilter.vue table.ts ResourceTableActionTooltip.vue ResourceTableActionButton.vue ResourceTableDeleteButton.vue ResourceTableEditButton.vue ResourceTableExpandButton.vue ResourceTimestamp.vue timestamp.ts timestampClock.ts StatusBadge.vue Tabs.vue useUserLabels.ts useAnchoredPopover.ts useDelayedLoading.ts useClipboardFeedback.ts)
+VUE_FILES=(ActionMenu.vue confirm.ts ConditionsPanel.vue ConfirmDialog.vue CopyValue.vue CreateGuidance.vue FirstRunGuide.vue FormSelect.vue InlineNotification.vue LayoutSelector.vue LoadingSkeleton.vue layoutPreference.ts ResourceBackLink.vue ResourceBoard.vue ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue ResourceTableFilter.vue table.ts ResourceTableActionTooltip.vue ResourceTableActionButton.vue ResourceTableDeleteButton.vue ResourceDeleteFailure.vue ResourceTableEditButton.vue ResourceTableExpandButton.vue ResourceTimestamp.vue timestamp.ts timestampClock.ts StatusBadge.vue Tabs.vue useUserLabels.ts useAnchoredPopover.ts useDelayedLoading.ts useClipboardFeedback.ts)
 VUE_TOAST_FILES=(ToastHost.vue toast.ts)
 VUE_TOAST_PORTALS=(
   "portal"
@@ -68,14 +68,14 @@ AGENTKIT_VUE_FILES=(
 )
 
 # Plain assets from the vanilla kit are shared by both portal styles.
-VUE_SHARED_FILES=(modal-focus.ts page-context.ts agent-context.ts navigation.ts dashboardtile.ts railgrid-ui.css icons.ts kube.ts loading-skeleton.ts page-state.ts styles.ts tabs.ts tenant.ts tooltip.ts)
+VUE_SHARED_FILES=(refresh.ts modal-focus.ts page-context.ts agent-context.ts navigation.ts dashboardtile.ts railgrid-ui.css icons.ts kube.ts loading-skeleton.ts page-state.ts styles.ts tabs.ts tenant.ts tooltip.ts)
 ALL_PORTALS=("${TS_PORTALS[@]}" "${VUE_PORTALS[@]}")
 HOST_UI="$ROOT/portal/src/assets/railgrid-ui.css"
 
 # README.md documents the canonical kit but is not a distributable vendored
 # asset. Every other direct file in the canonical directories must be listed
 # above so adding a new source file cannot silently skip every portal.
-TS_CANONICAL_ONLY=(README.md dashboardtile.conformance.test.mjs form-select.behavior.test.mjs kube.behavior.test.mjs page-state.ts)
+TS_CANONICAL_ONLY=(README.md refresh.behavior.test.mjs dashboardtile.conformance.test.mjs form-select.behavior.test.mjs kube.behavior.test.mjs)
 VUE_CANONICAL_ONLY=(ActionMenu.conformance.test.mjs ConditionsPanel.behavior.test.mjs ResourceTable.selection.test.mjs ResourceTable.sorting.test.mjs ResourceTable.overflow.test.mjs ResourceTimestamp.behavior.test.mjs resource-technical.conformance.test.mjs Toast.behavior.test.mjs Toast.conformance.test.mjs clipboard-feedback.test.mjs)
 AGENTKIT_CANONICAL_ONLY=(README.md styles.conformance.test.mjs)
 AGENTKIT_VUE_CANONICAL_ONLY=(conversation.conformance.test.mjs turn-work-duration.behavior.test.mjs)

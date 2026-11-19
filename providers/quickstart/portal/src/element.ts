@@ -1,5 +1,6 @@
 import { loadingSkeletonMarkup } from './portalkit/loading-skeleton'
 import { createKubeClient, type KubeClient, type KubeObject, type KubeResourceRef } from './portalkit/kube'
+import { createAdaptiveRefreshTimer, createLatestRefreshController, type AdaptiveRefreshTimer, type LatestRefreshController, type ResourceRefreshMode } from './portalkit/refresh'
 import { ic } from './portalkit/icons'
 import { providerFetch, type ProviderFetch } from './portalkit/tenant'
 import { toast } from './portalkit/toast'
@@ -71,7 +72,8 @@ export class QuickstartElement extends HTMLElement {
   private _draftName = ''
   private _draftMessage = ''
   private _generation = 0
-  private _readSerial = 0
+  private _reads: LatestRefreshController | null = null
+  private _poll: AdaptiveRefreshTimer | null = null
   private _active = false
   private _greetPending = new Set<string>()
   private _greetResults = new Map<string, { message: string; error: boolean }>()
@@ -86,8 +88,8 @@ export class QuickstartElement extends HTMLElement {
     const changed = key !== this._lastKey
     this._lastKey = key
     if (changed) {
+      this._resetReads()
       this._generation += 1
-      this._readSerial += 1
       this._items = []
       this._loaded = false
       this._loading = false
@@ -109,6 +111,14 @@ export class QuickstartElement extends HTMLElement {
 
   connectedCallback(): void {
     this._active = true
+    this._resetReads()
+    this._poll ??= createAdaptiveRefreshTimer(() => {
+      if (this._isCreateRoute()) {
+        this._poll?.schedule()
+      } else {
+        void this._load('background')
+      }
+    })
     this._unmountToast ??= mountToastFallback()
     this._render()
     if (this._canLoad()) void this._load()
@@ -116,10 +126,12 @@ export class QuickstartElement extends HTMLElement {
 
   disconnectedCallback(): void {
     this._active = false
+    this._resetReads()
+    this._poll?.stop()
+    this._poll = null
     this._unmountToast?.()
     this._unmountToast = null
     this._generation += 1
-    this._readSerial += 1
     this._busy = ''
     this._greetPending.clear()
     this._loading = false
@@ -144,26 +156,47 @@ export class QuickstartElement extends HTMLElement {
     })
   }
 
-  private async _load(): Promise<void> {
-    if (!this._canLoad()) return
+  private _resetReads(): void {
+    this._reads?.stop()
+    this._reads = this._active ? createLatestRefreshController((id, mode) => this._read(id, mode)) : null
+    this._poll?.cancel()
+  }
+
+  private _isCreateRoute(): boolean {
+    return this._ctx?.subPath?.replace(/^\/+|\/+$/g, '') === 'create/greeting'
+  }
+
+  private _load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
+    if (!this._reads || !this._canLoad()) return Promise.resolve()
+    this._poll?.cancel()
+    if (mode === 'foreground') {
+      this._loading = true
+      this._render()
+    }
+    return this._reads.request(mode)
+  }
+
+  private async _read(id: number, mode: ResourceRefreshMode): Promise<void> {
     const generation = this._generation
-    const serial = ++this._readSerial
     const ctx = this._ctx
-    this._loading = true
-    this._render()
+    const reads = this._reads
+    const current = () => this._current(generation) && reads?.isCurrent(id)
     try {
       const list = await this._kube(ctx).list<Greeting>(greetings)
-      if (!this._current(generation) || serial !== this._readSerial) return
+      if (!current()) return
       this._items = list.items
       this._loaded = true
       this._readError = ''
     } catch (err) {
-      if (!this._current(generation) || serial !== this._readSerial) return
+      if (!current()) return
       this._readError = (err as Error).message
     } finally {
-      if (this._current(generation) && serial === this._readSerial) {
-        this._loading = false
-        this._render()
+      if (current()) {
+        if (mode === 'foreground') this._loading = false
+        // A background read started on the collection can finish after the
+        // create form opens. Keep its snapshot without replacing the form.
+        if (mode === 'foreground' || !this._isCreateRoute()) this._render()
+        this._poll?.schedule()
       }
     }
   }
@@ -185,6 +218,7 @@ export class QuickstartElement extends HTMLElement {
       this._draftName = ''
       this._draftMessage = ''
       this._error = ''
+      this._reads?.invalidate()
       await this._load()
       if (this._current(generation)) {
         toast('ok', `Greeting ${name} created.`)
@@ -260,7 +294,7 @@ export class QuickstartElement extends HTMLElement {
     const otherKey = focusedOther && ['data-create', 'data-cancel', 'data-open', 'data-observed-for'].find(key => focusedOther.hasAttribute(key))
     const otherValue = otherKey ? focusedOther?.getAttribute(otherKey) : null
     const selection = focused ? [focused.selectionStart, focused.selectionEnd] as const : null
-    const createRoute = (ctx?.subPath || '').replace(/^\/+|\/+$/g, '') === 'create/greeting'
+    const createRoute = this._isCreateRoute()
     const firstRun = !!ctx?.tenant && this._loaded && this._items.length === 0
     this.innerHTML = createRoute ? `
       <section class="k-create-page">

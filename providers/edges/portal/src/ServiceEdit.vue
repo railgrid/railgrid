@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ResourceDeleteFailure from './portalkit/ResourceDeleteFailure.vue'
 import { portalHref } from './portalkit/navigation'
 import { ref, computed, nextTick, onUnmounted, watch } from 'vue'
 import { Globe2, KeyRound, Plug, RefreshCw, Save, Server } from 'lucide-vue-next'
@@ -17,6 +18,7 @@ import InlineNotification from './portalkit/InlineNotification.vue'
 import { toast } from './portalkit/toast'
 import { parseServiceHost, servicePortError } from './serviceValidation'
 import { serviceTarget } from './serviceTarget'
+import { createAdaptiveRefreshTimer, createLatestRefreshController, FAST_REFRESH_MS, STABLE_REFRESH_MS, type ResourceRefreshMode } from './refresh'
 
 // The route owns the resource identity. A list-row snapshot is optional and is
 // used only as a seed; every instance page performs an exact getService read so
@@ -27,12 +29,18 @@ const props = withDefaults(defineProps<{
   catalog: CatalogEntry[]
   edges: Edge[]
 }>(), { service: null, serviceName: null })
-const emit = defineEmits<{ back: []; saved: []; deleted: [] }>()
+const emit = defineEmits<{ back: []; saved: []; deleted: [target: { name: string; uid: string }] }>()
 
 const service = ref<EdgeService | null>(props.service)
+const reviewedUID = ref<string>()
+const serviceReplaced = computed(() => !!reviewedUID.value && !!service.value?.uid && service.value.uid !== reviewedUID.value)
+const canMutateService = computed(() => !!service.value?.uid && service.value.uid === reviewedUID.value)
+const replacementNotice = ref<HTMLElement | null>(null)
 const readLoading = ref(true)
 const readLoaded = ref(false)
 const readError = ref<string | null>(null)
+const refreshMode = ref<ResourceRefreshMode>('foreground')
+const foregroundLoading = computed(() => readLoading.value && refreshMode.value === 'foreground')
 const configurationError = ref<string | null>(null)
 const credentialsError = ref<string | null>(null)
 const deleteError = ref<string | null>(null)
@@ -52,7 +60,7 @@ const credentialsSaving = computed(() => mutationBusy.value?.kind === 'credentia
 // this state after the actions menu closes so the resource status and the
 // announcement remain truthful until the parent navigates away on success.
 const deleting = ref(false)
-let selectionGeneration = 0
+const deletionInProgress = computed(() => deleting.value || service.value?.phase === 'Deleting')
 let scopeGeneration = 0
 let mutationID = 0
 let selectedName = ''
@@ -62,10 +70,10 @@ const currentName = computed(() => service.value?.name || props.serviceName || p
 const title = computed(() => currentName.value || 'Service')
 const actionItems = computed<ActionMenuItem[]>(() => [{
   id: 'delete',
-  label: deleting.value ? 'Deleting service…' : 'Delete service',
+  label: deletionInProgress.value ? 'Deleting service…' : 'Delete service',
   tone: 'danger',
-  disabled: !service.value || busy.value || readLoading.value || deleting.value,
-  busy: deleting.value,
+  disabled: !canMutateService.value || busy.value || foregroundLoading.value || deletionInProgress.value,
+  busy: deletionInProgress.value,
 }])
 
 function beginMutation(name: string, kind: MutationKind): MutationRequest {
@@ -117,6 +125,20 @@ function seedForm(next: EdgeService | null): void {
   hostError.value = null
 }
 seedForm(service.value)
+
+async function reviewReplacement() {
+  if (!serviceReplaced.value || busy.value) return
+  const next = service.value!
+  const heading = replacementNotice.value?.closest('.k-resource-page')?.querySelector<HTMLElement>('h1')
+  reviewedUID.value = next.uid
+  seedForm(next)
+  credInputs.value = {}
+  configurationError.value = null
+  credentialsError.value = null
+  deleteError.value = null
+  await nextTick()
+  if (typeof document !== 'undefined' && document.activeElement === document.body) heading?.focus({ preventScroll: true })
+}
 
 // The catalog entry for the selected type drives provider information, scheme
 // locking, target hints, and credential fields.
@@ -174,12 +196,20 @@ function isNotFound(error: unknown): boolean {
   return (error as ErrorResponse)?.reason === 'NotFound'
 }
 
-async function load(resetDraft = false): Promise<void> {
+let resetDraftOnNextRead = false
+const poller = createAdaptiveRefreshTimer(() => {
+  if (busy.value) poller.schedule()
+  else void load('background')
+}, () => readError.value || !service.value?.phase || ['Pending', 'Deleting'].includes(service.value.phase)
+  ? FAST_REFRESH_MS : STABLE_REFRESH_MS)
+
+const refresh = createLatestRefreshController(async (requestID, mode) => {
+  refreshMode.value = mode
   const name = currentName.value.trim()
-  const generation = ++selectionGeneration
+  const resetDraft = resetDraftOnNextRead
+  resetDraftOnNextRead = false
   const hadSnapshot = readLoaded.value && service.value !== null
   readLoading.value = true
-  readError.value = null
   if (!name) {
     service.value = null
     readLoaded.value = false
@@ -189,15 +219,24 @@ async function load(resetDraft = false): Promise<void> {
   }
   try {
     const next = await getService(name)
-    if (generation !== selectionGeneration) return
+    if (!refresh.isCurrent(requestID)) return
+    const focused = typeof document === 'undefined' ? null : document.activeElement
+    const hadEditorFocus = service.value?.uid !== next.uid && !!focused?.closest('.service-detail__sections')
     service.value = next
+    reviewedUID.value ??= next.uid
     // Refresh observations without discarding work entered in this editor,
     // including edits made while the read was in flight. A successful config
     // save explicitly adopts the saved object as the next draft baseline.
-    if (resetDraft || !configurationDirty.value) seedForm(next)
+    if (!serviceReplaced.value && (resetDraft || !configurationDirty.value)) seedForm(next)
     readLoaded.value = true
+    readError.value = null
+    if (serviceReplaced.value && hadEditorFocus) void nextTick(() => {
+      if (document.activeElement === focused || document.activeElement === document.body) {
+        replacementNotice.value?.focus({ preventScroll: true })
+      }
+    })
   } catch (error) {
-    if (generation !== selectionGeneration) return
+    if (!refresh.isCurrent(requestID)) return
     if (isNotFound(error)) {
       // A confirmed not-found must remove the previous snapshot so a stale
       // service cannot remain actionable under a missing URL-owned resource.
@@ -209,8 +248,19 @@ async function load(resetDraft = false): Promise<void> {
       readError.value = errorMessage(error, 'Failed to load service')
     }
   } finally {
-    if (generation === selectionGeneration) readLoading.value = false
+    if (refresh.isCurrent(requestID)) {
+      readLoading.value = false
+      poller.schedule()
+    }
   }
+})
+
+function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
+  if (mode === 'foreground') {
+    refreshMode.value = mode
+    readLoading.value = true
+  }
+  return refresh.request(mode)
 }
 
 // Reuse the mounted editor as shell history moves between service/<name>
@@ -221,6 +271,7 @@ watch(
     const nextName = name || next?.name || ''
     if (nextName === selectedName) return
     selectedName = nextName
+    reviewedUID.value = undefined
     service.value = next ?? null
     seedForm(service.value)
     readLoaded.value = false
@@ -233,6 +284,8 @@ watch(
     mutationID += 1
     mutationBusy.value = null
     deleting.value = false
+    resetDraftOnNextRead = false
+    refresh.invalidate()
     void load()
   },
   { immediate: true },
@@ -324,13 +377,14 @@ const serviceStatCards = computed<ResourceStatCard[]>(() => [
 ])
 
 async function refreshDetail(): Promise<void> {
-  if (busy.value || readLoading.value) return
+  if (busy.value || foregroundLoading.value) return
   await load()
 }
 
 async function onSaveConfig(): Promise<void> {
   const name = currentName.value
-  if (!name || !service.value || busy.value || readLoading.value || deleting.value) return
+  const uid = reviewedUID.value
+  if (!name || !uid || !canMutateService.value || busy.value || foregroundLoading.value || deletionInProgress.value) return
   if (targetMode.value === 'host' && !hostInputError.value) applyHostUrl()
   portError.value = servicePortError(form.value.port)
   if (portError.value) {
@@ -367,10 +421,12 @@ async function onSaveConfig(): Promise<void> {
       targetName: byHost ? '' : form.value.targetName,
       instructions: instructions.value,
       targetMode: targetMode.value,
-    })
+    }, uid)
     if (!isCurrentMutation(request)) return
     toast('ok', `Service configuration saved for ${name}.`)
-    await load(true)
+    resetDraftOnNextRead = true
+    refresh.invalidate()
+    await load()
     if (!isCurrentMutation(request)) return
     emit('saved')
   } catch (error) {
@@ -405,14 +461,16 @@ const credFilled = computed(() => {
 async function onSaveCreds(): Promise<void> {
   const name = currentName.value
   const token = packedCredential()
-  if (!credentialsSupported.value || !name || !service.value || !token || busy.value || readLoading.value || deleting.value) return
+  const uid = reviewedUID.value
+  if (!credentialsSupported.value || !name || !uid || !canMutateService.value || !token || busy.value || foregroundLoading.value || deletionInProgress.value) return
   credentialsError.value = null
   const request = beginMutation(name, 'credentials')
   try {
-    await connectEdgeService(name, token)
+    await connectEdgeService(name, token, uid)
     if (!isCurrentMutation(request)) return
     credInputs.value = {}
     toast('ok', `Service credentials saved for ${name}.`)
+    refresh.invalidate()
     await load()
     if (!isCurrentMutation(request)) return
     emit('saved')
@@ -425,7 +483,8 @@ async function onSaveCreds(): Promise<void> {
 
 async function onDelete(): Promise<void> {
   const name = currentName.value
-  if (!name || !service.value || busy.value || deleting.value) return
+  const uid = reviewedUID.value
+  if (!name || !uid || !canMutateService.value || busy.value || deletionInProgress.value) return
   const generation = scopeGeneration
   if (!(await confirmDialog({
     title: `Delete service "${name}"?`,
@@ -433,15 +492,16 @@ async function onDelete(): Promise<void> {
     danger: true,
     confirmLabel: 'Delete',
   }))) return
-  if (!active || generation !== scopeGeneration || currentName.value !== name || busy.value || deleting.value) return
-  deleteError.value = null
+  if (!active || generation !== scopeGeneration || currentName.value !== name || service.value?.uid !== uid ||
+      reviewedUID.value !== uid || busy.value || deletionInProgress.value) return
   deleting.value = true
   const request = beginMutation(name, 'delete')
   try {
-    await deleteEdgeService(name)
+    await deleteEdgeService(name, uid)
     if (!isCurrentMutation(request)) return
+    deleteError.value = null
     toast('info', `Service deletion requested for ${name}.`)
-    emit('deleted')
+    emit('deleted', { name, uid })
   } catch (error) {
     if (isCurrentMutation(request)) {
       deleteError.value = errorMessage(error, 'Delete failed')
@@ -454,7 +514,8 @@ async function onDelete(): Promise<void> {
 
 onUnmounted(() => {
   active = false
-  selectionGeneration += 1
+  poller.stop()
+  refresh.stop()
   scopeGeneration += 1
   mutationID += 1
 })
@@ -473,6 +534,7 @@ onUnmounted(() => {
         :subtitle="entry?.displayName || service?.serviceType || 'Edge service'"
         :loaded="readLoaded"
         :loading="readLoading"
+        :refresh-mode="refreshMode"
         :error="readError"
         :stale="readLoaded && !!readError"
         retryable
@@ -488,14 +550,15 @@ onUnmounted(() => {
         </template>
         <template #actions>
           <div class="service-detail__actions" role="group" aria-label="Service actions">
-            <button class="k-btn k-btn--ghost" type="button" aria-label="Refresh service" :disabled="busy" :aria-disabled="readLoading || undefined" :aria-busy="readLoading || undefined" @click="refreshDetail">
-              <RefreshCw :size="14" :class="{ 'k-spin': readLoading }" aria-hidden="true" />
-              {{ readLoading ? 'Refreshing…' : 'Refresh' }}
+            <button class="k-btn k-btn--ghost" type="button" aria-label="Refresh service" :disabled="busy" :aria-disabled="foregroundLoading || undefined" :aria-busy="foregroundLoading || undefined" @click="refreshDetail">
+              <RefreshCw :size="14" :class="{ 'k-spin': foregroundLoading }" aria-hidden="true" />
+              {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
             </button>
             <ActionMenu
               label="More service actions"
+              :busy="deletionInProgress" busy-label="Deleting service…"
               :items="actionItems"
-              :disabled="!service || busy || readLoading || deleting"
+              :disabled="!canMutateService || busy || foregroundLoading || deletionInProgress"
               @select="selectAction"
             />
           </div>
@@ -506,9 +569,19 @@ onUnmounted(() => {
         </template>
 
         <template #body>
-          <InlineNotification v-if="deleteError" tone="error" title="Could not delete service" :message="deleteError" />
-          <p v-if="deleting" class="waiting" role="status" aria-live="polite">Deleting this service. The last successful snapshot remains visible until the hub confirms removal.</p>
-          <div class="service-detail__sections">
+          <div v-if="serviceReplaced" ref="replacementNotice" tabindex="-1">
+            <InlineNotification
+              tone="warning"
+              title="This service was replaced"
+              message="Review the new service to continue. This discards the previous service’s draft and credential inputs."
+              action-label="Review service"
+              :action-busy="busy"
+              @action="reviewReplacement"
+            />
+          </div>
+          <ResourceDeleteFailure v-if="deleteError" :title="`Could not delete service ${currentName}`" :message="deleteError" retry-hint="Use Delete to try again." @dismiss="deleteError = null" />
+          <p v-if="deleting" class="waiting" role="status" aria-live="polite">Requesting deletion of this service…</p>
+          <div class="service-detail__sections" :inert="serviceReplaced || undefined">
             <ResourceSectionCard class="service-detail__card" id="service-provider" eyebrow="Provider" title="Provider info" description="The catalog definition determines authentication, reachability, and exposed AI tools.">
               <div class="service-detail__facts">
                 <div><span class="lbl">Type</span><strong>{{ entry?.displayName || service?.serviceType || '—' }}</strong></div>
@@ -555,7 +628,7 @@ onUnmounted(() => {
                 <label class="fld"><span class="lbl">Target service name</span><input v-model="form.targetName" class="k-input" :disabled="busy || !service" placeholder="home-assistant" /></label>
               </div>
               <label class="fld"><span class="lbl">AI instructions (optional)</span><textarea v-model="instructions" class="k-input" rows="3" :disabled="busy || !service" placeholder="Describe this service's entities/rooms so the AI knows your setup."></textarea></label>
-              <div class="service-detail__form-actions"><button class="k-btn k-btn--primary" type="button" :disabled="!busy && (readLoading || !service)" :aria-disabled="busy ? 'true' : undefined" :aria-busy="configurationSaving || undefined" @click="onSaveConfig"><Save :size="14" aria-hidden="true" /> {{ configurationSaving ? 'Saving configuration…' : 'Save configuration' }}</button></div>
+              <div class="service-detail__form-actions"><button class="k-btn k-btn--primary" type="button" :disabled="!busy && (foregroundLoading || !canMutateService || deletionInProgress)" :aria-disabled="busy ? 'true' : undefined" :aria-busy="configurationSaving || undefined" @click="onSaveConfig"><Save :size="14" aria-hidden="true" /> {{ configurationSaving ? 'Saving configuration…' : 'Save configuration' }}</button></div>
               <InlineNotification v-if="configurationError" tone="error" title="Could not save configuration" :message="configurationError" />
             </ResourceSectionCard>
 
@@ -564,7 +637,7 @@ onUnmounted(() => {
                 <p class="muted service-detail__credential-hint">{{ entry?.credential.hint || 'Credential' }}{{ credentialsOptional ? ' (optional)' : '' }} — makes the service Ready when authentication is required.</p>
                 <div class="service-detail__credential-row">
                   <label v-for="field in credFields" :key="field.key" class="fld"><span :id="`service-edit-credential-${field.key}-label`" class="lbl">{{ field.label }}</span><input v-model="credInputs[field.key]" :type="field.secret ? 'password' : 'text'" class="k-input" :disabled="busy || !service" :aria-labelledby="`service-edit-credential-${field.key}-label`" :aria-describedby="field.help ? `service-edit-credential-${field.key}-help` : undefined" :placeholder="field.label" autocomplete="new-password" /><span v-if="field.help" :id="`service-edit-credential-${field.key}-help`" class="field-help service-detail__field-help">{{ field.help }}</span></label>
-                  <button class="k-btn k-btn--ghost" type="button" :disabled="!busy && (readLoading || !service || !credFilled)" :aria-disabled="busy ? 'true' : undefined" :aria-busy="credentialsSaving || undefined" @click="onSaveCreds"><KeyRound :size="14" aria-hidden="true" /> {{ credentialsSaving ? 'Saving credentials…' : service?.hasCredentials ? 'Update credentials' : 'Set credentials' }}</button>
+                  <button class="k-btn k-btn--ghost" type="button" :disabled="!busy && (foregroundLoading || !canMutateService || !credFilled || deletionInProgress)" :aria-disabled="busy ? 'true' : undefined" :aria-busy="credentialsSaving || undefined" @click="onSaveCreds"><KeyRound :size="14" aria-hidden="true" /> {{ credentialsSaving ? 'Saving credentials…' : service?.hasCredentials ? 'Update credentials' : 'Set credentials' }}</button>
                 </div>
                 <InlineNotification v-if="credentialsError" tone="error" title="Could not save credentials" :message="credentialsError" />
               </template>

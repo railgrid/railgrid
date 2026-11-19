@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import { Download, FileUp, Loader2, Package, Pencil, Plus, Trash2 } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
@@ -63,6 +64,9 @@ const validationError = ref('')
 const saveError = ref('')
 const saving = ref(false)
 const deleting = ref(false)
+const deleteFailure = ref('')
+const skillDeleteButton = ref<HTMLButtonElement | null>(null)
+watch(() => selectedSkill.value?.id, () => { deleteFailure.value = '' })
 const importing = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 let catalogSerial = 0
@@ -355,9 +359,12 @@ async function removeSkill(): Promise<void> {
   const selected = selectedSkill.value
   const packageID = selected?.packageName
   if (!selected || !packageID || !selected.editable || selected.scope !== 'workspace' || workbenchLocked.value || selectedSkillUnverified.value) return
-  const ok = await confirmDialog({ title: `Delete “${selected.name}”?`, message: 'This removes the workspace skill package for every agent in this workspace. Agents that enabled it will no longer be able to use it.', danger: true, confirmLabel: 'Delete skill' })
-  if (!ok || workbenchLocked.value || selectedSkillUnverified.value || selectedSkill.value?.id !== selected.id) return
   const authority = captureAuthority()
+  const displayedUID = detail.value?.sourceUID
+  if (!displayedUID) return
+  const ok = await confirmDialog({ title: `Delete “${selected.name}”?`, message: 'This removes the workspace skill package for every agent in this workspace. Agents that enabled it will no longer be able to use it.', danger: true, confirmLabel: 'Delete skill' })
+  if (!ok || !authorityIsCurrent(authority) || workbenchLocked.value || selectedSkillUnverified.value ||
+      selectedSkill.value?.id !== selected.id || detail.value?.sourceUID !== displayedUID) return
   const api = authority.api
   const serial = ++requestSerial
   deleting.value = true
@@ -365,15 +372,22 @@ async function removeSkill(): Promise<void> {
     const client = kubeClient(api)
     const current = await client.get<WorkspaceSkillCR>(WORKSPACE_SKILLS, packageID)
     if (!isCurrent(serial, api) || !authorityIsCurrent(authority)) return
+    if (current.metadata.uid !== displayedUID) {
+      deleteFailure.value = 'Refresh and review this skill before deleting it.'
+      return
+    }
     await client.delete(WORKSPACE_SKILLS, packageID, { preconditions: { uid: current.metadata.uid, resourceVersion: current.metadata.resourceVersion } })
     if (!isCurrent(serial, api) || !authorityIsCurrent(authority)) return
-    toast('ok', `Deleted workspace skill “${selected.name}”.`)
+    deleteFailure.value = ''
+    toast('ok', `Workspace skill deletion requested for ${selected.name}.`)
     catalog.value = catalog.value.filter(skill => skill.id !== selected.id)
     selectedSkill.value = null
     detail.value = null
     await loadCatalog()
   } catch (error) {
-    if (isCurrent(serial, api) && authorityIsCurrent(authority)) toast('error', `Could not delete skill: ${(error as Error).message}`)
+    if (isCurrent(serial, api) && authorityIsCurrent(authority)) {
+      deleteFailure.value = isKubeConflict(error) ? 'Refresh and review this skill before deleting it.' : 'The request failed.'
+    }
   } finally {
     if (serial === requestSerial) deleting.value = false
   }
@@ -456,6 +470,7 @@ watch([() => props.returnAgent, () => props.api, () => props.authorityEpoch], ()
   detail.value = null
   detailLoading.value = false
   detailError.value = ''
+  deleteFailure.value = ''
   editing.value = false
   saving.value = false
   deleting.value = false
@@ -608,7 +623,20 @@ watch(() => props.createRoute, (creating) => {
           <template v-if="selectedSkill.editable" #actions>
             <button type="button" class="k-btn k-btn--ghost" :disabled="detailLoading || workbenchLocked || selectedSkillUnverified || !detail" @click="exportSkill"><Download class="agents-skill-workbench__button-icon" aria-hidden="true" /> Export</button>
             <button type="button" class="k-btn k-btn--ghost" :disabled="!canEditDetail" @click="startEdit"><Pencil class="agents-skill-workbench__button-icon" aria-hidden="true" /> Edit</button>
-            <button type="button" class="k-icon-action agents-iconbtn-danger" :disabled="workbenchLocked || selectedSkillUnverified" aria-label="Delete workspace skill" title="Delete workspace skill" @click="removeSkill"><Trash2 class="agents-skill-workbench__button-icon" aria-hidden="true" /></button>
+            <button
+              ref="skillDeleteButton"
+              type="button"
+              class="k-icon-action agents-iconbtn-danger"
+              :disabled="!deleting && (workbenchLocked || selectedSkillUnverified || !detail?.sourceUID)"
+              :aria-disabled="deleting || undefined"
+              :aria-busy="deleting || undefined"
+              :aria-label="deleting ? 'Deleting workspace skill…' : 'Delete workspace skill'"
+              title="Delete workspace skill"
+              @click="removeSkill"
+            >
+              <Loader2 v-if="deleting" class="agents-skill-workbench__button-icon k-spin" aria-hidden="true" />
+              <Trash2 v-else class="agents-skill-workbench__button-icon" aria-hidden="true" />
+            </button>
           </template>
           <InlineNotification
             v-if="selectedSkillUnverified"
@@ -621,6 +649,14 @@ watch(() => props.createRoute, (creating) => {
             <span aria-hidden="true"> · </span>
             <code class="break-all" :title="selectedSkill.id">{{ selectedSkill.packageName || selectedSkill.packagePath }}</code>
           </p>
+          <ResourceDeleteFailure
+            v-if="deleteFailure"
+            :title="`Could not delete workspace skill ${selectedSkill.name}`"
+            :message="deleteFailure"
+            :return-focus="skillDeleteButton"
+            retry-hint="Use Delete workspace skill to try again."
+            @dismiss="deleteFailure = ''"
+          />
           <div v-if="detailError" ref="detailNotice">
             <InlineNotification
               :tone="detail ? 'warning' : 'error'"

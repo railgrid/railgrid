@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ResourceDeleteFailure from './portalkit/ResourceDeleteFailure.vue'
 import { computed, nextTick, onActivated, ref, watch } from 'vue'
 import { ArrowRight, Boxes, Laptop, Plus, RefreshCw, Server } from 'lucide-vue-next'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
@@ -45,7 +46,7 @@ const edgeRows = computed(() => props.edges.map(edge => ({
   ...edge,
   rowKey: `${edge.type}/${edge.name}`,
   typeLabel: edge.type === 'macos' ? 'macOS' : edgeTypeLabel(edge.type),
-  status: edge.connected ? 'Connected' : (edge.phase || 'Disconnected'),
+  status: edge.phase === 'Deleting' ? edge.phase : edge.connected ? 'Connected' : (edge.phase || 'Disconnected'),
   agentVersion: edge.agentVersion || '—',
   lastHeartbeat: edge.lastHeartbeatTime || null,
   actions: '',
@@ -135,12 +136,11 @@ async function dismissDeleteFailure(key: string) {
       </div>
     </header>
 
-    <InlineNotification
+    <ResourceDeleteFailure
       v-for="(failure, key) in props.deleteFailures" :key="key"
-      tone="error"
-      :title="`Could not delete ${failure.name}`"
-      :message="`${failure.message} Try again using the edge's delete action.`"
-      dismissible @dismiss="dismissDeleteFailure(String(key))"
+      :title="`Could not delete edge ${failure.name}`"
+      :message="failure.message"
+      @dismiss="dismissDeleteFailure(String(key))"
     />
     <div v-if="showFirstRun && props.error" ref="firstRunWarning">
       <InlineNotification tone="warning" message="Edges could not be refreshed. Showing the last successful empty result." action-label="Retry" action-busy-label="Retrying…" :action-busy="props.loading" @action="emit('refresh')" />
@@ -185,7 +185,7 @@ async function dismissDeleteFailure(key: string) {
       <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
       <template #agentVersion="{ value }"><span class="mono muted">{{ value }}</span></template>
       <template #lastHeartbeat="{ value }"><ResourceTimestamp :value="value ? String(value) : null" label="Last heartbeat" /></template>
-      <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete edge ${String(row.name)}`" :disabled="!!props.deletingEdge" :busy="props.deletingEdge === row.rowKey" @click="emit('delete', row as unknown as Edge)" /></div></template>
+      <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete edge ${String(row.name)}`" :disabled="!!props.deletingEdge || row.phase === 'Deleting'" :busy="props.deletingEdge === row.rowKey || row.phase === 'Deleting'" @click="emit('delete', row as unknown as Edge)" /></div></template>
     </ResourceTable>
   </div>
 </template>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
 import type { PublishPageResource } from '../portalkit/page-context'
 import ResourceTimestamp from '../portalkit/ResourceTimestamp.vue'
 import { portalHref } from '../portalkit/navigation'
@@ -10,7 +11,6 @@ import { api, isContextChangedError } from '../api'
 import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import ConditionsPanel, { type ConditionInfo } from '../portalkit/ConditionsPanel.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
-import InlineNotification from '../portalkit/InlineNotification.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
@@ -260,7 +260,7 @@ async function executeDelete() {
   const deletingInstance = inst.value
   deleting.value = true
   try {
-    await api.deleteInstance(props.instanceName)
+    await api.deleteInstance(deletingInstance.name, deletingInstance.uid)
     if (active) {
       if (deleteError.value?.name === deletingInstance.name && deleteError.value.uid === deletingInstance.uid) deleteError.value = null
       props.tombstones.add(deletingInstance.name, deletingInstance.uid)
@@ -355,6 +355,7 @@ onUnmounted(() => {
           </button>
           <ActionMenu
             label="More instance actions"
+            :busy="deletionInProgress" busy-label="Deleting instance…"
             :items="actionItems"
             :disabled="!inst || foregroundLoading || deleting || deletionInProgress"
             @select="selectAction"
@@ -373,8 +374,8 @@ onUnmounted(() => {
         </div>
       </template>
       <template #body>
-        <p v-if="deleting" class="instance-message" role="status" aria-live="polite">Deleting this instance. The last successful snapshot remains visible until the hub confirms removal.</p>
-        <InlineNotification v-if="deleteError" tone="error" :title="`Could not delete instance ${deleteError.name}`" :message="`${deleteError.message} Try again using the instance delete action.`" dismissible @dismiss="dismissDeleteError" />
+        <p v-if="deleting" class="instance-message" role="status" aria-live="polite">Requesting deletion of this instance…</p>
+        <ResourceDeleteFailure v-if="deleteError" :title="`Could not delete instance ${deleteError.name}`" :message="deleteError.message" retry-hint="Use Delete to try again." @dismiss="dismissDeleteError" />
 
         <div v-if="inst" class="instance-detail__sections">
           <template v-if="detailGroups.length">

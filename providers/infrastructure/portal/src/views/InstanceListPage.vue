@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
+import { createResourcePageReader } from '../portalkit/refresh'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import ViewValue from '../components/ViewValue.vue'
@@ -61,6 +63,7 @@ watch(() => firstRun.value && !!error.value, visible => {
   if (visible || typeof document === 'undefined' || !firstRunWarning.value?.contains(document.activeElement)) return
   void nextTick(() => { if (document.activeElement === document.body) pageHeading.value?.focus({ preventScroll: true }) })
 }, { flush: 'pre' })
+const pageReader = createResourcePageReader()
 const cursor = ref<string | null>(null)
 const pageInfo = ref<{ hasNext: boolean; nextCursor: string | null } | null>(null)
 // Client mode becomes a ready local authority after a complete cursor walk (or
@@ -224,6 +227,7 @@ const refresh = createLatestRefreshController(async (requestID, mode) => {
   try {
     let nextItems: Instance[]
     let nextIdentities: Array<{ name: string; uid?: string }>
+    let nextPage = request.page
     let nextCursor: string | null = null
     let nextPageInfo: { hasNext: boolean; nextCursor: string | null } | null = null
 
@@ -233,14 +237,18 @@ const refresh = createLatestRefreshController(async (requestID, mode) => {
       nextItems = result.items
       nextIdentities = result.identities
     } else {
-      const result = await api.listInstancesPage({
-        limit: request.pageSize,
-        ...(request.cursor ? { continue: request.cursor } : {}),
-      })
-      if (!requestIsCurrent(requestID, request)) return
+      const snapshot = await pageReader.read(
+        request,
+        (options, readingPage) => api.listInstancesPage(options, readingPage < request.page ? 'last-page' : 'always'),
+        () => requestIsCurrent(requestID, request),
+        mode,
+      )
+      if (!snapshot || !requestIsCurrent(requestID, request)) return
+      const result = snapshot.result
+      nextPage = snapshot.page
       nextItems = result.items
       nextIdentities = []
-      nextCursor = request.cursor
+      nextCursor = snapshot.cursor
       nextPageInfo = {
         hasNext: !!result.continue,
         nextCursor: result.continue ?? null,
@@ -290,6 +298,7 @@ const refresh = createLatestRefreshController(async (requestID, mode) => {
       pageInfo.value = null
     } else {
       clientAuthorityReady.value = false
+      page.value = nextPage
       cursor.value = nextCursor
       pageInfo.value = nextPageInfo
     }
@@ -344,6 +353,7 @@ function handleTableChange(change: ResourceTableChange) {
   query.value = change.query
   filterValues.value = nextFilters
   cursor.value = change.cursor
+  pageReader.navigate(change.reason === 'page' ? cursor.value : null)
   pageInfo.value = null
 
   if (!activeQuery) {
@@ -406,7 +416,7 @@ async function deleteInstance(instance: Instance) {
 
   deletingInstanceKey.value = instanceKey(currentInstance)
   try {
-    await api.deleteInstance(currentInstance.name)
+    await api.deleteInstance(currentInstance.name, currentInstance.uid)
     if (active) {
       clearDeleteError(`${currentInstance.name}:${currentInstance.uid || ""}`)
       tombstones.add(instanceKey(currentInstance), currentInstance.uid)
@@ -417,6 +427,8 @@ async function deleteInstance(instance: Instance) {
       // wait for its refreshed source rather than filtering an acknowledged
       // stale snapshot.
       clientAuthorityReady.value = false
+      refresh.invalidate()
+      pageReader.navigate(null)
       await load()
     }
   } catch (caught) {
@@ -481,7 +493,7 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <InlineNotification v-for="(failure, key) in deleteErrors" :key="key" tone="error" :title="`Could not delete instance ${failure.name}`" :message="`${failure.message} Try again using the instance delete action.`" dismissible @dismiss="dismissDeleteError(String(key))" />
+    <ResourceDeleteFailure v-for="(failure, key) in deleteErrors" :key="key" :title="`Could not delete instance ${failure.name}`" :message="failure.message" @dismiss="dismissDeleteError(String(key))" />
 
     <template v-if="firstRun">
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating infrastructure instances…</span>

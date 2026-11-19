@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import ResourceDeleteFailure from './portalkit/ResourceDeleteFailure.vue'
+import { createResourcePageReader } from './portalkit/refresh'
 import { computed, ref, nextTick, onMounted, onUnmounted, onActivated, useId } from 'vue'
 import { ArrowRight, RefreshCw, Plus, Boxes, Server } from 'lucide-vue-next'
 import { listWorkloads, listWorkloadsPage, deleteWorkload, listEdges, isContextChangedError } from './api'
@@ -117,6 +119,7 @@ const tablePage = ref(1)
 const tablePageSize = ref(10)
 const tableQuery = ref('')
 const filterValues = ref<WorkloadFilterValues>({ strategy: '', status: '' })
+const pageReader = createResourcePageReader()
 const tableCursor = ref<string | null>(null)
 const tablePageInfo = ref<TablePageInfo | null>(null)
 // Client-side filtering is authoritative only after a complete, query-
@@ -248,18 +251,16 @@ const workloadRefresh = createLatestRefreshController(async (requestID, mode) =>
       clientAuthorityReady.value = true
     } else {
       const [nextPage, nextEdges] = await Promise.all([
-        listWorkloadsPage({
-          limit: request.pageSize,
-          ...(request.cursor ? { continue: request.cursor } : {}),
-        }),
+        pageReader.read(request, options => listWorkloadsPage(options), () => workloadRequestIsCurrent(requestID, request), mode),
         edgeRead.read(),
       ])
-      if (!workloadRequestIsCurrent(requestID, request)) return
-      workloads.value = nextPage.items
+      if (!nextPage || !workloadRequestIsCurrent(requestID, request)) return
+      workloads.value = nextPage.result.items
       currentSnapshot.value = true
       edges.value = nextEdges
-      tableCursor.value = request.cursor
-      tablePageInfo.value = makeTablePageInfo(nextPage.continue)
+      tablePage.value = nextPage.page
+      tableCursor.value = nextPage.cursor
+      tablePageInfo.value = makeTablePageInfo(nextPage.result.continue)
     }
     loaded.value = true
     error.value = null
@@ -316,6 +317,7 @@ function handleWorkloadTableChange(change: ResourceTableChange) {
   tablePageSize.value = change.pageSize
   tableQuery.value = change.query
   tableCursor.value = change.cursor
+  pageReader.navigate(change.reason === 'page' ? tableCursor.value : null)
   tablePageInfo.value = null
 
   const active = hasActiveTableFilters(tableQuery.value, filterValues.value)
@@ -382,6 +384,8 @@ async function onDelete(w: Workload) {
     clearDeleteFailure(w.name)
     toast('info', `Workload deletion requested for ${w.name}.`)
     const focusedAction = typeof document !== 'undefined' ? document.activeElement : null
+    workloadRefresh.invalidate()
+    pageReader.navigate(null)
     await refresh('foreground', true)
     await nextTick()
     if (focusedAction && !focusedAction.isConnected && document.activeElement === document.body) workloadsHeading.value?.focus()
@@ -484,7 +488,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       <template #actions><a class="k-btn k-btn--primary" :href="firstRunHref" @click="followFirstRunLink">{{ hasKubernetesEdges ? 'Create workload' : 'Connect edge' }} <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>
     </FirstRunGuide>
 
-    <InlineNotification v-for="(failure, key) in deleteFailures" :key="key" tone="error" :title="`Could not delete ${failure.name}`" :message="`${failure.message} Try again using the workload's delete action.`" dismissible @dismiss="dismissDeleteFailure(String(key))" />
+    <ResourceDeleteFailure v-for="(failure, key) in deleteFailures" :key="key" :title="`Could not delete workload ${failure.name}`" :message="failure.message" @dismiss="dismissDeleteFailure(String(key))" />
 
     <ResourceTable
       v-if="!showFirstRun"
@@ -530,7 +534,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       <template #placement="{ value }"><span class="muted">{{ value }}</span></template>
       <template #status="{ value }"><StatusBadge :status="String(value)" :tone="workloadTone(value)" /></template>
       <template #ready="{ value }"><span class="mono">{{ value }}</span></template>
-      <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete workload ${String(row.name)}`" :busy="deletingWorkload === row.name" :busy-label="`Deleting workload ${String(row.name)}…`" :disabled="!!deletingWorkload && deletingWorkload !== row.name" @click="onDelete(row as unknown as Workload)" /></div></template>
+      <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete workload ${String(row.name)}`" :busy="deletingWorkload === row.name || row.phase === 'Deleting'" :busy-label="`Deleting workload ${String(row.name)}…`" :disabled="row.phase === 'Deleting' || (!!deletingWorkload && deletingWorkload !== row.name)" @click="onDelete(row as unknown as Workload)" /></div></template>
       <template #after-row="{ row, columnCount }">
         <tr v-if="expanded === row.name" :id="`${workloadDetailsPrefix}-${String(row.name)}`" class="k-table__detail-row">
           <td :colspan="columnCount" class="k-table__detail-cell">

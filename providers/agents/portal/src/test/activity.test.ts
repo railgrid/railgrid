@@ -2205,7 +2205,7 @@ describe('Automation.vue', () => {
     const pendingPatch = deferred<Schedule>()
     const patchSchedule = vi.fn().mockImplementation(() => pendingPatch.promise)
     const deleteSchedule = vi.fn().mockResolvedValue(undefined)
-    const schedule: Schedule = { metadata: { name: 'daily' }, spec: { agentRef: 'scout', type: 'cron', schedule: '0 9 * * *' } }
+    const schedule: Schedule = { metadata: { name: 'daily', uid: 'confirmed-schedule' }, spec: { agentRef: 'scout', type: 'cron', schedule: '0 9 * * *' } }
     const api = stubApi({ patchSchedule, deleteSchedule, listSchedules: vi.fn().mockResolvedValue([schedule]) })
     const store = storeWithAgent(api)
     store.schedules.data = [schedule]
@@ -2226,7 +2226,7 @@ describe('Automation.vue', () => {
     expect(deleteSchedule).not.toHaveBeenCalled()
     resolveConfirm(true)
     await settleVue()
-    expect(deleteSchedule).toHaveBeenCalledWith('daily')
+    expect(deleteSchedule).toHaveBeenCalledWith('daily', 'confirmed-schedule')
   })
 
   it('locks every automation row action while delete confirmation is open', async () => {

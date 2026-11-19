@@ -52,7 +52,7 @@ describe('Infrastructure instance detail conformance', () => {
 
   it('keeps local deletion visible after the menu closes and uses the provider UI backlink', () => {
     expect(source).toContain('const deletionInProgress = computed(() => deleting.value || Boolean(inst.value && instanceIsDeleting(inst.value)))')
-    expect(source).toContain('<p v-if="deleting" class="instance-message" role="status" aria-live="polite">Deleting this instance.')
+    expect(source).toContain('<p v-if="deleting" class="instance-message" role="status" aria-live="polite">Requesting deletion of this instance…')
     expect(source).toContain(":href=\"portalHref('/ui/providers/infrastructure/instances')\"")
     expect(source).toContain("import ResourceBackLink from '../portalkit/ResourceBackLink.vue'")
   })

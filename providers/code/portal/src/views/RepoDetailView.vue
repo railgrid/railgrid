@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import LoadingSkeleton from '../portalkit/LoadingSkeleton.vue'
+import { createResourcePageReader } from '../portalkit/refresh'
 import { portalHref } from '../portalkit/navigation'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { AlertTriangle, ArrowLeftRight, ExternalLink, Eye, GitBranch, Github, Package as PackageIcon, PackageOpen, Plug, RefreshCw, User, Users, X } from 'lucide-vue-next'
@@ -11,6 +12,7 @@ import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import InlineNotification from '../portalkit/InlineNotification.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
@@ -46,7 +48,7 @@ import {
 } from '../packagesPagination'
 
 const props = defineProps<{ name: string; deletions: ResourceDeletions }>()
-const emit = defineEmits<{ (e: 'back'): void }>()
+const emit = defineEmits<{ back: []; deleted: [] }>()
 const repositoryScope = 'repository'
 const keyScope = `deploy-key:${props.name}`
 const collaboratorScope = `collaborator:${props.name}`
@@ -103,6 +105,7 @@ const packagePage = ref(1)
 const packagePageSize = ref(PACKAGE_PAGE_SIZE)
 const packageQuery = ref('')
 const packageFilters = ref<PackageFilterValues>(clonePackageFilters(EMPTY_PACKAGE_FILTERS))
+const pageReader = createResourcePageReader()
 const packageCursor = ref<string | null>(null)
 const packagePageInfo = ref<PackagePageInfo | null>(null)
 const packageFullRead = createFullListReadCoordinator(() => api.listPackages(props.name))
@@ -422,7 +425,7 @@ async function deleteRepository() {
   const current = repo.value
   if (!current || repositoryDeleting.value) return
   const ok = await confirmDialog(repositoryDeletionPresentation(current).confirmation)
-  if (!ok || !mounted) return
+  if (!ok || !mounted || repo.value?.name !== current.name || repo.value?.uid !== current.uid || repositoryDeleting.value) return
   const lock = operationKey('repository', current.name)
   if (!operations.acquire(lock, 'deleting')) return
   try {
@@ -433,7 +436,7 @@ async function deleteRepository() {
     toast('info', current.retainsRemote === true
       ? `Repository registration removal requested for ${current.name}.`
       : `Repository deletion requested for ${current.name}.`)
-    loadRepository()
+    emit('deleted')
   } catch (e) {
     if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged' && repo.value?.name === current.name && repo.value?.uid === current.uid) repositoryMutationError.value = errMessage(e)
   } finally {
@@ -510,6 +513,7 @@ function handlePackageChange(change: ResourceTableChange) {
   packageQuery.value = next.query
   packageFilters.value = next.filters
   packageCursor.value = next.cursor
+  pageReader.navigate(change.reason === 'page' ? packageCursor.value : null)
   packagePageInfo.value = null
 
   if (!hasActivePackageFilters(next.query, next.filters)) {
@@ -561,7 +565,7 @@ async function changeConnection() {
     confirmLabel: 'Change',
     danger: ownerWillChange.value,
   })
-  if (!ok || !mounted) return
+  if (!ok || !mounted || repo.value?.name !== current.name || repo.value?.uid !== current.uid || repositoryDeleting.value) return
   const lock = operationKey('repository', current.name)
   if (!operations.acquire(lock, 'saving')) return
   changingConn.value = true
@@ -623,6 +627,7 @@ async function removeKey(row: Record<string, unknown>) {
     clearDeleteError(keyDeleteErrors, `${key.name}:${key.uid || ""}`)
     props.deletions.acknowledge(keyScope, key.name, key.uid)
     toast('info', `Deploy key update requested for ${props.name}.`)
+    keyRefresh.invalidate()
     loadKeys()
   } catch (e) {
     if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged' && props.name === key.repositoryRef) keyDeleteErrors.value = { ...keyDeleteErrors.value, [`${key.name}:${key.uid || ""}`]: `${key.title || key.name}: ${errMessage(e)}` }
@@ -683,6 +688,7 @@ async function removeCollab(row: Record<string, unknown>) {
     clearDeleteError(collabDeleteErrors, `${collab.name}:${collab.uid || ''}`)
     props.deletions.acknowledge(collaboratorScope, collab.name, collab.uid)
     toast('info', `Collaborator update requested for ${props.name}.`)
+    collabRefresh.invalidate()
     loadCollaborators()
   } catch (e) {
     if (mounted && (e as ErrorResponse)?.reason !== 'ContextChanged' && props.name === collab.repositoryRef) collabDeleteErrors.value = { ...collabDeleteErrors.value, [`${collab.name}:${collab.uid || ""}`]: `${collab.username}: ${errMessage(e)}` }
@@ -705,7 +711,7 @@ repoRefresh = createLatestRefreshController(async (requestID, mode) => {
   } catch (e) {
     if (!repoRefresh.isCurrent(requestID)) return
     const err = e as ErrorResponse
-    if (err.reason === 'NotFound' && (repositoryDeleting.value || props.deletions.has(repositoryScope, props.name))) {
+    if (err.reason === 'NotFound' && props.deletions.has(repositoryScope, props.name)) {
       repo.value = null
       emit('back')
       return
@@ -831,13 +837,12 @@ packageRefresh = createLatestRefreshController(async (requestID, mode) => {
       packageCursor.value = null
       packagePageInfo.value = null
     } else {
-      const next = await api.listPackagesPage(props.name, {
-        limit: request.pageSize,
-        ...(request.cursor ? { continue: request.cursor } : {}),
-      })
-      if (!packageRequestIsCurrent(requestID, request)) return
+      const snapshot = await pageReader.read(request, options => api.listPackagesPage(props.name, options), () => packageRequestIsCurrent(requestID, request), mode)
+      if (!snapshot || !packageRequestIsCurrent(requestID, request)) return
+      const next = snapshot.result
       packages.value = next.items
-      packageCursor.value = request.cursor
+      packagePage.value = snapshot.page
+      packageCursor.value = snapshot.cursor
       const nextPageInfo = toPackagePageInfo(next.continue)
       packagePageInfo.value = nextPageInfo
       // Keep server ownership until an active query/filter asks to reuse this
@@ -919,6 +924,7 @@ onUnmounted(() => {
         </button>
         <ActionMenu
           label="More repository actions"
+          :busy="repositoryDeleting" :busy-label="repo?.retainsRemote ? 'Removing registration…' : 'Deleting repository…'"
           :items="actionItems"
           :disabled="!repo || repositoryActionBusy"
           @select="selectAction"
@@ -931,8 +937,8 @@ onUnmounted(() => {
     </template>
 
     <template #body>
-      <InlineNotification v-if="repositoryMutationError" tone="error" :title="`Could not delete repository ${repo?.repo || name}`" :message="`${repositoryMutationError} Try again using the repository delete action.`" dismissible @dismiss="dismissRepositoryError" />
-      <InlineNotification v-if="repositoryDeleting" tone="warning" message="Deleting this repository. The last successful snapshot remains visible until the hub confirms removal." />
+      <ResourceDeleteFailure v-if="repositoryMutationError" :title="`Could not ${repo?.retainsRemote ? 'remove registration for' : 'delete'} repository ${repo?.repo || name}`" :message="repositoryMutationError" :retry-hint="repo?.retainsRemote ? 'Use Remove registration to try again.' : 'Use Delete to try again.'" @dismiss="dismissRepositoryError" />
+      <InlineNotification v-if="repositoryDeleting" tone="warning" :message="repositoryDeleteInFlight ? 'Requesting repository deletion…' : 'Repository deletion is in progress.'" />
       <div class="repo-detail__sections">
         <ResourceSectionCard
           id="repository-integration"
@@ -997,7 +1003,7 @@ onUnmounted(() => {
               <div class="code-form-actions"><button class="k-btn k-btn--ghost" type="submit" :disabled="repositoryDeleting || keySubmitting || !keysLoaded">{{ keySubmitting ? 'Adding…' : 'Add deploy key' }}</button><span v-if="keyError" class="error" role="alert">{{ keyError }}</span></div>
               <p class="muted">A generated key's private half is written to a Secret in your workspace.</p>
             </form>
-            <InlineNotification v-for="(message, key) in keyDeleteErrors" :key="key" tone="error" title="Could not delete deploy key" :message="`${message} Try again using the deploy key delete action.`" dismissible @dismiss="dismissDeleteError('key', String(key))" />
+            <ResourceDeleteFailure v-for="(message, key) in keyDeleteErrors" :key="key" title="Could not delete deploy key" :message="message" @dismiss="dismissDeleteError('key', String(key))" />
             <ResourceTable aria-label="Deploy keys" :columns="keyColumns" :rows="keyRows" row-key="name" :loaded="keysLoaded" :loading="keysLoading" :refresh-mode="keyRefreshMode" :error="keysError" :stale="keysLoaded && !!keysError" retryable searchable search-placeholder="Search deploy keys…" :filters="[{ key: 'access', label: 'Access' }, { key: 'status', label: 'Status', allLabel: 'Any status' }]" paginated :page-size="10" empty-text="No deploy keys." :interactive="false" @retry="loadKeys">
               <template #title="{ row }"><strong>{{ row.title }}</strong><div v-if="row.generated && row.secretName" class="muted">secret: <code>{{ row.secretName }}</code></div></template>
               <template #access="{ value }"><span class="k-badge k-badge--muted k-badge--label">{{ value }}</span></template>
@@ -1012,7 +1018,7 @@ onUnmounted(() => {
               <label class="field"><span class="field-label">Permission</span><select v-model="collabPerm" class="k-input" :disabled="repositoryDeleting"><option value="pull">pull</option><option value="push">push</option><option value="admin">admin</option></select></label>
               <div class="code-form-actions"><button class="k-btn k-btn--ghost" type="submit" :disabled="repositoryDeleting || collabSubmitting || !collabsLoaded">{{ collabSubmitting ? 'Adding…' : 'Add collaborator' }}</button><span v-if="collabError" class="error" role="alert">{{ collabError }}</span></div>
             </form>
-            <InlineNotification v-for="(message, key) in collabDeleteErrors" :key="key" tone="error" title="Could not remove collaborator" :message="`${message} Try again using the collaborator remove action.`" dismissible @dismiss="dismissDeleteError('collaborator', String(key))" />
+            <ResourceDeleteFailure v-for="(message, key) in collabDeleteErrors" :key="key" title="Could not remove collaborator" :message="message" @dismiss="dismissDeleteError('collaborator', String(key))" />
             <ResourceTable aria-label="Repository collaborators" :columns="collabColumns" :rows="collabRows" row-key="name" :loaded="collabsLoaded" :loading="collabsLoading" :refresh-mode="collabRefreshMode" :error="collabsError" :stale="collabsLoaded && !!collabsError" retryable searchable search-placeholder="Search collaborators…" :filters="[{ key: 'permission', label: 'Permission' }, { key: 'status', label: 'Status', allLabel: 'Any status' }]" paginated :page-size="10" empty-text="No collaborators." :interactive="false" @retry="loadCollaborators">
               <template #username="{ value }"><strong>{{ value }}</strong></template>
               <template #permission="{ value }"><span class="k-badge k-badge--muted k-badge--label">{{ value }}</span></template>

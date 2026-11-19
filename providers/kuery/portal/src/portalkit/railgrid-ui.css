@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 69;
+  --railgrid-ui-core-version: 70;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -927,6 +927,10 @@ html.light .k-menu {
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
   width: 32px;
 }
+.k-icon-action--quiet {
+  background: transparent;
+  border-color: transparent;
+}
 .k-icon-action:hover {
   background: var(--color-surface-hover, #1e2033);
   color: var(--color-text-primary, #e9e9f2);
@@ -948,6 +952,45 @@ html.light .k-menu {
   flex: 0 0 auto;
   height: 16px;
   width: 16px;
+}
+@media (pointer: fine) and (not (any-pointer: coarse)) {
+  .k-icon-action--quiet { flex-basis: 24px; height: 24px; width: 24px; }
+}
+
+/* A visible value and its copy action stay adjacent as the text wraps. */
+.k-copy-value {
+  align-items: flex-start;
+  display: inline-flex;
+  flex-direction: column;
+  max-width: 100%;
+  min-width: 0;
+  vertical-align: top;
+}
+.k-copy-value__line {
+  align-items: center;
+  color: var(--color-text-primary);
+  display: inline-flex;
+  font: 12px/1.5 var(--font-mono, ui-monospace, monospace);
+  gap: 4px;
+  max-width: 100%;
+  white-space: normal;
+}
+.k-copy-value__text { min-width: 0; overflow-wrap: anywhere; user-select: text; }
+.k-copy-value__text--select-all { user-select: all; }
+.k-copy-value__copied { color: var(--color-success); }
+.k-copy-value__status:not(.k-copy-value__status--error) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.k-copy-value__status--error {
+  color: var(--color-danger);
+  font-size: 11px;
+  margin-block-start: 4px;
 }
 .k-action-menu {
   display: inline-flex;

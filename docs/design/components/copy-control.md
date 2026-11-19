@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.copy-control","title":"Copy control","kind":"component","status":"draft","authority":{"design":"informative","implementation":"canonical"},"implementation":{"state":"partial","notes":"Shared useClipboardFeedback owns scoped asynchronous copy feedback; CLI setup, MCP setup and the account menu adopt it. Other cited views retain local presentation and lifecycle code."},"appliesTo":["portal","provider-portals"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/copy-control.md","role":"design"},{"path":"providers/agents/portal/src/views/RunDetail.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/useClipboardFeedback.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/clipboard-feedback.test.mjs","role":"reference"}],"verification":{"state":"partial","checks":[{"kind":"review","ref":"Copy control design and product adoption audit","status":"pending"},{"kind":"test","ref":"provider-sdk/portalkit-vue/clipboard-feedback.test.mjs","status":"passing","evidence":"Lifecycle tests cover pending-write guards, retained per-field errors, scope changes, obsolete completions, timers, disposal and unavailable clipboard. Browser evidence is recorded separately."}]},"relatedDocuments":[{"id":"design.accessibility.interaction","relation":"see-also"},{"id":"design.foundations.recipes","relation":"see-also"}]}
+{"schema":1,"id":"design.components.copy-control","title":"Copy control","kind":"component","status":"draft","authority":{"design":"informative","implementation":"canonical"},"implementation":{"state":"partial","notes":"CopyValue renders compact inline copy actions for Infrastructure values and Agents run IDs and webhook URLs. useClipboardFeedback owns scoped asynchronous copy feedback."},"appliesTo":["portal","provider-portals"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/copy-control.md","role":"design"},{"path":"providers/agents/portal/src/views/RunDetail.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/CopyValue.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/useClipboardFeedback.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/clipboard-feedback.test.mjs","role":"reference"}],"verification":{"state":"partial","checks":[{"kind":"review","ref":"Copy control design and product adoption audit","status":"pending"},{"kind":"test","ref":"provider-sdk/portalkit-vue/clipboard-feedback.test.mjs","status":"passing","evidence":"Lifecycle tests cover pending-write guards, retained per-field errors, scope changes, obsolete completions, timers, disposal and unavailable clipboard. Browser evidence is recorded separately."}]},"relatedDocuments":[{"id":"design.accessibility.interaction","relation":"see-also"},{"id":"design.foundations.recipes","relation":"see-also"}]}
 ---
 
 # Copy control
@@ -71,7 +71,11 @@ copy failure, or close it. Review these states using the synthetic
 choose **Actions → Issue token**. It does not contact a hub or validate a real
 system clipboard.
 
-**Ownership decision:** keep the run and Infrastructure implementations local for now. Both the run and Infrastructure value render local inline feedback. Consolidation needs a shared API that preserves each context and a deliberate consumer migration; neither consumer is claimed to use a shared component today. See [Infrastructure ViewValue](../../../providers/infrastructure/portal/src/components/ViewValue.vue).
+Use `CopyValue` for visible, selectable values such as a run ID, an endpoint,
+or a connection field. It wraps long values, places the copy icon beside the
+text, and keeps the action label and keyboard focus stable during feedback.
+Use `k-icon-action--quiet` for copy actions in command and diagnostics headers.
+Both controls use a 24px desktop target and the shared 44px coarse-pointer target.
 
 ## Content
 

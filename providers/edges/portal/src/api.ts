@@ -208,7 +208,7 @@ async function withKube<T>(
 }
 
 interface RawItem {
-  metadata: { name: string; creationTimestamp?: string; labels?: Record<string, string> }
+  metadata: { name: string; deletionTimestamp?: string; creationTimestamp?: string; labels?: Record<string, string> }
   status?: {
     phase?: string
     connected?: boolean
@@ -225,7 +225,7 @@ function toEdge(it: RawItem, type: EdgeType): Edge {
     type,
     creationTimestamp: it.metadata.creationTimestamp,
     labels: it.metadata.labels,
-    phase: s.phase,
+    phase: it.metadata.deletionTimestamp ? 'Deleting' : s.phase,
     connected: !!s.connected,
     hostname: s.hostname,
     agentVersion: s.agentVersion,
@@ -318,7 +318,7 @@ export async function getEdge(name: string, type: EdgeType): Promise<EdgeDetail>
     type,
     creationTimestamp: metadata.creationTimestamp,
     labels: metadata.labels,
-    phase: s.phase,
+    phase: metadata.deletionTimestamp ? 'Deleting' : s.phase,
     connected: !!s.connected,
     hostname: s.hostname,
     agentVersion: s.agentVersion,
@@ -495,7 +495,7 @@ import type { EdgeService, EdgeServiceDraft } from './types'
 const EDGE_SVC_SECRET_NS = 'railgrid-system'
 
 interface RawEdgeService {
-  metadata: { name: string; creationTimestamp?: string; labels?: Record<string, string> }
+  metadata: { name: string; uid?: string; deletionTimestamp?: string; creationTimestamp?: string; labels?: Record<string, string> }
   spec?: {
     edgeRef?: { kind?: string; name?: string }
     targetRef?: { namespace?: string; name?: string } | null
@@ -519,6 +519,7 @@ function toEdgeService(it: RawEdgeService): EdgeService {
   const s = it.status ?? {}
   return {
     name: it.metadata.name,
+    uid: it.metadata.uid,
     edgeName: it.spec?.edgeRef?.name ?? '',
     edgeKind: it.spec?.edgeRef?.kind,
     targetNamespace: it.spec?.targetRef?.namespace,
@@ -530,7 +531,7 @@ function toEdgeService(it: RawEdgeService): EdgeService {
     instructions: it.spec?.instructions,
     hasCredentials: !!it.spec?.authSecretRef?.name,
     discovered: it.metadata.labels?.['edges.railgrid.ai/discovered'] === 'true',
-    phase: s.phase,
+    phase: it.metadata.deletionTimestamp ? 'Deleting' : s.phase,
     version: s.version,
     installType: s.installType,
     url: s.url,
@@ -758,7 +759,7 @@ export interface EdgeServiceEdit {
 // updateEdgeService merge-patches the editable spec fields. host and targetRef
 // are mutually exclusive — the unused one is cleared (null/empty) so switching
 // target mode takes effect. JSON merge patch deletes a field set to null.
-export async function updateEdgeService(name: string, e: EdgeServiceEdit): Promise<void> {
+export async function updateEdgeService(name: string, e: EdgeServiceEdit, uid: string): Promise<void> {
   const byHost = e.targetMode ? e.targetMode === 'host' : !!e.host?.trim()
   const spec: Record<string, unknown> = {
     type: e.serviceType,
@@ -772,7 +773,7 @@ export async function updateEdgeService(name: string, e: EdgeServiceEdit): Promi
         ? { namespace: e.targetNamespace?.trim() || 'default', name: e.targetName.trim() }
         : null,
   }
-  await withKube((client) => client.patch(SERVICES, name, { spec }, { type: 'merge' }))
+  await withKube((client) => client.patch(SERVICES, name, { metadata: { uid }, spec }, { type: 'merge' }))
 }
 
 // createKubeEdgeService declares a service behind a Kubernetes Service on a
@@ -809,15 +810,16 @@ export async function createKubeEdgeService(d: EdgeServiceDraft): Promise<void> 
 }
 
 // deleteEdgeService removes a Service (used for declared kube services).
-export async function deleteEdgeService(name: string): Promise<void> {
-  await withKube((client) => client.delete(SERVICES, name))
+export async function deleteEdgeService(name: string, uid: string): Promise<void> {
+  await withKube((client) => client.delete(SERVICES, name, { preconditions: { uid } }))
 }
 
 // connectEdgeService writes the credential Secret and patches the EdgeService's
 // spec.authSecretRef so the validation reconciler can authenticate the service.
 // The secret key is "token" (e.g. a Home Assistant long-lived access token).
-export async function connectEdgeService(name: string, token: string): Promise<void> {
-  const secretName = `railgrid-edges-svc-${name}`
+export async function connectEdgeService(name: string, token: string, uid: string): Promise<void> {
+  // Credentials for a deleted Service must not overwrite those of its replacement.
+  const secretName = `railgrid-edges-svc-${uid}`
 
   await withKube(async (client) => {
     // 1. Upsert the Secret holding the token. Server-side apply is idempotent —
@@ -840,6 +842,7 @@ export async function connectEdgeService(name: string, token: string): Promise<v
         name: secretName,
         namespace: EDGE_SVC_SECRET_NS,
         labels: { 'railgrid.ai/owner': 'edges' },
+        ownerReferences: [{ apiVersion: EDGES_API_VERSION, kind: 'Service', name, uid }],
       },
       type: 'Opaque',
       stringData: { token },
@@ -849,6 +852,7 @@ export async function connectEdgeService(name: string, token: string): Promise<v
     //    spec.authSecretRef without disturbing the rest of the spec
     //    (edgeRef/type/port).
     await client.patch(SERVICES, name, {
+      metadata: { uid },
       spec: { authSecretRef: { name: secretName, namespace: EDGE_SVC_SECRET_NS } },
     }, { type: 'merge' })
   })
@@ -862,7 +866,7 @@ export async function connectEdgeService(name: string, token: string): Promise<v
 import type { Workload } from './types'
 
 interface RawWorkload {
-  metadata: { name: string; creationTimestamp?: string }
+  metadata: { name: string; deletionTimestamp?: string; creationTimestamp?: string }
   spec?: {
     targetNamespace?: string
     simple?: { image?: string; imagePullSecrets?: Array<{ name?: string }> }
@@ -889,7 +893,7 @@ function toWorkload(it: RawWorkload): Workload {
     replicas: it.spec?.replicas,
     strategy: it.spec?.placement?.strategy,
     selector: it.spec?.placement?.edgeSelector?.matchLabels,
-    phase: it.status?.phase,
+    phase: it.metadata.deletionTimestamp ? 'Deleting' : it.status?.phase,
     readyReplicas: it.status?.readyReplicas,
     availableReplicas: it.status?.availableReplicas,
     edges: (it.status?.edges ?? []).map((e) => ({

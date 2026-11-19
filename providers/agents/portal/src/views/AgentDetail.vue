@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ResourceDeleteFailure from '../portalkit/ResourceDeleteFailure.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import ChatTitleControl from '../components/ChatTitleControl.vue'
 import { computed, ref, watch } from 'vue'
@@ -25,6 +26,7 @@ import {
   type AgentWorkbenchTabKind,
 } from '../agent-workbench'
 import type { AppStore } from '../store'
+import { sameDeleteTarget } from '../vue/tableDeletion'
 import { useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import Activity from './Activity.vue'
 import AgentChat from './AgentChat.vue'
@@ -63,6 +65,14 @@ const emit = defineEmits<{ navigate: [route: Route] }>()
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 const deleteBusy = ref(false)
+const deleteButton = ref<HTMLButtonElement | null>(null)
+const deleteFailure = ref('')
+let deleteOperation = 0
+watch([() => props.store, () => props.name, () => props.authorityEpoch], () => {
+  deleteOperation++
+  deleteBusy.value = false
+  deleteFailure.value = ''
+}, { flush: 'sync' })
 const workspace = ref<AIWorkspaceHandle | null>(null)
 
 const agent = computed(() => {
@@ -280,25 +290,37 @@ function handleChildNavigate(route: Route): void {
 
 async function remove(): Promise<void> {
   if (deleteBusy.value) return
+  const target = agent.value
+  if (!target) return
   const authority = captureAuthority()
   const name = props.name
   const ok = await confirmDialog({
     title: `Delete agent “${name}”?`,
     message: 'This also deletes its chat history.',
     danger: true,
-    confirmLabel: 'Delete',
+    confirmLabel: 'Delete agent',
   })
-  if (!ok || !authorityIsCurrent(authority) || name !== props.name) return
+  if (!ok || !authorityIsCurrent(authority) || name !== props.name || deleteBusy.value ||
+      !sameDeleteTarget(target, agent.value ?? undefined, item => item.metadata.uid)) return
+  const operation = ++deleteOperation
+  const isCurrent = () => operation === deleteOperation && authorityIsCurrent(authority) && name === props.name
   deleteBusy.value = true
   try {
     const result = await mutate(authority.store, {
-      run: async () => { await authority.store.deleteAgent(name); return true },
-      success: `Agent “${name}” deleted.`,
+      run: async () => { await authority.store.deleteAgent(name, target.metadata.uid); return true },
+      success: `Agent deletion requested for ${name}.`,
       failure: 'Delete failed',
+      onFailure: () => {
+        if (isCurrent()) deleteFailure.value = 'The request failed.'
+        return true
+      },
     })
-    if (result && authorityIsCurrent(authority) && name === props.name) navigate({ kind: 'menu', menu: 'agents' })
+    if (result && isCurrent()) {
+      deleteFailure.value = ''
+      navigate({ kind: 'menu', menu: 'agents' })
+    }
   } finally {
-    deleteBusy.value = false
+    if (operation === deleteOperation) deleteBusy.value = false
   }
 }
 
@@ -422,12 +444,21 @@ async function remove(): Promise<void> {
                         </label>
                       </AgentsWorkbenchSection>
                       <AgentsWorkbenchSection class="agents-config-sec" :heading-id="domID('agent-delete-heading')" title="Delete agent" description="Delete this agent and its chat history.">
+                        <ResourceDeleteFailure
+                          v-if="deleteFailure"
+                          :title="`Could not delete agent ${name}`"
+                          :message="deleteFailure"
+                          :return-focus="deleteButton"
+                          retry-hint="Use Delete agent to try again."
+                          @dismiss="deleteFailure = ''"
+                        />
                         <div class="agents-form-actions">
                           <button
+                            ref="deleteButton"
                             class="k-btn k-btn--danger-solid"
                             type="button"
                             aria-label="Delete agent"
-                            :disabled="deleteBusy"
+                            :aria-disabled="deleteBusy || undefined"
                             :aria-busy="deleteBusy ? 'true' : undefined"
                             @click="remove"
                           >

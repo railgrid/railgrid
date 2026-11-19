@@ -1427,8 +1427,8 @@ test('guards delayed model mutations against context, route, and newer mutation 
     const block = mutations.slice(start, end < 0 ? mutations.length : end)
     assert.match(block, /const guard = beginLLMModelMutation\(\)/)
     assert.match(block, /if \(!llmModelMutationIsCurrent\(guard\)\) return/)
-    assert.match(block, /catch \(e\) \{[\s\S]*if \(!llmModelMutationIsCurrent\(guard\)\) return/)
-    assert.match(block, /finally \{[\s\S]*if \(llmModelMutationIsCurrent\(guard\)\) llmSaving\.value = false/)
+    assert.match(block, /catch(?: \(e\))? \{[\s\S]*if \(!llmModelMutationIsCurrent\(guard\)\) return/)
+    assert.match(block, /finally \{[\s\S]*if \(llmModelMutationIsCurrent\(guard\)\) (?:\{[\s\S]*?)?llmSaving\.value = false/)
   }
 })
 
@@ -1467,6 +1467,8 @@ test('refreshing settings allows retry and ignores old saved-model completions',
       const appContextFingerprint = ctx => ctx;
       const routePath = { value: '/models' };
       const llmSaving = { value: false };
+      const deletingLLMRow = { value: null };
+      const llmDeleteFailures = { value: {} };
       const llmModelTests = dependencies.llmModelTests;
       const llmSettings = dependencies.llmSettings;
       let llmModelTestRequestSerial = 0;
@@ -1532,7 +1534,7 @@ test('shows model actions and states in a table even with a saved card preferenc
     assert.doesNotMatch(html, /Model layout:/)
     assert.match(html, /aria-label="Edit Sol"/)
     assert.match(html, /aria-label="Test connection for Sol"/)
-    assert.match(html, /aria-label="Delete Sol"/)
+    assert.match(html, /aria-label="Delete model Sol"/)
     assert.match(html, /Not tested/)
     assert.match(html, /Default/)
   } finally {
@@ -1546,6 +1548,28 @@ test('offers all Agents chat provider paths and keeps Google AI Studio', async (
   for (const label of ['OpenAI', 'Anthropic', 'OpenRouter', 'Custom OpenAI-compatible', 'Google AI Studio / Vertex AI']) {
     assert.ok(html.includes(label), `missing provider option: ${label}`)
   }
+})
+
+test('model deletion rejects a changed revision or provider connection before writing', async () => {
+  const registry = await vite.ssrLoadModule('/src/llmRegistry.ts')
+  const requests = []
+  const ctx = {
+    tenant: 'workspace',
+    async fetch(path, { method }) {
+      requests.push(method)
+      assert.equal(method, 'GET')
+      if (path.endsWith('/studios/studio')) return Response.json({
+        metadata: { name: 'studio', uid: 'studio', resourceVersion: '2' },
+        spec: { llm: { models: [{ id: 'main', revisionID: 'new-revision', name: 'Main model' }] } },
+      })
+      assert.match(path, /\/modelproviderconnections\/primary$/)
+      return Response.json({ metadata: { name: 'primary', uid: 'replacement', resourceVersion: '2' } })
+    },
+  }
+
+  await assert.rejects(registry.deleteLLMModel(ctx, 'main', 'confirmed-revision'), /model changed/i)
+  await assert.rejects(registry.deleteModelProviderConnection(ctx, 'primary', 'confirmed-connection'), /connection changed/i)
+  assert.deepEqual(requests, ['GET', 'GET', 'GET'])
 })
 
 test('provider key activation rejects insufficient revision capacity before changing the active spec', async () => {

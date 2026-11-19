@@ -618,7 +618,7 @@ async function assertConnectionRolloverCapacity(client: KubeClient, name: string
   }
 }
 
-export async function deleteModelProviderConnection(ctx: RailgridContext | null, name: string): Promise<void> {
+export async function deleteModelProviderConnection(ctx: RailgridContext | null, name: string, expectedUID?: string): Promise<void> {
   const client = kube(ctx)
   const studio = await readStudio(client)
   const activeBindings = (studio?.spec?.llm?.models ?? []).filter(model => !model.archived && model.connectionRef === name)
@@ -634,6 +634,9 @@ export async function deleteModelProviderConnection(ctx: RailgridContext | null,
   }
   if (!connection.metadata.uid || !connection.metadata.resourceVersion) {
     throw new LLMRegistryError('The provider connection identity could not be confirmed. Refresh before deleting it.')
+  }
+  if (expectedUID && connection.metadata.uid !== expectedUID) {
+    throw new LLMRegistryError('The provider connection changed. Refresh before deleting it.')
   }
   await client.delete(MODEL_PROVIDER_CONNECTION_RESOURCE, name, {
     preconditions: { uid: connection.metadata.uid, resourceVersion: connection.metadata.resourceVersion },
@@ -773,7 +776,7 @@ export async function patchLLMModel(
   return getLLMSettings(ctx)
 }
 
-export async function deleteLLMModel(ctx: RailgridContext | null, id: string): Promise<ProjectLLMSettings> {
+export async function deleteLLMModel(ctx: RailgridContext | null, id: string, expectedRevisionID?: string): Promise<ProjectLLMSettings> {
   const client = kube(ctx)
   const studio = await readStudio(client)
   const spec: StudioLLMSpec = { ...(studio?.spec?.llm ?? {}) }
@@ -783,6 +786,9 @@ export async function deleteLLMModel(ctx: RailgridContext | null, id: string): P
   for (let index = 0; index < revisions.length; index += 1) {
     const model = revisions[index]
     if (model.id !== id || model.archived) continue
+    if (expectedRevisionID && model.revisionID !== expectedRevisionID) {
+      throw new LLMRegistryError('This model changed. Refresh before deleting it.')
+    }
     revisions[index] = {
       ...model,
       ...(model.connectionRef && !model.connectionSnapshot

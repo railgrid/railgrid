@@ -97,16 +97,8 @@ railgrid-provider-infrastructure .template-card:hover {
   border-color: var(--color-accent, #8b6bff);
 }
 
-/* Compact inline controls retain the canonical k-* focus/colour contract;
- * their surrounding value/table cell owns the spacing. */
-railgrid-provider-infrastructure .view-value-code { text-transform: none; max-width: 100%; white-space: normal; }
 railgrid-provider-infrastructure .view-value-text { min-width: 0; overflow-wrap: anywhere; }
 railgrid-provider-infrastructure .view-value-link { max-width: 100%; }
-railgrid-provider-infrastructure .view-value-code-wrap { display: inline-grid; max-width: 100%; gap: 4px; }
-railgrid-provider-infrastructure .view-value-copy { flex-shrink: 0; background: transparent; border-color: transparent; }
-railgrid-provider-infrastructure .view-value-copy:hover { background: var(--color-surface-hover); }
-railgrid-provider-infrastructure .view-value-copy-feedback { color: var(--color-text-secondary); font-size: 11px; }
-railgrid-provider-infrastructure .view-value-copy-feedback--error { color: var(--color-danger); }
 @media (pointer: coarse), (any-pointer: coarse) {
   railgrid-provider-infrastructure .view-value-link { min-height: 44px; min-width: 44px; }
 }
@@ -455,10 +447,6 @@ railgrid-provider-infrastructure .instance-detail__attention p {
   color: var(--color-text-secondary);
 }
 
-railgrid-provider-infrastructure .instance-detail__sections .detail-field {
-  padding-inline: 0;
-}
-
 railgrid-provider-infrastructure .instance-list-actions,
 railgrid-provider-infrastructure .instance-detail-head,
 railgrid-provider-infrastructure .instance-detail-title {
@@ -521,24 +509,23 @@ railgrid-provider-infrastructure .detail-group-title {
 
 railgrid-provider-infrastructure .detail-fields { margin: 0; }
 railgrid-provider-infrastructure .detail-field {
-  align-items: baseline;
+  align-items: center;
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  display: flex;
-  gap: 16px;
-  padding: 10px 16px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 9rem) minmax(0, 1fr);
+  padding-block: 6px;
 }
 railgrid-provider-infrastructure .detail-field:last-child { border-bottom: 0; }
-railgrid-provider-infrastructure .detail-field dt { color: var(--color-text-muted, #5d5f78); flex: 0 0 160px; font-size: 12px; }
+railgrid-provider-infrastructure .detail-field dt { color: var(--color-text-muted, #5d5f78); font-size: 12px; overflow-wrap: anywhere; }
 railgrid-provider-infrastructure .detail-field dd { color: var(--color-text-secondary, #8a8ca6); margin: 0; min-width: 0; overflow-wrap: anywhere; }
 railgrid-provider-infrastructure .detail-empty { padding: 24px 16px; text-align: center; }
 
 @media (max-width: 640px) {
   railgrid-provider-infrastructure .detail-field {
-    flex-direction: column;
-    align-items: stretch;
     gap: 4px;
+    grid-template-columns: minmax(0, 1fr);
   }
-  railgrid-provider-infrastructure .detail-field dt { flex-basis: auto; }
   railgrid-provider-infrastructure .catalog-loading-grid {
     grid-template-columns: minmax(0, 1fr);
   }

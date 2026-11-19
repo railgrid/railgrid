@@ -42,6 +42,7 @@ import {
 import { api, isProjectAPIInitializingError, isProjectAPINotFoundError, ProjectAPIRequestError, type ProjectAssistantThreadItemPage } from './api'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import ToastHost from './portalkit/ToastHost.vue'
+import { createAdaptiveRefreshTimer, createLatestRefreshController, FAST_REFRESH_MS, STABLE_REFRESH_MS } from './portalkit/refresh'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import ModelActivationFeedback from './ModelActivationFeedback.vue'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
@@ -61,7 +62,8 @@ import LayoutSelector from './portalkit/LayoutSelector.vue'
 import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import ResourceTable from './portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
-import { confirmDialog, confirmState } from './portalkit/confirm'
+import ResourceDeleteFailure from './portalkit/ResourceDeleteFailure.vue'
+import { confirmDialog, confirmState, resolveConfirm } from './portalkit/confirm'
 import { readLayoutPreference, writeLayoutPreference, type LayoutMode } from './portalkit/layoutPreference'
 import { toast } from './portalkit/toast'
 import {
@@ -815,6 +817,8 @@ let projectGitSettingsFocusAnchor: HTMLElement | null = null
 const deletingProjectName = ref('')
 const deletingProjectUID = ref('')
 const projectDeletionError = ref<string | null>(null)
+const projectCollectionHeading = ref<HTMLElement | null>(null)
+const projectSettingsDeleteButton = ref<HTMLButtonElement | null>(null)
 const projectDeletionRetry = ref<(() => void) | null>(null)
 const prompt = ref('')
 // Files cannot be uploaded until the project has a server identity. Keep the
@@ -1061,6 +1065,14 @@ let llmModelTestRequestSerial = 0
 const llmTestedFingerprint = ref('')
 let llmConnectionTestSerial = 0
 const llmActionError = ref<string | null>(null)
+const deletingLLMRow = ref<{ kind: 'model' | 'connection'; id: string } | null>(null)
+const llmDeleteFailures = ref<Record<string, { kind: 'model' | 'connection'; title: string; message: string }>>({})
+
+function dismissLLMDeleteFailure(key: string) {
+  const next = { ...llmDeleteFailures.value }
+  delete next[key]
+  llmDeleteFailures.value = next
+}
 const llmEditorOpen = ref(false)
 const llmEditorBaseline = ref<LLMEditorSnapshot | null>(null)
 const llmValidationAttempted = ref(false)
@@ -1120,7 +1132,22 @@ const mountedToolEl = ref<HTMLElement | null>(null)
 const splitWidth = ref(readSplitWidth())
 let toolLoadSerial = 0
 let projectLoadSerial = 0
-let projectDeletionPollTimer: number | undefined
+const projectListStale = ref(false)
+let retryProjectIndexLoad = false
+const projectListPoll = createAdaptiveRefreshTimer(refreshProjectIndex, () => {
+  const context = appContextFingerprint(props.ctx)
+  return projectDeletion.hasPending(context) || projects.value.some(project => projectDeletion.isDeleting(context, project))
+    ? PROJECT_DELETION_POLL_MS : STABLE_REFRESH_MS
+})
+const projectDetailStale = ref(false)
+const projectDetailReplaced = ref(false)
+const projectReplacementHeading = ref<HTMLElement | null>(null)
+const projectDetailPoll = createAdaptiveRefreshTimer(
+  () => { void projectDetailRefresh.request('background') },
+  () => projectDetailStale.value || selected.value?.deleting || ['Creating', 'Pending'].includes(selected.value?.phase || '')
+    ? FAST_REFRESH_MS : STABLE_REFRESH_MS,
+)
+const projectDetailRefresh = createLatestRefreshController(refreshProjectDetail)
 let appComponentMounted = true
 let activeProjectContextFingerprint = ''
 let initializationRetryTimer: number | undefined
@@ -1598,6 +1625,8 @@ async function retryPreProjectAttachment(clientID: string) {
 
 function invalidateLLMModelMutationState() {
   llmModelMutationGeneration += 1
+  deletingLLMRow.value = null
+  llmDeleteFailures.value = {}
   llmModelTests.value = {}
   // A route/context transition owns the replacement busy state. The previous
   // request remains in flight, but its finalizer is no longer allowed to
@@ -1622,6 +1651,7 @@ function llmModelMutationIsCurrent(guard: LLMModelMutationGuard): boolean {
 }
 
 function invalidateProjectContextState() {
+  projectDetailReplaced.value = false
   invalidateAssistantReasoningPreferenceState(true)
   projectCreationSubmit.invalidate()
   const hasToken = Boolean(props.ctx?.token)
@@ -1658,7 +1688,7 @@ function invalidateProjectContextState() {
 
   clearInitializationRetry()
   clearProjectThumbnailURLs()
-  clearProjectDeletionPollTimer()
+  projectListPoll.cancel()
   clearPromotionPoll()
   clearPublishingPoll()
   clearDevelopmentPreviewAuthorizationRetry()
@@ -2737,23 +2767,92 @@ function updateProjectThumbnailRefresh(guard: ProjectThumbnailRequestGuard, shou
   resetProjectThumbnailRefreshWindow()
 }
 
-function clearProjectDeletionPollTimer() {
-  if (projectDeletionPollTimer === undefined) return
-  window.clearTimeout(projectDeletionPollTimer)
-  projectDeletionPollTimer = undefined
+function scheduleProjectListRefresh() {
+  if (appComponentMounted && hasProjectRequestTransport(props.ctx) && isProjectIndexRoute.value) projectListPoll.schedule()
 }
 
-function scheduleProjectDeletionPoll() {
-  clearProjectDeletionPollTimer()
-  if (!appComponentMounted || !props.ctx?.token || !isProjectIndexRoute.value) return
-  const contextFingerprint = appContextFingerprint(props.ctx)
-  if (!projectDeletion.hasPending(contextFingerprint) &&
-      !projects.value.some((project) => projectDeletion.isDeleting(contextFingerprint, project))) return
-  projectDeletionPollTimer = window.setTimeout(() => {
-    projectDeletionPollTimer = undefined
-    if (!appComponentMounted || !props.ctx?.token || !isProjectIndexRoute.value) return
-    void load()
-  }, PROJECT_DELETION_POLL_MS)
+function scheduleProjectDetailRefresh() {
+  if (appComponentMounted && !projectDetailReplaced.value && hasProjectRequestTransport(props.ctx) &&
+      selectedNameFromPath.value && selected.value?.name === selectedNameFromPath.value) {
+    projectDetailPoll.schedule()
+  }
+}
+
+async function refreshProjectDetail(requestID: number) {
+  const project = selected.value
+  if (!project || projectDetailReplaced.value || selectedNameFromPath.value !== project.name) return
+  if (busy.value || loading.value || projectOpenLoading.value || conversationRefreshing.value || projectSettingsSaving.value) {
+    scheduleProjectDetailRefresh()
+    return
+  }
+  const guard = currentProjectRequestGuard()
+  const isCurrent = () => projectDetailRefresh.isCurrent(requestID) && projectRequestIsCurrent(guard, project.name)
+  try {
+    const latest = await api.getProject(props.ctx, project.name)
+    if (!isCurrent() || selected.value !== project || busy.value || projectSettingsSaving.value) return
+    // A new UID needs a full workspace open so it cannot inherit this
+    // project's transcript and settings.
+    if (!sameProjectIdentity(project, latest)) {
+      requireProjectReopen()
+      return
+    }
+    selected.value = latest
+    projectDetailStale.value = false
+  } catch {
+    if (isCurrent() && selected.value === project) projectDetailStale.value = true
+  } finally {
+    if (projectDetailRefresh.isCurrent(requestID)) scheduleProjectDetailRefresh()
+  }
+}
+
+function requireProjectReopen() {
+  const hadWorkspaceFocus = workspaceRef.value?.contains(document.activeElement) || shareDialogOpen.value
+  projectDetailReplaced.value = true
+  showSettings.value = false
+  shareDialogOpen.value = false
+  shareDialogReturnFocus = null
+  cancelAssistantThreadTitleRename()
+  projectDeletion.invalidate()
+  resolveConfirm(false)
+  clearPromotionPoll()
+  clearPublishingPoll()
+  beginProjectRequest()
+  beginAssistantThreadRequest()
+  projectSettingsSaveSerial += 1
+  projectSettingsSaving.value = false
+  assistantRunController.disconnect()
+  activeAssistantSubscription?.abort()
+  activeAssistantSubscription = null
+  setActiveAssistantRun(null)
+  activeAssistantProject = ''
+  messageStreaming.value = false
+  if (hadWorkspaceFocus) void nextTick(() => {
+    if (document.activeElement === document.body) projectReplacementHeading.value?.focus({ preventScroll: true })
+  })
+}
+
+async function refreshProjectIndex() {
+  if (!appComponentMounted || !hasProjectRequestTransport(props.ctx) || !isProjectIndexRoute.value) return
+  if (loading.value || deletingProjectName.value) {
+    scheduleProjectListRefresh()
+    return
+  }
+  if (retryProjectIndexLoad) {
+    await load()
+    return
+  }
+  const request = currentProjectRequestGuard()
+  const thumbnail = beginProjectThumbnailRequest()
+  try {
+    const list = await api.listProjects(props.ctx)
+    if (!projectRequestIsCurrent(request) || !projectThumbnailRequestIsCurrent(thumbnail)) return
+    const visible = applyProjectList(list)
+    void hydrateProjectThumbnails(visible, thumbnail)
+  } catch {
+    if (projectRequestIsCurrent(request) && projectThumbnailRequestIsCurrent(thumbnail)) projectListStale.value = true
+  } finally {
+    if (projectRequestIsCurrent(request)) scheduleProjectListRefresh()
+  }
 }
 
 function clearProjectThumbnailURLs() {
@@ -2783,13 +2882,14 @@ function invalidateProjectListRequests() {
   projectLoadSerial += 1
   projectThumbnailLoadSerial += 1
   clearProjectThumbnailRefreshTimer()
-  clearProjectDeletionPollTimer()
+  projectListPoll.cancel()
 }
 
 function applyProjectList(projectList: Project[]): Project[] {
   const visibleProjectList = projectDeletion.reconcile(appContextFingerprint(props.ctx), projectList)
+  projectListStale.value = false
   projects.value = visibleProjectList
-  scheduleProjectDeletionPoll()
+  scheduleProjectListRefresh()
   return visibleProjectList
 }
 
@@ -2798,7 +2898,7 @@ function removeProjectFromLocalList(target: ProjectDeletionIdentity) {
   // Keep the controller tombstone alive so the next route-triggered list read
   // cannot reintroduce the accepted project from a stale server projection.
   projects.value = projects.value.filter((item) => !sameProjectIdentity(target, item))
-  scheduleProjectDeletionPoll()
+  scheduleProjectListRefresh()
 }
 
 function beginProjectThumbnailRequest(): ProjectThumbnailRequestGuard {
@@ -3332,13 +3432,14 @@ onMounted(() => {
 watch(
   () => props.ctx?.subPath ?? '',
   () => {
+    projectDetailReplaced.value = false
     projectCreationSubmit.invalidate()
     resetProjectThumbnailRefreshWindow()
     // A route transition changes the visible workspace. Let an in-flight
     // deletion finish on the server, but fence its response from the new
     // route and release the old route's local lock immediately.
     projectDeletion.invalidate()
-    clearProjectDeletionPollTimer()
+    projectListPoll.cancel()
     if (deletingProjectName.value) {
       deletingProjectName.value = ''
       deletingProjectUID.value = ''
@@ -3529,6 +3630,16 @@ watch(developmentPreviewFrameRef, (frame, _previous, onCleanup) => {
   onCleanup(() => window.clearTimeout(timer))
 })
 
+watch(
+  [selectedNameFromPath, () => selected.value?.name, () => selected.value?.uid, () => appContextFingerprint(props.ctx)],
+  () => {
+    projectDetailPoll.cancel()
+    projectDetailRefresh.invalidate()
+    projectDetailStale.value = false
+    scheduleProjectDetailRefresh()
+  },
+)
+
 watch(selectedNameFromPath, (projectName) => {
   if (projectName) void loadLLMSettings()
   else if (llmSettingsLoadProject) invalidateLLMSettingsLoad()
@@ -3661,7 +3772,9 @@ onBeforeUnmount(() => {
   clearDevelopmentPreviewAuthorizationRetry()
 	clearDevelopmentPreviewRecovery()
   clearProjectThumbnailURLs()
-  clearProjectDeletionPollTimer()
+  projectListPoll.stop()
+  projectDetailPoll.stop()
+  projectDetailRefresh.stop()
   projectDeletion.clear()
   assistantRunController.disconnect()
   activeAssistantSubscription?.abort()
@@ -3685,6 +3798,9 @@ onBeforeUnmount(() => {
 })
 
 async function load() {
+  projectListPoll.cancel()
+  retryProjectIndexLoad = false
+  projectListStale.value = false
   if (isProjectIndexRoute.value) resetProjectThumbnailRefreshWindow()
   const requestGuard = beginProjectRequest()
   // Invalidate every assistant-thread operation before resetting its visible
@@ -3721,6 +3837,7 @@ async function load() {
     return
   }
   if (
+    !projectDetailReplaced.value &&
     messageStreaming.value &&
     selected.value &&
     selectedNameFromPath.value === selected.value.name &&
@@ -3808,9 +3925,11 @@ async function load() {
     // state. Keep any cached projects visible and expose the error/retry
     // affordance instead of leaving the skeleton branch mounted forever.
     projectsLoaded.value = true
+    retryProjectIndexLoad = isProjectIndexRoute.value
   } finally {
     if (projectRequestIsCurrent(requestGuard)) {
       loading.value = false
+      if (retryProjectIndexLoad) scheduleProjectListRefresh()
       resetProjectOpenLatch()
       resetThreadHistoryLatch()
     }
@@ -5394,26 +5513,51 @@ function handleModelConnectionsChanged(connection?: ProjectModelProviderConnecti
 }
 
 async function deleteModelProviderConnection(connection: ProjectModelProviderConnection) {
-  if (!connection || llmSaving.value) return
+  if (!connection || llmSaving.value || connection.deleting) return
+  const label = connection.displayName || connection.name
+  const key = 'connection:' + connection.name
+  const confirmationGuard: LLMModelMutationGuard = {
+    generation: llmModelMutationGeneration,
+    contextFingerprint: appContextFingerprint(props.ctx),
+    routePath: routePath.value,
+  }
   if (!(await confirmDialog({
     title: `Delete ${connection.displayName || connection.name}?`,
     message: 'This removes the saved provider connection and its generated key versions after retained model revisions no longer need them.',
     danger: true,
     confirmLabel: 'Delete connection',
   }))) return
+  const current = llmConnections.value.find(item => item.name === connection.name)
+  if (!llmModelMutationIsCurrent(confirmationGuard) || llmSaving.value || !current || current.deleting ||
+      (connection.uid ? connection.uid !== current.uid : connection !== current)) return
   const guard = beginLLMModelMutation()
+  deletingLLMRow.value = { kind: 'connection', id: connection.name }
   llmSaving.value = true
   llmActionError.value = null
   try {
-    await api.deleteModelProviderConnection(props.ctx, connection.name)
+    await api.deleteModelProviderConnection(props.ctx, current.name, current.uid)
     if (!llmModelMutationIsCurrent(guard)) return
-    llmConnections.value = llmConnections.value.filter(item => item.name !== connection.name)
-    toast('ok', 'Provider connection deleted.')
+    llmConnections.value = llmConnections.value.map(item => {
+      const sameConnection = current.uid ? item.uid === current.uid : item === current
+      return sameConnection ? { ...item, deleting: true } : item
+    })
+    dismissLLMDeleteFailure(key)
+    toast('info', 'Provider connection deletion requested.')
+    await loadModelProviderConnections()
   } catch (error) {
     if (!llmModelMutationIsCurrent(guard)) return
-    llmActionError.value = error instanceof Error ? error.message : String(error)
+    llmDeleteFailures.value = { ...llmDeleteFailures.value, [key]: {
+      kind: 'connection',
+      title: `Could not delete provider connection ${label}`,
+      message: error instanceof ProjectAPIRequestError && error.status === 409
+        ? 'A model may still reference this connection. Refresh the models and review their provider connections.'
+        : 'The request failed.',
+    } }
   } finally {
-    if (llmModelMutationIsCurrent(guard)) llmSaving.value = false
+    if (llmModelMutationIsCurrent(guard)) {
+      deletingLLMRow.value = null
+      llmSaving.value = false
+    }
   }
 }
 
@@ -5800,6 +5944,8 @@ async function testSavedLLMModel(modelID: string) {
 watch([() => appContextFingerprint(props.ctx), routePath, llmSettings], () => { llmModelTests.value = {} })
 
 async function deleteLLMModel(modelID: string) {
+  if (llmSaving.value) return
+  const key = 'model:' + modelID
   const confirmationGuard: LLMModelMutationGuard = {
     generation: llmModelMutationGeneration,
     contextFingerprint: appContextFingerprint(props.ctx),
@@ -5821,15 +5967,18 @@ async function deleteLLMModel(modelID: string) {
     danger: true,
     confirmLabel: 'Delete model',
   }))) return
-  if (!llmModelMutationIsCurrent(confirmationGuard)) return
+  if (!llmModelMutationIsCurrent(confirmationGuard) || llmSaving.value ||
+      llmSettings.value?.models.find(model => model.id === modelID) !== saved) return
   const guard = beginLLMModelMutation()
+  deletingLLMRow.value = { kind: 'model', id: modelID }
   const mutationContext = props.ctx
   llmSaving.value = true
   llmActionError.value = null
   try {
-    const settings = await api.deleteLLMModel(mutationContext, modelID)
+    const settings = await api.deleteLLMModel(mutationContext, modelID, saved.revisionID || undefined)
     if (!llmModelMutationIsCurrent(guard)) return
     applyLLMSettings(settings)
+    dismissLLMDeleteFailure(key)
     toast('ok', 'Model deleted.')
     if (llmEditingModelID.value === modelID) {
       llmEditorOpen.value = false
@@ -5837,11 +5986,16 @@ async function deleteLLMModel(modelID: string) {
   llmEditingRevisionID.value = ''
   llmEditingOriginalName.value = ''
     }
-  } catch (e) {
+  } catch {
     if (!llmModelMutationIsCurrent(guard)) return
-    llmActionError.value = e instanceof Error ? e.message : String(e)
+    llmDeleteFailures.value = { ...llmDeleteFailures.value, [key]: {
+      kind: 'model', title: `Could not delete model ${saved.name}`, message: 'The request failed.',
+    } }
   } finally {
-    if (llmModelMutationIsCurrent(guard)) llmSaving.value = false
+    if (llmModelMutationIsCurrent(guard)) {
+      deletingLLMRow.value = null
+      llmSaving.value = false
+    }
   }
 }
 
@@ -6489,7 +6643,7 @@ function syncProjectSettingsForm() {
 
 async function saveProjectSettings() {
   const project = settingsProject.value
-  if (!project || projectSettingsSaving.value) return
+  if (!project?.uid || projectDetailReplaced.value || projectSettingsSaving.value) return
   const draftName = projectSettingsName.value
   const draftDescription = projectSettingsDescription.value
   const displayName = draftName.trim()
@@ -6510,8 +6664,12 @@ async function saveProjectSettings() {
     (!project.uid || selected.value?.uid === project.uid)
   projectSettingsSaving.value = true
   try {
-    const updated = await api.updateProjectDetails(props.ctx, projectName, { displayName, description })
+    const updated = await api.updateProjectDetails(props.ctx, projectName, { displayName, description }, project.uid)
     if (!isCurrentSave()) return
+    if (updated.uid !== project.uid) {
+      requireProjectReopen()
+      return
+    }
     selected.value = updated
     const idx = projects.value.findIndex((item) => item.name === updated.name)
     if (idx >= 0) {
@@ -6556,7 +6714,7 @@ async function openProject(name: string, updateURL = true, requestGuardOverride?
   const projectOpenLatchOwner = beginProjectOpenLatch()
   const threadHistoryLatchOwner = beginThreadHistoryLatch()
   selectingThreadID.value = ''
-  if (selected.value?.name !== name) {
+  if (projectDetailReplaced.value || selected.value?.name !== name) {
     assistantRunController.disconnect()
     activeAssistantSubscription?.abort()
     setActiveAssistantRun(null)
@@ -6589,6 +6747,8 @@ async function openProject(name: string, updateURL = true, requestGuardOverride?
       assistantThreadLoadSerial !== assistantThreadRequestSerial
     ) return
     selected.value = project
+    projectDetailReplaced.value = false
+    projectDetailStale.value = false
     activeProjectContextFingerprint = appContextFingerprint(props.ctx)
     hydrateWorkbenchForProject(name)
     assistantThreads.value = threads
@@ -7833,6 +7993,7 @@ async function recoverAssistantConversation(
 }
 
 function reloadActiveAssistantConversation() {
+  if (projectDetailReplaced.value) return
   const projectName = selected.value?.name
   if (projectName) void recoverAssistantConversation(projectName)
 }
@@ -8934,13 +9095,11 @@ async function requestDeleteProject(project: Project) {
       // Keep provider and transport details out of the contextual message.
       // They may contain implementation paths or other data unsuitable for
       // a user-facing surface; the retry action carries the recovery path.
-      const failureMessage = `Could not delete ${projectLabel}. Try again.`
+      const failureMessage = `Could not delete project ${projectLabel}`
       const retryContextFingerprint = operation.context.fingerprint
       const retryRoutePath = operation.context.routePath
       const retryDeletion = () => {
-        // Toast actions outlive route renders. Bind this one to the original
-        // route, workspace, and immutable UID so it cannot target a same-name
-        // Project after navigation, a tenant switch, or recreation.
+        // Bind retry to the original route, workspace, and project UID.
         if (appContextFingerprint(props.ctx) !== retryContextFingerprint || routePath.value !== retryRoutePath) return
         const current = visibleProjectNamed(name)
         if (!current || !sameProjectIdentity(target, current)) return
@@ -8955,7 +9114,7 @@ async function requestDeleteProject(project: Project) {
       deletingProjectName.value = ''
       deletingProjectUID.value = ''
       releaseBusyOperation(busyOwner)
-      scheduleProjectDeletionPoll()
+      scheduleProjectListRefresh()
       if (isProjectIndexRoute.value) void hydrateProjectThumbnails(projects.value)
     }
   }
@@ -10840,7 +10999,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       />
 
       <header v-if="isProjectIndexRoute" class="mb-4 flex items-center justify-between gap-3">
-        <h2 class="truncate text-[14px] font-medium text-text-primary">Projects</h2>
+        <h2 ref="projectCollectionHeading" class="truncate text-[14px] font-medium text-text-primary" tabindex="-1">Projects</h2>
         <div class="flex shrink-0 items-center gap-2">
           <button
             v-if="!projectsLoaded || loading || error || projects.length > 0"
@@ -10888,13 +11047,16 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <LayoutSelector v-model="projectLayout" class="ml-auto" aria-label="Project layout" />
         </div>
 
-        <InlineNotification
+        <InlineNotification v-if="projectListStale" tone="warning" message="Could not refresh projects. Showing the last loaded list." action-label="Retry" @action="load()" />
+        <ResourceDeleteFailure
           v-if="projectDeletionError"
           class="mb-4 max-w-[720px]"
-          tone="error"
-          :message="projectDeletionError"
-          action-label="Retry deletion"
-          @action="projectDeletionRetry?.()"
+          :title="projectDeletionError"
+          message="Confirm the deletion to try again."
+          :return-focus="projectCollectionHeading"
+          retry-label="Retry deletion"
+          @retry="projectDeletionRetry?.()"
+          @dismiss="projectDeletionError = null; projectDeletionRetry = null"
         />
         <div v-if="error && !projectDeletionError" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
           <template v-if="isMissingCodeConnectionError(error)">
@@ -11300,7 +11462,39 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     </div>
   </div>
 
-  <div v-else ref="workspaceRef" data-app-studio-workspace class="flex h-full min-h-0 w-full flex-col overflow-hidden bg-surface-raised/70" :aria-busy="conversationLoading || conversationRefreshing">
+  <section v-else-if="projectDetailReplaced" class="p-4" aria-labelledby="app-studio-project-replaced">
+    <h1 id="app-studio-project-replaced" ref="projectReplacementHeading" class="mb-3 text-[15px] font-semibold text-text-primary" tabindex="-1">This project was replaced</h1>
+    <InlineNotification
+      tone="warning"
+      message="Reopen the project to review the replacement. Any unsaved settings for the previous project will be discarded."
+      action-label="Reopen project"
+      action-busy-label="Reopening…"
+      :action-busy="loading"
+      @action="load"
+    />
+    <InlineNotification v-if="error" class="mt-3" tone="error" :message="error" />
+  </section>
+  <div v-else ref="workspaceRef" data-app-studio-workspace class="flex h-full min-h-0 w-full flex-col overflow-hidden bg-surface-raised/70" :aria-busy="conversationLoading || conversationRefreshing" tabindex="-1">
+    <InlineNotification
+      v-if="projectDetailStale"
+      class="mx-3 mt-3"
+      tone="warning"
+      announce="polite"
+      message="Could not refresh the project. Showing the last successful project details."
+      action-label="Retry"
+      :action-busy="projectOpenLoading"
+      @action="load"
+    />
+    <ResourceDeleteFailure
+      v-if="projectDeletionError && (!projectSettingsDeleteButton || (settingsInWorkbench && !workbenchVisible))"
+      class="mx-3 mt-3"
+      :title="projectDeletionError"
+      message="Confirm the deletion to try again."
+      :return-focus="workspaceRef"
+      retry-label="Retry deletion"
+      @retry="projectDeletionRetry?.()"
+      @dismiss="projectDeletionError = null; projectDeletionRetry = null"
+    />
     <div ref="splitRegionRef" class="relative flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
       <section data-app-studio-conversation-pane class="min-h-0 min-w-0 shrink-0 basis-full flex-col md:flex md:min-w-[var(--conversation-min-width)] md:[flex-basis:var(--conversation-split-basis)]" :style="conversationPaneStyle" :class="[
         'workbench-conversation-pane',
@@ -11467,15 +11661,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <span class="block break-words">{{ selected.commitBlock.message }}</span>
         <span v-if="selected.commitBlock.reason !== 'RepositoryCommitFailed'" class="block">Your saved commit is preserved. Ask a workspace administrator to resolve the cause and retry it.</span>
       </InlineNotification>
-      <InlineNotification
-        v-if="projectDeletionError"
-        class="mx-3 mt-3"
-        tone="error"
-        :message="projectDeletionError"
-        action-label="Retry deletion"
-        @action="projectDeletionRetry?.()"
-      />
-
       <template v-if="selected || projectRouteShellVisible">
         <div class="relative min-h-0 flex-1">
           <div
@@ -12375,7 +12560,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     </div>
   </div>
 
-  <Teleport defer :to="projectControlSurfaceTarget">
+  <Teleport v-if="!projectDetailReplaced" defer :to="projectControlSurfaceTarget">
     <div
       v-if="createModelSetup || showSettings || publishingInWorkbench || historyInWorkbench || ((isModelsRoute || isCreateModelRoute) && !(initializing && !loading))"
       :class="settingsSurfaceInline
@@ -12455,7 +12640,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <div class="flex justify-end">
               <button
                 class="k-btn k-btn--primary"
-                :disabled="projectSettingsSaving || !projectSettingsName.trim()"
+                :disabled="projectSettingsSaving || !settingsProject?.uid || !projectSettingsName.trim()"
                 title="Save project details"
               >
                 <Loader2 v-if="projectSettingsSaving" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
@@ -12574,9 +12759,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           >
             <template #actions>
               <button
+                ref="projectSettingsDeleteButton"
                 type="button"
                 class="k-btn k-btn--danger-solid"
-                :disabled="busy || isProjectDeleting(settingsProject)"
+                :disabled="busy && !isProjectDeleting(settingsProject)"
+                :aria-disabled="isProjectDeleting(settingsProject) || undefined"
+                :aria-busy="isProjectDeleting(settingsProject) || undefined"
                 @click="requestDeleteProject(settingsProject)"
               >
                 <Loader2 v-if="isProjectDeleting(settingsProject)" class="h-4 w-4 animate-spin" :stroke-width="1.75" aria-hidden="true" />
@@ -12584,6 +12772,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 {{ isProjectDeleting(settingsProject) ? 'Deleting…' : 'Delete project' }}
               </button>
             </template>
+            <ResourceDeleteFailure
+              v-if="projectDeletionError && (!settingsInWorkbench || workbenchVisible)"
+              :title="projectDeletionError"
+              message="Confirm the deletion to try again."
+              :return-focus="projectSettingsDeleteButton"
+              retry-label="Retry deletion"
+              @retry="projectDeletionRetry?.()"
+              @dismiss="projectDeletionError = null; projectDeletionRetry = null"
+            />
           </AIWorkbenchSection>
           </component>
 
@@ -12898,6 +13095,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :load-error="llmSettingsError"
             :saving="llmSaving"
             :action-error="llmActionError"
+            :deleting-row="deletingLLMRow"
+            :delete-failures="llmDeleteFailures"
+            @dismiss-delete-failure="dismissLLMDeleteFailure"
             :editor-open="!isModelUsageRoute && (llmEditorOpen || isCreateModelRoute)"
             :creation-route="isCreateModelRoute"
             :editing-model-i-d="llmEditingModelID"

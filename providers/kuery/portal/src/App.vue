@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
+import { createAdaptiveRefreshTimer, type ResourceRefreshMode } from './portalkit/refresh'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
@@ -63,7 +64,10 @@ function openEdgeConnection(): void {
  * binding. It also makes sure the caller's scratch view exists, because every
  * ad-hoc query below runs as a verb on it.
  */
-async function load(): Promise<void> {
+const discoveryPoll = createAdaptiveRefreshTimer(() => { void load('background') })
+
+async function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
+  discoveryPoll.cancel()
   const current = ++requestID
   const request = requestContext.value
   const hostFetch = context.value?.fetch
@@ -75,14 +79,14 @@ async function load(): Promise<void> {
     if (isCurrent()) loading.value = false
     return
   }
-  loading.value = true
+  loading.value = mode === 'foreground'
   try {
-    const name = await playgroundViewName(request.user)
-    await ensurePlaygroundView(kube, name, request.user)
+    const name = scratchView.value || await playgroundViewName(request.user)
+    if (mode === 'foreground' || !scratchView.value) await ensurePlaygroundView(kube, name, request.user)
     const discovered = await listEdges(kube)
     if (!isCurrent()) return
     scratchView.value = name
-    edges.value = discovered
+    if (edges.value.length !== discovered.length || discovered.some((edge, index) => edges.value[index] !== edge)) edges.value = discovered
     loaded.value = true
     error.value = ''; errorDetail.value = ''
   } catch (reason) {
@@ -91,7 +95,10 @@ async function load(): Promise<void> {
     const status = safeHTTPStatus(reason)
     errorDetail.value = status === null ? '' : `Workspace request returned HTTP ${status}.`
   } finally {
-    if (isCurrent()) loading.value = false
+    if (isCurrent()) {
+      loading.value = false
+      discoveryPoll.schedule()
+    }
   }
 }
 
@@ -121,7 +128,7 @@ watch([identity, token, () => context.value?.fetch], ([currentIdentity, currentT
   }
   if (authorityChanged || currentToken !== previousToken) void load()
 }, { immediate: true })
-onBeforeUnmount(() => { requestID += 1 })
+onBeforeUnmount(() => { requestID += 1; discoveryPoll.stop() })
 </script>
 
 <template>
@@ -180,7 +187,7 @@ onBeforeUnmount(() => { requestID += 1 })
       </FirstRunGuide>
       <template v-else-if="loaded">
         <TopologyView v-show="active === 'topology'" :key="`${identity}:topology`" :context="context" :edges="edges" :saved-view="scratchView" :active="!impact && active === 'topology'" @inspect="impact = $event" />
-        <InventoryView v-if="visited.inventory" v-show="active === 'inventory'" :key="`${identity}:inventory`" :context="context" :edges="edges" :saved-view="scratchView" @inspect="impact = $event" />
+        <InventoryView v-if="visited.inventory" v-show="active === 'inventory'" :active="!impact && active === 'inventory'" :key="`${identity}:inventory`" :context="context" :edges="edges" :saved-view="scratchView" @inspect="impact = $event" />
         <PlaygroundView v-if="visited.playground" v-show="active === 'playground'" :key="`${identity}:playground`" :context="context" :saved-view="scratchView" :active="!impact && active === 'playground'" />
       </template>
       <LoadingSkeleton v-else label="Checking workspace setup…" />

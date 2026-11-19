@@ -462,7 +462,7 @@ describe('models view on an empty workspace', () => {
     const deleteCredential = vi.fn(() => request.promise)
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls), deleteCredential })
     const store = makeStore(api)
-    store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
+    store.credentials.data = [{ name: 'main', uid: 'main-credential', model: 'gpt-5' }]
     store.credentials.loaded = store.credentials.hasSnapshot = true
     const { element: el } = await mountVue(Models, { store, api })
 
@@ -472,7 +472,7 @@ describe('models view on an empty workspace', () => {
     resolveConfirm(true)
     await settleVue()
 
-    expect(deleteCredential).toHaveBeenCalledExactlyOnceWith('main')
+    expect(deleteCredential).toHaveBeenCalledExactlyOnceWith('main', 'main-credential')
     const deleting = el.querySelector<HTMLButtonElement>('[aria-label="Deleting main…"]')!
     expect(deleting.getAttribute('aria-disabled')).toBe('true')
     expect(deleting.getAttribute('aria-busy')).toBe('true')
@@ -987,8 +987,8 @@ describe('provider connection table', () => {
   })
 
   it('keeps same-name API and harness entries distinct and uses each family’s edit/delete operation', async () => {
-    const connection: Credential = { name: 'shared', isConnection: true, provider: 'openai', baseURL: 'https://api.openai.com/v1' }
-    const harness: Credential = { name: 'shared', provider: 'codex', model: '', ready: true }
+    const connection: Credential = { name: 'shared', uid: 'shared-connection', isConnection: true, provider: 'openai', baseURL: 'https://api.openai.com/v1' }
+    const harness: Credential = { name: 'shared', uid: 'shared-harness', provider: 'codex', model: '', ready: true }
     const deleteProviderConnection = vi.fn().mockResolvedValue(undefined)
     const deleteCredential = vi.fn().mockResolvedValue(undefined)
     const api = stubApi({
@@ -1028,13 +1028,13 @@ describe('provider connection table', () => {
     view.element.querySelector<HTMLButtonElement>('[aria-label="Delete shared harness identity"]')!.click()
     resolveConfirm(true)
     await settleVue(8)
-    expect(deleteCredential).toHaveBeenCalledExactlyOnceWith('shared')
+    expect(deleteCredential).toHaveBeenCalledExactlyOnceWith('shared', 'shared-harness')
     expect(deleteProviderConnection).not.toHaveBeenCalled()
 
     view.element.querySelector<HTMLButtonElement>('[aria-label="Delete provider connection shared"]')!.click()
     resolveConfirm(true)
     await settleVue(8)
-    expect(deleteProviderConnection).toHaveBeenCalledExactlyOnceWith('shared')
+    expect(deleteProviderConnection).toHaveBeenCalledExactlyOnceWith('shared', 'shared-connection')
   })
 
   it('rejects a duplicate harness credential name without mistaking an API connection for the conflict', async () => {

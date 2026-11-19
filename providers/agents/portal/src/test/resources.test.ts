@@ -672,6 +672,12 @@ describe('schedules and triggers', () => {
 })
 
 describe('webhooks', () => {
+  it('requires the confirmed webhook UID when deleting', async () => {
+    kcp.fail('DELETE /webhooks/github-org', 409, 'Conflict')
+    await expect(resources.deleteWebhook('github-org', 'confirmed-webhook')).rejects.toMatchObject({ status: 409 })
+    expect(kcp.lastOf('DELETE').body).toMatchObject({ preconditions: { uid: 'confirmed-webhook' } })
+  })
+
   it('creates a cluster-scoped Webhook and never writes its path, because the token is the provider’s to mint', async () => {
     await resources.createWebhook({ name: 'github-org', source: 'github', displayName: ' GitHub org ', deliveryRetention: 50 })
     const post = kcp.lastOf('POST')
@@ -785,6 +791,12 @@ describe('connections', () => {
 })
 
 describe('model credentials', () => {
+  it('rejects a replacement credential before modifying its finalizers or deleting it', async () => {
+    kcp.reply('GET /modelcredentials/primary', { metadata: { name: 'primary', uid: 'replacement' } })
+    await expect(resources.deleteCredential('primary', 'confirmed-credential')).rejects.toMatchObject({ status: 409 })
+    expect(kcp.calls.map(call => call.method)).toEqual(['GET'])
+  })
+
   it('reads the objects, not the Secrets, and projects the reconciler\'s verdict', async () => {
     // The old shape listed every Secret in the namespace and filtered by name
     // prefix, which pulled real API keys into the browser on every page load

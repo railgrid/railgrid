@@ -10,6 +10,7 @@
 // It is an EventTarget: components listen for 'change' (any slice mutated) and
 // 'server' (a raw run/inbox push, for views that track their own run lists).
 
+import { createAdaptiveRefreshTimer, type AdaptiveRefreshTimer } from './portalkit/refresh'
 import type { ApiClient } from './api'
 import { isChatProvider, isHarnessProvider } from './types'
 import type { Agent, Capabilities, Connection, Credential, Edge, InboxItem, Schedule, Toolset, Trigger, Webhook } from './types'
@@ -48,6 +49,11 @@ export interface CreateCollectionItems {
 
 export type CreateCollectionKey = keyof CreateCollectionItems
 
+type DeletableCollectionItems = Omit<CreateCollectionItems, 'agents'> & { schedules: Schedule; triggers: Trigger }
+type DeletableCollection = keyof DeletableCollectionItems
+type DeleteReceipt = { uid?: string; loadID: number }
+
+
 interface AdoptedItem {
   // A list request captures the collection generation when it starts. An item
   // with a newer generation must survive that request's response if the
@@ -85,8 +91,6 @@ export interface ServerEvent {
     routes?: { trigger: string; outcome: string; runID?: string }[]
   }
 }
-
-const POLL_MS = 30_000
 
 function requestAbortError(signal: AbortSignal): Error {
   if (signal.reason instanceof Error) return signal.reason
@@ -147,7 +151,7 @@ export class AppStore extends EventTarget {
   // the old client.
   private retired = false
   private abort: AbortController | null = null
-  private poll: ReturnType<typeof setInterval> | null = null
+  private poll: AdaptiveRefreshTimer | null = null
   private collectionGenerations: Record<CreateCollectionKey, number> = {
     agents: 0,
     connections: 0,
@@ -164,6 +168,7 @@ export class AppStore extends EventTarget {
   }
   private acknowledgedInboxIDs = new Set<string>()
   private nextLoadID = 0
+  private readonly deleteReceipts: Partial<Record<SliceKey, Map<string, DeleteReceipt>>> = {}
   private agentWriteLocks = new Map<string, number>()
   private deletedAgentUIDs = new Map<string, string>()
   private latestLoadID: Partial<Record<SliceKey, number>> = {}
@@ -290,10 +295,9 @@ export class AppStore extends EventTarget {
     }
   }
 
-  async deleteAgent(name: string): Promise<void> {
-    const uid = this.agent(name)?.metadata.uid
+  async deleteAgent(name: string, uid = this.agent(name)?.metadata.uid): Promise<void> {
     try {
-      await this.api.deleteAgent(name)
+      await this.api.deleteAgent(name, uid)
       if (this.retired || !uid) return
 
       // The DELETE can succeed while the Agent still has a cleanup finalizer.
@@ -307,6 +311,32 @@ export class AppStore extends EventTarget {
     } finally {
       // A lost response can also leave the Agent deleted on the server.
       if (!this.retired) void this.load('agents')
+    }
+  }
+
+  // An accepted DELETE can leave a terminating object in the next list.
+  // Keep the receipt across failed reads and retire it on a fresh absence
+  // or a replacement with a different UID.
+  acknowledgeDeletion<K extends DeletableCollection>(key: K, target: DeletableCollectionItems[K]): void {
+    if (this.retired) return
+    const receipts = this.deleteReceipts[key] ??= new Map()
+    const id = createCollectionItemID(key, target)
+    receipts.set(id, { uid: deletionUID(target), loadID: this.nextLoadID })
+    this.changed()
+  }
+
+  isDeleting<K extends DeletableCollection>(key: K, target: DeletableCollectionItems[K]): boolean {
+    const serverDeleting = 'metadata' in target ? Boolean(target.metadata.deletionTimestamp) : Boolean(target.deleting)
+    const receipt = this.deleteReceipts[key]?.get(createCollectionItemID(key, target))
+    return serverDeleting || Boolean(receipt && deletionUID(target) === receipt.uid)
+  }
+
+  private reconcileDeleteReceipts(key: DeletableCollection, rows: unknown[], loadID: number) {
+    const receipts = this.deleteReceipts[key]
+    if (!receipts?.size) return
+    const identities = new Map(rows.map(row => [createCollectionItemID(key, row), deletionUID(row as DeletableCollectionItems[DeletableCollection])]))
+    for (const [id, receipt] of receipts) {
+      if (loadID > receipt.loadID && (!identities.has(id) || identities.get(id) !== receipt.uid)) receipts.delete(id)
     }
   }
 
@@ -381,6 +411,7 @@ export class AppStore extends EventTarget {
       // adopted item back in. This keeps refreshes authoritative for every
       // other row instead of suppressing the reload altogether.
       if (this.latestLoadID[key] === loadID) {
+        if (key !== 'agents' && key !== 'inbox' && key !== 'edges') this.reconcileDeleteReceipts(key, rows, loadID)
         const merged = this.mergeLoadedRows(key, rows, requestGeneration)
         s.data = key === 'agents' ? this.activeAgentRows(merged as Agent[]) : merged
         if (key === 'inbox' && this.acknowledgedInboxIDs.size) {
@@ -555,11 +586,13 @@ export class AppStore extends EventTarget {
     const ac = new AbortController()
     this.abort = ac
     void this.pump(ac)
-    this.poll = setInterval(() => {
+    this.poll = createAdaptiveRefreshTimer(() => {
       // Kubernetes writes made by agents or other clients do not emit an
       // SSE event. A healthy stream must not disable collection refresh.
       this.refreshCollections()
-    }, POLL_MS)
+      this.poll?.schedule()
+    })
+    this.poll.schedule()
   }
 
   // markLive flips the connection indicator on stream open / first traffic.
@@ -573,7 +606,7 @@ export class AppStore extends EventTarget {
   disconnect(): void {
     this.abort?.abort()
     this.abort = null
-    if (this.poll) clearInterval(this.poll)
+    this.poll?.stop()
     this.poll = null
     this.live = false
   }
@@ -634,7 +667,11 @@ function isCreateCollectionKey(key: SliceKey): key is CreateCollectionKey {
   return CREATE_COLLECTION_KEYS.includes(key as CreateCollectionKey)
 }
 
-function createCollectionItemID(key: CreateCollectionKey, item: unknown): string {
+function deletionUID(target: DeletableCollectionItems[DeletableCollection]): string | undefined {
+  return 'metadata' in target ? target.metadata.uid : target.uid
+}
+
+function createCollectionItemID(key: CreateCollectionKey | DeletableCollection, item: unknown): string {
   if (key === 'credentials') {
     const credential = item as Credential | null | undefined
     const name = credential?.name

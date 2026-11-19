@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.resource-table-actions","title":"ResourceTable row actions","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"Shared row action buttons provide visibility, touch targets, event isolation, and caller-owned destructive confirmation."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/resource-table-actions.md#resourcetable-row-actions","role":"design"},{"path":"provider-sdk/portalkit-vue/ResourceTableActionButton.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTableDeleteButton.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTableEditButton.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTableExpandButton.vue","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.components.resource-table","relation":"implements","path":"docs/design/components/resource-table.md"},{"id":"design.components.confirm-dialog","relation":"prerequisite","path":"docs/design/components/confirm-dialog.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.content.ui-copy","relation":"see-also","path":"docs/design/content/ui-copy.md"}]}
+{"schema":1,"id":"design.components.resource-table-actions","title":"ResourceTable row actions","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"Shared row action buttons provide visibility, touch targets, event isolation, and caller-owned destructive confirmation."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/resource-table-actions.md#resourcetable-row-actions","role":"design"},{"path":"provider-sdk/portalkit-vue/ResourceTableActionButton.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTableDeleteButton.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTableEditButton.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTableExpandButton.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceDeleteFailure.vue","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.components.resource-table","relation":"implements","path":"docs/design/components/resource-table.md"},{"id":"design.components.confirm-dialog","relation":"prerequisite","path":"docs/design/components/confirm-dialog.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.content.ui-copy","relation":"see-also","path":"docs/design/content/ui-copy.md"}]}
 ---
 
 # ResourceTable row actions
@@ -40,6 +40,28 @@ hiding: it stays visible, because a collapsed row gives no other hint that a
 detail row exists, and its chevron turns to point at the open detail. Destructive confirmation is caller-owned through
 `confirmDialog({ danger: true })`.
 
+### Row deletion
+
+Use the Code Repositories table as the reference for a destructive row action.
+
+- Give the action and its pending label the resource name. Use the shared delete
+  button when the action fits with the other row controls. A row with a larger
+  action set can keep Delete in the shared menu.
+- Use the shared danger confirmation to name the target and describe its
+  consequences. Keep typed-name verification for irreversible teardown where
+  the resource requires it. Use **Remove registration** when the remote
+  repository is retained.
+- Keep the affected action busy through the write and its immediate refresh.
+  Show **Deleting** when the server reports ongoing teardown. Remove the row
+  when the provider has evidence the resource is gone or an accepted deletion
+  has already made it inaccessible.
+- Render rejected writes using `ResourceDeleteFailure` beside the table.
+  Keep the row actionable. The row action opens confirmation again. A
+  provider-owned Retry action may also reopen confirmation after validating
+  that the same resource and workspace are still selected.
+- On cancellation, return focus to the initiating control. When that control
+  disappears, use the table or collection heading as the focus target.
+
 ## Content
 
 Every action has a resource-specific accessible label. The primary resource name
@@ -72,8 +94,9 @@ focus, naming, and target contract.
 The canonical implementations are
 `provider-sdk/portalkit-vue/ResourceTableActionButton.vue`,
 `provider-sdk/portalkit-vue/ResourceTableDeleteButton.vue`,
-`provider-sdk/portalkit-vue/ResourceTableEditButton.vue`, and
-`provider-sdk/portalkit-vue/ResourceTableExpandButton.vue`. Verify them with
+`provider-sdk/portalkit-vue/ResourceTableEditButton.vue`,
+`provider-sdk/portalkit-vue/ResourceTableExpandButton.vue`, and
+`provider-sdk/portalkit-vue/ResourceDeleteFailure.vue`. Verify them with
 `make verify-portalkit`.
 
 ## Related guidance

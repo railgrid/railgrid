@@ -696,7 +696,7 @@ describe('stable Instance API lifecycle contract', () => {
       .rejects.toMatchObject({ reason: 'TemplateNotFound' })
   })
 
-  it('deletes through a plain DELETE of the named Instance', async () => {
+  it('sends the confirmed Instance UID with the DELETE', async () => {
     const tenant = 'delete-contract'
     setTenant(tenant)
     const calls: KubeCall[] = []
@@ -712,9 +712,9 @@ describe('stable Instance API lifecycle contract', () => {
       throw new Error('unexpected request ' + req.method + ' ' + req.path)
     }))
 
-    await expect(api.deleteInstance('demo')).resolves.toBeUndefined()
+    await expect(api.deleteInstance('demo', 'confirmed-instance')).resolves.toBeUndefined()
     expect(calls).toHaveLength(1)
-    expect(calls[0]?.body).toMatchObject({ kind: 'DeleteOptions' })
+    expect(calls[0]?.body).toMatchObject({ kind: 'DeleteOptions', preconditions: { uid: 'confirmed-instance' } })
     await expect(api.deleteInstance('gone')).rejects.toMatchObject({ reason: 'NotFound' })
   })
 

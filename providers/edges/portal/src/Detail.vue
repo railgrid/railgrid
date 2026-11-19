@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import LoadingSkeleton from './portalkit/LoadingSkeleton.vue'
+import { useClipboardFeedback } from './portalkit/useClipboardFeedback'
+import ResourceDeleteFailure from './portalkit/ResourceDeleteFailure.vue'
 import { portalHref } from './portalkit/navigation'
 import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
 import { Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Globe2, Home, Laptop, Plug, Plus, RefreshCw, Server, TerminalSquare } from 'lucide-vue-next'
@@ -57,12 +59,11 @@ const deleting = ref(false)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const detailRefreshing = computed(() => loading.value && refreshMode.value === 'foreground')
 const mutationError = ref<string | null>(null)
-const copied = ref<string | null>(null)
-const copyFeedback = ref('')
-const copyFeedbackField = ref<string | null>(null)
-const copyFailed = ref(false)
-let copyAttempt = 0
-let copyTimer: ReturnType<typeof setTimeout> | null = null
+const edgeUID = computed(() => edge.value?.uid)
+const edgeJoinToken = computed(() => edge.value?.joinToken)
+const { copiedField: copied, pendingField, errors: copyErrors, copy: writeClipboard } = useClipboardFeedback(
+  () => [props.name, props.type, props.cluster, edgeUID.value, edgeJoinToken.value],
+)
 const servicesExpanded = ref(false)
 const technicalExpanded = ref(false)
 
@@ -118,6 +119,7 @@ async function onDelete() {
   const scope = { name: props.name, type: props.type, cluster: props.cluster }
   if (!(await confirmDialog({ title: `Delete ${edgeDeleteLabel.value} "${props.name}"?`, message: EDGE_DELETE_MESSAGE, danger: true, confirmLabel: 'Delete' }))) return
   if (stopped || generation !== scopeGeneration || deleting.value || props.name !== scope.name || props.type !== scope.type || props.cluster !== scope.cluster) return
+  if (!edge.value || edge.value.uid !== current.uid || edge.value.phase === 'Deleting') return
   deleting.value = true
   try {
     await deleteEdge(current)
@@ -136,31 +138,15 @@ function copyControlLabel(field: string, label: string): string {
   return copied.value === field ? 'Copied' : `Copy ${label}`
 }
 
-async function copy(text: string, field: string, label: string) {
-  const attempt = ++copyAttempt
-  if (copyTimer) clearTimeout(copyTimer)
-  copied.value = null
-  copyFeedbackField.value = field
-  copyFeedback.value = ''
-  copyFailed.value = false
-  try {
-    await navigator.clipboard.writeText(text)
-    if (attempt !== copyAttempt) return
-    copied.value = field
-    copyFeedback.value = `${label} copied to clipboard.`
-    copyTimer = setTimeout(() => {
-      copied.value = null
-      copyFeedback.value = ''
-      copyFeedbackField.value = null
-      copyTimer = null
-    }, 2000)
-  } catch {
-    if (attempt !== copyAttempt) return
-    copyFailed.value = true
-    copyFeedback.value = field === 'join'
-      ? 'Could not copy the agent join command. Try copying again; the token may be masked.'
-      : `Could not copy the ${label.toLowerCase()}. Select the command and copy it manually.`
-  }
+function copy(text: string, field: string, label: string) {
+  const failure = field === 'join'
+    ? 'Could not copy the agent join command. Try copying again; the token may be masked.'
+    : `Could not copy the ${label.toLowerCase()}. Select the command and copy it manually.`
+  return writeClipboard(text, field, failure)
+}
+
+function copyStatus(field: string, label: string): string {
+  return copyErrors.value[field] || (copied.value === field ? `${label} copied to clipboard.` : '')
 }
 
 const macosJoinDisplay = computed(() => macosJoinSnippet(props.name, props.cluster, MACOS_MASKED_JOIN_TOKEN))
@@ -431,6 +417,8 @@ async function dismissServiceMutationError(key: string) {
 
 async function removeService(name: string) {
   if (deleting.value || deletingServiceName.value || connecting.value) return
+  const uid = services.value.find(service => service.name === name)?.uid
+  if (!uid) return
   const focused = typeof document === 'undefined' ? null : document.activeElement
   const scope = { name: props.name, type: props.type, cluster: props.cluster }
   const generation = scopeGeneration
@@ -438,7 +426,7 @@ async function removeService(name: string) {
   if (stopped || generation !== scopeGeneration || deleting.value || deletingServiceName.value || connecting.value || props.name !== scope.name || props.type !== scope.type || props.cluster !== scope.cluster) return
   deletingServiceName.value = name
   try {
-    await deleteEdgeService(name)
+    await deleteEdgeService(name, uid)
     if (stopped || generation !== scopeGeneration) return
     clearServiceMutationError(`${name}:delete`)
     clearServiceMutationError(`${name}:connect`)
@@ -453,19 +441,22 @@ async function removeService(name: string) {
   }
 }
 
+let connectForUID: string | undefined
 function startConnect(name: string) {
   if (connecting.value || deleting.value || deletingServiceName.value) return
+  connectForUID = services.value.find(service => service.name === name)?.uid
+  if (!connectForUID) return
   connectFor.value = name
   tokenInput.value = ''
 }
 
 async function submitConnect() {
-  if (!connectFor.value || !tokenInput.value.trim() || connecting.value || deleting.value || deletingServiceName.value) return
+  if (!connectFor.value || !connectForUID || !tokenInput.value.trim() || connecting.value || deleting.value || deletingServiceName.value) return
   const name = connectFor.value
   const generation = scopeGeneration
   connecting.value = true
   try {
-    await connectEdgeService(name, tokenInput.value.trim())
+    await connectEdgeService(name, tokenInput.value.trim(), connectForUID)
     if (stopped || generation !== scopeGeneration || connectFor.value !== name) return
     clearServiceMutationError(`${name}:connect`)
     connectFor.value = null
@@ -510,11 +501,6 @@ watch(() => [props.name, props.type, props.cluster], () => {
   connectFor.value = null
   tokenInput.value = ''
   mutationError.value = null
-  copyAttempt++
-  if (copyTimer) clearTimeout(copyTimer)
-  copied.value = null
-  copyFeedback.value = ''
-  copyFeedbackField.value = null
   detailRefresh.invalidate()
   edge.value = null
   services.value = []
@@ -526,11 +512,9 @@ watch(() => [props.name, props.type, props.cluster], () => {
   void load('foreground')
 }, { immediate: true })
 onUnmounted(() => {
-  copyAttempt++
   stopped = true
   detailRefresh.stop()
   poller.stop()
-  if (copyTimer) clearTimeout(copyTimer)
 })
 
 </script>
@@ -595,6 +579,7 @@ onUnmounted(() => {
             </button>
             <ActionMenu
               label="More edge actions"
+              :busy="deleting" busy-label="Deleting edge…"
               :items="actionItems"
               :disabled="!edge || deleting || detailRefreshing || connecting"
               @select="selectAction"
@@ -607,8 +592,8 @@ onUnmounted(() => {
         </template>
 
         <template #body>
-          <InlineNotification v-if="mutationError" tone="error" :title="`Could not delete edge ${name}`" :message="mutationError" />
-          <div v-if="deleting" class="waiting" role="status">Deleting this edge. The last successful snapshot remains visible until the hub confirms removal.</div>
+          <ResourceDeleteFailure v-if="mutationError" :title="`Could not delete edge ${name}`" :message="mutationError" retry-hint="Use Delete to try again." @dismiss="mutationError = null" />
+          <div v-if="deleting" class="waiting" role="status">Requesting deletion of this edge…</div>
 
           <div class="edge-detail__sections">
             <ResourceSectionCard id="edge-connectivity" eyebrow="Access" title="Connectivity" description="Connect the agent, reach the edge, and keep its software current.">
@@ -641,8 +626,10 @@ onUnmounted(() => {
                         <div class="snippet-head"><span>Option A — CLI</span>
                           <button
                             type="button"
-                            class="k-icon-action snippet-copy"
-                            :aria-label="copyControlLabel('up-cli', 'CLI upgrade command')"
+                            class="k-icon-action k-icon-action--quiet"
+                            aria-label="Copy CLI upgrade command"
+                            :aria-disabled="pendingField !== null || undefined"
+                            :aria-busy="pendingField === 'up-cli' || undefined"
                             :data-k-tip="copyControlLabel('up-cli', 'CLI upgrade command')"
                             @click="copy(upgradeCliCommand, 'up-cli', 'CLI upgrade command')"
                           >
@@ -650,14 +637,16 @@ onUnmounted(() => {
                           </button>
                         </div>
                         <pre>{{ upgradeCliCommand }}</pre>
-                      <p v-if="copyFeedbackField === 'up-cli'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
+                      <p v-if="copyErrors['up-cli'] || copied === 'up-cli'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyErrors['up-cli'] }" role="status" aria-live="polite">{{ copyStatus('up-cli', 'CLI upgrade command') }}</p>
                       </div>
                       <div class="snippet">
                         <div class="snippet-head"><span>Option B — Helm</span>
                           <button
                             type="button"
-                            class="k-icon-action snippet-copy"
-                            :aria-label="copyControlLabel('up-helm', 'Helm upgrade command')"
+                            class="k-icon-action k-icon-action--quiet"
+                            aria-label="Copy Helm upgrade command"
+                            :aria-disabled="pendingField !== null || undefined"
+                            :aria-busy="pendingField === 'up-helm' || undefined"
                             :data-k-tip="copyControlLabel('up-helm', 'Helm upgrade command')"
                             @click="copy(upgradeHelmSnippet, 'up-helm', 'Helm upgrade command')"
                           >
@@ -665,7 +654,7 @@ onUnmounted(() => {
                           </button>
                         </div>
                         <pre>{{ upgradeHelmSnippet }}</pre>
-                      <p v-if="copyFeedbackField === 'up-helm'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
+                      <p v-if="copyErrors['up-helm'] || copied === 'up-helm'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyErrors['up-helm'] }" role="status" aria-live="polite">{{ copyStatus('up-helm', 'Helm upgrade command') }}</p>
                       </div>
                     </template>
 
@@ -673,8 +662,10 @@ onUnmounted(() => {
                       <div class="snippet-head"><span>Replace binary and restart</span>
                         <button
                           type="button"
-                          class="k-icon-action snippet-copy"
-                          :aria-label="copyControlLabel('up-srv', 'server upgrade command')"
+                          class="k-icon-action k-icon-action--quiet"
+                          aria-label="Copy server upgrade command"
+                          :aria-disabled="pendingField !== null || undefined"
+                          :aria-busy="pendingField === 'up-srv' || undefined"
                           :data-k-tip="copyControlLabel('up-srv', 'server upgrade command')"
                           @click="copy(upgradeServerSnippet, 'up-srv', 'server upgrade command')"
                         >
@@ -682,14 +673,16 @@ onUnmounted(() => {
                         </button>
                       </div>
                       <pre>{{ upgradeServerSnippet }}</pre>
-                      <p v-if="copyFeedbackField === 'up-srv'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
+                      <p v-if="copyErrors['up-srv'] || copied === 'up-srv'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyErrors['up-srv'] }" role="status" aria-live="polite">{{ copyStatus('up-srv', 'server upgrade command') }}</p>
                     </div>
                     <div v-else class="snippet">
                       <div class="snippet-head"><span>Replace binary and restart the launchd service</span>
                         <button
                           type="button"
-                          class="k-icon-action snippet-copy"
-                          :aria-label="copyControlLabel('up-mac', 'macOS upgrade command')"
+                          class="k-icon-action k-icon-action--quiet"
+                          aria-label="Copy macOS upgrade command"
+                          :aria-disabled="pendingField !== null || undefined"
+                          :aria-busy="pendingField === 'up-mac' || undefined"
                           :data-k-tip="copyControlLabel('up-mac', 'macOS upgrade command')"
                           @click="copy(upgradeMacOSSnippet, 'up-mac', 'macOS upgrade command')"
                         >
@@ -698,7 +691,7 @@ onUnmounted(() => {
                       </div>
                       <p class="muted">The restart command assumes the default system LaunchDaemon; custom or user installs need their own label and domain.</p>
                       <pre>{{ upgradeMacOSSnippet }}</pre>
-                      <p v-if="copyFeedbackField === 'up-mac'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
+                      <p v-if="copyErrors['up-mac'] || copied === 'up-mac'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyErrors['up-mac'] }" role="status" aria-live="polite">{{ copyStatus('up-mac', 'macOS upgrade command') }}</p>
                     </div>
 
                     <p class="muted">After upgrading, the agent reports its new version on the next heartbeat and this notice clears.</p>
@@ -720,8 +713,10 @@ onUnmounted(() => {
                       <div class="snippet-head"><span>railgrid agent join</span>
                         <button
                           type="button"
-                          class="k-icon-action snippet-copy"
-                          :aria-label="copyControlLabel('join', 'agent join command')"
+                          class="k-icon-action k-icon-action--quiet"
+                          aria-label="Copy agent join command"
+                          :aria-disabled="pendingField !== null || undefined"
+                          :aria-busy="pendingField === 'join' || undefined"
                           :data-k-tip="copyControlLabel('join', 'agent join command')"
                           @click="copy(joinCommand, 'join', 'agent join command')"
                         >
@@ -729,7 +724,7 @@ onUnmounted(() => {
                         </button>
                       </div>
                       <pre>{{ joinDisplay }}</pre>
-                      <p v-if="copyFeedbackField === 'join'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
+                      <p v-if="copyErrors['join'] || copied === 'join'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyErrors['join'] }" role="status" aria-live="polite">{{ copyStatus('join', 'agent join command') }}</p>
                     </div>
                   </div>
                 </details>
@@ -749,8 +744,10 @@ onUnmounted(() => {
                       <div class="snippet-head"><span>kubectl</span>
                         <button
                           type="button"
-                          class="k-icon-action snippet-copy"
-                          :aria-label="copyControlLabel('kube', 'kubectl command')"
+                          class="k-icon-action k-icon-action--quiet"
+                          aria-label="Copy kubectl command"
+                          :aria-disabled="pendingField !== null || undefined"
+                          :aria-busy="pendingField === 'kube' || undefined"
                           :data-k-tip="copyControlLabel('kube', 'kubectl command')"
                           @click="copy(`railgrid edge kubeconfig ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube', 'kubectl command')"
                         >
@@ -759,7 +756,7 @@ onUnmounted(() => {
                       </div>
                       <pre>railgrid edge kubeconfig {{ name }} &gt; {{ name }}.kubeconfig
 kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
-                      <p v-if="copyFeedbackField === 'kube'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
+                      <p v-if="copyErrors['kube'] || copied === 'kube'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyErrors['kube'] }" role="status" aria-live="polite">{{ copyStatus('kube', 'kubectl command') }}</p>
                     </div>
                   </div>
                 </details>
@@ -779,8 +776,10 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                       <div class="snippet-head"><span>railgrid ssh</span>
                         <button
                           type="button"
-                          class="k-icon-action snippet-copy"
-                          :aria-label="copyControlLabel('ssh', 'SSH command')"
+                          class="k-icon-action k-icon-action--quiet"
+                          aria-label="Copy SSH command"
+                          :aria-disabled="pendingField !== null || undefined"
+                          :aria-busy="pendingField === 'ssh' || undefined"
                           :data-k-tip="copyControlLabel('ssh', 'SSH command')"
                           @click="copy(`railgrid ssh ${name}`, 'ssh', 'SSH command')"
                         >
@@ -788,7 +787,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                         </button>
                       </div>
                       <pre>railgrid ssh {{ name }}</pre>
-                      <p v-if="copyFeedbackField === 'ssh'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyFailed }" role="status" aria-live="polite">{{ copyFeedback }}</p>
+                      <p v-if="copyErrors['ssh'] || copied === 'ssh'" class="edge-copy-feedback" :class="{ 'edge-copy-feedback--error': copyErrors['ssh'] }" role="status" aria-live="polite">{{ copyStatus('ssh', 'SSH command') }}</p>
                     </div>
                   </div>
                 </details>
@@ -833,12 +832,24 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                   :action-busy="loading || deleting || connecting"
                   @action="retryServiceRead"
                 />
-                <InlineNotification
-                  v-for="(failure, key) in svcMutationErrors" :key="key"
-                  tone="error"
-                  :title="failure.action === 'delete' ? `Could not delete service ${failure.name}` : `Could not save credentials for ${failure.name}`"
-                  :message="failure.message" dismissible @dismiss="dismissServiceMutationError(String(key))"
-                />
+                <template v-for="(failure, key) in svcMutationErrors" :key="key">
+                  <ResourceDeleteFailure
+                    v-if="failure.action === 'delete'"
+                    :title="`Could not delete service ${failure.name}`"
+                    :message="failure.message"
+                    :return-focus="servicesToggle"
+                    retry-hint="Use the service’s Delete action to try again."
+                    @dismiss="clearServiceMutationError(String(key))"
+                  />
+                  <InlineNotification
+                    v-else
+                    tone="error"
+                    :title="`Could not save credentials for ${failure.name}`"
+                    :message="failure.message"
+                    dismissible
+                    @dismiss="dismissServiceMutationError(String(key))"
+                  />
+                </template>
 
                 <div class="edge-services-content__actions">
                   <button

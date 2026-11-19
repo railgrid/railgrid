@@ -264,7 +264,8 @@ describe('mounted Infrastructure instance detail deletion behavior', () => {
     expect(document.body.querySelector('.k-action-menu__item')).toBeNull()
     expect(text('.k-resource-page__status .k-badge')).toContain('Deleting')
     expect(host.querySelector('[role="status"][aria-live="polite"].instance-message')?.textContent)
-      .toContain('Deleting this instance.')
+      .toContain('Requesting deletion of this instance…')
+    expect(actionTrigger!.getAttribute('aria-busy')).toBe('true')
     expect(host.textContent).toContain('retained-value')
     expect(refresh!.disabled).toBe(true)
     expect(back!.getAttribute('aria-disabled')).toBe('true')
@@ -285,7 +286,7 @@ describe('mounted Infrastructure instance detail deletion behavior', () => {
     document.body.querySelector<HTMLButtonElement>('.k-action-menu__item')!.click()
     await flush()
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('delete failed')
-    const dismiss = host.querySelector<HTMLButtonElement>('[aria-label="Dismiss notification"]')!
+    const dismiss = host.querySelector<HTMLButtonElement>('[aria-label^="Dismiss: Could not delete instance"]')!
     dismiss.focus()
     dismiss.click()
     await flush()

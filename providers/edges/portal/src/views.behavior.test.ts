@@ -253,7 +253,7 @@ function deferred<T>() {
 }
 
 const edge = { name: 'edge-a', type: 'kubernetes', connected: true }
-const service = { name: 'svc-a', edgeName: 'edge-a', serviceType: 'generic', phase: 'Ready' }
+const service = { name: 'svc-a', uid: 'uid-svc-a', edgeName: 'edge-a', serviceType: 'generic', phase: 'Ready' }
 const edgeDetail = {
   ...edge,
   apiVersion: 'edges.railgrid.ai/v1alpha1',
@@ -491,6 +491,7 @@ describe('collection mutation feedback ownership', () => {
     ['services', Services, 'deleteEdgeService', service],
     ['workloads', Workloads, 'deleteWorkload', workload],
   ] as const)('preserves independent %s failures through refresh and unrelated success', async (_kind, component, method, resource) => {
+    if (_kind === 'services') api.listServicesPage.mockResolvedValue({ items: [service, { ...service, name: 'other', uid: 'uid-other' }] })
     const mounted = await mount(component)
     try {
       await flush()
@@ -499,10 +500,11 @@ describe('collection mutation feedback ownership', () => {
       api[method].mockRejectedValueOnce({ message: 'First failure' })
       await state.onDelete(resource)
       api[method].mockRejectedValueOnce({ message: 'Second failure' })
-      await state.onDelete({ ...resource, name: 'other' })
+      const other = { ...resource, name: 'other', uid: 'uid-other' }
+      await state.onDelete(other)
       expect(Object.keys(state.deleteFailures)).toHaveLength(2)
       api[method].mockResolvedValueOnce(undefined)
-      await state.onDelete({ ...resource, name: 'other' })
+      await state.onDelete(other)
       expect(state.deleteFailures[resource.name]?.message).toBe('First failure')
       expect(state.deleteFailures.other).toBeUndefined()
       api[method].mockRejectedValueOnce({ reason: 'ContextChanged', message: 'old context' })
@@ -613,6 +615,34 @@ describe('edge list views', () => {
       filters: { strategy: '', status: '' },
     },
   ] as const
+
+  it.each(views)('$label deletes from page two against a fresh snapshot while an older refresh is pending', async view => {
+    const mounted = await mount(view.component)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      const resource = view.pageRows[0]
+      view.pageMock.mockResolvedValueOnce({ items: [resource] })
+      state[view.change]({ reason: 'page', page: 2, pageSize: 10, query: '', filters: view.filters, cursor: 'pre-delete' })
+      await flush()
+      expect(view.pageMock).toHaveBeenLastCalledWith({ limit: 10, continue: 'pre-delete' })
+
+      const oldRead = deferred<{ items: typeof view.pageRows; continue: string }>()
+      view.pageMock.mockReturnValueOnce(oldRead.promise)
+      void state.refresh('background')
+      confirm.confirmDialog.mockResolvedValue(true)
+      const deleting = state.onDelete(resource)
+      await flush()
+      view.pageMock.mockResolvedValueOnce({ items: [] })
+      oldRead.resolve({ items: view.pageRows, continue: 'still-pre-delete' })
+      await deleting
+
+      expect(view.pageMock).toHaveBeenLastCalledWith({ limit: 10 })
+      expect(state.tablePage).toBe(1)
+      expect(state.tableCursor).toBeNull()
+      expect(view.label === 'services' ? state.services : state.workloads).toEqual([])
+    } finally { mounted.unmount() }
+  })
 
   it.each(views)('$label loads unfiltered first/next/previous pages and resets the cursor for a page-size change', async (view) => {
     const mounted = await mount(view.component)
@@ -1455,8 +1485,31 @@ describe('edge list views', () => {
       expect(state.instructions).toBe('Unsaved instructions')
       api.getService.mockResolvedValue({ ...detail, port: 12345, instructions: 'Unsaved instructions' })
       await state.onSaveConfig()
-      expect(api.updateEdgeService).toHaveBeenCalledWith(detail.name, expect.objectContaining({ port: 12345, instructions: 'Unsaved instructions' }))
+      expect(api.updateEdgeService).toHaveBeenCalledWith(detail.name, expect.objectContaining({ port: 12345, instructions: 'Unsaved instructions' }), detail.uid)
       expect(state.configurationDirty).toBe(false)
+    } finally { mounted.unmount() }
+  })
+
+  it('locks a replaced service until its draft has been reset to the reviewed UID', async () => {
+    const detail = { ...service, host: 'localhost', port: 80, conditions: [] }
+    api.getService.mockResolvedValue(detail)
+    const mounted = await mount(ServiceEdit, { serviceName: detail.name, catalog: [], edges: [edge] })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.form.port = 9000
+      api.getService.mockResolvedValue({ ...detail, uid: 'replacement', port: 8080 })
+      await state.load('background')
+      expect(state.serviceReplaced).toBe(true)
+      await state.onSaveConfig()
+      await state.onDelete()
+      expect(api.updateEdgeService).not.toHaveBeenCalled()
+      expect(api.deleteEdgeService).not.toHaveBeenCalled()
+      await state.reviewReplacement()
+      expect(state.serviceReplaced).toBe(false)
+      expect(state.form.port).toBe(8080)
+      await state.onSaveConfig()
+      expect(api.updateEdgeService).toHaveBeenCalledWith(detail.name, expect.objectContaining({ port: 8080 }), 'replacement')
     } finally { mounted.unmount() }
   })
 
@@ -1890,7 +1943,8 @@ describe('edge detail actions', () => {
       expect(rendered).not.toContain('join-secret')
 
       const previousNavigator = globalThis.navigator
-      const writeText = vi.fn().mockResolvedValue(undefined)
+      const clipboardWrite = deferred<void>()
+      const writeText = vi.fn().mockReturnValue(clipboardWrite.promise)
       Object.defineProperty(globalThis, 'navigator', {
         configurable: true,
         value: { clipboard: { writeText } },
@@ -1905,7 +1959,13 @@ describe('edge detail actions', () => {
         await flush()
         await flush()
         const state = mounted.instance.setupState
-        await state.copy(state.joinCommand, 'join', 'agent join command')
+        const copying = state.copy(state.joinCommand, 'join', 'agent join command')
+        expect(state.pendingField).toBe('join')
+        await state.copy('different value', 'ssh', 'SSH command')
+        expect(writeText).toHaveBeenCalledTimes(1)
+        clipboardWrite.resolve()
+        await copying
+        expect(state.pendingField).toBeNull()
         expect(writeText).toHaveBeenCalledWith(expect.stringContaining('--token join-secret'))
         expect(writeText.mock.calls[0][0]).toContain('sudo railgrid agent join')
       } finally {
@@ -2089,7 +2149,7 @@ describe('edge detail actions', () => {
 
   it('names and locks a service deletion while it is pending, then recovers on failure', async () => {
     api.getEdge.mockResolvedValue(edgeDetail)
-    api.listEdgeServices.mockResolvedValue([{ name: 'svc-a', serviceType: 'generic', port: 8080 }])
+    api.listEdgeServices.mockResolvedValue([{ ...service, port: 8080 }])
     const pendingDelete = deferred<void>()
     api.deleteEdgeService.mockImplementation(() => pendingDelete.promise)
     confirm.confirmDialog.mockResolvedValue(true)
@@ -2133,7 +2193,7 @@ describe('edge detail actions', () => {
   })
 
   it('retains the service snapshot and read failure through a guarded retry', async () => {
-    const service = { name: 'svc-a', serviceType: 'generic', port: 8080 }
+    const service = { name: 'svc-a', uid: 'uid-svc-a', serviceType: 'generic', port: 8080 }
     api.getEdge.mockResolvedValue(edgeDetail)
     api.listEdgeServices.mockResolvedValue([service])
     const mounted = await mount(Detail, { name: edgeDetail.name, type: edgeDetail.type, cluster: null, token: null })
@@ -2161,7 +2221,7 @@ describe('edge detail actions', () => {
 
   it('keeps a failed credential save and draft separate from service reads and guards duplicate saves', async () => {
     api.getEdge.mockResolvedValue(edgeDetail)
-    api.listEdgeServices.mockResolvedValue([{ name: 'svc-a', serviceType: 'generic', port: 8080 }])
+    api.listEdgeServices.mockResolvedValue([{ ...service, port: 8080 }])
     const mounted = await mount(Detail, { name: edgeDetail.name, type: edgeDetail.type, cluster: null, token: null })
     try {
       await flush()
@@ -2197,7 +2257,10 @@ describe('edge detail actions', () => {
 
   it('does not let a credential save erase an unresolved deletion failure for the same service', async () => {
     api.getEdge.mockResolvedValue(edgeDetail)
-    api.listEdgeServices.mockResolvedValue([{ name: 'svc-a', serviceType: 'generic', port: 8080 }])
+    api.listEdgeServices.mockResolvedValue([
+      { ...service, port: 8080 },
+      { ...service, name: 'svc-b', uid: 'uid-svc-b', port: 8080 },
+    ])
     const mounted = await mount(Detail, { name: edgeDetail.name, type: edgeDetail.type, cluster: null, token: null })
     try {
       await flush()

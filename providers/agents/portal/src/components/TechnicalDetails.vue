@@ -47,7 +47,7 @@ async function copyDetails(): Promise<void> {
     <div class="k-resource-technical__body">
       <template v-if="copyable">
         <button
-          class="k-icon-action agents-technical__copy"
+          class="k-icon-action k-icon-action--quiet agents-technical__copy"
           type="button"
           aria-label="Copy details"
           :data-k-tip="copyState === 'copied' ? 'Copied' : 'Copy details'"
