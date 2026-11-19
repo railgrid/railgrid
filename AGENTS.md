@@ -770,6 +770,9 @@ The hub is the only publicly-reachable component. Key areas:
   resolution.
 - `restapi/`, `serviceaccounts/`, `quota/`, `portal*.go` — REST API surface,
   SA management, quotas, portal serving.
+- `telemetry/` — opt-in product telemetry relay (`POST /api/telemetry/events`),
+  off unless `--telemetry-url` is set; the portal side is `portal/src/telemetry/`.
+  What may and may not be sent is the contract in `docs/telemetry.md`.
 - `pkg/virtual/builder/` — kcp virtual-workspace handlers: the agent-proxy
   (tunnel auth, status, SSH creds) and the multi-cluster MCP server.
 

@@ -460,6 +460,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         <button
           type="button"
           class="k-btn k-btn--primary px-3 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-60"
+          data-track="enable_provider"
+          :data-track-provider="provider?.scope === 'global' ? provider.name : 'org-provider'"
           :disabled="busy"
           @click="onConfirm"
         >

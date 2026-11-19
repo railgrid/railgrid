@@ -29,6 +29,9 @@ export interface HealthzResponse {
   // Whether the hub offers interactive static-token login. Absent on older
   // hubs, which always offered it when reachable — treat undefined as true.
   tokenLogin?: boolean
+  // Whether the operator enabled product telemetry (--telemetry-url). Absent
+  // or false: the portal records and sends nothing.
+  telemetry?: boolean
   issuerUrl?: string
   clientId?: string
 }

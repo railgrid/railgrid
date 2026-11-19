@@ -101,6 +101,8 @@ func main() {
 			"operators can stage the change; the next release defaults to false. Changing it replaces the existing binding.")
 	cmd.Flags().StringVar(&opts.PortalDevURL, "portal-dev-url", "", "Reverse-proxy /ui/* to this URL (e.g. http://localhost:3000 for Vite dev server); takes precedence over embedded portal dist")
 	cmd.Flags().StringSliceVar(&opts.PortalFrameSources, "portal-frame-source", nil, "Additional CSP frame-src source expressions allowed by the portal, e.g. https://*.preview.example.com")
+	cmd.Flags().StringVar(&opts.TelemetryURL, "telemetry-url", "", "Opt in to product telemetry: base URL of the Umami instance that receives the portal's page and click events, relayed by the hub. Empty (default) disables telemetry entirely. See docs/telemetry.md")
+	cmd.Flags().StringVar(&opts.TelemetryWebsiteID, "telemetry-website-id", "", "Umami website ID the portal's events are recorded under; required with --telemetry-url")
 
 	// Embedded kcp flags
 	cmd.Flags().BoolVar(&opts.EmbeddedKCP, "embedded-kcp", opts.EmbeddedKCP, "Enable embedded kcp server (runs kcp in-process)")

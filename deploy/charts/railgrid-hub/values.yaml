@@ -126,6 +126,18 @@ hub:
   # Additional Content-Security-Policy frame-src entries allowed in the portal.
   # Use this for platform-owned preview hosts that are rendered inside the portal.
   portalFrameSources: []
+  # Product telemetry, off by default. Set both values to have the portal
+  # report which pages are opened and which marked controls are clicked to an
+  # Umami instance you run; the hub relays the events, so the portal's
+  # Content-Security-Policy does not change. With url empty the hub registers
+  # no telemetry route and the portal sends nothing. What is sent, and what is
+  # not, is in docs/telemetry.md.
+  telemetry:
+    # Base URL of the Umami instance, e.g. https://telemetry.example.com.
+    url: ""
+    # Umami website ID to record under. Use the same ID as your marketing site
+    # to follow a visitor from the site into the console.
+    websiteID: ""
   # CIDRs of the reverse proxies that front the hub (ingress controller pods,
   # load balancer, CDN egress). The hub keys its pre-auth rate limits
   # (token-login, /auth/refresh, MCP bearer checks) on the client address and
