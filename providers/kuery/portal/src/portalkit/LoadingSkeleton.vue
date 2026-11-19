@@ -1,15 +1,25 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref, shallowRef } from 'vue'
 import { useDelayedLoading } from './useDelayedLoading'
 
 defineProps<{ label: string; tabs?: boolean; compact?: boolean }>()
 
 const showLoading = useDelayedLoading(ref(true))
+const root = ref<HTMLElement | null>(null)
+const announcementTarget = shallowRef<string | Element | null>(null)
+
+onMounted(() => {
+  const dialog = root.value?.closest('dialog, [aria-modal="true"]')
+  // Keep announcements in the active modal when its root is outside the busy region.
+  announcementTarget.value = dialog && !dialog.closest('[aria-busy="true"]') ? dialog : 'body'
+})
 </script>
 
 <template>
-  <div>
-    <span class="k-loading-skeleton__status" role="status">{{ showLoading ? label : '' }}</span>
+  <div ref="root">
+    <Teleport v-if="announcementTarget" :to="announcementTarget">
+      <span class="k-loading-skeleton__status" role="status">{{ showLoading ? label : '' }}</span>
+    </Teleport>
     <div
       class="k-loading-skeleton k-delayed-loading"
       :class="{ 'k-loading-skeleton--compact': compact }"

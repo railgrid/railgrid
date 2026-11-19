@@ -171,6 +171,7 @@ interface TreeNode {
   parent: TreeNode | null
   text?: string
   focus?(): void
+  closest?(): TreeNode | null
   setAttribute(name: string, value: string): void
   removeAttribute(name: string): void
 }
@@ -189,6 +190,7 @@ function createTreeElement(type: string): TreeNode {
     focus() {
       focusedNode = node
     },
+    closest() { return null },
     removeAttribute(name) {
       delete this.props[name]
     },
@@ -196,7 +198,9 @@ function createTreeElement(type: string): TreeNode {
   return node
 }
 
+const teleportBody = createTreeElement('body')
 const rendererOptions: RendererOptions<TreeNode, TreeNode> = {
+  querySelector: selector => selector === 'body' ? teleportBody : null,
   patchProp(node, key, _previous, next) {
     node.props[key] = next
   },
