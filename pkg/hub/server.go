@@ -72,6 +72,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/restapi"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	"github.com/railgrid/railgrid/pkg/hub/sharedstore"
+	"github.com/railgrid/railgrid/pkg/hub/telemetry"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 	"github.com/railgrid/railgrid/pkg/hub/workloadidentity"
 	"github.com/railgrid/railgrid/pkg/hub/workspaceseeds"
@@ -137,6 +138,15 @@ func (s *Server) Run(ctx context.Context) error {
 	trustedProxies, err := proxy.ParseTrustedProxyCIDRs(s.opts.TrustedProxyCIDRs)
 	if err != nil {
 		return fmt.Errorf("--trusted-proxy-cidrs: %w", err)
+	}
+	// Product telemetry is opt-in. With no --telemetry-url this stays the zero
+	// value: no route, nothing advertised to the portal, no outbound call.
+	telemetryConfig := telemetry.Config{URL: s.opts.TelemetryURL, WebsiteID: s.opts.TelemetryWebsiteID}
+	if err := telemetryConfig.Validate(); err != nil {
+		return err
+	}
+	if u, err := url.Parse(s.opts.HubExternalURL); err == nil {
+		telemetryConfig.Hostname = u.Hostname()
 	}
 	if len(trustedProxies) > 0 {
 		logger.Info("Trusting X-Forwarded-For from proxies", "cidrs", trustedProxies)
@@ -663,10 +673,12 @@ func (s *Server) Run(ctx context.Context) error {
 		// tokenLogin tells the portal whether the interactive token form is
 		// worth rendering; bearer-token API auth is independent of it.
 		tokenLogin := len(s.opts.StaticAuthTokens) > 0 && !s.opts.DisableTokenLogin
+		// telemetry is the portal's only signal to start reporting; a hub
+		// without --telemetry-url answers false and the portal sends nothing.
 		if oidcEnabled {
-			_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":true,"tokenLogin":%t,"issuerUrl":%q,"clientId":%q}`, tokenLogin, s.opts.IDPIssuerURL, s.opts.IDPClientID)
+			_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":true,"tokenLogin":%t,"telemetry":%t,"issuerUrl":%q,"clientId":%q}`, tokenLogin, telemetryConfig.Enabled(), s.opts.IDPIssuerURL, s.opts.IDPClientID)
 		} else {
-			_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":false,"tokenLogin":%t}`, tokenLogin)
+			_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":false,"tokenLogin":%t,"telemetry":%t}`, tokenLogin, telemetryConfig.Enabled())
 		}
 	})
 	router.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -1061,6 +1073,17 @@ func (s *Server) Run(ctx context.Context) error {
 			userOnlySub := router.PathPrefix("/api").Subrouter()
 			userOnlySub.Use(tenant.UserOnlyMiddleware(userResolver))
 			apiHandler.RegisterUserOnly(userOnlySub)
+			// Opt-in product telemetry relay (docs/telemetry.md). Signed-in
+			// callers only, so it cannot be used as an open proxy to the
+			// analytics backend; the route does not exist when telemetry is off.
+			if telemetryConfig.Enabled() {
+				telemetryRelay := telemetry.NewRelay(telemetry.NewUmamiSink(telemetryConfig), func(r *http.Request) string {
+					return proxy.ClientIP(r, trustedProxies)
+				})
+				go telemetryRelay.Run(ctx)
+				userOnlySub.Handle("/telemetry/events", telemetryRelay).Methods(http.MethodPost)
+				logger.Info("Product telemetry enabled", "url", telemetryConfig.URL, "hostname", telemetryConfig.Hostname)
+			}
 
 			// Full tenant-context routes (Org admin / member, optionally Workspace)
 			tenantSub := router.PathPrefix("/api/orgs").Subrouter()

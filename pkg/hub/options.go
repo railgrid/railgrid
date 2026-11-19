@@ -190,6 +190,16 @@ type Options struct {
 	// the hub, while platform-owned preview hosts can be added explicitly.
 	PortalFrameSources []string
 
+	// TelemetryURL turns on product telemetry: the base URL of the analytics
+	// backend (Umami) the hub relays the portal's page and click events to.
+	// Empty, the default, means off: no relay route is registered, the portal
+	// is told nothing is enabled and sends nothing, and the hub makes no
+	// outbound call. See docs/telemetry.md.
+	TelemetryURL string
+	// TelemetryWebsiteID is the backend's website ID the events are recorded
+	// under. Required with TelemetryURL.
+	TelemetryWebsiteID string
+
 	// Embedded kcp options
 	EmbeddedKCP         bool   // Enable embedded kcp server
 	KCPRootDir          string // Root directory for kcp data (default: <DataDir>/kcp)

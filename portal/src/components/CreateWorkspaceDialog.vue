@@ -204,7 +204,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="k-modal__actions">
           <button type="button" class="k-btn k-btn--secondary" @click="close">{{ busy || created ? 'Close' : 'Cancel' }}</button>
-          <button type="submit" class="k-btn k-btn--primary" :disabled="busy || (!created && (!name.trim() || !canCreate))">
+          <button type="submit" class="k-btn k-btn--primary" data-track="create_workspace" :disabled="busy || (!created && (!name.trim() || !canCreate))">
             {{ busy ? (created ? 'Preparing…' : 'Creating…') : created ? 'Check again' : 'Create workspace' }}
           </button>
         </div>
