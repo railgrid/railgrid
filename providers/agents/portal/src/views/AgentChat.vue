@@ -50,6 +50,7 @@ import RenameChatDialog from '../agentkit/AIConversationRenameDialog.vue'
 import ChatTitleControl from '../components/ChatTitleControl.vue'
 import { agentChatDraftStorageKey, clearAgentChatDraft, readAgentChatDraft, writeAgentChatDraft, type AgentChatDraft } from '../chatDraft'
 import { assistantAttachmentContentTypeKind } from '../agentkit/composerAttachments'
+import { failureReason, track } from '../telemetry'
 
 const domID = useAgentDOMID()
 
@@ -2230,6 +2231,8 @@ async function send(): Promise<void> {
     skillRefs: submittedSkills.map((skill) => ({ id: skill.id, sha256: skill.digest! })),
     skillViews: submittedSkills,
   })
+  // Count only: no content, length, attachment or skill detail.
+  track('chat_message_sent')
   await streamTurn(userID, (signal) => props.api.chatStream(props.name, text, requestSession, signal, {
     contentParts: submittedParts,
     contextResources: submittedResources,
@@ -2293,6 +2296,7 @@ async function streamTurn(
   const acceptTurn = () => {
     if (turnAccepted || !submittedDraft) return
     turnAccepted = true
+    track('run_started')
     clearTerminalTranscriptRefresh()
     const receiptIDs = submittedDraft.contentParts.flatMap((part) => part.type === 'attachment' ? [part.attachment.id] : [])
     clearAgentChatDraft(requestDraftStorageKey)
@@ -2536,6 +2540,8 @@ async function streamTurn(
           const status = data.status === undefined
             ? 'completed'
             : progressStatusForRunPhase(data.status) || 'failed'
+          // status is one of the AITurnProgressStatus literals, never server text.
+          track('run_finished', { status })
           if (['completed', 'aborted', 'failed', 'interrupted'].includes(status)) closeApprovalRecovery(data.runID || liveRunID)
           const finalContent = data.finalContent !== undefined
             ? data.finalContent
@@ -2563,6 +2569,7 @@ async function streamTurn(
           const status = data.status === undefined
             ? 'failed'
             : progressStatusForRunPhase(data.status) || 'failed'
+          track('run_failed', { status })
           if (data.status !== undefined && ['completed', 'aborted', 'failed', 'interrupted'].includes(status)) closeApprovalRecovery(data.runID || liveRunID)
           patchMessage(assistantID, {
             error: data.message || 'stream error',
@@ -2592,6 +2599,7 @@ async function streamTurn(
     if (!streamIsCurrent(serial, controller, name, api)) return
     if (onAnswerAccepted && !started) throw error
     admissionRefused = error instanceof ApiError && [400, 401, 403, 404, 409, 422, 429].includes(error.status)
+    if (!started && !stopRequested.value) track('chat_send_failed', { reason: failureReason(error) })
     if (!started && submittedDraft?.skills.length && error instanceof ApiError && error.status === 400) {
       skillSendRejected = true
       void loadSkillCatalog(name, api)
@@ -2667,6 +2675,7 @@ async function streamTurn(
 
 async function stopActiveRun(): Promise<void> {
   if (composerStopping.value) return
+  track('run_stop', { surface: 'chat' })
   if (streaming.value) await stop()
   else await cancelOrphan()
 }
@@ -2749,6 +2758,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
     const item = await (decision === 'answer'
       ? api.resolveInbox(inboxID, decision, response, name)
       : api.resolveInbox(inboxID, decision))
+    track('approval_resolved', { decision, surface: 'chat' })
     if (!requestIsCurrent()) return
     if (target?.approval) {
       showResolution(decision, item?.response ?? (typeof response === 'string' ? response : undefined), optimisticAIMessageActor(api.context()?.user), item?.payload?.answers)
@@ -2759,6 +2769,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
       : decision === 'approve' ? 'Approved — resuming the run.' : 'Denied.')
     void store.load('inbox')
   } catch (error) {
+    track('approval_resolve_failed', { decision, surface: 'chat', reason: failureReason(error) })
     if (requestIsCurrent()) {
       toast('error', inboxResolutionFailureMessage(decision, error instanceof ApiError ? error.status : undefined))
       // A question answer stream may disconnect before its start frame. It

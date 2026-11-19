@@ -22,6 +22,7 @@ function requirements(template: AgentTemplate): string {
       :aria-labelledby="`${id}-${template.metadata.name}-title`"
       :aria-describedby="`${id}-${template.metadata.name}-details`"
       :aria-current="template.metadata.name === selected ? 'true' : undefined"
+      data-track="agent_template_select"
       @click="emit('select', template.metadata.name)"
     >
       <span class="agents-card-glyph"><LayoutTemplate aria-hidden="true" /></span>

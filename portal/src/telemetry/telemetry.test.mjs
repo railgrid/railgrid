@@ -23,7 +23,7 @@ const source = await readFile(path.join(here, 'telemetry.ts'), 'utf8')
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } })
 const mod = { exports: {} }
 new Function('module', 'exports', outputText)(mod, mod.exports)
-const { routePattern, pageEvent, trackProps, externalOrigin, createTracker, MAX_BATCH } = mod.exports
+const { routePattern, pageEvent, repeatsPage, allowedBeforeSignIn, providerOfTag, providerEvent, trackProps, externalOrigin, createTracker, MAX_BATCH } = mod.exports
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
 const WORKSPACE = `/:orgID${UUID}/:workspaceID${UUID}`
@@ -59,9 +59,40 @@ test('a provider name that is not a plain name stays a placeholder', () => {
   assert.equal(routePattern(route, () => 'platform'), '/:orgID/:workspaceID/providers/:name')
 })
 
+test('moving around inside a provider is one page view, moving between pages is not', () => {
+  const edges = { type: 'page', name: 'provider-frame', route: '/:orgID/:workspaceID/providers/edges' }
+  const agents = { type: 'page', name: 'provider-frame', route: '/:orgID/:workspaceID/providers/agents' }
+  const detail = { type: 'page', name: 'mcp-detail', route: '/:orgID/:workspaceID/mcp/:name' }
+  assert.equal(repeatsPage(undefined, edges), false)
+  assert.equal(repeatsPage(edges, { ...edges }), true)
+  assert.equal(repeatsPage(edges, agents), false)
+  // Two resources of one kind share a pattern but are two visits.
+  assert.equal(repeatsPage(detail, { ...detail }), false)
+})
+
 test('the catch-all and unnamed routes still produce a valid event', () => {
   assert.deepEqual(pageEvent({ name: 'not-found', matched: [{ path: '/:pathMatch(.*)*' }] }), { type: 'page', name: 'not-found', route: '/:pathMatch' })
   assert.deepEqual(pageEvent({ name: Symbol('x'), matched: [] }), { type: 'page', name: 'unnamed', route: '/' })
+})
+
+test('before sign-in only the sign-in page reports, and only as itself', () => {
+  assert.equal(allowedBeforeSignIn({ type: 'page', name: 'login', route: '/login' }), true)
+  assert.equal(allowedBeforeSignIn({ type: 'page', name: 'auth-callback', route: '/auth/callback' }), true)
+  assert.equal(allowedBeforeSignIn({ type: 'event', name: 'sign_in', route: '/login' }), true)
+  assert.equal(allowedBeforeSignIn({ type: 'page', name: 'dashboard', route: '/:orgID/:workspaceID' }), false)
+  assert.equal(allowedBeforeSignIn({ type: 'page', name: 'login', route: '/:orgID/:workspaceID' }), false)
+  assert.equal(allowedBeforeSignIn({ type: 'event', name: 'create_workspace', route: '/login' }), false)
+})
+
+test("a platform provider's events carry its name; an organization's own provider reports nothing", () => {
+  assert.equal(providerOfTag('RAILGRID-PROVIDER-APP-STUDIO'), 'app-studio')
+  assert.equal(providerOfTag('DIV'), '')
+  assert.equal(providerOfTag('railgrid-provider-'), '')
+  assert.deepEqual(providerEvent('edges', 'platform', { placement: 'header' }), { placement: 'header', provider: 'edges' })
+  // The provider label is the host's, not the bundle's.
+  assert.deepEqual(providerEvent('edges', 'platform', { provider: 'spoofed' }), { provider: 'edges' })
+  assert.equal(providerEvent('acme-internal-billing', 'org', { customer: 'Initech' }), null)
+  assert.equal(providerEvent('not-in-catalog', 'unknown'), null)
 })
 
 test('data-track-* attributes become event properties', () => {

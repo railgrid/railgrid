@@ -7,6 +7,7 @@ import { listWorkloads, listWorkloadsPage, deleteWorkload, listEdges, isContextC
 import type { Workload, Edge, ErrorResponse } from './types'
 import { confirmDialog } from './portalkit/confirm'
 import { toast } from './portalkit/toast'
+import { track, trackFailure } from './telemetry'
 import { portalHref } from './portalkit/navigation'
 import { edgeConnectPath, workloadDeployPath } from './routes'
 import ResourceTable from './portalkit/ResourceTable.vue'
@@ -380,6 +381,7 @@ async function onDelete(w: Workload) {
   deletingWorkload.value = w.name
   try {
     await deleteWorkload(w.name)
+    track('workload_deleted')
     if (stopped) return
     clearDeleteFailure(w.name)
     toast('info', `Workload deletion requested for ${w.name}.`)
@@ -390,6 +392,7 @@ async function onDelete(w: Workload) {
     await nextTick()
     if (focusedAction && !focusedAction.isConnected && document.activeElement === document.body) workloadsHeading.value?.focus()
   } catch (e) {
+    trackFailure('workload_delete_failed', e)
     if (!stopped && !isContextChangedError(e)) deleteFailures.value = { ...deleteFailures.value, [w.name]: { name: w.name, message: (e as ErrorResponse)?.message ?? 'The request failed.' } }
   } finally {
     deletingWorkload.value = null
@@ -465,6 +468,8 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
         <a
           class="k-btn k-btn--primary"
           :href="portalHref(`/ui/providers/edges/${workloadDeployPath('manual')}`)"
+          data-track="workload_create_open"
+          data-track-placement="header"
           @click="followCreateLink"
         >
           <Plus :size="14" aria-hidden="true" /> New workload
@@ -485,7 +490,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       :steps="[]"
     >
       <template #icon><component :is="hasKubernetesEdges ? Boxes : Server" aria-hidden="true" /></template>
-      <template #actions><a class="k-btn k-btn--primary" :href="firstRunHref" @click="followFirstRunLink">{{ hasKubernetesEdges ? 'Create workload' : 'Connect edge' }} <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>
+      <template #actions><a class="k-btn k-btn--primary" :href="firstRunHref" :data-track="hasKubernetesEdges ? 'workload_create_open' : 'edge_connect_click'" :data-track-placement="hasKubernetesEdges ? 'first_run' : 'workloads_first_run'" @click="followFirstRunLink">{{ hasKubernetesEdges ? 'Create workload' : 'Connect edge' }} <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>
     </FirstRunGuide>
 
     <ResourceDeleteFailure v-for="(failure, key) in deleteFailures" :key="key" :title="`Could not delete workload ${failure.name}`" :message="failure.message" @dismiss="dismissDeleteFailure(String(key))" />

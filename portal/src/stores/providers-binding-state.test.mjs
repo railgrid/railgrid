@@ -16,6 +16,7 @@ const sourceWithoutImports = storeSource
   .replace("import { defineStore } from 'pinia'\n", '')
   .replace("import { computed, ref } from 'vue'\n", '')
   .replace("import { authFetch } from '@/auth/session'\n", '')
+  .replace("import { trackEvent } from '@/telemetry/track'\n", '')
 const navigationSource = fs.readFileSync(path.join(root, 'portal/src/portalkit/navigation.ts'), 'utf8')
 const harness = `
 ${navigationSource}
@@ -33,6 +34,7 @@ const defineStore = (_name, setup) => () => {
   })
 }
 const authFetch = (...args) => globalThis.__providerAuthFetch(...args)
+const trackEvent = (name, props) => { globalThis.__providerTelemetry?.push({ name, props }) }
 `
 const { outputText } = ts.transpileModule(`${harness}\n${sourceWithoutImports}`, {
   compilerOptions: {
@@ -261,6 +263,28 @@ test('ordinary enable directs the user to resume setup without retrying', async 
 
   await assert.rejects(store.enable(provider, []), /Resume it from Getting started/)
   assert.equal(requests, 1)
+})
+
+test('a failed enable is reported by status, never by provider-chosen names or response text', async () => {
+  setSelection('org-a', 'workspace-a')
+  const store = storeModule.useProvidersStore()
+  const events = globalThis.__providerTelemetry = []
+  try {
+    globalThis.__providerAuthFetch = async () => ({
+      ...response(null, { ok: false, status: 403, statusText: 'Forbidden' }),
+      text: async () => 'acme-internal-billing is forbidden for alice@acme.example',
+    })
+    const own = { name: 'acme-internal-billing', scope: 'org', export: { name: 'x.export', path: 'root:railgrid:tenants:org-a:providers:x' } }
+    await assert.rejects(store.enable(own, []), /403/)
+    const platform = { name: 'edges', scope: 'global', export: { name: 'edges.export', path: 'root:railgrid:providers:edges' } }
+    await assert.rejects(store.enable(platform, []), /403/)
+    assert.deepEqual(events, [
+      { name: 'provider_enable_failed', props: { provider: 'org-provider', flow: 'enable', status: '403' } },
+      { name: 'provider_enable_failed', props: { provider: 'edges', flow: 'enable', status: '403' } },
+    ])
+  } finally {
+    delete globalThis.__providerTelemetry
+  }
 })
 
 test('guided setup fails closed on a hub that does not support the setup endpoint', async () => {

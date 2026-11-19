@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ArrowRight, Box, Database, ExternalLink, FileCog, Loader2, Network, RefreshCw, Route, Server, Workflow } from 'lucide-vue-next'
 import type { DevelopmentTemplate, RailgridContext, ProjectPlan } from './types'
 import { api } from './api'
+import { failureReason, track } from './telemetry'
 import type { CreateSetupItem } from './createReadiness'
 import AssistantPreProjectComposer from './AssistantPreProjectComposer.vue'
 import type { AssistantStagedAttachment } from './assistantAttachments'
@@ -179,8 +180,10 @@ async function runPlan() {
     }
     displayName.value = result.displayName
     step.value = 'confirm'
+    track(props.ctx, 'project_create_step', { step: 'confirm' })
   } catch (e) {
     if (serial !== planRequestSerial) return
+    track(props.ctx, 'project_plan_failed', { reason: failureReason(e) })
     error.value = e instanceof Error ? e.message : 'Could not plan the project. Try again.'
     // Keep manually entered wizard behavior intact: an error returns to the
     // editable intake. A submitted landing idea remains on the honest

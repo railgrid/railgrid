@@ -42,6 +42,7 @@ import Toolsets from './views/Toolsets.vue'
 import Models from './views/Models.vue'
 import Automation from './views/Automation.vue'
 import Webhooks from './views/Webhooks.vue'
+import { setTelemetryContext } from './telemetry'
 
 const props = defineProps<{ ctx: RailgridContext | null; host: HTMLElement; overlay?: AgentOverlayState }>()
 
@@ -373,6 +374,7 @@ function rotateContext(context: RailgridContext | null, resetRoute: boolean): vo
 }
 
 function applyContext(context: RailgridContext | null): void {
+  setTelemetryContext(context)
   const previous = authority
   const next = api.value.contextAuthority(context)
   const changed = previous !== null && (

@@ -15,20 +15,33 @@
 import type { Router } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useProvidersStore } from '@/stores/providers'
-import { createTracker, externalOrigin, pageEvent, routePattern, trackProps, type ProviderKind, type TelemetryEvent } from './telemetry'
+import { allowedBeforeSignIn, createTracker, externalOrigin, pageEvent, providerEvent, providerOfTag, repeatsPage, routePattern, trackProps, type ProviderKind, type TelemetryEvent } from './telemetry'
+import { setTrack, trackEvent } from './track'
 
 const EVENTS_PATH = '/api/telemetry/events'
+// The sign-in page reports here, without credentials. The hub accepts only
+// that page's own events on it.
+const PUBLIC_EVENTS_PATH = '/api/telemetry/public'
 // Where the user came from, kept for the tab's lifetime: the sign-in redirect
 // reloads the app, and by then document.referrer names the identity provider.
 const REFERRER_KEY = 'railgrid:telemetry:referrer'
 
-let track: (name: string, props?: Record<string, string>) => void = () => {}
+// trackEvent records an outcome or a flow step from host code; see track.ts.
+// For a click, prefer the declarative form in the markup:
+// <button data-track="enable_provider" data-track-placement="card">.
+export { trackEvent }
 
-// trackEvent records a named interaction from host code. It does nothing
-// unless the operator enabled telemetry. Markup should prefer the declarative
-// form: <button data-track="enable_provider" data-track-placement="card">.
-export function trackEvent(name: string, props?: Record<string, string>): void {
-  track(name, props)
+let providerKindOf: (name: string) => ProviderKind = () => 'unknown'
+
+// providerTracker is the `track` function the host hands a provider's UI on
+// railgridContext, for outcomes that are not clicks. Events from a platform
+// provider are labelled with its name; an organization's own provider gets a
+// function that records nothing.
+export function providerTracker(provider: string): (name: string, props?: Record<string, string>) => void {
+  return (name, props) => {
+    const labelled = providerEvent(provider, providerKindOf(provider), props)
+    if (labelled) trackEvent(name, labelled)
+  }
 }
 
 // installTelemetry connects the tracker to the router and the document. It is
@@ -39,34 +52,37 @@ export function trackEvent(name: string, props?: Record<string, string>): void {
 // data-track attribute inside a provider element is seen by the same listener.
 export function installTelemetry(router: Router): void {
   const arrivedFrom = externalOrigin(document.referrer, window.location.origin)
-  const enabled = () => {
-    const auth = useAuthStore()
-    // The relay only accepts signed-in callers; before sign-in there is
-    // nothing to send and no one to send it as.
-    return auth.healthz?.telemetry === true && !!auth.token
-  }
+  const enabled = () => useAuthStore().healthz?.telemetry === true
 
   function send(events: TelemetryEvent[]): void {
     const token = useAuthStore().token
-    if (!token) return
+    // Before sign-in only the sign-in page's own events leave, to the route
+    // that takes no credentials.
+    if (!token) events = events.filter(allowedBeforeSignIn)
+    if (!events.length) return
     // Plain fetch on purpose: a rejected telemetry call must not trip the
     // session-expired handling that authFetch applies to real API calls.
-    void fetch(EVENTS_PATH, {
+    void fetch(token ? EVENTS_PATH : PUBLIC_EVENTS_PATH, {
       method: 'POST',
       keepalive: true,
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ events }),
     }).catch(() => { /* best effort */ })
   }
 
   const tracker = createTracker({ enabled, send })
+  // Signed out, anything but the sign-in page's own events is not recorded.
+  const record = (event: TelemetryEvent) => {
+    if (useAuthStore().token || allowedBeforeSignIn(event)) tracker.record(event)
+  }
   // Platform provider names are ours and safe to report; an organization's
   // own provider is named by that organization and is not.
   const providerKind = (name: string): ProviderKind => {
     const provider = useProvidersStore().items.find((item) => item.name === name)
     return provider ? (provider.scope === 'global' ? 'platform' : 'org') : 'unknown'
   }
+  providerKindOf = providerKind
   const context = () => ({
     screen: `${window.screen.width}x${window.screen.height}`,
     language: navigator.language,
@@ -85,34 +101,47 @@ export function installTelemetry(router: Router): void {
   }
 
   let firstPage = true
+  let lastPage: TelemetryEvent | undefined
   router.afterEach((to, _from, failure) => {
     if (failure) return
     if (useAuthStore().healthz?.telemetry === true) landingReferrer()
     if (!enabled()) return
     const event: TelemetryEvent = { ...pageEvent(to, providerKind), ...context() }
+    if (repeatsPage(lastPage, event)) return
+    lastPage = event
     if (firstPage) {
       firstPage = false
       const referrer = landingReferrer()
       if (referrer) event.referrer = referrer
     }
-    tracker.record(event)
+    record(event)
   })
 
-  track = (name, props) => {
-    tracker.record({ type: 'event', name, route: routePattern(router.currentRoute.value, providerKind), props, ...context() })
+  const track = (name: string, props?: Record<string, string>) => {
+    record({ type: 'event', name, route: routePattern(router.currentRoute.value, providerKind), props, ...context() })
   }
+  setTrack(track)
 
   function onClick(event: MouseEvent): void {
     // A middle click opens a link too; other auxiliary buttons do not.
     if (event.type === 'auxclick' && event.button !== 1) return
     const element = (event.target as Element | null)?.closest?.<HTMLElement>('[data-track]')
-    if (element?.dataset.track) track(element.dataset.track, trackProps(element.dataset))
+    if (!element?.dataset.track) return
+    let props: Record<string, string> | null = trackProps(element.dataset)
+    // A control inside a provider's UI: see providerEvent for what may leave.
+    let provider = ''
+    for (let node: Element | null = element; node && !provider; node = node.parentElement) provider = providerOfTag(node.tagName)
+    if (provider) props = providerEvent(provider, providerKind(provider), props)
+    if (props) track(element.dataset.track, props)
   }
   document.addEventListener('click', onClick, true)
   document.addEventListener('auxclick', onClick, true)
 
-  // Deliver what is queued before the tab goes away.
+  // Deliver what is queued before the tab goes away. pagehide covers a
+  // navigation to another site (the identity provider, checkout), which is
+  // exactly when the last click is the one worth having.
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') tracker.flush()
   })
+  window.addEventListener('pagehide', () => tracker.flush())
 }

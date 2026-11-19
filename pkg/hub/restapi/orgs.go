@@ -265,6 +265,7 @@ func (h *Handler) waitForCreatedOrg(w http.ResponseWriter, r *http.Request, orgU
 	view := projectOrg(ready)
 	// The controller has seeded the creator's org access.
 	view.Role = tenancyv1alpha1.MembershipRoleAdmin
+	h.track(r, "organization_created", nil)
 	writeJSON(w, http.StatusCreated, view)
 }
 

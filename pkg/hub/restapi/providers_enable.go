@@ -323,6 +323,17 @@ func (h *Handler) enableProviderWithMode(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
+	// An organization's own provider is named by that organization, so only
+	// a platform provider is reported by name.
+	tracked := map[string]string{"provider": "org-provider", "flow": "enable"}
+	if prov.OrgUUID == "" {
+		tracked["provider"] = providerName
+	}
+	if setup {
+		tracked["flow"] = "setup"
+	}
+	h.track(r, "provider_enabled", tracked)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)

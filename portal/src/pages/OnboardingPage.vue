@@ -27,6 +27,7 @@ import { UUID_PATTERN } from '@/portalkit/navigation'
 import { readOrganizationWorkspace } from '@/router/landingPreference'
 import { preferredWorkspace } from '@/router/workspaceEntry'
 import { useAuthStore } from '@/stores/auth'
+import { trackEvent } from '@/telemetry/track'
 import { isWorkspaceAvailable, isWorkspaceUsable, useTenantStore, type OrgBillingPlan, type OrgRow, type WorkspaceRow } from '@/stores/tenant'
 
 const auth = useAuthStore()
@@ -66,6 +67,13 @@ const error = ref('')
 const busy = ref(false)
 const status = ref('')
 const lifetime = new AbortController()
+
+// Telemetry: where in the flow an attempt stopped. A fixed label, never the
+// error text, which can carry an organization name.
+let stage: 'organization' | 'checkout' | 'workspace' | 'activation' = 'workspace'
+// Only a plan from the loaded catalog is reported by name; the plan can also
+// arrive in the URL, which is not ours.
+const planLabel = () => startWith.value === 'personal' ? '' : plan.value === 'free' ? 'free' : selectedOffer.value?.name || 'other'
 
 const current = () => !lifetime.signal.aborted && authSessionRevision() === session
 onBeforeUnmount(() => {
@@ -159,6 +167,7 @@ type FirstTaskAudience = 'personal' | 'team'
 // The first-task guide opens in the audience the user just chose here, and
 // every wait on this page shares one budget rather than nesting its own.
 async function openWorkspace(org: string, audience: FirstTaskAudience, deadline = Date.now() + 60_000) {
+  stage = 'workspace'
   status.value = 'Preparing your workspace…'
   const remembered = readOrganizationWorkspace(auth.user, org)
   while (current() && Date.now() < deadline) {
@@ -177,6 +186,7 @@ async function openWorkspace(org: string, audience: FirstTaskAudience, deadline 
         : { name: 'workspace-chooser', params: { orgID: org } }
       const failure = await router.replace({ ...destination, query: { firstTask: audience } })
       if (failure && current()) throw new Error('Unable to open your workspace. Try again.')
+      if (!failure) trackEvent('onboarding_completed', { start: audience === 'personal' ? 'personal' : 'organization' })
       return !failure
     }
     await delay()
@@ -213,6 +223,8 @@ async function submit() {
   let leavingForCheckout = false
   busy.value = true
   error.value = ''
+  stage = startWith.value === 'personal' ? 'workspace' : 'organization'
+  trackEvent('onboarding_submit', { start: startWith.value, plan: planLabel() })
   try {
     if (startWith.value === 'personal') {
       await openPersonalWorkspace()
@@ -232,9 +244,11 @@ async function submit() {
       saveDraft({ name: organizationName, requestId, org: org.uuid, plan: plan.value })
     }
     if (offer && priceAvailable(price)) {
+      stage = 'checkout'
       status.value = 'Opening checkout…'
       const url = await tenant.startOrgCheckout(createdOrg.value, offer.name, price.id, true)
       if (current()) {
+        trackEvent('onboarding_checkout_opened', { plan: planLabel() })
         window.location.assign(url)
         leavingForCheckout = true
       }
@@ -244,6 +258,7 @@ async function submit() {
     if (opened && authSessionRevision() === session) saveDraft(null)
   } catch (err) {
     if (!current()) return
+    trackEvent('onboarding_failed', { start: startWith.value, stage })
     error.value = err instanceof Error ? err.message : 'Unable to continue. Try again.'
     if (createdOrg.value && !canceled && !(await draftOrgUsable(createdOrg.value)) && current()) {
       startOver('That organization is no longer available. Start again to create a new one.')
@@ -262,6 +277,7 @@ async function checkActivation() {
   error.value = ''
   status.value = ''
   const deadline = Date.now() + 60_000
+  stage = 'activation'
   try {
     while (current() && Date.now() < deadline) {
       const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(12_000)])
@@ -280,8 +296,12 @@ async function checkActivation() {
       }
       await delay()
     }
-    if (current()) error.value = 'Plan activation is taking longer than expected. Check again to continue.'
+    if (current()) {
+      trackEvent('onboarding_failed', { start: 'organization', stage: 'activation' })
+      error.value = 'Plan activation is taking longer than expected. Check again to continue.'
+    }
   } catch (err) {
+    if (current()) trackEvent('onboarding_failed', { start: 'organization', stage })
     if (current()) error.value = status.value && err instanceof Error ? err.message : 'Unable to confirm your subscription. Check again to continue.'
   } finally {
     if (current()) busy.value = false
@@ -307,6 +327,7 @@ async function draftOrgUsable(org: string): Promise<boolean> {
 }
 
 function startOver(message = '') {
+  if (!message) trackEvent('onboarding_start_over')
   saveDraft(null)
   createdOrg.value = ''
   error.value = message
@@ -334,6 +355,8 @@ async function restoreCanceledCheckout() {
 
 onMounted(() => {
   window.addEventListener('pageshow', resumeAfterCheckoutBack)
+  if (confirming) trackEvent('onboarding_checkout_returned')
+  else if (canceled) trackEvent('onboarding_checkout_canceled')
   if (confirming) void checkActivation()
   else {
     void loadPrices()
@@ -409,7 +432,7 @@ onMounted(() => {
           <div class="flex flex-wrap justify-end gap-2">
             <button v-if="(createdOrg || draft) && !canceled && error && !busy" type="button" class="k-btn k-btn--text min-h-11" @click="startOver()">Start over</button>
             <button v-if="canceled && !createdOrg" type="button" class="k-btn k-btn--primary min-h-11" :disabled="busy" @click="restoreCanceledCheckout">Try again</button>
-            <a v-else-if="enterprise" class="k-btn k-btn--primary min-h-11" href="https://railgrid.ai/contact/" target="_blank" rel="noopener noreferrer">
+            <a v-else-if="enterprise" class="k-btn k-btn--primary min-h-11" data-track="contact_sales" data-track-placement="onboarding" href="https://railgrid.ai/contact/" target="_blank" rel="noopener noreferrer">
               Contact sales <ExternalLink class="h-4 w-4" aria-hidden="true" /><span class="sr-only"> (opens in a new tab)</span>
             </a>
             <button v-else type="submit" class="k-btn k-btn--primary min-h-11" :disabled="busy || !valid" :aria-busy="busy">

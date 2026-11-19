@@ -555,6 +555,7 @@ onBeforeUnmount(() => {
         class="account-menu-item k-menu-item"
         :disabled="!developerAccessReady"
         :title="developerAccessDisabledReason"
+        data-track="open_cli_quickstart"
         @click="emitAndClose('cli')"
       >
         <Terminal class="h-3.5 w-3.5 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />

@@ -38,6 +38,9 @@ export interface RailgridContext {
   fetch?: ProviderFetch | null
   /** @deprecated Read-only fallback for older hosts; use fetch. */
   token?: string | null
+  // track records a product-telemetry outcome (src/telemetry.ts). Absent on
+  // an older host and when telemetry is off.
+  track?: ((name: string, props?: Record<string, string>) => void) | null
   user?: { email?: string; sub?: string; userId?: string } | null
   // tenant is the kcp cluster name of the active workspace (host-side id).
   tenant?: string | null

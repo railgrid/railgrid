@@ -225,3 +225,98 @@ func TestUmamiSinkReportsARejectedEvent(t *testing.T) {
 		t.Fatal("a 400 from the backend must be an error")
 	}
 }
+
+func TestRecordQueuesAHubSideOutcomeUnderTheCallersBrowser(t *testing.T) {
+	sink := recordingSink{got: make(chan queued, 2)}
+	relay := NewRelay(sink, func(*http.Request) string { return "203.0.113.7" })
+	go relay.Run(t.Context())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/orgs/0b9c6a1e/workspaces/7d1f0c2a/providers/agents/enable", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 test")
+	relay.Record(req, "provider_enabled", map[string]string{"provider": "agents", "flow": "enable"})
+	// A name outside the contract is dropped, not delivered half-formed.
+	relay.Record(req, "Provider Enabled", nil)
+
+	select {
+	case q := <-sink.got:
+		want := queued{
+			client: Client{IP: "203.0.113.7", UserAgent: "Mozilla/5.0 test"},
+			// Never the request path: it carries organization and workspace IDs.
+			event: Event{Type: "event", Name: "provider_enabled", Route: "/hub", Props: map[string]string{"provider": "agents", "flow": "enable"}},
+		}
+		if !reflect.DeepEqual(q, want) {
+			t.Errorf("got %+v\nwant %+v", q, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("outcome was not delivered")
+	}
+	select {
+	case q := <-sink.got:
+		t.Fatalf("invalid outcome was delivered: %+v", q)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// With telemetry off the handlers hold a nil relay.
+	var off *Relay
+	off.Record(req, "provider_enabled", nil)
+}
+
+func TestPublicHandlerAcceptsOnlyTheSignInPage(t *testing.T) {
+	sink := recordingSink{got: make(chan queued, 8)}
+	relay := NewRelay(sink, func(*http.Request) string { return "203.0.113.7" })
+	go relay.Run(t.Context())
+	allowed := true
+	handler := relay.PublicHandler(func(string) bool { return allowed })
+
+	post := func(body string) int {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/telemetry/public", strings.NewReader(body)))
+		return rec.Code
+	}
+	delivered := func() []Event {
+		var out []Event
+		for {
+			select {
+			case q := <-sink.got:
+				out = append(out, q.event)
+			case <-time.After(100 * time.Millisecond):
+				return out
+			}
+		}
+	}
+
+	if code := post(`{"events":[
+		{"type":"page","name":"login","route":"/login","referrer":"https://railgrid.ai/pricing","props":{"x":"y"}},
+		{"type":"event","name":"sign_in","route":"/login","props":{"method":"oidc","email":"alice@example.com"}},
+		{"type":"page","name":"dashboard","route":"/:orgID/:workspaceID"},
+		{"type":"event","name":"anything_else","route":"/login"}
+	]}`); code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", code)
+	}
+	want := []Event{
+		{Type: "page", Name: "login", Route: "/login", Referrer: "https://railgrid.ai"},
+		{Type: "event", Name: "sign_in", Route: "/login", Props: map[string]string{"method": "oidc"}},
+	}
+	if got := delivered(); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v\nwant %+v", got, want)
+	}
+
+	// A page name that is allowed cannot be used to smuggle another route.
+	post(`{"events":[{"type":"page","name":"login","route":"/attacker/chosen"}]}`)
+	if got := delivered(); len(got) != 0 {
+		t.Errorf("a login page with a foreign route was delivered: %+v", got)
+	}
+
+	if code := post(`{"events":[` + strings.TrimSuffix(strings.Repeat(`{"type":"page","name":"login","route":"/login"},`, maxPublicBatch+1), ",") + `]}`); code != http.StatusRequestEntityTooLarge {
+		t.Errorf("oversized batch: status = %d, want 413", code)
+	}
+
+	// Over the limit: same answer, nothing recorded.
+	allowed = false
+	if code := post(`{"events":[{"type":"page","name":"login","route":"/login"}]}`); code != http.StatusNoContent {
+		t.Errorf("limited caller: status = %d, want 204", code)
+	}
+	if got := delivered(); len(got) != 0 {
+		t.Errorf("a limited caller's event was delivered: %+v", got)
+	}
+}

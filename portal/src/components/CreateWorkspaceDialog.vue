@@ -8,6 +8,7 @@ import { authFetch } from '@/auth/session'
 import { useAuthStore } from '@/stores/auth'
 import { isWorkspaceUsable, useTenantStore, type WorkspaceRow } from '@/stores/tenant'
 import { billingSettingsLocation, clearBillingState, saveWorkspaceBillingDraft, workspaceLimitError } from '@/lib/billing-flow'
+import { trackEvent } from '@/telemetry/track'
 
 const props = defineProps<{ initialName?: string }>()
 const emit = defineEmits<{ close: [] }>()
@@ -136,6 +137,7 @@ async function submit() {
     await checkReady(revision)
   } catch (e) {
     if (!current(revision)) return
+    trackEvent('workspace_create_failed', { placement: 'dialog', reason: limitReached.value ? 'limit' : 'error' })
     error.value = e instanceof Error ? e.message : 'Unable to create the workspace. Try again.'
     busy.value = false
   }
@@ -204,7 +206,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="k-modal__actions">
           <button type="button" class="k-btn k-btn--secondary" @click="close">{{ busy || created ? 'Close' : 'Cancel' }}</button>
-          <button type="submit" class="k-btn k-btn--primary" data-track="create_workspace" :disabled="busy || (!created && (!name.trim() || !canCreate))">
+          <button type="submit" class="k-btn k-btn--primary" data-track="create_workspace" data-track-placement="dialog" :disabled="busy || (!created && (!name.trim() || !canCreate))">
             {{ busy ? (created ? 'Preparing…' : 'Creating…') : created ? 'Check again' : 'Create workspace' }}
           </button>
         </div>

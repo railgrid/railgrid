@@ -14,6 +14,7 @@ import type { Edge, EdgeDetail, EdgeHarnessSpec, EdgeType, ErrorResponse, Harnes
 // by hand.
 import serviceCatalogAsset from './service-catalog.json'
 import { providerFetch, type ProviderFetch } from './portalkit/tenant'
+import { noteFailureStatus } from './telemetry'
 import {
   createKubeClient,
   isKubeError,
@@ -166,6 +167,13 @@ function requireTenant(context: RequestContext): string {
 // failure stays HTTPError with the server's Status message.
 function toErrorResponse(error: unknown): unknown {
   if (!isKubeError(error)) return error
+  const response = kubeErrorResponse(error)
+  // Telemetry reports a failure by HTTP class; the views' contract drops it.
+  noteFailureStatus(response, error.status)
+  return response
+}
+
+function kubeErrorResponse(error: KubeError): ErrorResponse {
   if (error.status >= 200 && error.status < 300) return protocolError(error.message)
   if (error.status === 404) {
     if (isKubeResourceUnavailable(error)) {

@@ -225,6 +225,7 @@ func (h *Handler) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	// The creator was just seeded as workspace admin (UMI row above).
 	view.Role = tenancyv1alpha1.MembershipRoleAdmin
+	h.track(r, "workspace_created", nil)
 	writeJSON(w, http.StatusCreated, view)
 }
 

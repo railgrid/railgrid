@@ -46,6 +46,7 @@ import {
   type HarnessWorkspace,
 } from '../types'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import { track } from '../telemetry'
 
 const REASONING_EFFORT_RE = /^[a-z][a-z0-9_-]{0,31}$/
 const NAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
@@ -436,6 +437,7 @@ function addCredential(family: AgentCredentialFamily): void {
 
 function cancel(): void {
   if (busy.value) return
+  track('agent_create_cancel')
   emit('create-cancel', {
     store: props.store,
     authorityEpoch: props.authorityEpoch,
@@ -445,6 +447,9 @@ function cancel(): void {
 
 async function submit(): Promise<void> {
   if (busy.value) return
+  // Fixed labels only: the backend type and whether a template is in use.
+  const telemetryProps = { backend: isHarness.value ? 'harness' : 'model', template: template.value ? 'yes' : 'no' }
+  track('agent_create_submit', telemetryProps)
   clearErrors()
   const normalizedName = name.value.trim()
   if (!normalizedName) errors.name = 'A name is required.'
@@ -484,6 +489,7 @@ async function submit(): Promise<void> {
     }
   }
   if (Object.keys(errors).length) {
+    track('agent_create_failed', { ...telemetryProps, reason: 'validation' })
     await nextTick()
     form.value?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus()
     return
@@ -516,6 +522,7 @@ async function submit(): Promise<void> {
     result = await mutate(props.store, {
       run: () => props.api.createAgent(body),
       failure: 'Create failed',
+      telemetry: { ok: 'agent_created', failed: 'agent_create_failed', props: telemetryProps },
       reload: ['agents'],
     })
   } finally {
@@ -552,6 +559,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
     instance = instantiateTemplate(chosen, { name: normalizedName, parameters: effectiveParameters.value, wiring })
   } catch (e) {
     errors.template = (e as Error).message
+    track('agent_create_failed', { backend: isHarness.value ? 'harness' : 'model', template: 'yes', reason: 'validation' })
     return
   }
   if (customPrompt.value) {
@@ -594,6 +602,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
     result = await mutate(props.store, {
       run: () => props.api.createAgentFromTemplate(agent, schedules),
       failure: 'Create failed',
+      telemetry: { ok: 'agent_created', failed: 'agent_create_failed', props: { backend: isHarness.value ? 'harness' : 'model', template: 'yes' } },
       reload: schedules.length ? ['agents', 'schedules'] : ['agents'],
     })
   } finally {

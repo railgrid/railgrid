@@ -20,6 +20,7 @@ import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import { toast } from './portalkit/toast'
 import { api, ProjectAPIRequestError } from './api'
+import { closedLabel, failureReason, track } from './telemetry'
 import { llmProviderSelection, type LLMProviderPreset } from './llmDiscovery'
 import { validateLLMBaseURL } from './llmSettingsValidation'
 import type {
@@ -333,6 +334,11 @@ function normalizedConnectionBaseURL(): string {
   return trimmed
 }
 
+// The telemetry label for the provider select: only its five shipped presets.
+function providerPresetLabel(): string {
+  return closedLabel(connectionPreset.value, ['openai', 'anthropic', 'openrouter', 'google', 'custom'])
+}
+
 function providerPresetFor(provider: string, baseURL: string): LLMProviderPreset {
   const normalized = provider.trim().toLowerCase()
   if (normalized === 'google-ai-studio') return 'google'
@@ -531,6 +537,7 @@ async function continueConnection() {
       connectionStage.value = 'verify'
       return
     }
+    track(props.ctx, 'model_provider_connect_failed', { stage: 'discover', preset: providerPresetLabel(), reason: failureReason(error) })
     connectionError.value = error instanceof Error ? error.message : String(error)
     connectionNotice.value = ''
     connectionStage.value = 'details'
@@ -542,6 +549,8 @@ async function continueConnection() {
 
 function acceptSavedConnection(connection: ProjectModelProviderConnection, fingerprint: string) {
   const editing = connectionOriginal.value !== null
+  // connectionPreset is the closed LLMProviderPreset the form's select offers.
+  if (!editing) track(props.ctx, 'model_provider_connected', { preset: providerPresetLabel() })
   pendingConnection.value = connection.activationPending ? connection : null
   connectionAPIKey.value = ''
   connectionEditorOpen.value = false
@@ -664,6 +673,7 @@ async function saveProviderConnection() {
     acceptSavedConnection({ ...result, credentialMode: connectionCredentialMode.value }, fingerprint)
   } catch (error) {
     if (requestSerial !== connectionRequestSerial || fingerprint !== connectionDraftFingerprint.value) return
+    track(props.ctx, 'model_provider_connect_failed', { stage: 'save', preset: providerPresetLabel(), reason: failureReason(error) })
     connectionError.value = error instanceof Error ? error.message : String(error)
   } finally {
     if (requestSerial === connectionRequestSerial) connectionBusy.value = false

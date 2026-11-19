@@ -9,6 +9,7 @@ import { useAuthStore } from '@/stores/auth'
 import { welcomeIdentity } from '@/lib/firstWelcome'
 import { audienceCopy, defaultGoalForAudience, goalBodyForAudience, goalCopy, goalTitleForAudience, purposeForProvider } from '@/lib/onboardingCopy'
 import { planFor, setupReadyFor } from '@/lib/onboardingPlan'
+import { trackEvent } from '@/telemetry/track'
 import { isConfirmedAdmin, onboardingStorageKey, persistOnboardingState, restoreOnboardingState } from '@/lib/onboardingState'
 
 const { scopePath } = useScopedNavigation()
@@ -170,15 +171,23 @@ async function runGuidedSetup() {
   setupRun = operation
   setupPending.value = true
   setupError.value = ''
+  // Telemetry: which check stopped the setup. A fixed label, never the
+  // message, which names Providers an organization may have registered.
+  let stage = 'stale'
+  const setupGoal = goal.value
+  trackEvent('guide_setup_started', { goal: setupGoal })
   try {
     for (const { name, review } of reviewed) {
       if (setupRun !== operation) return
+      stage = 'stale'
       if (!setupDataCurrent.value) throw new Error('Refresh Provider status and try again.')
       if (providers.isEnabled(name)) continue
       const provider = providers.workspaceProvider(name)
+      stage = 'access_changed'
       if (!provider || JSON.stringify(setupReviewFor(provider)) !== JSON.stringify(review)) {
         throw new Error('Requested access changed. Review the updated permissions and try again.')
       }
+      stage = 'unavailable'
       if (!provider.ready || providers.hasMissingDependencies(provider)) {
         throw new Error(`${provider.displayName} or a required Provider is still unavailable. Refresh Provider status and try again.`)
       }
@@ -193,18 +202,23 @@ async function runGuidedSetup() {
         }
       }
       const hubAccess = (review.hubAccess ?? []).filter(access => access.scope === 'workspace')
+      stage = 'enable'
       await providers.enable(provider, claims, hubAccess, compositions, review)
       if (setupRun !== operation) return
+      stage = 'not_ready'
       if (!setupDataCurrent.value || !usableForSetup(name)) {
         throw new Error(`${provider.displayName} is still becoming available. Refresh Provider status to continue.`)
       }
     }
+    if (!setupReady.value) trackEvent('guide_setup_failed', { goal: setupGoal, stage: 'not_ready' })
     if (setupReady.value) {
+      trackEvent('guide_setup_completed', { goal: setupGoal })
       await router.push(destination)
       if (setupRun === operation && router.currentRoute.value.path === destination) emit('dismiss')
     }
   } catch (error) {
     if (setupRun !== operation) return
+    trackEvent('guide_setup_failed', { goal: setupGoal, stage })
     setupError.value = error instanceof Error ? error.message : String(error)
     await providers.load()
   } finally {
@@ -242,6 +256,23 @@ async function focusStep() {
 }
 onMounted(focusStep)
 watch(step, focusStep)
+
+// Telemetry: one event per step shown, so the guide reads as a funnel. The
+// last step also says what the user found there, which is where the guide
+// loses people: a member whose administrator has not set the Workspace up,
+// or an admin whose setup is blocked.
+function guideState(): string {
+  if (exploring.value) return 'explore'
+  if (setupReady.value) return 'ready'
+  if (memberJourney.value) return setupDataCurrent.value ? 'needs_admin' : 'unknown'
+  return setupBlocked.value ? 'blocked' : 'needs_setup'
+}
+watch(step, (value) => {
+  const props: Record<string, string> = { step: ['audience', 'goal', 'setup'][value] ?? 'setup', role: memberJourney.value ? 'member' : 'admin' }
+  if (value >= 1) props.audience = audience.value
+  if (value >= 2) { props.goal = goal.value; props.state = guideState() }
+  trackEvent('guide_step', props)
+}, { immediate: true })
 const finalActionReason = computed(() =>
   setupPending.value ? setupProgress.value : setupReady.value ? '' : setupBlocked.value,
 )
@@ -296,7 +327,7 @@ const finalActionReason = computed(() =>
         <p v-if="copyFailed" role="alert" class="onboarding-help">Couldn’t copy automatically. Select the request above and copy it manually.</p>
       </template>
       <div v-if="!setupReady" class="onboarding-member-actions">
-        <button v-if="setupDataCurrent" type="button" class="k-btn k-btn--text" @click="copySetupRequest"><component :is="requestCopied ? Check : Copy" :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />{{ requestCopied ? 'Request copied' : 'Copy request' }}</button>
+        <button v-if="setupDataCurrent" type="button" class="k-btn k-btn--text" data-track="guide_request_copied" @click="copySetupRequest"><component :is="requestCopied ? Check : Copy" :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />{{ requestCopied ? 'Request copied' : 'Copy request' }}</button>
         <button type="button" class="k-btn k-btn--text" :disabled="providers.loading" @click="providers.load()"><RefreshCw :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />{{ providers.loading ? 'Checking availability…' : 'Check again' }}</button>
       </div>
       <p v-if="!setupReady && setupDataCurrent" class="onboarding-help">You can keep using your Workspace while your administrator sets this up.</p>
@@ -351,7 +382,7 @@ const finalActionReason = computed(() =>
             </dl>
           </div>
         </details>
-        <router-link v-if="!setupPending" :to="scopePath('/providers')" class="text-accent text-[13px]">Browse all Providers</router-link>
+        <router-link v-if="!setupPending" :to="scopePath('/providers')" class="text-accent text-[13px]" data-track="guide_browse_providers">Browse all Providers</router-link>
       </div>
       </div>
     </div>
@@ -363,16 +394,16 @@ const finalActionReason = computed(() =>
     </div>
     <footer class="onboarding-footer">
       <button v-if="step > (props.firstTask ? 1 : 0)" type="button" class="k-btn k-btn--text" :disabled="setupPending" @click="back"><ArrowLeft :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />Back</button>
-      <button v-else type="button" class="k-btn k-btn--ghost" @click="emit('dismiss')">Go to dashboard</button>
-      <router-link v-if="step === 1 && canSkipSetup" :to="scopePath(`/providers/${goal}`)" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">{{ openLabel }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
+      <button v-else type="button" class="k-btn k-btn--ghost" data-track="guide_dismissed" :data-track-step="['audience', 'goal', 'setup'][step]" @click="emit('dismiss')">Go to dashboard</button>
+      <router-link v-if="step === 1 && canSkipSetup" :to="scopePath(`/providers/${goal}`)" class="k-btn k-btn--primary min-h-11 onboarding-control" data-track="guide_open_goal" :data-track-goal="goal" @click="emit('dismiss')">{{ openLabel }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
       <button v-else-if="step < 2" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="next">{{ step === 0 ? 'Continue' : memberJourney ? 'See next steps' : 'Review setup' }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
-      <button v-else-if="memberJourney && (exploring || !setupReady)" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">Go to Workspace<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
-      <router-link v-else-if="exploring" :to="scopePath('/providers')" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">Explore Providers<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
+      <button v-else-if="memberJourney && (exploring || !setupReady)" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" data-track="guide_dismissed" :data-track-step="['audience', 'goal', 'setup'][step]" @click="emit('dismiss')">Go to Workspace<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
+      <router-link v-else-if="exploring" :to="scopePath('/providers')" class="k-btn k-btn--primary min-h-11 onboarding-control" data-track="guide_explore_providers" @click="emit('dismiss')">Explore Providers<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
       <button v-else-if="!setupReady || setupPending" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" :disabled="setupPending || !!setupBlocked || !missingSetupProviders.length" :aria-describedby="finalActionReason ? 'onboarding-action-reason' : undefined" @click="runGuidedSetup">
         <Loader2 v-if="setupPending" :stroke-width="1.75" class="h-4 w-4 animate-spin" aria-hidden="true" />{{ setupPending ? `Setting up ${setupLabel}…` : setupError ? `Retry ${setupLabel} setup` : `Set up ${setupLabel}` }}
       </button>
-      <button v-else-if="teamSetup" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">Go to Workspace<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
-      <router-link v-else :to="scopePath(`/providers/${goal}`)" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">{{ openLabel }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
+      <button v-else-if="teamSetup" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" data-track="guide_dismissed" :data-track-step="['audience', 'goal', 'setup'][step]" @click="emit('dismiss')">Go to Workspace<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
+      <router-link v-else :to="scopePath(`/providers/${goal}`)" class="k-btn k-btn--primary min-h-11 onboarding-control" data-track="guide_open_goal" :data-track-goal="goal" @click="emit('dismiss')">{{ openLabel }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
     </footer>
   </section>
   </div>

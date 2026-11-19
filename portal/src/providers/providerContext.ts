@@ -22,6 +22,10 @@ export interface ProviderContext {
   // only; it does not grant authority or trigger a request.
   publishAgentContext?: PublishAgentContext
   agentOverlay?: AgentOverlayControl
+  // track records a product-telemetry outcome that is not a click (portalkit
+  // providerTrack(ctx)). It does nothing unless the operator enabled
+  // telemetry, and nothing at all for an organization's own provider.
+  track?: (name: string, props?: Record<string, string>) => void
   subPath?: string
   user: unknown
   // tenant is the kcp cluster name of the active workspace.
@@ -71,6 +75,7 @@ export interface ProviderContextFields {
   publishPageResource?: PublishPageResource
   publishAgentContext?: PublishAgentContext
   agentOverlay?: AgentOverlayControl
+  track?: (name: string, props?: Record<string, string>) => void
   subPath?: string
   user: unknown
   tenant: string | null

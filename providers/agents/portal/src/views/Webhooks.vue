@@ -273,6 +273,7 @@ async function create(): Promise<void> {
       }),
       success: `Webhook “${name}” created.`,
       failure: 'Create failed',
+      telemetry: { ok: 'webhook_created', failed: 'webhook_create_failed' },
       reload: ['webhooks'],
     })
     if (!result || !authorityIsCurrent(authority)) return

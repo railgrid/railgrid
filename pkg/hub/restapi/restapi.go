@@ -60,6 +60,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/providerinstall"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/quota"
+	"github.com/railgrid/railgrid/pkg/hub/telemetry"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 	"github.com/railgrid/railgrid/pkg/server/proxy"
 )
@@ -415,11 +416,28 @@ type Handler struct {
 	// create at cap-1, which a limit that exists to stop casual
 	// multiplication of free allowances can live with.
 	orgCreate keyedMutex
+	// telemetry records the outcomes this API confirms. Nil-safe: with
+	// product telemetry off it is a nil relay that records nothing.
+	telemetry telemetry.Recorder
 }
 
 // NewHandler constructs a Handler.
 func NewHandler(mgr *Manager) *Handler {
 	return &Handler{mgr: mgr, userSearch: newUserSearchLimiter()}
+}
+
+// SetTelemetry installs the opt-in product telemetry recorder
+// (docs/telemetry.md). Not calling it leaves outcomes unrecorded.
+func (h *Handler) SetTelemetry(recorder telemetry.Recorder) {
+	h.telemetry = recorder
+}
+
+// track records a confirmed outcome under the caller's browser session.
+// props are fixed labels chosen here; never a name, an ID or an error.
+func (h *Handler) track(r *http.Request, name string, props map[string]string) {
+	if h.telemetry != nil {
+		h.telemetry.Record(r, name, props)
+	}
 }
 
 // SetProviderUIGrantHandler installs the existing scoped asset-grant issuer

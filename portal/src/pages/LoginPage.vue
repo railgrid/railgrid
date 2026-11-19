@@ -163,6 +163,8 @@ async function revealTokenForm() {
           v-if="oidcAvailable"
           type="button"
           class="k-btn k-btn--primary min-h-11 w-full"
+          data-track="sign_in"
+          data-track-method="oidc"
           @click="startOIDCLogin"
         >
           Sign in with SSO
@@ -199,6 +201,8 @@ async function revealTokenForm() {
           </div>
           <button
             type="submit"
+            data-track="sign_in"
+            data-track-method="token"
             class="k-btn min-h-11 w-full"
             :class="oidcAvailable ? 'k-btn--ghost' : 'k-btn--primary'"
             :disabled="!tokenInput"

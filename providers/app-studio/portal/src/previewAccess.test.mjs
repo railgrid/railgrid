@@ -68,6 +68,7 @@ test('summarizes only acknowledged preview policy and matching runtime evidence'
     const scheduleDevelopmentPreviewAuthorizationRetry = (...args) => { authorizationRetries.push(args) }
     const schedulePublishingPoll = () => {}, clearPublishingPoll = () => {}
     const previewAccessUpdateToast = () => ({ kind: 'ok', message: '' }), toast = () => {}
+    const track = () => {}, failureReason = () => 'error', oncePerKey = () => false, previewTelemetrySeen = new Set()
     const projectDevelopmentPreviewAuthorization = result => result
     const applyDevelopmentPreviewAuthorization = () => {}
     const clearDevelopmentPreviewAuthorizationRetry = () => {}, developmentPreviewAuthorizationRetryable = () => false

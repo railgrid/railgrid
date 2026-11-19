@@ -24,6 +24,7 @@ import {
   Plus,
 } from 'lucide-vue-next'
 import { useTenantStore } from '@/stores/tenant'
+import { trackEvent } from '@/telemetry/track'
 import InlineNotification from '@/portalkit/InlineNotification.vue'
 
 const tenant = useTenantStore()
@@ -86,6 +87,7 @@ async function createOrganization() {
     const created = await tenant.createOrg(displayName)
     if (!created) {
       localError.value = tenant.error ?? 'Failed to create organization.'
+      trackEvent('organization_create_failed')
       return
     }
     if (
@@ -96,6 +98,7 @@ async function createOrganization() {
     }
   } catch (error: unknown) {
     localError.value = error instanceof Error ? error.message : 'Failed to create organization.'
+    trackEvent('organization_create_failed')
   } finally {
     creating.value = false
   }

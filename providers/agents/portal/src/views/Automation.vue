@@ -656,6 +656,9 @@ async function save(): Promise<void> {
             : authority.api.createTrigger({ name, agentRef: agent, ...bodyPatch } as TriggerCreate),
           success: `${cap(one)} “${name}” created.`,
           failure: 'Create failed',
+          telemetry: kind === 'schedule'
+            ? { ok: 'schedule_created', failed: 'schedule_create_failed' }
+            : { ok: 'trigger_created', failed: 'trigger_create_failed' },
           onFailure: error => {
             if (showCreateModal.value && authorityIsCurrent(authority) && kind === props.kind && agent === props.agent) {
               formError.value = error instanceof Error && error.message ? error.message : 'Try again.'
@@ -772,6 +775,9 @@ async function runNow(name: string): Promise<void> {
     const result = await mutate(authority.store, {
       run: (): Promise<{ runID: string }> => kind === 'schedule' ? authority.api.runSchedule(name) : authority.api.runTrigger(name),
       failure: 'Run failed',
+      telemetry: kind === 'schedule'
+        ? { ok: 'schedule_run_now', failed: 'schedule_run_now_failed' }
+        : { ok: 'trigger_run_now', failed: 'trigger_run_now_failed' },
     })
     if (!result?.runID || !authorityIsCurrent(authority) || kind !== props.kind) return
     const id = result.runID

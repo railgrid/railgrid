@@ -10,6 +10,7 @@ import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuid
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import { toast } from './portalkit/toast'
 import { parseServiceHost, servicePortError } from './serviceValidation'
+import { track, trackFailure } from './telemetry'
 
 const props = withDefaults(defineProps<{
   initialEdgeType?: EdgeType | null
@@ -182,6 +183,8 @@ async function onCreate(): Promise<void> {
   busy.value = true
   error.value = null
   const name = draft.value.name.trim()
+  // The type is one of this bundle's own catalog entries, never free text.
+  const labels = { type: catalogFor(draft.value.serviceType)?.type ?? 'other', kind: edge.type, target: byHost ? 'host' : 'kube' }
   try {
     await createKubeEdgeService({
       name,
@@ -195,10 +198,12 @@ async function onCreate(): Promise<void> {
       port: Number(draft.value.port),
       instructions: draft.value.instructions?.trim() || undefined,
     })
+    track('service_created', labels)
     if (!active) return
     toast('info', `Service creation requested for ${name}.`)
     emit('created', name)
   } catch (e) {
+    trackFailure('service_create_failed', e, labels)
     error.value = (e as ErrorResponse)?.message ?? 'Create failed'
   } finally {
     busy.value = false

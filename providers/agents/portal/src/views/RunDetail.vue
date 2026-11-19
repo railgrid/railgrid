@@ -48,6 +48,7 @@ import RunFailureNotice from '../components/RunFailureNotice.vue'
 import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presentation'
 import { inboxResolutionFailureMessage, sanitizeTechnicalDiagnostic, technicalDiagnosticExcerpt } from '../failure-presentation'
 import { attachCodeCopy } from '../vue/chat'
+import { failureReason, track } from '../telemetry'
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -284,6 +285,7 @@ async function cancel(): Promise<void> {
   const id = props.runId
   if (cancellingRuns.value.has(id)) return
   cancellingRuns.value = new Set(cancellingRuns.value).add(id)
+  track('run_stop', { surface: 'run' })
   try {
     await authority.api.cancelRun(id)
     if (!authorityIsCurrent(authority) || id !== props.runId) return
@@ -310,10 +312,12 @@ async function resolve(inboxID: string, decision: 'approve' | 'deny' | 'answer',
     await (decision === 'answer'
       ? authority.api.resolveInbox(inboxID, 'answer', answer)
       : authority.api.resolveInbox(inboxID, decision))
+    track('approval_resolved', { decision, surface: 'run' })
     if (!authorityIsCurrent(authority) || id !== props.runId) return
     toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : decision === 'answer' ? response === skippedQuestionResponse ? 'Question skipped — the run is resuming.' : 'Answered — the run is resuming.' : 'Denied.')
     await Promise.allSettled([authority.store.load('inbox'), load()])
   } catch (cause) {
+    track('approval_resolve_failed', { decision, surface: 'run', reason: failureReason(cause) })
     if (authorityIsCurrent(authority) && id === props.runId) {
       toast('error', inboxResolutionFailureMessage(decision, cause instanceof ApiError ? cause.status : undefined))
       await Promise.allSettled([authority.store.load('inbox'), load('background')])

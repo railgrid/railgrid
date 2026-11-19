@@ -34,6 +34,7 @@ import type { AppStore } from '../store'
 import { toast } from '../ui/toast'
 import { agentHarness, agentModelCredential, agentModelFallbacks, harnessLabel, isHarnessProvider, type Agent, type Credential, type CredentialWrite, type CredentialTestResult, type ModelInfo } from '../types'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import { failureReason, track } from '../telemetry'
 
 interface Fence { store: AppStore; authorityEpoch?: number; createSession?: number }
 const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; returnLabel?: string; selectConnection?: boolean; continueAddModelAfterProviderConnect?: boolean; modelsTab?: ModelsTab; routeOwned?: boolean; setupNavigation?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { modelsTab: 'models', routeOwned: false, createRoute: false, initialFamily: 'chat', returnLabel: 'Models', continueAddModelAfterProviderConnect: false })
@@ -372,6 +373,7 @@ function toggleEdit(credential: Credential): void {
   saveError.value = null
 }
 function beginModel(): void {
+  track('model_connect_open', { kind: 'model' })
   if (props.routeOwned) emit('navigate', { kind: 'create', resource: 'model', type: 'from-connection' })
   else { selectingConnection.value = true; creating.value = true }
 }
@@ -381,6 +383,7 @@ function selectCreateAction(id: string): void {
   else if (id === 'harness') beginHarness()
 }
 function beginHarness(): void {
+  track('model_connect_open', { kind: 'harness' })
   if (props.routeOwned) {
     emit('navigate', { kind: 'create', resource: 'model', type: 'harness' })
     return
@@ -395,6 +398,7 @@ function beginHarness(): void {
   editorGeneration.value++
 }
 function openProvider(): void {
+  track('model_connect_open', { kind: 'provider' })
   const continueToModel = selectingConnection.value
   if (props.routeOwned) {
     emit('connect-provider', continueToModel)
@@ -423,7 +427,10 @@ async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): P
   if (createBusy.value) return
   const edited = !!editingCredential.value
   const savingProviderConnection = !edited && !body.connectionRef && !body.newConnection && body.model === ''
-  if (!edited && credentials.value.data.some(item => providerConnectionCredential(item) === savingProviderConnection && item.name === body.name && (!body.connectionRef || item.connectionRef !== body.connectionRef))) { saveError.value = savingProviderConnection ? 'A provider connection with this name already exists. Choose another name.' : 'A model with this name already exists. Choose another name.'; return }
+  // Fixed labels only: what is being connected, never its name or model ID.
+  const telemetryKind = savingProviderConnection ? 'provider' : isHarnessProvider(body.provider) ? 'harness' : 'model'
+  if (!edited) track('model_connect_submit', { kind: telemetryKind })
+  if (!edited && credentials.value.data.some(item => providerConnectionCredential(item) === savingProviderConnection && item.name === body.name && (!body.connectionRef || item.connectionRef !== body.connectionRef))) { saveError.value = savingProviderConnection ? 'A provider connection with this name already exists. Choose another name.' : 'A model with this name already exists. Choose another name.'; track('model_connect_failed', { kind: telemetryKind, reason: 'conflict' }); return }
   const authority = captureAuthority()
   const fence = { store: props.store, authorityEpoch: props.authorityEpoch, createSession: props.createSession }
   createBusy.value = true
@@ -437,6 +444,7 @@ async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): P
     }
     const { newConnection: _newConnection, ...modelBody } = body
     const result = await authority.api.saveCredential(modelBody)
+    if (!edited) track('model_connected', { kind: telemetryKind })
     if (!authorityIsCurrent(authority) || fence.createSession !== props.createSession) return
     clearProbeState(body.name, Boolean(result.isConnection))
     if (probe) tested.value = setMap(tested.value, credentialStateKey(body.name, Boolean(result.isConnection)), probe)
@@ -479,6 +487,7 @@ async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): P
     toast('ok', edited ? 'Credential updated.' : isHarnessProvider(body.provider) ? 'Harness identity added.' : 'Model connected.')
     if (!edited && props.routeOwned) emit('create-success', { resource: 'model', name: body.name, item: result, ...fence })
   } catch (error) {
+    if (!edited) track('model_connect_failed', { kind: telemetryKind, reason: failureReason(error) })
     if (authorityIsCurrent(authority) && fence.createSession === props.createSession) {
       saveError.value = (body.newConnection ? 'The provider connection may have been saved, but the model could not be added. Retry to finish connecting. ' : '') + (error as Error).message
       void authority.store.load('credentials')

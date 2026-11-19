@@ -19,6 +19,7 @@ import { toast } from './portalkit/toast'
 import { parseServiceHost, servicePortError } from './serviceValidation'
 import { serviceTarget } from './serviceTarget'
 import { createAdaptiveRefreshTimer, createLatestRefreshController, FAST_REFRESH_MS, STABLE_REFRESH_MS, type ResourceRefreshMode } from './refresh'
+import { track, trackFailure } from './telemetry'
 
 // The route owns the resource identity. A list-row snapshot is optional and is
 // used only as a seed; every instance page performs an exact getService read so
@@ -422,6 +423,7 @@ async function onSaveConfig(): Promise<void> {
       instructions: instructions.value,
       targetMode: targetMode.value,
     }, uid)
+    track('service_updated')
     if (!isCurrentMutation(request)) return
     toast('ok', `Service configuration saved for ${name}.`)
     resetDraftOnNextRead = true
@@ -430,6 +432,7 @@ async function onSaveConfig(): Promise<void> {
     if (!isCurrentMutation(request)) return
     emit('saved')
   } catch (error) {
+    trackFailure('service_update_failed', error)
     if (isCurrentMutation(request)) configurationError.value = errorMessage(error, 'Save failed')
   } finally {
     finishMutation(request)
@@ -467,6 +470,7 @@ async function onSaveCreds(): Promise<void> {
   const request = beginMutation(name, 'credentials')
   try {
     await connectEdgeService(name, token, uid)
+    track('service_credentials_saved', { placement: 'service_detail' })
     if (!isCurrentMutation(request)) return
     credInputs.value = {}
     toast('ok', `Service credentials saved for ${name}.`)
@@ -475,6 +479,7 @@ async function onSaveCreds(): Promise<void> {
     if (!isCurrentMutation(request)) return
     emit('saved')
   } catch (error) {
+    trackFailure('service_credentials_failed', error, { placement: 'service_detail' })
     if (isCurrentMutation(request)) credentialsError.value = errorMessage(error, 'Connect failed')
   } finally {
     finishMutation(request)
@@ -498,11 +503,13 @@ async function onDelete(): Promise<void> {
   const request = beginMutation(name, 'delete')
   try {
     await deleteEdgeService(name, uid)
+    track('service_deleted', { placement: 'service_detail' })
     if (!isCurrentMutation(request)) return
     deleteError.value = null
     toast('info', `Service deletion requested for ${name}.`)
     emit('deleted', { name, uid })
   } catch (error) {
+    trackFailure('service_delete_failed', error, { placement: 'service_detail' })
     if (isCurrentMutation(request)) {
       deleteError.value = errorMessage(error, 'Delete failed')
       deleting.value = false

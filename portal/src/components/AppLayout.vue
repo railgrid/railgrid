@@ -815,6 +815,7 @@ const contextStatus = computed<ContextStatus>(() => {
         class="shell-help mb-2 flex items-center rounded-md text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
         :class="sidebarExpanded ? 'w-full gap-2 px-2.5 py-2' : 'h-8 w-8 justify-center p-0'"
         :title="sidebarExpanded ? undefined : 'Help'"
+        data-track="open_help"
         @click="showHelpModal = true"
       >
         <CircleHelp class="h-4 w-4 shrink-0" :stroke-width="1.75" aria-hidden="true" />
@@ -954,6 +955,7 @@ const contextStatus = computed<ContextStatus>(() => {
         :aria-expanded="showHelpModal"
         class="shell-help flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
         title="Help"
+        data-track="open_help"
         @click="showHelpModal = true"
       >
         <CircleHelp class="h-4 w-4 shrink-0" :stroke-width="1.75" aria-hidden="true" />
@@ -1152,6 +1154,7 @@ const contextStatus = computed<ContextStatus>(() => {
           :aria-expanded="showHelpModal"
           class="shell-help flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
           title="Help"
+          data-track="open_help"
           @click="showHelpModal = true"
         >
           <CircleHelp class="h-4 w-4 shrink-0" :stroke-width="1.75" aria-hidden="true" />
