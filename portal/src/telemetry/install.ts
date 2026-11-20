@@ -45,8 +45,8 @@ export function providerTracker(provider: string): (name: string, props?: Record
 }
 
 // installTelemetry connects the tracker to the router and the document. It is
-// inert until the hub's /healthz says telemetry is on, which a hub without
-// --telemetry-url never does: no request, no storage, nothing recorded.
+// inert until the hub's /healthz says telemetry is on, which a hub with
+// telemetry off (--telemetry=false, or a development build) never does: no request, no storage, nothing recorded.
 //
 // Providers need no code for clicks: their UIs render in this document, so a
 // data-track attribute inside a provider element is seen by the same listener.

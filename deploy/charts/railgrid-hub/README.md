@@ -42,6 +42,10 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 | `hub.devMode` | `false` | Enable development mode (verbose logging, relaxed security) |
 | `hub.staticAuthTokens` | `[]` | Static bearer tokens for access. Each token creates its own user/workspace. Generate with `openssl rand -base64 32` |
 | `hub.adminUsers` | `[]` | Platform-admin identities allowed at `/api/admin/*` + the portal `/bonkers` area. Match a User by name, email, or rbacIdentity. Empty disables the admin surface (the `/bonkers` menu item stays hidden). For a static token use its RBAC identity, `railgrid:static:<first 16 hex of sha256("static-token/<token>")>` (static-token users have no email, so the token never appears in member lists). |
+| `hub.telemetry.enabled` | `true` | Anonymous telemetry to Railgrid: which console pages and marked controls are used, plus the daily instance report. No hostname, user, organization or resource name and no browser address is sent. `false` sends nothing anywhere. See [Telemetry](https://railgrid.github.io/railgrid/telemetry.html) |
+| `hub.telemetry.instanceReport` | `true` | The daily instance report alone: a random instance ID, the hub version, and size classes. `false` turns off only this |
+| `hub.telemetry.url` | `""` | Send console events to your own Umami instance at this base URL instead of Railgrid's. Requires `hub.telemetry.websiteID` |
+| `hub.telemetry.websiteID` | `""` | Umami website ID the console events are recorded under |
 | `hub.resources` | see values | CPU/memory requests and limits (includes embedded kcp overhead) |
 | `hub.extraArgs` | `[]` | Extra hub command-line flags appended after the flags the chart renders, for flags the chart does not model yet (e.g. `--v=4`). The chart refuses an entry that repeats a flag it renders from a value — set the value instead. |
 

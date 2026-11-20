@@ -37,11 +37,11 @@ type umamiSink struct {
 }
 
 // NewUmamiSink returns the sink for an Umami backend.
-func NewUmamiSink(cfg Config) Sink {
+func NewUmamiSink(d Destination) Sink {
 	return &umamiSink{
-		endpoint: strings.TrimRight(cfg.URL, "/") + "/api/send",
-		website:  cfg.WebsiteID,
-		hostname: cfg.Hostname,
+		endpoint: strings.TrimRight(d.URL, "/") + "/api/send",
+		website:  d.WebsiteID,
+		hostname: d.Hostname,
 		client:   &http.Client{Timeout: 5 * time.Second},
 	}
 }
@@ -52,7 +52,11 @@ func NewUmamiSink(cfg Config) Sink {
 // a rotating salt) into its anonymous session ID and does not store the
 // address. Sending the browser's values is what makes a console session the
 // same session as that visitor's on the marketing site when both report to
-// one website ID. No distinct ID is sent, so nothing here names a user.
+// one website ID.
+//
+// id is Umami's distinct ID. When it is set Umami keys the session on it and
+// not on the address, so the built-in destination gets an id and no ip. It is
+// never a user: see Relay.Anonymous and Reporter.
 type umamiPayload struct {
 	Website   string            `json:"website"`
 	Hostname  string            `json:"hostname,omitempty"`
@@ -65,6 +69,7 @@ type umamiPayload struct {
 	Data      map[string]string `json:"data,omitempty"`
 	IP        string            `json:"ip,omitempty"`
 	UserAgent string            `json:"userAgent,omitempty"`
+	ID        string            `json:"id,omitempty"`
 }
 
 func (s *umamiSink) Send(ctx context.Context, client Client, event Event) error {
@@ -77,6 +82,7 @@ func (s *umamiSink) Send(ctx context.Context, client Client, event Event) error 
 		Language:  event.Language,
 		IP:        client.IP,
 		UserAgent: client.UserAgent,
+		ID:        client.ID,
 	}
 	if event.Type == "page" {
 		// Umami records an event without a name as a page view; the route
@@ -103,9 +109,14 @@ func (s *umamiSink) Send(ctx context.Context, client Client, event Event) error 
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	answer, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("umami answered %s", resp.Status)
+	}
+	// Umami answers 200 {"beep":"boop"} to a user agent it takes for a bot
+	// and records nothing. Say so, or the event is lost without a trace.
+	if bytes.Contains(answer, []byte(`"beep"`)) {
+		return fmt.Errorf("umami discarded the event: user agent %q looks like a bot to it", client.UserAgent)
 	}
 	return nil
 }

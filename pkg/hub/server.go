@@ -36,6 +36,7 @@ import (
 	"github.com/railgrid/provider-sdk/metrics"
 	"github.com/railgrid/provider-sdk/providerrelay"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -139,15 +140,34 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("--trusted-proxy-cidrs: %w", err)
 	}
-	// Product telemetry is opt-in. With no --telemetry-url this stays the zero
-	// value: no route, nothing advertised to the portal, no outbound call.
-	telemetryConfig := telemetry.Config{URL: s.opts.TelemetryURL, WebsiteID: s.opts.TelemetryWebsiteID}
+	// Telemetry (docs/telemetry.md). A released hub reports anonymously to
+	// the built-in destination unless --telemetry=false; --telemetry-url
+	// sends the portal's events to the operator's own backend instead. A
+	// development build has no built-in destination at all.
+	telemetryConfig := telemetry.Config{
+		Disabled:               !s.opts.Telemetry,
+		InstanceReportDisabled: !s.opts.TelemetryInstanceReport,
+		URL:                    s.opts.TelemetryURL,
+		WebsiteID:              s.opts.TelemetryWebsiteID,
+		Version:                pkgversion.Version,
+	}
 	if err := telemetryConfig.Validate(); err != nil {
 		return err
 	}
 	if u, err := url.Parse(s.opts.HubExternalURL); err == nil {
 		telemetryConfig.Hostname = u.Hostname()
 	}
+	consoleTelemetry, consoleTelemetryOn := telemetryConfig.Console()
+	instanceTelemetry, instanceTelemetryOn := telemetryConfig.Instances()
+	// The built-in destination identifies the installation by a hash of a
+	// kcp UID, resolved after bootstrap. Without it (a hub with no kcp, or
+	// a failed lookup) nothing is sent there.
+	var telemetryInstanceID string
+	if consoleTelemetry.Anonymous {
+		consoleTelemetryOn = false
+	}
+	builtinTelemetry := consoleTelemetry.Anonymous || instanceTelemetryOn
+	instanceTelemetryOn = false
 	if len(trustedProxies) > 0 {
 		logger.Info("Trusting X-Forwarded-For from proxies", "cidrs", trustedProxies)
 	} else {
@@ -408,6 +428,21 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("creating user dynamic client: %w", err)
 		}
 		userClient = railgridclient.NewFromDynamic(userDynamic)
+
+		if builtinTelemetry {
+			lc, err := userDynamic.Resource(telemetryInstanceSeedGVR).Get(ctx, "cluster", metav1.GetOptions{})
+			if err != nil {
+				logger.Error(err, "Resolving the anonymous instance ID failed; telemetry to the built-in destination is off for this run")
+			} else {
+				telemetryInstanceID = telemetry.InstanceID(string(lc.GetUID()))
+				// The host the backend records is the instance ID too:
+				// the hub's real hostname never goes to Railgrid.
+				consoleTelemetry.Hostname = telemetryInstanceID
+				instanceTelemetry.Hostname = telemetryInstanceID
+				consoleTelemetryOn = consoleTelemetryOn || consoleTelemetry.Anonymous
+				_, instanceTelemetryOn = telemetryConfig.Instances()
+			}
+		}
 
 		// The hub creates and deletes child workspaces on whichever replica
 		// serves the request or runs the cascade, but reconciles metering
@@ -674,11 +709,11 @@ func (s *Server) Run(ctx context.Context) error {
 		// worth rendering; bearer-token API auth is independent of it.
 		tokenLogin := len(s.opts.StaticAuthTokens) > 0 && !s.opts.DisableTokenLogin
 		// telemetry is the portal's only signal to start reporting; a hub
-		// without --telemetry-url answers false and the portal sends nothing.
+		// with telemetry off answers false and the portal sends nothing.
 		if oidcEnabled {
-			_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":true,"tokenLogin":%t,"telemetry":%t,"issuerUrl":%q,"clientId":%q}`, tokenLogin, telemetryConfig.Enabled(), s.opts.IDPIssuerURL, s.opts.IDPClientID)
+			_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":true,"tokenLogin":%t,"telemetry":%t,"issuerUrl":%q,"clientId":%q}`, tokenLogin, consoleTelemetryOn, s.opts.IDPIssuerURL, s.opts.IDPClientID)
 		} else {
-			_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":false,"tokenLogin":%t,"telemetry":%t}`, tokenLogin, telemetryConfig.Enabled())
+			_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":false,"tokenLogin":%t,"telemetry":%t}`, tokenLogin, consoleTelemetryOn)
 		}
 	})
 	router.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -1070,13 +1105,16 @@ func (s *Server) Run(ctx context.Context) error {
 			apiHandler := restapi.NewHandler(apiMgr)
 			apiHandler.SetProviderUIGrantHandler(providerUIGrantHandler)
 
-			// Opt-in product telemetry relay (docs/telemetry.md). None of
-			// this exists when telemetry is off: no route, no recorder, no
+			// Product telemetry relay (docs/telemetry.md). None of this
+			// exists when telemetry is off: no route, no recorder, no
 			// outbound call.
-			if telemetryConfig.Enabled() {
-				telemetryRelay = telemetry.NewRelay(telemetry.NewUmamiSink(telemetryConfig), func(r *http.Request) string {
+			if consoleTelemetryOn {
+				telemetryRelay = telemetry.NewRelay(telemetry.NewUmamiSink(consoleTelemetry), func(r *http.Request) string {
 					return proxy.ClientIP(r, trustedProxies)
 				})
+				if consoleTelemetry.Anonymous {
+					telemetryRelay.Anonymous(telemetryInstanceID)
+				}
 				go telemetryRelay.Run(ctx)
 				apiHandler.SetTelemetry(telemetryRelay)
 				// The sign-in page reports before there is a session, so
@@ -1086,7 +1124,8 @@ func (s *Server) Run(ctx context.Context) error {
 				// ahead of the /api subrouters so their auth does not claim it.
 				publicTelemetry := proxy.NewIPRateLimiter(2*time.Second, 30)
 				router.Handle("/api/telemetry/public", telemetryRelay.PublicHandler(publicTelemetry.Allow)).Methods(http.MethodPost)
-				logger.Info("Product telemetry enabled", "url", telemetryConfig.URL, "hostname", telemetryConfig.Hostname)
+				logger.Info("Console telemetry enabled; --telemetry=false turns it off, see docs/telemetry.md",
+					"url", consoleTelemetry.URL, "anonymous", consoleTelemetry.Anonymous)
 			}
 
 			// User-only routes (no Org context required)
@@ -1368,8 +1407,23 @@ func (s *Server) Run(ctx context.Context) error {
 		// The catalog manager above is deliberately NOT gated: the registry it
 		// maintains is request-path state, and a non-leader with an empty
 		// routing table would 404 every provider request it served.
+		// The anonymous instance report (docs/telemetry.md): one event a
+		// day saying this installation exists. Leader-only, so a scaled hub
+		// is still one report.
+		var instanceReporter *telemetry.Reporter
+		if instanceTelemetryOn {
+			instanceReporter = telemetry.NewReporter(telemetry.NewUmamiSink(instanceTelemetry), telemetryInstanceID, pkgversion.Version,
+				func(ctx context.Context) telemetry.Report {
+					return s.telemetryReport(ctx, userClient, providerRegistry)
+				})
+			logger.Info("Anonymous instance report enabled; --telemetry-instance-report=false or --telemetry=false turns it off, see docs/telemetry.md",
+				"url", instanceTelemetry.URL, "instanceID", telemetryInstanceID)
+		}
 		startLeaderOnlyControllers := func(ctx context.Context) {
 			logger.Info("Elected leader; starting singleton controllers")
+			if instanceReporter != nil {
+				go instanceReporter.Run(ctx)
+			}
 
 			// MCPServer reconciler: MCPServer is a built-in, core-hosted provider —
 			// its CRD is distributed to tenants via core.railgrid.ai, so we re-introduce
@@ -1719,6 +1773,45 @@ func (s *Server) Run(ctx context.Context) error {
 // ServiceAccount — admin onboarding, the Provider reconciler, org-owned
 // registration — and the catalog reconciler that sweeps rotated credentials go
 // through it, so they cannot disagree about which role a provider is bound to.
+// telemetryInstanceSeedGVR is the kcp LogicalCluster, whose UID in the users
+// workspace seeds the anonymous instance ID (telemetry.InstanceID).
+var telemetryInstanceSeedGVR = schema.GroupVersionResource{Group: "core.kcp.io", Version: "v1alpha1", Resource: "logicalclusters"}
+
+// telemetryReport gathers what the anonymous instance report carries. What it
+// cannot read it leaves unknown: the report matters more than its labels.
+func (s *Server) telemetryReport(ctx context.Context, users *railgridclient.Client, registry *providers.Registry) telemetry.Report {
+	report := telemetry.Report{KCP: "external", Organizations: -1, Users: -1}
+	if s.opts.EmbeddedKCP {
+		report.KCP = "embedded"
+	}
+	switch oidc, static := s.opts.IDPIssuerURL != "", len(s.opts.StaticAuthTokens) > 0; {
+	case oidc && static:
+		report.Auth = "oidc+static"
+	case oidc:
+		report.Auth = "oidc"
+	case static:
+		report.Auth = "static"
+	}
+	if list, err := users.Users().List(ctx, metav1.ListOptions{}); err == nil {
+		report.Users = len(list.Items)
+	}
+	if list, err := users.Organizations().List(ctx, metav1.ListOptions{}); err == nil {
+		report.Organizations = 0
+		for i := range list.Items {
+			// A personal organization is its user, counted above.
+			if !list.Items[i].Spec.Personal {
+				report.Organizations++
+			}
+		}
+	}
+	for _, p := range registry.List() {
+		if p.OrgUUID == "" {
+			report.Providers = append(report.Providers, p.Name)
+		}
+	}
+	return report
+}
+
 func (s *Server) providerProvisionerOptions() []providers.ProvisionerOption {
 	return []providers.ProvisionerOption{
 		providers.WithWorkspaceClusterAdmin(s.opts.ProviderWorkspaceClusterAdmin),

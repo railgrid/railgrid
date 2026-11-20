@@ -1,5 +1,5 @@
-// Product telemetry from a provider UI. Opt-in by the operator and off by
-// default; docs/telemetry.md is the contract for what may be reported.
+// Product telemetry from a provider UI. On by default, and the operator can
+// turn it off; docs/telemetry.md is the contract for what may be reported.
 //
 // A CLICK needs no code: put data-track="create_edge" (and optional
 // data-track-<label>="...") on the control, and the host's listener records it.

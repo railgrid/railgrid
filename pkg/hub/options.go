@@ -190,11 +190,19 @@ type Options struct {
 	// the hub, while platform-owned preview hosts can be added explicitly.
 	PortalFrameSources []string
 
-	// TelemetryURL turns on product telemetry: the base URL of the analytics
-	// backend (Umami) the hub relays the portal's page and click events to.
-	// Empty, the default, means off: no relay route is registered, the portal
-	// is told nothing is enabled and sends nothing, and the hub makes no
-	// outbound call. See docs/telemetry.md.
+	// Telemetry is the master switch, on by default. False means nothing is
+	// sent anywhere: no relay route is registered, the portal is told
+	// nothing is enabled and sends nothing, and the hub makes no outbound
+	// telemetry call. See docs/telemetry.md.
+	Telemetry bool
+	// TelemetryInstanceReport is the hub's own anonymous daily report to
+	// Railgrid (instance ID, version, size classes), on by default. It can
+	// be turned off on its own, leaving console telemetry as configured.
+	TelemetryInstanceReport bool
+	// TelemetryURL sends the portal's page and click events to the
+	// operator's own analytics backend (Umami) instead of Railgrid's. Empty,
+	// the default, means the built-in anonymous destination, which only a
+	// released build uses.
 	TelemetryURL string
 	// TelemetryWebsiteID is the backend's website ID the events are recorded
 	// under. Required with TelemetryURL.
@@ -265,6 +273,9 @@ func NewOptions() *Options {
 		KCPSecurePort:       6443,
 		KCPBindAddress:      "127.0.0.1",
 		KCPBatteriesInclude: "admin,user",
+
+		Telemetry:               true,
+		TelemetryInstanceReport: true,
 
 		SoftDeleteGracePeriod: softdelete.DefaultGracePeriod,
 		DefaultOrgsPerUser:    quota.DefaultOrgsPerUser,

@@ -126,14 +126,20 @@ hub:
   # Additional Content-Security-Policy frame-src entries allowed in the portal.
   # Use this for platform-owned preview hosts that are rendered inside the portal.
   portalFrameSources: []
-  # Product telemetry, off by default. Set both values to have the portal
-  # report which pages are opened and which marked controls are clicked to an
-  # Umami instance you run; the hub relays the events, so the portal's
-  # Content-Security-Policy does not change. With url empty the hub registers
-  # no telemetry route and the portal sends nothing. What is sent, and what is
-  # not, is in docs/telemetry.md.
+  # Anonymous telemetry, on by default. A released hub sends Railgrid
+  # (https://telemetry.railgrid.ai) which console pages are opened and which
+  # marked controls are clicked, and one report a day that the installation
+  # exists (random instance ID, hub version, size classes). No hostname, no
+  # user, organization or resource name, and no browser address is sent. The
+  # full list of what is and is not sent is in docs/telemetry.md.
   telemetry:
-    # Base URL of the Umami instance, e.g. https://telemetry.example.com.
+    # false sends nothing anywhere: the hub registers no telemetry route, the
+    # portal records nothing, and the hub makes no outbound telemetry call.
+    enabled: true
+    # false turns off only the daily instance report.
+    instanceReport: true
+    # Set both to send the console's events to an Umami instance you run
+    # instead of Railgrid's. Base URL, e.g. https://telemetry.example.com.
     url: ""
     # Umami website ID to record under. Use the same ID as your marketing site
     # to follow a visitor from the site into the console.
