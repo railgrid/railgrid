@@ -23,14 +23,16 @@ const preferredWorkspace = runInNewContext(`${selectionCode}\npreferredWorkspace
   isWorkspaceAvailable: available, isWorkspaceUsable: usable,
 })
 
-function setup() {
+function setup(historyState = {}) {
   let onDispose
   let onOrgChange
   let now = 0
   const timers = new Map()
   const navigations = []
+  const reloads = []
   const org = { uuid: 'org-a', displayName: 'Team', role: 'admin', initialWorkspacePending: true }
-  const route = { params: { orgID: 'org-a' }, query: {} }
+  const route = { params: { orgID: 'org-a' }, query: {}, fullPath: '/org-a/workspaces' }
+  const history = { state: historyState, replace: (_path, state) => { history.state = state } }
   const state = {
     org, rows: [], orgStatus: 200, workspaceStatus: 'ready',
     orgRead: null, createResult: null, createCalls: 0, navigate: null, create: null,
@@ -45,18 +47,23 @@ function setup() {
   })
   const api = runInNewContext(`${code}\n({ load, retry, retryNavigation, enter, create, loading, error, createError, navigationError, opening, hasSnapshot, waiting, timedOut, creating, name, org })`, {
     ref, computed, nextTick, useRoute: () => route,
-    useRouter: () => ({ replace: async to => { navigations.push(to); return state.navigate?.(to) } }),
+    useRouter: () => ({
+      options: { history },
+      replace: async to => { navigations.push(to); return state.navigate?.(to) },
+    }),
+    window: { location: { reload: () => reloads.push(route.fullPath) } },
     useTenantStore: () => tenant, useAuthStore: () => ({ user: { userId: 'alice' } }),
+    useRouteContextStore: () => ({ blocksRoute: () => false }),
     authFetch: async () => state.orgRead ? state.orgRead() : new Response(JSON.stringify(state.org), { status: state.orgStatus }),
     isWorkspaceAvailable: available, isWorkspaceUsable: usable, preferredWorkspace,
     readOrganizationWorkspace: () => null,
-    watch: (_source, callback) => { onOrgChange = callback },
+    watch: (source, callback) => { if (!Array.isArray(source)) onOrgChange = callback },
     onBeforeUnmount: callback => { onDispose = callback },
     setTimeout: callback => { const key = Symbol(); timers.set(key, callback); return key },
     clearTimeout: key => timers.delete(key),
     Date: { now: () => now }, Error,
   })
-  return { api, state, tenant, timers, navigations, route, dispose: () => onDispose(), changeOrg: () => onOrgChange(), advance: ms => { now += ms } }
+  return { api, state, tenant, timers, navigations, reloads, history, route, dispose: () => onDispose(), changeOrg: () => onOrgChange(), advance: ms => { now += ms } }
 }
 
 test('direct org entry polls an empty pending bootstrap without a preparing query and enters when ready', async () => {
@@ -208,7 +215,7 @@ test('navigation retry opens the failed target rather than refreshing or creatin
   state.org.initialWorkspacePending = false
   state.rows = ['a', 'b'].map(id => ({ uuid: `ws-${id}`, clusterName: `cluster-${id}` }))
   await api.retry()
-  state.navigate = async () => { throw new Error('Navigation unavailable') }
+  state.navigate = async () => new Error('Navigation aborted')
   await api.enter(state.rows[1])
   assert.equal(api.navigationError.value.workspace.uuid, 'ws-b')
   assert.equal(api.error.value, '')
@@ -223,6 +230,32 @@ test('navigation retry opens the failed target rather than refreshing or creatin
   resolve()
   await retry
   assert.equal(api.navigationError.value, null)
+})
+
+test('a rejected workspace load waits for Retry, then reloads and rechecks the same workspace once', async () => {
+  const rows = ['a', 'b'].map(id => ({ uuid: `ws-${id}`, clusterName: `cluster-${id}` }))
+  const fixture = setup()
+  fixture.state.rows = rows
+  fixture.state.navigate = async () => { throw new TypeError('Failed to fetch dynamically imported module') }
+  await fixture.api.retry()
+  await fixture.api.enter(rows[1])
+  assert.equal(fixture.api.navigationError.value.workspace.uuid, 'ws-b')
+  assert.equal(fixture.navigations.length, 1)
+  assert.deepEqual(fixture.reloads, [])
+
+  fixture.api.retryNavigation()
+  fixture.api.retryNavigation()
+  assert.deepEqual(fixture.reloads, [fixture.route.fullPath])
+
+  for (const available of [true, false]) {
+    const afterReload = setup(fixture.history.state)
+    afterReload.state.org.initialWorkspacePending = false
+    afterReload.state.rows = available ? rows : [rows[0]]
+    afterReload.changeOrg()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(afterReload.history.state.retryWorkspace, null)
+    assert.deepEqual(afterReload.navigations.map(to => to.params.workspaceID), available ? ['ws-b'] : [])
+  }
 })
 
 test('a previous organization cannot publish late creation or navigation failures', async () => {

@@ -65,16 +65,18 @@ test('renders distinct initial loading, empty, and failed history states', async
     assert.match(selected, /aria-checked="true"/)
     assert.doesNotMatch(selected, /class="k-btn k-btn--danger ml-auto" disabled/)
     const loading = await render({ refreshing: true })
-    assert.match(loading, /Loading saved commits/)
+    // The skeleton mounts its live announcement outside the busy pane on the client.
+    assert.match(history, /<LoadingSkeleton[^>]*label="Loading saved commits…"/)
+    assert.match(loading, /data-loading-visual/)
     assert.match(loading, /<button[^>]*aria-disabled="true"[^>]*aria-busy="true"[^>]*aria-label="Refresh Git history"/)
     assert.doesNotMatch(loading, /<button[^>]* disabled[^>]*aria-label="Refresh Git history"/)
     assert.doesNotMatch(loading, /No saved commits|Selected commit|Restore project files/)
     const empty = await render()
     assert.match(empty, /No saved commits yet/)
-    assert.doesNotMatch(empty, /Loading saved commits|Selected commit|Restore project files/)
+    assert.doesNotMatch(empty, /data-loading-visual|Selected commit|Restore project files/)
     const failed = await render({ error: 'History could not be fetched', repositoryStatus: 'Pending' })
     assert.match(failed, /History could not be fetched/)
-    assert.doesNotMatch(failed, /No saved commits|Git commit history is not ready/)
+    assert.doesNotMatch(failed, /data-loading-visual|No saved commits|Git commit history is not ready/)
   } finally {
     await vite.close()
   }

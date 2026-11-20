@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ArrowRight, FolderTree, Loader2 } from 'lucide-vue-next'
 import InlineNotification from '@/portalkit/InlineNotification.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useRouteContextStore } from '@/stores/routeContext'
 import { authFetch } from '@/auth/session'
 import { isWorkspaceAvailable, isWorkspaceUsable, useTenantStore, type OrgRow, type WorkspaceRow } from '@/stores/tenant'
 import { readOrganizationWorkspace } from '@/router/landingPreference'
@@ -11,6 +12,7 @@ import { preferredWorkspace } from '@/router/workspaceEntry'
 
 const tenant = useTenantStore()
 const auth = useAuthStore()
+const context = useRouteContextStore()
 const route = useRoute()
 const router = useRouter()
 const orgID = computed(() => String(route.params.orgID))
@@ -24,7 +26,8 @@ const error = ref('')
 const hasSnapshot = ref(false)
 const heading = ref<HTMLElement | null>(null)
 const createError = ref('')
-const navigationError = ref<{ workspace: WorkspaceRow; message: string } | null>(null)
+const navigationError = ref<{ workspace: WorkspaceRow; reload: boolean } | null>(null)
+const restoreNavigationFocus = ref(false)
 const opening = ref<string | null>(null)
 const creating = ref(false)
 const name = ref('')
@@ -34,11 +37,13 @@ const canCreate = computed(() => org.value?.role === 'admin' || org.value?.works
 let generation = 0
 let timer: ReturnType<typeof setTimeout> | undefined
 let started = 0
+let workspaceToRetry: string | null = null
 
 async function enter(workspace: WorkspaceRow) {
   if (!isWorkspaceUsable(workspace) || loading.value || error.value || opening.value || creating.value) return
   const revision = generation
   const target = orgID.value
+  const focused = typeof document === 'undefined' ? null : document.activeElement
   opening.value = workspace.uuid
   try {
     const failure = await router.replace({
@@ -46,19 +51,40 @@ async function enter(workspace: WorkspaceRow) {
       params: { orgID: target, workspaceID: workspace.uuid },
       ...(route.query.firstTask === 'personal' || route.query.firstTask === 'team' ? { query: { firstTask: route.query.firstTask } } : {}),
     })
-    if (failure) throw new Error('Navigation failed')
-    if (revision === generation) navigationError.value = null
+    if (revision === generation) navigationError.value = failure ? { workspace, reload: false } : null
   } catch {
-    if (revision === generation) navigationError.value = { workspace, message: 'Unable to open this workspace. Try again.' }
-  } finally { if (revision === generation) opening.value = null }
+    if (revision === generation) navigationError.value = { workspace, reload: true }
+  } finally {
+    if (revision === generation) {
+      opening.value = null
+      restoreNavigationFocus.value = !!(navigationError.value && focused && heading.value?.closest('main')?.contains(focused))
+    }
+  }
 }
+
+const chooserBlocked = computed(() => context.blocksRoute(route.path, !!route.meta.public))
+watch([restoreNavigationFocus, chooserBlocked], async ([restore, blocked]) => {
+  if (!restore || blocked) return
+  const revision = generation
+  restoreNavigationFocus.value = false
+  await nextTick()
+  if (revision === generation && !chooserBlocked.value && document.activeElement === document.body) heading.value?.focus()
+})
 
 const navigationRetryTarget = computed(() => rows.value.find(row =>
   row.uuid === navigationError.value?.workspace.uuid && isWorkspaceUsable(row),
 ))
 
 function retryNavigation() {
-  if (navigationRetryTarget.value) return enter(navigationRetryTarget.value)
+  const workspace = navigationRetryTarget.value
+  if (!workspace || opening.value || loading.value || error.value) return
+  if (!navigationError.value?.reload) return enter(workspace)
+  // A failed module import can be cached for the lifetime of the document.
+  // Reload the chooser and retry the same workspace after checking access.
+  opening.value = workspace.uuid
+  const history = router.options.history
+  history.replace(route.fullPath, { retryWorkspace: workspace.uuid })
+  window.location.reload()
 }
 
 async function load(revision = generation) {
@@ -93,7 +119,10 @@ async function load(revision = generation) {
   hasSnapshot.value = true
   error.value = ''
   if (!navigationRetryTarget.value) navigationError.value = null
-  const workspace = preferredWorkspace(rows.value, readOrganizationWorkspace(auth.user, target))
+  const workspace = workspaceToRetry
+    ? rows.value.find(row => row.uuid === workspaceToRetry && isWorkspaceUsable(row))
+    : preferredWorkspace(rows.value, readOrganizationWorkspace(auth.user, target))
+  workspaceToRetry = null
   if (workspace) {
     waiting.value = false
     timedOut.value = false
@@ -143,10 +172,15 @@ watch(orgID, () => {
   error.value = ''
   createError.value = ''
   navigationError.value = null
+  restoreNavigationFocus.value = false
   opening.value = null
   creating.value = false
   waiting.value = false
-  retry()
+  const history = router.options.history
+  const retryWorkspace = history.state.retryWorkspace
+  workspaceToRetry = typeof retryWorkspace === 'string' ? retryWorkspace : null
+  if (workspaceToRetry) history.replace(route.fullPath, { retryWorkspace: null })
+  void retry()
 }, { immediate: true })
 onBeforeUnmount(() => { generation++; clearTimeout(timer) })
 </script>
@@ -161,8 +195,8 @@ onBeforeUnmount(() => { generation++; clearTimeout(timer) })
       title="Could not load workspaces" :message="`${hasSnapshot ? 'Showing the last successful result. ' : ''}${error}`"
       action-label="Try again" action-busy-label="Trying again…" :action-busy="loading" @action="retry" />
     <InlineNotification v-if="navigationError" class="mt-6" tone="error"
-      :title="`Could not open ${navigationError.workspace.displayName || navigationError.workspace.uuid}`" :message="navigationError.message"
-      :action-label="navigationRetryTarget ? 'Open workspace' : ''" action-busy-label="Opening…"
+      :title="`Could not open ${navigationError.workspace.displayName || navigationError.workspace.uuid}`"
+      :action-label="navigationRetryTarget ? 'Try again' : ''" action-busy-label="Opening…"
       :action-busy="!!opening || loading || !!error" @action="retryNavigation" />
     <div v-if="!error && loading && !hasSnapshot" role="status" class="flex items-center gap-3 py-10 text-text-secondary">
       <Loader2 class="h-5 w-5 animate-spin" />Loading workspaces…
