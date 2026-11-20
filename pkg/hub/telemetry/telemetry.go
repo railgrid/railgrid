@@ -209,6 +209,114 @@ func (r *Relay) Run(ctx context.Context) {
 	}
 }
 
+// Recorder records an outcome the hub itself confirmed (an organization was
+// created, a provider was enabled). It is what the hub's own handlers hold;
+// a nil *Relay is a valid Recorder that records nothing, so a handler never
+// has to ask whether telemetry is on.
+type Recorder interface {
+	Record(req *http.Request, name string, props map[string]string)
+}
+
+// serverRoute is the route recorded for a hub-side outcome. The request path
+// carries organization and workspace IDs, so it is never used.
+const serverRoute = "/hub"
+
+// Record queues a hub-side outcome under the caller's browser, so it lands in
+// the same backend session as the clicks that led to it. It is authoritative
+// where a browser event is not: it also fires for the CLI and the API, and
+// only when the operation succeeded. Labels are fixed strings chosen in the
+// handler, never tenant data.
+func (r *Relay) Record(req *http.Request, name string, props map[string]string) {
+	if r == nil {
+		return
+	}
+	event, ok := sanitize(Event{Type: "event", Name: name, Route: serverRoute, Props: props})
+	if !ok {
+		return
+	}
+	select {
+	case r.queue <- queued{client: Client{IP: r.clientIP(req), UserAgent: req.UserAgent()}, event: event}:
+	default: // full: drop
+	}
+}
+
+// What a browser may report before anyone has signed in. The sign-in page is
+// the one step of the funnel the authenticated route cannot see, so exactly
+// that is accepted here and nothing else: this route takes no credentials, and
+// an open one would let anyone write arbitrary events into the backend.
+var (
+	publicPages  = map[string]string{"login": "/login", "auth-callback": "/auth/callback"}
+	publicEvents = map[string]bool{"sign_in": true}
+	// sign_in's one label: which button.
+	publicProps = map[string]map[string]bool{"method": {"oidc": true, "token": true}}
+)
+
+const (
+	maxPublicBodyBytes = 2 << 10
+	maxPublicBatch     = 4
+)
+
+// publicEvent narrows a sanitized event to the pre-sign-in contract.
+func publicEvent(e Event) (Event, bool) {
+	switch e.Type {
+	case "page":
+		if route, ok := publicPages[e.Name]; !ok || e.Route != route {
+			return Event{}, false
+		}
+		e.Props = nil
+	case "event":
+		if !publicEvents[e.Name] || e.Route != publicPages["login"] {
+			return Event{}, false
+		}
+		for k, v := range e.Props {
+			if !publicProps[k][v] {
+				delete(e.Props, k)
+			}
+		}
+	}
+	return e, true
+}
+
+// PublicHandler handles POST /api/telemetry/public: the sign-in page's own
+// page views and its sign-in click, from a browser with no session. allow is
+// the per-address limiter; a caller over its budget gets 204 like everyone
+// else, because the portal never acts on the answer.
+func (r *Relay) PublicHandler(allow func(clientIP string) bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		ip := r.clientIP(req)
+		if !allow(ip) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		var body struct {
+			Events []Event `json:"events"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, maxPublicBodyBytes)).Decode(&body); err != nil {
+			http.Error(w, "invalid telemetry batch", http.StatusBadRequest)
+			return
+		}
+		if len(body.Events) > maxPublicBatch {
+			http.Error(w, "telemetry batch too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		client := Client{IP: ip, UserAgent: req.UserAgent()}
+		for _, e := range body.Events {
+			event, ok := sanitize(e)
+			if !ok {
+				continue
+			}
+			if event, ok = publicEvent(event); !ok {
+				continue
+			}
+			select {
+			case r.queue <- queued{client: client, event: event}:
+			default: // full: drop
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
 // ServeHTTP handles POST /api/telemetry/events. It answers 204 as soon as the
 // batch is queued: the portal never waits on, or learns about, the backend.
 func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {

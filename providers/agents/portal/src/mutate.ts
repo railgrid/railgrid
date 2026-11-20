@@ -6,6 +6,7 @@
 // describe *what* they want changed; the mechanics live here.
 
 import type { AppStore, SliceKey } from './store'
+import { trackMutationFailed, trackMutationOk, type MutationTelemetry } from './telemetry'
 import { toast } from './ui/toast'
 
 export interface MutateOptions<T> {
@@ -31,6 +32,9 @@ export interface MutateOptions<T> {
   awaitReload?: boolean
   // action attaches a follow-up button to the success toast (e.g. "View run").
   action?: { label: string; run: () => void }
+  // telemetry names the product-telemetry outcome events of this write. Fixed
+  // labels only; see src/telemetry.ts.
+  telemetry?: MutationTelemetry
 }
 
 // mutate returns the write's result, or undefined if it failed. Failures
@@ -43,6 +47,7 @@ export async function mutate<T>(store: AppStore, opts: MutateOptions<T>): Promis
   if (opts.optimistic) store.dispatchEvent(new Event('change'))
   try {
     const res = await opts.run()
+    trackMutationOk(opts.telemetry)
     // The write may have been in flight when the host changed user, token, or
     // workspace. The server result still belongs to that old authority; do not
     // surface its toast or issue new reads through its retired client.
@@ -52,6 +57,7 @@ export async function mutate<T>(store: AppStore, opts: MutateOptions<T>): Promis
     if (opts.awaitReload) await Promise.all(reads)
     return res
   } catch (e) {
+    trackMutationFailed(opts.telemetry, e)
     if (store.isRetired()) return undefined
     const handled = opts.onFailure?.(e) === true
     opts.rollback?.()

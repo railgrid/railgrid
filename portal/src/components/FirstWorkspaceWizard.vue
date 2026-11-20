@@ -16,6 +16,7 @@ import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, ref } from 'vue'
 import { useTenantStore } from '@/stores/tenant'
 import { useAuthStore } from '@/stores/auth'
+import { trackEvent } from '@/telemetry/track'
 import { billingSettingsLocation, clearBillingState, saveWorkspaceBillingDraft, workspaceLimitError } from '@/lib/billing-flow'
 import { ArrowRight, FolderTree, Loader2, Sparkles, AlertCircle, Settings } from 'lucide-vue-next'
 
@@ -48,6 +49,7 @@ async function handleCreate() {
     const created = await tenant.createWorkspace(tenant.orgUUID, trimmed.value)
     if (!created) {
       error.value = tenant.error ?? 'Failed to create workspace'
+      trackEvent('workspace_create_failed', { placement: 'first', reason: workspaceLimitError(error.value) ? 'limit' : 'error' })
     } else {
       clearBillingState('draft', created.orgUUID, userAtStart)
       await router.push({ name: 'dashboard', params: { orgID: created.orgUUID, workspaceID: created.uuid } })
@@ -56,6 +58,7 @@ async function handleCreate() {
     // AppLayout re-keys the slot, and the original page renders.
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to create workspace'
+    trackEvent('workspace_create_failed', { placement: 'first', reason: 'error' })
   } finally {
     busy.value = false
   }
@@ -96,7 +99,7 @@ async function handleCreate() {
           {{ error }}
         </div>
 
-        <button v-if="error && workspaceLimitError(error)" type="button" class="k-btn k-btn--ghost" @click="reviewPlans">Review plans · save this Workspace draft</button>
+        <button v-if="error && workspaceLimitError(error)" type="button" class="k-btn k-btn--ghost" data-track="review_plans" data-track-placement="first" @click="reviewPlans">Review plans · save this Workspace draft</button>
 
         <form class="space-y-5" @submit.prevent="handleCreate">
           <div>
@@ -127,6 +130,8 @@ async function handleCreate() {
             </router-link>
             <button
               type="submit"
+              data-track="create_workspace"
+              data-track-placement="first"
               class="k-btn k-btn--primary group px-4 py-2.5 text-[12px] disabled:pointer-events-none disabled:opacity-40"
               :disabled="!canSubmit"
             >

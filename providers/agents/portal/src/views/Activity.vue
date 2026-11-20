@@ -27,6 +27,7 @@ import AgentsWorkbenchSection from './AgentsWorkbenchSection.vue'
 import { skippedQuestionResponse } from '../question-presentation'
 import { inboxResolutionFailureMessage } from '../failure-presentation'
 import { RUN_PREVIEW_CELL_CHARS, RUN_PREVIEW_DISCLOSURE_CHARS, RUN_PREVIEW_MAX_WIDTH, runPreview } from '../run-preview'
+import { failureReason, track } from '../telemetry'
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -316,11 +317,13 @@ async function resolve(item: InboxItem, decision: InboxDecision, response?: Ques
   resolvingInbox.value = new Map(resolvingInbox.value).set(item.id, decision)
   try {
     await (decision === 'answer' ? authority.api.resolveInbox(item.id, 'answer', answer) : authority.api.resolveInbox(item.id, decision))
+    track('approval_resolved', { decision, surface: 'inbox' })
     if (!authorityIsCurrent(authority)) return
     authority.store.acknowledgeInboxResolution(item.id)
     toast('ok', decision === 'answer' && answer === skippedQuestionResponse ? 'Question skipped.' : resolutionToast(item, decision))
     await Promise.allSettled([authority.store.load('inbox'), reload('foreground')])
   } catch (cause) {
+    track('approval_resolve_failed', { decision, surface: 'inbox', reason: failureReason(cause) })
     if (authorityIsCurrent(authority)) {
       // The request can time out after the server has already accepted it.
       // Read both projections again before leaving the pending card as truth.

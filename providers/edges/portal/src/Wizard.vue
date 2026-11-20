@@ -7,6 +7,7 @@ import { parseEdgeLabelPairs } from './edgeLabels'
 import { MACOS_MASKED_JOIN_TOKEN, hubURLForCluster, macosJoinSnippet } from './macos'
 import CreateGuidance from './portalkit/CreateGuidance.vue'
 import { edgeTypeLabel, type EdgeType, type ErrorResponse } from './types'
+import { track, trackFailure } from './telemetry'
 
 const props = withDefaults(defineProps<{
   cluster: string | null
@@ -137,6 +138,7 @@ async function copy(build: (t: string) => string, field: string, label: string) 
   try {
     await navigator.clipboard.writeText(build(joinToken.value))
     if (!active || generation !== copyGeneration) return
+    track('edge_command_copied', { command: field === 'helm' ? 'join_helm' : 'join_cli', kind: edgeType.value, placement: 'wizard' })
     copied.value = field
     failedCopyField.value = null
     copyFeedback.value = `${label} copied to clipboard.`
@@ -165,10 +167,12 @@ async function handleCreate() {
   error.value = null
   try {
     await createEdge(trimmed.value, edgeType.value, labelResult.value.value)
+    track('edge_created', { kind: edgeType.value })
     if (!active) return
     step.value = 2
     startPolling()
   } catch (e) {
+    trackFailure('edge_create_failed', e, { kind: edgeType.value })
     if (!active) return
     error.value = (e as ErrorResponse)?.message ?? 'Create failed'
   } finally {
@@ -184,6 +188,7 @@ function startPolling() {
   elapsedTimer = setInterval(() => {
     elapsed.value = Math.floor((Date.now() - startedAt) / 1000)
     if (elapsed.value >= 30 && !joinToken.value) {
+      if (!tokenError.value) track('edge_join_token_failed', { kind: type })
       tokenError.value = `Could not retrieve join token. Run: railgrid edge join-command ${edgeName}`
     }
   }, 1000)
@@ -198,6 +203,7 @@ function startPolling() {
       }
       if (p.connected) {
         agentVersion.value = p.agentVersion ?? null
+        track('edge_connected', { kind: type, placement: 'wizard' })
         stopPolling()
         step.value = 3
         clearSetupSecret()
@@ -207,6 +213,8 @@ function startPolling() {
 }
 
 function leaveWizard(event: 'cancel' | 'created'): void {
+  if (event === 'cancel') track('edge_connect_cancelled', { step: step.value === 1 ? 'configure' : step.value === 2 ? 'install' : 'connected' })
+  else if (step.value === 2) track('edge_connect_skipped', { kind: edgeType.value })
   active = false
   stopPolling()
   clearSetupSecret()

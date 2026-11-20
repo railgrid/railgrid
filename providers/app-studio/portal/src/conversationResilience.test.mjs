@@ -119,6 +119,7 @@ async function stopStateHarness(t) {
   return scope.run(() => new Function('ref', 'computed', 'watch', 'assistantRunTerminal', `
     const context = ref({ tenant: 'tenant-a', token: 'token-a', subPath: '/project-a' });
     const props = { get ctx() { return context.value; } };
+    const track = () => {}, trackRunFinished = () => {}, failureReason = () => 'error';
     const selected = ref({ name: 'project-a', uid: 'uid-a' });
     const activeAssistantThreadID = ref('thread-a');
     const assistantStopRequestedRunID = ref('');
@@ -222,6 +223,7 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
   const stopCalls = []
   return scope.run(() => new Function('ref', 'computed', 'watch', 'api', 'outputText', 'fingerprint', 'initialParts', 'initialState', 'startCalls', 'createCalls', 'clearDraftCalls', 'transferDraftCalls', 'rebindDraftCalls', 'writeDraftCalls', 'committedParts', 'mutationCalls', 'steerCalls', 'recoveryCalls', 'pageCalls', 'pageOutcomes', 'activeTurnCalls', 'activeTurnOutcomes', 'reasoningSaveCalls', 'reasoningSaveWaiters', 'state', 'runRequiresLiveControls', 'isTerminal', 'startControllerCalls', 'stopCalls', 'composerDraft', `
     const props = { ctx: { tenant: 'tenant-a', workspaceUUID: 'workspace-a', subPath: '/project-a' } };
+    const track = () => {}, trackRunFinished = () => {}, failureReason = () => 'error';
     const selected = ref({ name: 'project-a', uid: 'uid-a' });
     const projectGitSettingsOpen = ref(false);
     let previewAccessRevision = 0;
@@ -2377,6 +2379,7 @@ function threadActivitySnapshotHarness() {
     let activeAssistantRun;
     let activeAssistantProject = '';
     const normalizeSnapshotMessage = message => message;
+    const track = () => {}, trackRunFinished = () => {}, failureReason = () => 'error';
     const acceptScopedConversationSnapshot = state.acceptScopedConversationSnapshot;
     const mergeConversationSnapshot = state.mergeConversationSnapshot;
     const assistantRunTerminal = state.assistantRunTerminal;

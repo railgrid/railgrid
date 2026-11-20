@@ -1053,6 +1053,7 @@ func (s *Server) Run(ctx context.Context) error {
 			apiMgr.WithOrgProviderAvailability(s.orgProviderRuntimeAvailable)
 			providerInstaller = providerinstall.New(kcpConfig, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode)
 			apiMgr.WithProviderInstaller(providerInstaller)
+			var telemetryRelay *telemetry.Relay
 			// Per-workspace kubeconfig download — OIDC mode emits an exec
 			// credential plugin entry (railgrid get-token), static-token mode
 			// embeds the caller's bearer token. Either way the cluster URL
@@ -1069,20 +1070,34 @@ func (s *Server) Run(ctx context.Context) error {
 			apiHandler := restapi.NewHandler(apiMgr)
 			apiHandler.SetProviderUIGrantHandler(providerUIGrantHandler)
 
+			// Opt-in product telemetry relay (docs/telemetry.md). None of
+			// this exists when telemetry is off: no route, no recorder, no
+			// outbound call.
+			if telemetryConfig.Enabled() {
+				telemetryRelay = telemetry.NewRelay(telemetry.NewUmamiSink(telemetryConfig), func(r *http.Request) string {
+					return proxy.ClientIP(r, trustedProxies)
+				})
+				go telemetryRelay.Run(ctx)
+				apiHandler.SetTelemetry(telemetryRelay)
+				// The sign-in page reports before there is a session, so
+				// this one route takes no credentials. It accepts only the
+				// sign-in page's own events and is limited per address:
+				// a burst of 30, refilled one every two seconds. Registered
+				// ahead of the /api subrouters so their auth does not claim it.
+				publicTelemetry := proxy.NewIPRateLimiter(2*time.Second, 30)
+				router.Handle("/api/telemetry/public", telemetryRelay.PublicHandler(publicTelemetry.Allow)).Methods(http.MethodPost)
+				logger.Info("Product telemetry enabled", "url", telemetryConfig.URL, "hostname", telemetryConfig.Hostname)
+			}
+
 			// User-only routes (no Org context required)
 			userOnlySub := router.PathPrefix("/api").Subrouter()
 			userOnlySub.Use(tenant.UserOnlyMiddleware(userResolver))
 			apiHandler.RegisterUserOnly(userOnlySub)
-			// Opt-in product telemetry relay (docs/telemetry.md). Signed-in
-			// callers only, so it cannot be used as an open proxy to the
-			// analytics backend; the route does not exist when telemetry is off.
-			if telemetryConfig.Enabled() {
-				telemetryRelay := telemetry.NewRelay(telemetry.NewUmamiSink(telemetryConfig), func(r *http.Request) string {
-					return proxy.ClientIP(r, trustedProxies)
-				})
-				go telemetryRelay.Run(ctx)
+			// Everything else the portal reports comes from signed-in callers
+			// only, so the relay cannot be used as an open proxy to the
+			// analytics backend.
+			if telemetryRelay != nil {
 				userOnlySub.Handle("/telemetry/events", telemetryRelay).Methods(http.MethodPost)
-				logger.Info("Product telemetry enabled", "url", telemetryConfig.URL, "hostname", telemetryConfig.Hostname)
 			}
 
 			// Full tenant-context routes (Org admin / member, optionally Workspace)

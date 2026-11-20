@@ -14,6 +14,7 @@ import { updateEdgeHarness } from './api'
 import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
+import { track, trackFailure } from './telemetry'
 import {
   HARNESS_NAMES,
   HARNESS_PERMISSION_MODES,
@@ -314,12 +315,14 @@ async function write(spec: EdgeHarnessSpec, operation: WriteOperation): Promise<
   clearWriteError(operation)
   try {
     await updateEdgeHarness(request.edgeName, request.edgeType, spec)
+    track('edge_harness_updated', { operation, kind: request.edgeType })
     if (!isCurrentWrite(request)) return
     requested.value = spec
     // The spec write is done; the machine has not confirmed it yet.
     awaitingAgent.value = !agentAgrees.value
     emit('changed')
   } catch (error) {
+    trackFailure('edge_harness_update_failed', error, { operation, kind: request.edgeType })
     if (!isCurrentWrite(request)) return
     requested.value = null
     const fallback = operation === 'switch'

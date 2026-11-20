@@ -22,6 +22,7 @@ import { toast } from '../portalkit/toast'
 import { useAuthorityGuard } from '../vue/runtime'
 import { createSkillDocument, parseSkillDocument, skillPackageName, validateSkillResources } from '../skill-document'
 import { WORKSPACE_SKILLS, type SkillLibrarySource } from '../skill-library'
+import { failureReason, track } from '../telemetry'
 
 ensureAgentUIStyles()
 
@@ -332,6 +333,7 @@ async function save(): Promise<void> {
         spec: { ...(current.spec || {}), document: value.document, resources: value.resources },
       })
     }
+    track(operation === 'create' ? 'skill_created' : 'skill_updated')
     if (!isCurrent(serial, api) || !authorityIsCurrent(authority)) return
     toast('ok', operation === 'create' ? `Created workspace skill “${value.name}”.` : `Saved workspace skill “${value.name}”.`)
     const id = `workspace:${savedPackageName}`
@@ -345,6 +347,7 @@ async function save(): Promise<void> {
       if (authorityIsCurrent(authority)) detailSection.value?.focus()
     }
   } catch (error) {
+    track(operation === 'create' ? 'skill_create_failed' : 'skill_update_failed', { reason: failureReason(error) })
     if (isCurrent(serial, api) && authorityIsCurrent(authority)) {
       saveError.value = operation === 'edit' && isKubeConflict(error) ? editConflictMessage : (error as Error).message
       await nextTick()

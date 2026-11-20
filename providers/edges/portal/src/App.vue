@@ -13,6 +13,7 @@ import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import Tabs from './portalkit/Tabs.vue'
 import { confirmDialog } from './portalkit/confirm'
 import { toast } from './portalkit/toast'
+import { setTrackContext, track, trackFailure } from './telemetry'
 import {
   FAST_REFRESH_MS,
   STABLE_REFRESH_MS,
@@ -38,6 +39,10 @@ import {
 } from './routes'
 
 const props = defineProps<{ ctx: RailgridContext | null }>()
+
+// Telemetry reports through the host context; keep the module holder current
+// before anything below (or any child) can report.
+watch(() => props.ctx, ctx => setTrackContext(ctx), { immediate: true, flush: 'sync' })
 
 // The shell owns the provider prefix and passes only the trailing path. Every
 // consequential action is represented here so browser refresh/back/forward
@@ -66,6 +71,7 @@ function navigate(path: string, replace = false) {
 }
 
 function selectView(id: string): void {
+  if (id === 'edges' || id === 'workloads' || id === 'services') track('edges_tab_selected', { section: id })
   // Keep the provider landing page canonical at /providers/edges; the parser
   // also accepts the explicit `edges` collection alias for deep links.
   navigate(id === 'edges' ? '' : id)
@@ -92,6 +98,18 @@ function connectEdgeFrom(successPath: string, options: EdgeConnectOptions = {}):
 function cancelEdgeConnection(): void {
   navigate(edgeConnectionCancelPath(route.value.connect?.cancelPath), true)
 }
+// Where the connect flow was entered from, as a fixed label.
+const edgeConnectionSource = computed(() => {
+  const cancelPath = route.value.connect?.cancelPath
+  if (cancelPath === 'services') return 'services'
+  if (cancelPath === 'workloads') return 'workloads'
+  if (cancelPath?.startsWith('create/service')) return 'service_create'
+  if (cancelPath?.startsWith('deploy/workload')) return 'workload_create'
+  return 'edges'
+})
+watch(() => route.value.connect?.resource === 'edge', (open) => {
+  if (open) track('edge_connect_started', { source: edgeConnectionSource.value })
+}, { immediate: true })
 const edgeConnectionCancelLabel = computed(() => {
   const cancelPath = route.value.connect?.cancelPath
   if (cancelPath === 'services') return 'Back to services'
@@ -185,11 +203,13 @@ async function onDelete(edge: Edge) {
     await deleteEdge(edge)
     if (contextGeneration.value !== expectedContextGeneration) return
     dismissDeleteFailure(`${edge.type}/${edge.name}`)
+    track('edge_deleted', { kind: edge.type, placement: 'list' })
     toast('info', `${label} edge deletion requested for ${edge.name}.`)
     edgeRefresh.invalidate()
     await refresh()
   } catch (e) {
     if (contextGeneration.value === expectedContextGeneration && !isContextChangedError(e)) {
+      trackFailure('edge_delete_failed', e, { kind: edge.type, placement: 'list' })
       deleteFailures.value = { ...deleteFailures.value, [`${edge.type}/${edge.name}`]: { name: edge.name, message: (e as ErrorResponse)?.message ?? 'The request failed.' } }
     }
   } finally {

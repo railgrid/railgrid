@@ -771,6 +771,7 @@ test('provider detours preserve the original Models or project route and the mod
       const connectionNotice = ref('saved')
       const connectionError = ref('stale error')
       const connectionVerifiedFingerprint = ref('')
+      const track = () => {}, providerPresetLabel = () => 'openai'
       ${compiledAccept}
       return { acceptSavedConnection, pendingConnection, connectionAPIKey,
         connectionEditorOpen, connectionOriginal, connectionNotice, connectionError,
@@ -1734,6 +1735,7 @@ test('discovery failures keep credentials in place unless the endpoint is unsupp
       connectionRequestSerial: 0, connectionDraftFingerprint: ref('draft'), connectionBusy: ref(false),
       connectionDiscoverySucceeded: ref(false), connectionDiscoveredModels: ref([]),
       connectionAPIKey: ref('typed-key'), props: { ctx: null }, draftProbeBody: () => ({}),
+      track: () => {}, failureReason: () => 'error', providerPresetLabel: () => 'openai',
       connectionCredentialRef: ref({ focus: () => { focused = true } }),
     }
     const api = { discoverLLMModels: async () => { throw new ProjectAPIRequestError('Discovery failed', 502, reason) } }
@@ -1916,6 +1918,7 @@ test('discovery guidance only appears in the existing-connection editor', async 
       connectionEndpoint: ref('https://api.openai.com/v1'), connectionWorkspaceID: ref(''),
       connectionDisplayName: ref(''), connectionPreset: ref('openai'), connectionRows: ref([]),
       connectionAPIKey: ref('typed-key'), props: { ctx: null }, draftProbeBody: () => ({}),
+      track: () => {}, failureReason: () => 'error', providerPresetLabel: () => 'openai',
       connectionDisplayNameForSave: () => 'OpenAI',
     }
     let saves = 0

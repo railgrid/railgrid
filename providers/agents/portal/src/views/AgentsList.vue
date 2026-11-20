@@ -104,6 +104,7 @@ async function selectAgentAction(name: string, action: string): Promise<void> {
       run: async () => { await authority.store.deleteAgent(name, agent.metadata.uid); return true },
       success: `Agent deletion requested for ${label}.`,
       failure: 'Delete failed',
+      telemetry: { ok: 'agent_deleted', failed: 'agent_delete_failed' },
       onFailure: () => !authorityIsCurrent(authority) || deleteFeedback.fail(key, 'agent', label, 'The request failed.'),
     })
     if (done && authorityIsCurrent(authority)) deleteFeedback.clear(key)
@@ -210,7 +211,7 @@ function openAgentRow(row: Record<string, unknown>): void {
   <ResourcePage title="Agents" ref="collectionRef" variant="collection">
     <template #actions>
       <a v-if="assistantSettings" class="k-btn k-btn--text" :href="hashFor({ kind: 'menu', menu: 'agents', assistantSettings: true })">Workspace assistant settings</a>
-      <button v-if="!showAgentCards" class="k-btn k-btn--primary" type="button" @click="navigate({ kind: 'create', resource: 'agent' })">
+      <button v-if="!showAgentCards" class="k-btn k-btn--primary" type="button" data-track="agent_create_open" data-track-placement="header" @click="navigate({ kind: 'create', resource: 'agent' })">
         <Plus aria-hidden="true" /> New agent
       </button>
     </template>
@@ -250,7 +251,7 @@ function openAgentRow(row: Record<string, unknown>): void {
       </div>
       <template v-if="showAgentCards">
         <div class="agents-grid">
-          <button class="k-card agents-starter-card agents-new-agent" type="button" aria-labelledby="agents-new-agent-label" aria-describedby="agents-new-agent-description" @click="navigate({ kind: 'create', resource: 'agent' })">
+          <button class="k-card agents-starter-card agents-new-agent" type="button" aria-labelledby="agents-new-agent-label" aria-describedby="agents-new-agent-description" data-track="agent_create_open" data-track-placement="card" @click="navigate({ kind: 'create', resource: 'agent' })">
             <span class="agents-card-glyph"><Plus aria-hidden="true" /></span>
             <span id="agents-new-agent-label" class="agents-starter-name">New agent</span>
             <span id="agents-new-agent-description" class="agents-starter-description">Start with a name, a model, and your own instructions.</span>

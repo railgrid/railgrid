@@ -314,6 +314,7 @@ async function remove(): Promise<void> {
         if (isCurrent()) deleteFailure.value = 'The request failed.'
         return true
       },
+      telemetry: { ok: 'agent_deleted', failed: 'agent_delete_failed' },
     })
     if (result && isCurrent()) {
       deleteFailure.value = ''

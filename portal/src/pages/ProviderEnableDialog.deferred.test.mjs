@@ -53,6 +53,7 @@ async function loadCaller(fileName) {
   const sourceWithoutImports = script.replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '')
   const harness = `
 const useScopedNavigation = () => ({ scopePath: (path) => path })
+const trackEvent = () => {}
 
 const ref = (value) => ({ value })
 const computed = (getter) => typeof getter === 'function'

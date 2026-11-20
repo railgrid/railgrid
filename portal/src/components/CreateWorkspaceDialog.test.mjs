@@ -57,6 +57,7 @@ function setup() {
     computed, ref, Error, useAuthStore: () => auth, useId: () => 'dialog', useTenantStore: () => tenant,
     useRouter: () => ({ currentRoute: route, async push(to) { navigations.push(to); tenant.workspaceUUID = to.params.workspaceID } }),
     defineEmits: () => () => { state.closed++ }, defineProps: () => ({}),
+    trackEvent() {},
     clearBillingState() {}, workspaceLimitError: message => /workspace.*limit.*(?:exceeded|reached)/i.test(message),
     saveWorkspaceBillingDraft: (org, user, name) => { state.draft = { org, user, name }; return true },
     billingSettingsLocation: org => ({ path: `/${org}/settings/organizations`, query: { panel: 'billing', meter: 'workspaces', review: '1' } }),

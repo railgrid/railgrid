@@ -14,6 +14,7 @@ import { portalHref } from './portalkit/navigation'
 import { edgeConnectPath, serviceCreatePath, serviceDetailPath } from './routes'
 import { serviceTarget } from './serviceTarget'
 import { toast } from './portalkit/toast'
+import { track, trackFailure } from './telemetry'
 import ResourceTable from './portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableEditButton from './portalkit/ResourceTableEditButton.vue'
@@ -485,6 +486,7 @@ async function onDelete(s: EdgeService) {
   deletingService.value = s.name
   try {
     await deleteEdgeService(s.name, uid)
+    track('service_deleted', { placement: 'list' })
     if (stopped) return
     deletions.acknowledge(s.name, uid)
     clearDeleteFailure(s.name)
@@ -494,6 +496,7 @@ async function onDelete(s: EdgeService) {
     await nextTick()
     if (focusedAction && !focusedAction.isConnected && document.activeElement === document.body) servicesHeading.value?.focus()
   } catch (e) {
+    trackFailure('service_delete_failed', e, { placement: 'list' })
     if (!stopped && !isContextChangedError(e)) deleteFailures.value = { ...deleteFailures.value, [s.name]: { name: s.name, message: (e as ErrorResponse)?.message ?? 'The request failed.' } }
   } finally {
     deletingService.value = null
@@ -571,6 +574,8 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
         <a
           class="k-btn k-btn--primary"
           :href="portalHref(`/ui/providers/edges/${serviceCreatePath()}`)"
+          data-track="service_create_open"
+          data-track-placement="header"
           @click="followCreateLink"
         >
           <Plus :size="14" aria-hidden="true" /> New service
@@ -590,7 +595,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
       :steps="[]"
     >
       <template #icon><component :is="hasEdges ? Plug : Server" aria-hidden="true" /></template>
-      <template #actions><a class="k-btn k-btn--primary" :href="firstRunHref" @click="followFirstRunLink">{{ hasEdges ? 'Create service' : 'Connect edge' }} <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>
+      <template #actions><a class="k-btn k-btn--primary" :href="firstRunHref" :data-track="hasEdges ? 'service_create_open' : 'edge_connect_click'" :data-track-placement="hasEdges ? 'first_run' : 'services_first_run'" @click="followFirstRunLink">{{ hasEdges ? 'Create service' : 'Connect edge' }} <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>
     </FirstRunGuide>
 
     <div v-else class="services-table">

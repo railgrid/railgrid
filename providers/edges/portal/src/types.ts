@@ -8,6 +8,9 @@ export interface RailgridContext {
   // tenant headers and refuses paths outside this provider's allow list.
   // Send every hub request through portalkit providerFetch(ctx).
   fetch?: ProviderFetch | null
+  // track records a product-telemetry outcome that is not a click. Absent on
+  // older hosts; report through ./telemetry, never by calling it directly.
+  track?: ((name: string, props?: Record<string, string>) => void) | null
   /** @deprecated Read-only fallback for older hosts; use fetch. */
   token?: string | null
   user?: { userId?: string; email?: string; sub?: string } | null

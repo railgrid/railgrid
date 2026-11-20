@@ -3,6 +3,7 @@ import { scopedPath } from '@/portalkit/navigation'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { authFetch } from '@/auth/session'
+import { trackEvent } from '@/telemetry/track'
 
 // ProviderDTO is the wire shape returned by the hub's GET /api/providers.
 // Keep it aligned with pkg/hub/providers/api.go:providerDTO.
@@ -912,6 +913,11 @@ export const useProvidersStore = defineStore('providers', () => {
       acceptedCompositions: acceptCompositions.map((c) => ({ provider: c.provider, group: c.group, resource: c.resource })),
     }
     const action = setupReview ? 'setup' : 'enable'
+    // Telemetry: an organization's own provider is named by that
+    // organization, so only a platform provider is reported by name, and a
+    // failure by its HTTP status, never by the response text.
+    const tracked = { provider: p.scope === 'global' ? p.name : 'org-provider', flow: action }
+    let failedStatus = 'network'
     const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/${action}`
 
     try {
@@ -936,6 +942,7 @@ export const useProvidersStore = defineStore('providers', () => {
         if (res.ok) break
         const detail = await res.text().catch(() => '')
         if (!isCurrentEnable()) return
+        failedStatus = String(res.status)
         if (res.status === 409) {
           let pendingMessage: string | undefined
           try {
@@ -969,6 +976,7 @@ export const useProvidersStore = defineStore('providers', () => {
       // A rejected request from an old tenant must not surface after a switch;
       // current-scope failures retain the existing rejection contract.
       if (!isCurrentEnable()) return
+      trackEvent('provider_enable_failed', { ...tracked, status: failedStatus })
       throw e
     }
   }

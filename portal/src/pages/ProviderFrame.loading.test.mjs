@@ -99,14 +99,14 @@ function providerContextHarness() {
     'elementRef', 'entry', 'accessActive', 'auth', 'tenant', 'routeContext', 'router',
     'theme', 'props', 'agentOverlay', 'providerRouteEpoch', 'pageResource', 'resourceSource',
     'createAgentContextPublisher', 'createPageResourcePublisher', 'createProviderContext',
-    'guardProviderContextCallback', 'scopePath',
+    'guardProviderContextCallback', 'scopePath', 'providerTracker',
     `let mountGeneration = 1; return { pushContext() { ${body} }, setMountGeneration(value) { mountGeneration = value } }`,
   )(
     elementRef, entry, accessAllowed, auth, tenant, routeContext, router, theme, props,
     agentOverlay, providerRouteEpoch, pageResource, resourceSource, createAgentContextPublisher,
     createPageResourcePublisher, createProviderContext, (isCurrent, callback) => (...args) => {
       if (isCurrent()) callback(...args)
-    }, path => path,
+    }, path => path, () => () => {},
   )
   makeContext.pushContext()
   return { element, entry, accessAllowed, auth, tenant, routeContext, router, providerRouteEpoch, actions, publishedContexts, makeContext }

@@ -180,7 +180,7 @@ async function save(): Promise<void> {
   try {
     const result = currentEdit
       ? await mutate(authority.store, { run: () => authority.api.patchToolset(currentEdit, { displayName, families, connections }), success: 'Toolset updated.', failure: 'Update failed', reload: ['toolsets'] })
-      : await mutate(authority.store, { run: () => authority.api.createToolset({ name, displayName, families, connections }), success: 'Toolset created.', failure: 'Create failed', reload: ['toolsets'] })
+      : await mutate(authority.store, { run: () => authority.api.createToolset({ name, displayName, families, connections }), success: 'Toolset created.', failure: 'Create failed', reload: ['toolsets'], telemetry: { ok: 'toolset_created', failed: 'toolset_create_failed' } })
     if (!result || !authorityIsCurrent(authority)) return
     if (currentEdit) {
       emit('edit-success', { resource: 'toolset', name: currentEdit, item: result, store: props.store, authorityEpoch: props.authorityEpoch, createSession: props.createSession })

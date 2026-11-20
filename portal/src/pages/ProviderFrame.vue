@@ -24,6 +24,7 @@ import { createProviderRouteFocus } from '@/providers/providerRouteFocus'
 import { createPageResourcePublisher } from '@/providers/pageResourcePublisher'
 import { createAgentContextPublisher } from '@/providers/agentContextPublisher'
 import { createProviderContext, createProviderContextEpoch, guardProviderContextCallback } from '@/providers/providerContext'
+import { providerTracker } from '@/telemetry/install'
 import { AlertCircle, Puzzle } from 'lucide-vue-next'
 import { useDelayedLoading } from '@/portalkit/useDelayedLoading'
 import StatusBadge from '@/portalkit/StatusBadge.vue'
@@ -540,6 +541,7 @@ function pushContext() {
           if (name) void router.push(scopePath('/providers/agents') + '#/agents')
         }),
       } } : {}),
+      track: guardProviderContextCallback(isCurrentOwnerContext, providerTracker(providerName)),
       user: auth.user,
       tenant: auth.clusterName,
       // Sidebar-selected org/workspace. The host fetch forwards these as

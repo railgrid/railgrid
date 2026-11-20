@@ -40,6 +40,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api, isProjectAPIInitializingError, isProjectAPINotFoundError, ProjectAPIRequestError, type ProjectAssistantThreadItemPage } from './api'
+import { failureReason, oncePerKey, track as reportTelemetry } from './telemetry'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import ToastHost from './portalkit/ToastHost.vue'
 import { createAdaptiveRefreshTimer, createLatestRefreshController, FAST_REFRESH_MS, STABLE_REFRESH_MS } from './portalkit/refresh'
@@ -399,6 +400,23 @@ const props = defineProps<{
   navigate: (path: string, options?: { replace?: boolean }) => void
   requestFullBleed?: (fullBleed: boolean) => void
 }>()
+
+// Product telemetry (docs/telemetry.md). Labels are fixed strings only: never
+// a project, repository, model or template name, a prompt or an error message.
+function track(name: string, labels?: Record<string, string>) {
+  reportTelemetry(props.ctx, name, labels)
+}
+function trackRunFinished(status: unknown) {
+  track('session_run_finished', { status: normalizeAssistantRunStatus(status) ?? 'unknown' })
+}
+// In-memory only: stops polled preview observations repeating per project.
+const previewTelemetrySeen = new Set<string>()
+const WORKBENCH_TAB_LABELS: ReadonlySet<string> = new Set([
+  'preview', 'code', 'review', 'providers', 'integrations', 'publishing', 'history', 'settings', 'skills', 'launcher', 'provider',
+])
+function trackWorkbenchTab(kind: string | undefined) {
+  if (kind && WORKBENCH_TAB_LABELS.has(kind)) track('workbench_tab_opened', { tab: kind })
+}
 
 interface ProjectRequestGuard {
   serial: number
@@ -4352,6 +4370,7 @@ async function importRepositoryProject() {
   importError.value = null
   try {
     const project = await api.createProject(props.ctx, { existingRepositoryRef: repositoryRef })
+    track('project_created', { source: 'import' })
     importSelectedRepository.value = ''
     selected.value = project
     resetWorkbench()
@@ -4361,6 +4380,7 @@ async function importRepositoryProject() {
     void load()
     void loadImportRepositories()
   } catch (e) {
+    track('project_create_failed', { source: 'import', reason: failureReason(e) })
     importError.value = e instanceof Error ? e.message : String(e)
   } finally {
     importBusy.value = false
@@ -4689,12 +4709,15 @@ async function loadPromotionStatus(scheduleNext: boolean) {
     syncProductionForm(readiness)
     const observation = promotionObservation(readiness)
     if (productionRolloutFailed.value) {
+      // Only the poll that follows a deploy from this page reports the failure.
+      if (pollAtStart && promotionPollState === pollAtStart) track('publish_deploy_failed', { stage: 'rollout', reason: 'error' })
       promotionFeedback.value = null
       promotionPollState = null
     } else if (pollAtStart && promotionPollState === pollAtStart) {
       const progress = advancePromotionPoll(pollAtStart, observation)
       promotionLastTarget = progress.state
       if (progress.matched) {
+        track('publish_deploy_ready')
         promotionFeedback.value = promotionReadyFeedback(progress.state, observation)
       } else if (progress.done) {
         promotionFeedback.value = promotionPollExhaustedFeedback(progress.state, observation)
@@ -4892,6 +4915,7 @@ async function publishCurrentProject() {
   publishingActionError.value = null
   try {
     const state = await api.publishProject(props.ctx, name, mode)
+    track('share_access_changed', { target: 'production', action: 'save', mode: mode === 'public' ? 'public' : 'restricted' })
     if (selected.value?.name !== name) return
     publishing.value = state
     // Share stays open after a successful save. Reflect the acknowledged
@@ -4902,6 +4926,7 @@ async function publishCurrentProject() {
     toast(notice.kind, notice.message)
     await loadPublishing()
   } catch (err) {
+    track('share_access_failed', { target: 'production', action: 'save', reason: failureReason(err) })
     if (selected.value?.name === name) {
       publishingActionError.value = err instanceof Error ? err.message : String(err)
     }
@@ -4942,6 +4967,7 @@ async function savePreviewAccess() {
   publishingActionError.value = null
   try {
     const state = await api.setPreviewAccess(props.ctx, name, previewMode.value)
+    track('share_access_changed', { target: 'preview', action: 'save', mode: previewMode.value === 'public' ? 'public' : 'restricted' })
     if (selected.value?.name !== name || accessRevision !== previewAccessRevision) return
     accessRevision = ++previewAccessRevision
     applyPreviewAccessState(state)
@@ -4950,6 +4976,7 @@ async function savePreviewAccess() {
     toast(notice.kind, notice.message)
     void authorizeDevelopmentPreview({ force: true })
   } catch (err) {
+    track('share_access_failed', { target: 'preview', action: 'save', reason: failureReason(err) })
     if (accessRevision === previewAccessRevision) {
       publishingActionError.value = err instanceof Error ? err.message : String(err)
       accessRevision = reconcilePreviewAccessAfterFailure()
@@ -4998,6 +5025,7 @@ async function mutatePreviewGrants(operation: PreviewGrantMutation) {
   publishingActionError.value = null
   try {
     const grants = await operation.run(name)
+    track('share_access_changed', { target: 'preview', action: operation.mutation === 'invite' ? 'invite' : operation.mutation === 'revoke' ? 'revoke' : 'grant' })
     if (selected.value?.name !== name) return
     // Keep the visibility fields and swap only the grant list, so the toggle's
     // converged/pending state is not reset by a grant mutation.
@@ -5007,6 +5035,7 @@ async function mutatePreviewGrants(operation: PreviewGrantMutation) {
     const notice = accessMutationToast('preview', operation.mutation, operation.subject)
     toast(notice.kind, notice.message)
   } catch (err) {
+    track('share_access_failed', { target: 'preview', action: operation.mutation === 'invite' ? 'invite' : operation.mutation === 'revoke' ? 'revoke' : 'grant', reason: failureReason(err) })
     if (selected.value?.name === name) {
       publishingActionError.value = err instanceof Error ? err.message : String(err)
     }
@@ -5036,12 +5065,14 @@ async function unpublishCurrentProject() {
   let disableSucceeded = false
   try {
     const state = await api.unpublishProject(props.ctx, name)
+    track('share_access_changed', { target: 'production', action: 'disable' })
     if (selected.value?.name !== name) return
     publishing.value = state
     toast('ok', 'Production access disabled.')
     await loadPublishing()
     disableSucceeded = true
   } catch (err) {
+    track('share_access_failed', { target: 'production', action: 'disable', reason: failureReason(err) })
     if (selected.value?.name === name) {
       publishingActionError.value = err instanceof Error ? err.message : String(err)
     }
@@ -5071,11 +5102,13 @@ async function grantOrInviteProjectAccess(user: string, invite: boolean) {
   publishingActionError.value = null
   try {
     await api.grantPublishingAccess(props.ctx, name, selectedUser, invite)
+    track('share_access_changed', { target: 'production', action: invite ? 'invite' : 'grant' })
     if (selected.value?.name !== name) return
     const notice = accessMutationToast('production', invite ? 'invite' : 'grant', selectedUser)
     toast(notice.kind, notice.message)
     await loadPublishing()
   } catch (err) {
+    track('share_access_failed', { target: 'production', action: invite ? 'invite' : 'grant', reason: failureReason(err) })
     if (selected.value?.name === name) {
       publishingActionError.value = err instanceof Error ? err.message : String(err)
     }
@@ -5091,11 +5124,13 @@ async function revokeCurrentProjectAccess(grant: string) {
   publishingActionError.value = null
   try {
     await api.revokePublishingAccess(props.ctx, name, grant)
+    track('share_access_changed', { target: 'production', action: 'revoke' })
     if (selected.value?.name !== name) return
     const notice = accessMutationToast('production', 'revoke')
     toast(notice.kind, notice.message)
     await loadPublishing()
   } catch (err) {
+    track('share_access_failed', { target: 'production', action: 'revoke', reason: failureReason(err) })
     if (selected.value?.name === name) {
       publishingActionError.value = err instanceof Error ? err.message : String(err)
     }
@@ -5128,8 +5163,10 @@ async function promoteToProd(applyProductionValues = false, requestedRelease: Pr
     ? promotionValues.value
     : undefined
   promotionBusy.value = true
+  const deployKind = !productionBinding.value ? 'first' : applyProductionValues ? 'config' : 'update'
   try {
     const result = await api.promoteProject(props.ctx, name, values, commitSHA, releaseID)
+    track('publish_deploy_accepted', { kind: deployKind })
     if (selected.value?.name !== name) return
     if (promotion.value && result.rolloutRevision) {
       promotion.value = {
@@ -5143,6 +5180,7 @@ async function promoteToProd(applyProductionValues = false, requestedRelease: Pr
     promotionFeedback.value = promotionAcceptedFeedback(result)
     await Promise.allSettled([loadPromotion(), loadReleases()])
   } catch (err) {
+    track('publish_deploy_failed', { stage: 'request', kind: deployKind, reason: failureReason(err) })
     if (selected.value?.name === name) {
       promotionFeedback.value = null
       promotionError.value = err instanceof Error ? err.message : String(err)
@@ -5747,6 +5785,7 @@ async function saveLLMSettings() {
   }
   const routeOwnedCreation = isCreateModelRoute.value && !llmEditingModelID.value
   const editingID = llmEditingModelID.value
+  if (!editingID) track('model_connect_submit', { flow: createModelSetup.value ? 'project_create' : 'settings' })
   const displayNameOnly = Boolean(editingID && llmNameOnlyEdit.value)
   const returnRoute = routeOwnedCreation
     ? (modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? CREATE_PROJECT_ROUTE : modelsReturnRoute.value === MODEL_PROVIDER_CONNECTIONS_ROUTE ? MODEL_PROVIDER_CONNECTIONS_ROUTE : MODELS_ROUTE)
@@ -5793,6 +5832,7 @@ async function saveLLMSettings() {
       }
     }
     applyLLMSettings(projectedSettings)
+    if (!editingID) track('model_connected', { flow: createModelSetup.value ? 'project_create' : 'settings' })
     toast('ok', editingID ? 'Model updated.' : 'Model connected.')
     llmEditorOpen.value = false
     llmEditingModelID.value = null
@@ -5813,6 +5853,7 @@ async function saveLLMSettings() {
     }
   } catch (e) {
     if (!llmModelMutationIsCurrent(guard)) return
+    if (!editingID) track('model_connect_failed', { stage: 'save', reason: failureReason(e) })
     llmActionError.value = e instanceof Error ? e.message : String(e)
   } finally {
     if (llmModelMutationIsCurrent(guard)) llmSaving.value = false
@@ -5908,6 +5949,7 @@ async function testLLMConnection(): Promise<boolean> {
     return true
   } catch (e) {
     if (serial !== llmConnectionTestSerial || verificationFingerprint !== llmConnectionFingerprint.value) return false
+    track('model_connect_failed', { stage: 'verify', reason: failureReason(e) })
     llmTestError.value = e instanceof Error ? e.message : String(e)
     return false
   } finally {
@@ -6025,6 +6067,7 @@ function beginCreateModelSetup() {
   openLLMEditor()
   showProjectSetupJourney.value = true
   createModelSetup.value = true
+  track('project_create_step', { step: 'model_setup' })
 }
 
 function clearCreateModelSetup() {
@@ -6073,6 +6116,7 @@ function createProjectFromPrompt() {
   reviewedGitConnection.value = createReadiness.value?.gitConnection.connectionRef || ''
   createGitError.value = ''
   wizardOpen.value = true
+  track('project_create_step', { step: 'review' })
 }
 
 // The creation surface is continuous from the landing composer: preparation
@@ -6080,6 +6124,7 @@ function createProjectFromPrompt() {
 
 async function onWizardCancel() {
   projectCreationSubmit.invalidate()
+  track('project_create_canceled')
   if (authCompatibleCreation.value) {
     authCompatibleCreationGeneration += 1
     authCompatibleCreation.value = false
@@ -6107,6 +6152,11 @@ async function onWizardCreate(payload: { prompt: string; templateName?: string; 
   )
 
   authCompatibleCreationError.value = ''
+  track('project_create_submit', {
+    git: createWithGit.value ? 'yes' : 'no',
+    template: payload.templateName ? 'selected' : 'inferred',
+    auth: authMode ? 'yes' : 'no',
+  })
   await projectCreationSubmit.run(async () => {
     if (!authModeIsCurrent()) return false
     return ensureCreateSetupReady()
@@ -6371,6 +6421,7 @@ async function createProjectAndStartConversation(
       }, (message) => {
         if (current()) conversationStatus.value = message
       })
+      track('project_created', { source: 'prompt', git: createWithGit.value ? 'yes' : 'no' })
       if (!current()) return
       projectName = created.name
       submission = firstProjectSubmissionWithProject(submission, projectName)
@@ -6440,6 +6491,7 @@ async function createProjectAndStartConversation(
     // projection/history failure after this point must replay this same
     // client request rather than manufacture a new turn.
     startPostAccepted = true
+    track('session_prompt_sent', { kind: 'first' })
     if (!current()) return
     // The POST response is the durable acceptance boundary. A later history
     // projection failure must not make these receipts look sendable again.
@@ -6514,6 +6566,7 @@ async function createProjectAndStartConversation(
       return
     }
     if (handleProjectAPIInitializing(e)) {
+      if (!projectName) track('project_create_failed', { source: 'prompt', reason: 'initializing' })
       if (preProjectAttachments.value.length) {
         prompt.value = content
         props.navigate(CREATE_PROJECT_ROUTE)
@@ -6525,6 +6578,8 @@ async function createProjectAndStartConversation(
       props.navigate(CREATE_PROJECT_ROUTE)
       return
     }
+    if (!projectName) track('project_create_failed', { source: 'prompt', reason: failureReason(e) })
+    else if (!startPostAccepted) track('session_prompt_failed', { kind: 'first', reason: failureReason(e) })
     error.value = e instanceof Error ? e.message : String(e)
     prompt.value = content
     if (!acceptedRun && preProjectAttachments.value.length) {
@@ -6610,8 +6665,10 @@ function openModelsSection() {
 
 function selectAppStudioSection(id: string) {
   if (id === 'setup') {
+    track('studio_section_opened', { section: 'models' })
     openModelsSection()
   } else if (id === 'projects') {
+    track('studio_section_opened', { section: 'projects' })
     openProjectsSection()
   }
 }
@@ -6628,6 +6685,7 @@ function closeSettings() {
 }
 
 function onProjectGitConnected(project: Project) {
+  track('project_git_connected')
   if (selected.value?.name !== project.name) return
   selected.value = project
   projects.value = projects.value.map((item) => item.name === project.name ? project : item)
@@ -7840,6 +7898,10 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
   else assistantRunController.disconnect()
   messageStreaming.value = requiresLiveControls
   if (assistantRunTerminal(normalized.run.status) && acceptedTerminal) {
+    // Only a run this page saw live counts, so loading history reports nothing.
+    if (previousRun && !assistantRunTerminal(previousRun.status)) {
+      trackRunFinished(normalized.run.status)
+    }
     if (assistantStopRequestedRunID.value === normalized.run.id) assistantStopRequestedRunID.value = ''
     assistantStopError.value = null
     if (reviewPanelHold.value?.runID === normalized.run.id) reviewPanelHold.value = null
@@ -8044,6 +8106,7 @@ async function syncDevelopmentPreviewForProject(projectName: string | undefined,
 		resetDevelopmentPreviewDocumentState()
 		developmentPreviewPendingLoadedStatus.value = successStatus
 		await api.syncDevelopment(props.ctx, projectName)
+		track('preview_synced')
 		const project = await api.getProject(props.ctx, projectName)
 		if (!developmentPreviewComponentMounted || selected.value?.name !== projectName) return
 		selected.value = project
@@ -8060,6 +8123,7 @@ async function syncDevelopmentPreviewForProject(projectName: string | undefined,
 			documentState: developmentPreviewDocumentState.value,
 		}, successStatus)
 	} catch (e) {
+		track('preview_sync_failed', { reason: failureReason(e) })
 		developmentSyncError.value = e instanceof Error ? e.message : String(e)
 	} finally {
 		developmentSyncBusy.value = false
@@ -8099,6 +8163,7 @@ async function openDevelopmentPreviewInBrowser() {
   const projectName = selected.value?.name
   if (!projectName || !developmentBinding.value) return
   if (!developmentPreviewNeedsAuthorization.value) return
+  track('preview_open_browser')
   await authorizeDevelopmentPreview({ force: true })
   if (
     selected.value?.name !== projectName ||
@@ -8204,6 +8269,7 @@ async function authorizeDevelopmentPreviewRequest(projectName: string, key: stri
       }
     }
     if (!authorization.ready) {
+      if (oncePerKey(previewTelemetrySeen, `waiting:${projectName}`)) track('preview_waiting')
 	  if (!preserveExistingPreview) developmentPreviewOverrideURL.value = null
       developmentPreviewAuthorizationKey.value = key
       developmentPreviewReadinessMessage.value = authorization.message || 'Preview is getting ready. The development instance is not serving traffic yet.'
@@ -8221,6 +8287,9 @@ async function authorizeDevelopmentPreviewRequest(projectName: string, key: stri
     developmentPreviewAuthorizationKey.value = key
     developmentPreviewReadinessMessage.value = null
     clearDevelopmentPreviewAuthorizationRetry()
+    if (oncePerKey(previewTelemetrySeen, `failed:authorize:${projectName}`)) {
+      track('preview_failed', { stage: 'authorize', reason: failureReason(e) })
+    }
     developmentPreviewAuthorizationError.value = e instanceof Error ? e.message : String(e)
     if (developmentPreviewAuthorizationRetryable(e)) {
 	  scheduleDevelopmentPreviewAuthorizationRetry(projectName, key, preserveExistingPreview)
@@ -8337,6 +8406,10 @@ function revealDevelopmentPreviewFrame() {
   if (!frame || !developmentPreviewFrameLoaded.value || developmentPreviewFrameVisible.value) return
   const restoreFocus = developmentPreviewRecoveryPanel.value?.contains(document.activeElement)
   developmentPreviewFrameVisible.value = true
+  const readyProject = selected.value?.name
+  if (readyProject && oncePerKey(previewTelemetrySeen, `ready:${readyProject}`)) {
+    track('preview_ready', { verified: developmentPreviewDocumentState.value === 'connected' ? 'yes' : 'no' })
+  }
   if (restoreFocus) {
     void nextTick(() => {
       if (developmentPreviewFrameRef.value === frame && document.activeElement === document.body) frame.focus()
@@ -8512,6 +8585,7 @@ function commitDevelopmentPreviewAnnotation() {
   const draft = developmentPreviewAnnotationDraft.value
   const comment = draft?.comment.trim() || ''
   if (!draft || !comment || !developmentPreviewCanAnnotate.value) return
+  track('preview_annotation_added')
   const annotation: ProjectAssistantAnnotation = {
     id: draft.annotationID || annotationPartID(),
     comment,
@@ -8598,6 +8672,9 @@ function scheduleDevelopmentPreviewRecovery() {
 		return
 	}
 	if (action.kind === 'background') {
+		if (!developmentPreviewFrameLoaded.value && oncePerKey(previewTelemetrySeen, `failed:document:${projectName}`)) {
+			track('preview_failed', { stage: 'document', reason: 'error' })
+		}
 		developmentPreviewRecoveryError.value = developmentPreviewFrameLoaded.value
 			? 'Preview loaded, but annotations are reconnecting.'
 			: 'The preview document did not finish loading. The development runtime may still be starting.'
@@ -8676,6 +8753,7 @@ function openShareDialog(event?: Event) {
       ? document.activeElement
       : shareButtonRef.value
   shareDialogOpen.value = true
+  track('share_opened')
 }
 
 function restoreShareDialogFocus() {
@@ -8815,6 +8893,7 @@ function toggleWorkbenchPane(event?: MouseEvent) {
 
 function openBuiltInWorkbenchTab(kind: WorkbenchBuiltInTab) {
   revealWorkbenchPane()
+  trackWorkbenchTab(kind)
   workbench.value = openWorkbenchBuiltInTab(workbench.value, kind)
 }
 
@@ -8852,6 +8931,7 @@ function openWorkbenchLauncherItem(itemOrID: WorkbenchLauncherItem | string) {
     ? launcherSuggestedItems.value.find((candidate) => candidate.id === itemOrID)
     : itemOrID
   if (!item) return
+  trackWorkbenchTab(item.providerTool ? 'provider' : item.builtInTab)
   revealWorkbenchPane()
   if (item.providerTool) {
     workbench.value = selectWorkbenchLauncherProviderTool(workbench.value, item.providerTool)
@@ -8869,6 +8949,7 @@ function selectExistingWorkbenchLauncherTab(tabID: string) {
 }
 
 function activateWorkbenchTabByID(tabID: string) {
+  trackWorkbenchTab(workbenchTabByID(tabID)?.kind)
   revealWorkbenchPane()
   workbench.value = activateWorkbenchTab(workbench.value, tabID)
 }
@@ -9192,6 +9273,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
     error.value = null
     prompt.value = ''
     assistantComposerParts.value = []
+    track('session_prompt_sent', { kind: 'queued' })
     return true
   }
   if (!steeringActiveRun && assistantReasoningPreferenceError.value) {
@@ -9369,6 +9451,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
       })
       startPostAccepted = true
       submissionOwner.postAccepted = true
+      track('session_prompt_sent', { kind: 'steer' })
       acceptedTurnID = activeAssistantRun!.id
       acceptedThreadID = submissionOwner.threadID
       // Steering acceptance consumes the submitted draft just like a new
@@ -9466,6 +9549,9 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
       submissionOwner.postAccepted = true
       const requestedThreadID = thread.id
       const canonicalThreadID = canonical.thread.id.trim() || requestedThreadID
+      track('session_prompt_sent', {
+        kind: startOperation.collaborationMode === 'review' ? 'review' : startOperation.collaborationMode === 'plan' ? 'plan' : 'turn',
+      })
       acceptedTurnID = canonical.turn.id.trim()
       acceptedThreadID = canonicalThreadID
       // The POST response is the acceptance boundary. Later projection or
@@ -9642,6 +9728,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
         const detail = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
         error.value = detail ? `Could not recover the active assistant run: ${detail}` : 'Could not recover the active assistant run. Your prompt is preserved.'
       }
+      if (!recoveredSameRequest) track('session_prompt_failed', { kind: steeringActiveRun ? 'steer' : 'turn', reason: 'conflict' })
       return recoveredSameRequest
     }
     if (isAssistantAttachmentReceiptUnavailableError(e) && turnContentParts.some((part) => part.type === 'attachment')) {
@@ -9654,6 +9741,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
         return false
       }
     }
+    track('session_prompt_failed', { kind: steeringActiveRun ? 'steer' : 'turn', reason: failureReason(e) })
     error.value = e instanceof Error ? e.message : String(e)
     restoreCapturedComposerDraft()
     messageStreaming.value = false
@@ -9768,6 +9856,7 @@ function cancelMessageStream() {
 function handleAssistantComposerPrimaryAction(event: MouseEvent) {
   if (assistantComposerShowsStop.value) {
     event.preventDefault()
+    track('session_stop_requested')
     cancelMessageStream()
     return
   }
@@ -10410,6 +10499,7 @@ function isAbortError(err: unknown): boolean {
 
 function openTool(tool: ProviderTool) {
   revealWorkbenchPane()
+  trackWorkbenchTab('provider')
   workbench.value = openWorkbenchProviderTool(workbench.value, tool)
   toolError.value = null
 }
@@ -11006,6 +11096,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             type="button"
             class="k-btn k-btn--primary"
             :disabled="busy"
+            data-track="project_create_open"
             @click="openNewProjectComposer"
           >
             <Plus class="h-4 w-4" :stroke-width="1.75" />
@@ -11292,6 +11383,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       aria-haspopup="dialog"
                       aria-controls="landing-import-popover"
                       :aria-expanded="landingImportOpen"
+                      data-track="project_import_open"
                       @click="toggleLandingImport"
                     >
                       <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -11419,6 +11511,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       :class="prompt.trim() === starter.prompt ? 'border-accent/40 bg-accent/10' : 'border-border-subtle bg-surface'"
                       :aria-label="`Use ${starter.label} starting point`"
                       :aria-pressed="prompt.trim() === starter.prompt"
+                      data-track="project_starter_selected"
+                      :data-track-starter="starter.id"
                       @click="applyLandingStarterPrompt(starter)"
                     >
                       <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-raised text-accent" aria-hidden="true">
@@ -11716,6 +11810,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     <button
                       type="button"
                       class="app-studio-touch-target inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
+                      data-track="model_setup_open"
+                      data-track-placement="project"
                       @click="openSettings"
                     >
                       <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -11863,6 +11959,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     v-if="canImplementPlan(message)"
                     type="button"
                     class="app-studio-touch-target mt-3 inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent-subtle px-3 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    data-track="session_plan_implement"
                     @click="implementPlan(message)"
                   >
                     Implement plan
@@ -12349,7 +12446,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 						<div v-if="developmentPreviewFrameLoaded" class="mt-1 text-[12px] leading-5 text-text-muted">Show the loaded page to continue if sign-in is required.</div>
 					</div>
 					<div class="mt-3 flex flex-wrap justify-center gap-2">
-						<button type="button" class="k-btn k-btn--ghost app-studio-touch-target" @click="retryDevelopmentPreview">Retry preview</button>
+						<button type="button" class="k-btn k-btn--ghost app-studio-touch-target" data-track="preview_retry" @click="retryDevelopmentPreview">Retry preview</button>
 						<button v-if="developmentPreviewFrameLoaded" type="button" class="k-btn k-btn--primary app-studio-touch-target" @click="showUnverifiedDevelopmentPreview">Show preview</button>
 					</div>
 				</div>
@@ -12811,7 +12908,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <template #actions>
                 <StatusBadge :status="productionOverview.label" :tone="productionOverview.tone" />
               </template>
-              <button v-if="selected && !selected.repository?.ref" type="button" class="k-btn k-btn--primary justify-self-start" @click="openGitSettings">Connect Git</button>
+              <button v-if="selected && !selected.repository?.ref" type="button" class="k-btn k-btn--primary justify-self-start" data-track="project_git_connect_open" data-track-placement="publishing" @click="openGitSettings">Connect Git</button>
 
               <ProductionSettingsLoadingShell v-if="promotionLoading && !promotion" />
               <template v-else-if="promotion">
@@ -12889,6 +12986,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                           type="button"
                           class="k-btn k-btn--primary"
                           :disabled="!canPromoteLatestRelease"
+                          data-track="publish_deploy_open"
                           @click="openProductionDeployReview(latestDeployableRelease)"
                         >
                           <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
@@ -12921,7 +13019,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     <p v-if="!canPromoteRelease(productionDeployReviewRelease) && currentBuildActionDisabledReason" class="text-[12px] leading-5 text-text-secondary" role="status">{{ currentBuildActionDisabledReason }}</p>
                     <div class="flex flex-wrap justify-end gap-2">
                       <button type="button" class="k-btn k-btn--ghost" @click="closeProductionDeployReview">Cancel</button>
-                      <button ref="productionDeployConfirmRef" type="button" class="k-btn k-btn--primary" :disabled="!canPromoteRelease(productionDeployReviewRelease)" @click="confirmProductionDeploy">
+                      <button ref="productionDeployConfirmRef" type="button" class="k-btn k-btn--primary" data-track="publish_deploy_submit" :disabled="!canPromoteRelease(productionDeployReviewRelease)" @click="confirmProductionDeploy">
                         Deploy release
                       </button>
                     </div>
@@ -12932,7 +13030,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <div v-if="productionAccess.label === 'Live'" class="grid gap-3 border-t border-border-subtle pt-4">
                     <div class="flex min-w-0 items-center gap-2">
                       <Link2 class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
-                      <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target inline-flex min-w-0 items-center truncate font-mono text-[13px] font-medium text-accent hover:underline">{{ productionURL }}</a>
+                      <a :href="productionURL" data-track="publish_open_production" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target inline-flex min-w-0 items-center truncate font-mono text-[13px] font-medium text-accent hover:underline">{{ productionURL }}</a>
                     </div>
                     <div class="flex flex-wrap items-center justify-between gap-3">
                       <div>
@@ -12943,7 +13041,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         <button type="button" class="k-btn k-btn--ghost" @click="openShareDialog">
                           <Users class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />Manage sharing
                         </button>
-                        <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost no-underline"><ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />Open app</a>
+                        <a :href="productionURL" data-track="publish_open_production" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost no-underline"><ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />Open app</a>
                       </div>
                     </div>
                   </div>
@@ -13070,7 +13168,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               @restore="restoreProjectHistory"
             >
               <template #connect>
-                <button type="button" class="k-btn k-btn--ghost justify-self-start" @click="openGitSettings">Connect Git in project settings</button>
+                <button type="button" class="k-btn k-btn--ghost justify-self-start" data-track="project_git_connect_open" data-track-placement="history" @click="openGitSettings">Connect Git in project settings</button>
               </template>
             </ProjectHistory>
           </section>

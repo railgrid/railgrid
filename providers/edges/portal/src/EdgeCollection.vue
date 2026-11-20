@@ -130,7 +130,7 @@ async function dismissDeleteFailure(key: string) {
         <button ref="refreshButton" type="button" class="k-btn k-btn--ghost" aria-label="Refresh edges" :aria-disabled="headerRefreshBusy || undefined" :aria-busy="headerRefreshBusy || undefined" @click="refreshFromHeader">
           <RefreshCw :size="14" :class="{ 'k-spin': headerRefreshBusy }" aria-hidden="true" /> {{ headerRefreshBusy ? 'Refreshing…' : 'Refresh' }}
         </button>
-        <a class="k-btn k-btn--primary" :href="connectHref()" @click="followConnectLink">
+        <a class="k-btn k-btn--primary" :href="connectHref()" data-track="edge_connect_click" data-track-placement="header" @click="followConnectLink">
           <Plus :size="14" aria-hidden="true" /> Connect edge
         </a>
       </div>
@@ -153,7 +153,7 @@ async function dismissDeleteFailure(key: string) {
       :steps="[]"
     >
       <template #icon><Server aria-hidden="true" /></template>
-      <template #actions><a class="k-btn k-btn--primary" :href="connectHref()" @click="followConnectLink">Connect edge <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>
+      <template #actions><a class="k-btn k-btn--primary" :href="connectHref()" data-track="edge_connect_click" data-track-placement="first_run" @click="followConnectLink">Connect edge <ArrowRight :stroke-width="1.75" aria-hidden="true" /></a></template>
     </FirstRunGuide>
 
     <ResourceTable

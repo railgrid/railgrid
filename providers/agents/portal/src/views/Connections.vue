@@ -7,6 +7,7 @@ import type { ApiClient } from '../api'
 import SecretHandoff from '../components/SecretHandoff.vue'
 import { CATEGORY_META, CONN_DEFS, SLACK_SIGNING_SECRET_FIELD, connCategory, connShape, isSecretBearingWebhook, type ConnCategory, type ConnField, type ConnTypeDef } from '../conn-defs'
 import { mutate } from '../mutate'
+import { track } from '../telemetry'
 import { confirmDialog } from '../portalkit/confirm'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
@@ -143,6 +144,8 @@ watch([() => props.editRoute, () => props.editName, () => revision.value], () =>
 }, { immediate: true })
 
 function selectType(def: ConnTypeDef): void {
+  // def.id is one of the CONN_DEFS ids fixed in conn-defs.ts.
+  track('connection_create_open', { type: def.id })
   choosingType.value = false
   reviewing.value = false
   focusStep()
@@ -165,7 +168,7 @@ async function create(def: ConnTypeDef): Promise<void> {
   const body = def.build(values, mode)
   createBusy.value = true
   try {
-    const result = await mutate(props.store, { run: () => props.api.createConnection(body), success: 'Connection created.', failure: 'Create failed', reload: ['connections'] })
+    const result = await mutate(props.store, { run: () => props.api.createConnection(body), success: 'Connection created.', failure: 'Create failed', reload: ['connections'], telemetry: { ok: 'connection_created', failed: 'connection_create_failed', props: { type: def.id, category: connCategory(def.id) } } })
     if (result) emit('create-success', { resource: 'connection', name: body.name, item: result, ...fence() })
   } finally { createBusy.value = false }
 }
@@ -239,7 +242,7 @@ async function test(name: string): Promise<void> {
   const operation = `test:${name}`
   actionBusy.value = operation
   try {
-    await mutate(authority.store, { run: () => authority.api.testConnection(name), success: `Test message sent via ${name}. Check the channel.`, failure: `Test of “${name}” failed` })
+    await mutate(authority.store, { run: () => authority.api.testConnection(name), success: `Test message sent via ${name}. Check the channel.`, failure: `Test of “${name}” failed`, telemetry: { ok: 'connection_tested', failed: 'connection_test_failed' } })
   } finally {
     if (actionBusy.value === operation) actionBusy.value = ''
   }

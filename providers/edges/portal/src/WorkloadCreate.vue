@@ -9,6 +9,7 @@ import { MARKETPLACE, type MarketplaceApp } from './marketplace'
 import type { Edge, ErrorResponse } from './types'
 import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
+import { track, trackFailure } from './telemetry'
 
 const props = defineProps<{
   mode: 'manual' | 'marketplace'
@@ -166,6 +167,7 @@ async function submit(): Promise<void> {
       const latestEdge = latestEdges.find((edge) => edge.name === selectedEdge.name && edge.type === 'kubernetes')
       edges.value = latestEdges
       if (!latestEdge) {
+        track('workload_create_failed', { mode: 'marketplace', app: selected.type, reason: 'edge_unavailable' })
         deployEdge.value = kubernetesEdges.value[0]?.name ?? ''
         error.value = 'The selected KubernetesCluster edge is no longer available. Choose another edge.'
         return
@@ -179,6 +181,8 @@ async function submit(): Promise<void> {
         port: selected.port,
         targetNamespace: draft.value.targetNamespace.trim() || undefined,
       })
+      // selected is an entry of this bundle's MARKETPLACE list, not the URL.
+      track('workload_created', { mode: 'marketplace', app: selected.type })
       if (!isCurrent(generation)) return
       emit('completed', `${selected.label} deployment started as ${deployName.value.trim()}.`)
       return
@@ -194,9 +198,13 @@ async function submit(): Promise<void> {
       imagePullSecrets: pullSecretsResult.value.value,
     }
     await createWorkload(workload)
+    track('workload_created', { mode: 'manual', strategy: draft.value.strategy === 'Singleton' ? 'singleton' : 'spread' })
     if (!isCurrent(generation)) return
     emit('completed', `Workload ${workload.name} created.`)
   } catch (e) {
+    trackFailure('workload_create_failed', e, props.mode === 'marketplace' && app.value
+      ? { mode: 'marketplace', app: app.value.type }
+      : { mode: props.mode === 'marketplace' ? 'marketplace' : 'manual' })
     if (!isCurrent(generation)) return
     error.value = (e as ErrorResponse)?.message ?? (props.mode === 'marketplace' ? 'Deploy failed' : 'Create failed')
   } finally {

@@ -337,6 +337,7 @@ function onGridSelectStart(event: Event) {
                 ref="gettingStartedTrigger"
                 type="button"
                 class="k-btn k-btn--primary min-h-11 px-3 text-[12px] md:min-h-0 md:py-1.5"
+                data-track="open_getting_started"
                 @click="openGettingStarted"
               >
                 <Rocket class="h-4 w-4" :stroke-width="1.75" /> Getting started

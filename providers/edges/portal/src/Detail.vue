@@ -30,12 +30,25 @@ import {
   type LatestRefreshController,
   type ResourceRefreshMode,
 } from './refresh'
+import { track, trackFailure } from './telemetry'
 import { edgeSupportsHarness, edgeTypeLabel as edgeTypeName, type EdgeDetail, type EdgeService, type EdgeType, type ErrorResponse } from './types'
 
 const props = defineProps<{ name: string; type: EdgeType; cluster: string | null; token: string | null }>()
 const emit = defineEmits<{ back: []; deleted: []; addService: [] }>()
 let stopped = false
 let scopeGeneration = 0
+let connectionReported = false
+
+// Fixed telemetry labels for the copyable commands; the text is never sent.
+const COPY_COMMANDS: Record<string, string> = {
+  join: 'join_cli',
+  kube: 'kubectl',
+  ssh: 'ssh',
+  'up-cli': 'upgrade',
+  'up-helm': 'upgrade',
+  'up-srv': 'upgrade',
+  'up-mac': 'upgrade',
+}
 
 // SSH terminals dock at the bottom of the host portal (survives page
 // navigation) rather than rendering inline here. The provider is an isolated
@@ -74,6 +87,11 @@ async function loadEdgeSnapshot(requestID: number) {
   try {
     const nextEdge = await getEdge(props.name, props.type)
     if (!detailRefresh.isCurrent(requestID)) return false
+    // The agent connected while this page was open: at most once per edge.
+    if (!connectionReported && edge.value && !edge.value.connected && nextEdge.connected) {
+      connectionReported = true
+      track('edge_connected', { kind: props.type, placement: 'detail' })
+    }
     edge.value = nextEdge
     readComplete.value = true
     return true
@@ -123,11 +141,13 @@ async function onDelete() {
   deleting.value = true
   try {
     await deleteEdge(current)
+    track('edge_deleted', { kind: scope.type, placement: 'detail' })
     if (stopped || generation !== scopeGeneration) return
     mutationError.value = null
     toast('info', `${edgeMutationLabel.value} deletion requested for ${current.name}.`)
     emit('deleted')
   } catch (e) {
+    trackFailure('edge_delete_failed', e, { kind: scope.type, placement: 'detail' })
     if (stopped || generation !== scopeGeneration) return
     if (!isContextChangedError(e)) mutationError.value = (e as ErrorResponse)?.message ?? 'Delete failed'
     deleting.value = false
@@ -138,11 +158,13 @@ function copyControlLabel(field: string, label: string): string {
   return copied.value === field ? 'Copied' : `Copy ${label}`
 }
 
-function copy(text: string, field: string, label: string) {
+async function copy(text: string, field: string, label: string) {
   const failure = field === 'join'
     ? 'Could not copy the agent join command. Try copying again; the token may be masked.'
     : `Could not copy the ${label.toLowerCase()}. Select the command and copy it manually.`
-  return writeClipboard(text, field, failure)
+  const done = await writeClipboard(text, field, failure)
+  if (done && COPY_COMMANDS[field]) track('edge_command_copied', { command: COPY_COMMANDS[field], kind: props.type, placement: 'detail' })
+  return done
 }
 
 function copyStatus(field: string, label: string): string {
@@ -427,6 +449,7 @@ async function removeService(name: string) {
   deletingServiceName.value = name
   try {
     await deleteEdgeService(name, uid)
+    track('service_deleted', { placement: 'edge_detail' })
     if (stopped || generation !== scopeGeneration) return
     clearServiceMutationError(`${name}:delete`)
     clearServiceMutationError(`${name}:connect`)
@@ -435,6 +458,7 @@ async function removeService(name: string) {
     await nextTick()
     if (!stopped && generation === scopeGeneration && focused && !focused.isConnected && document.activeElement === document.body) servicesToggle.value?.focus()
   } catch (e) {
+    trackFailure('service_delete_failed', e, { placement: 'edge_detail' })
     if (!stopped && generation === scopeGeneration && !isContextChangedError(e)) svcMutationErrors.value = { ...svcMutationErrors.value, [`${name}:delete`]: { name, action: 'delete', message: (e as ErrorResponse)?.message ?? 'The request failed.' } }
   } finally {
     if (generation === scopeGeneration && deletingServiceName.value === name) deletingServiceName.value = null
@@ -457,6 +481,7 @@ async function submitConnect() {
   connecting.value = true
   try {
     await connectEdgeService(name, tokenInput.value.trim(), connectForUID)
+    track('service_credentials_saved', { placement: 'edge_detail' })
     if (stopped || generation !== scopeGeneration || connectFor.value !== name) return
     clearServiceMutationError(`${name}:connect`)
     connectFor.value = null
@@ -464,6 +489,7 @@ async function submitConnect() {
     toast('ok', `Service credentials saved for ${name}.`)
     await loadServices()
   } catch (e) {
+    trackFailure('service_credentials_failed', e, { placement: 'edge_detail' })
     if (!stopped && generation === scopeGeneration && connectFor.value === name && !isContextChangedError(e)) svcMutationErrors.value = { ...svcMutationErrors.value, [`${name}:connect`]: { name, action: 'connect', message: (e as ErrorResponse)?.message ?? 'The request failed.' } }
   } finally {
     if (generation === scopeGeneration) connecting.value = false
@@ -495,6 +521,7 @@ detailRefresh = createLatestRefreshController(async (requestID, mode) => {
 
 watch(() => [props.name, props.type, props.cluster], () => {
   scopeGeneration++
+  connectionReported = false
   deleting.value = false
   deletingServiceName.value = null
   connecting.value = false
@@ -561,6 +588,7 @@ onUnmounted(() => {
               class="k-btn k-btn--primary"
               type="button"
               :disabled="deleting"
+              data-track="edge_terminal_open"
               @click="openTerminal"
             >
               <TerminalSquare :size="14" aria-hidden="true" /> Open terminal
@@ -856,6 +884,8 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                     type="button"
                     class="k-btn k-btn--ghost"
                     :disabled="deleting"
+                    data-track="service_create_open"
+                    data-track-placement="edge_detail"
                     @click="emit('addService')"
                   ><Plus :size="14" aria-hidden="true" /> Add service</button>
                 </div>

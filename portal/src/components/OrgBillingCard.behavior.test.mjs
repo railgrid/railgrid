@@ -385,7 +385,9 @@ test('first-workspace creation clears only the successful creator’s saved bill
   for (const success of [true, false]) {
     const creation = deferred()
     const cleared = []
+    const tracked = []
     const context = {
+      trackEvent: (name, props) => tracked.push({ name, props }), workspaceLimitError: message => /limit reached/i.test(message),
       canSubmit: { value: true }, busy: { value: false }, error: { value: null },
       trimmed: { value: 'Production' }, auth: { user: { userId: 'alice' } },
       tenant: { orgUUID: 'org-a', error: 'Workspace limit reached', createWorkspace: () => creation.promise },
@@ -396,6 +398,10 @@ test('first-workspace creation clears only the successful creator’s saved bill
     creation.resolve(success ? { orgUUID: 'org-a', uuid: 'ws-new' } : null)
     await pending
     assert.deepEqual(cleared, success ? [['draft', 'org-a', 'alice']] : [])
+    // The outcome is reported by a fixed reason, never by the error text.
+    // Success is reported by the hub, which confirmed it.
+    assert.deepEqual(JSON.parse(JSON.stringify(tracked)), success ? []
+      : [{ name: 'workspace_create_failed', props: { placement: 'first', reason: 'limit' } }])
   }
 })
 

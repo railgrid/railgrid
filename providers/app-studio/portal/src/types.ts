@@ -17,6 +17,9 @@ export interface RailgridContext {
   navigationBasePath?: string
   basePath?: string
   subPath?: string
+  // track is the host's product-telemetry reporter (absent on older hosts and
+  // when telemetry is off). Call it through ./telemetry, never directly.
+  track?: ((name: string, props?: Record<string, string>) => void) | null
 }
 
 export interface ProjectMemory {

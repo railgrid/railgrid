@@ -78,6 +78,42 @@ export function pageEvent(route: RouteLike, providerKind?: (name: string) => Pro
   return { type: 'page', name: typeof route.name === 'string' && route.name ? route.name : 'unnamed', route: routePattern(route, providerKind) }
 }
 
+// repeatsPage reports a provider page view that says nothing new. Every
+// navigation inside a provider is a route change in the host, and all of them
+// collapse to the same pattern once the in-provider path is dropped, so
+// without this a provider page is counted once per click inside it.
+export function repeatsPage(previous: TelemetryEvent | undefined, next: TelemetryEvent): boolean {
+  return next.name === 'provider-frame' && previous?.name === 'provider-frame' && previous.route === next.route
+}
+
+// What may be reported before anyone has signed in: the sign-in page's own
+// page views and its sign-in click. The hub enforces the same list on the
+// route that takes no credentials; this copy only avoids sending what it
+// would drop.
+const PUBLIC_PAGES: Record<string, string> = { login: '/login', 'auth-callback': '/auth/callback' }
+
+export function allowedBeforeSignIn(event: TelemetryEvent): boolean {
+  if (event.type === 'page') return PUBLIC_PAGES[event.name] === event.route
+  return event.name === 'sign_in' && event.route === PUBLIC_PAGES.login
+}
+
+// providerOfTag returns the provider whose UI a custom element is:
+// RAILGRID-PROVIDER-EDGES -> edges, anything else -> ''.
+export function providerOfTag(tagName: string): string {
+  const match = /^railgrid-provider-([a-z0-9][a-z0-9-]{0,62})$/.exec(tagName.toLowerCase())
+  return match ? match[1] : ''
+}
+
+// providerEvent decides what a click or a call from inside a provider's UI
+// may report. A platform provider's bundle is ours, so its event passes and is
+// labelled with the provider. An organization's own provider is code that
+// organization wrote: its event names and labels are whatever it chose, so
+// nothing from inside it is reported at all.
+export function providerEvent(provider: string, kind: ProviderKind, props?: Record<string, string>): Record<string, string> | null {
+  if (kind !== 'platform') return null
+  return { ...props, provider }
+}
+
 // trackProps reads data-track-placement="sidebar" as { placement: 'sidebar' }.
 export function trackProps(dataset: Record<string, string | undefined>): Record<string, string> {
   const props: Record<string, string> = {}
