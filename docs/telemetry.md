@@ -1,33 +1,72 @@
 ---
 layout: default
-title: Product telemetry
-description: "Opt-in console usage reporting to an analytics backend you run: off by default, what is sent and what never is"
+title: Telemetry
+description: "Anonymous console usage and instance reporting, on by default: what is sent, what never is, and how to turn it off"
 ---
 
-# Product telemetry
+# Telemetry
 
-Railgrid can report how the console is used (which pages are opened, which
-marked controls are clicked) to an analytics backend **you run**. It is for
-operators who want to see where users go and where they stop.
+A released Railgrid hub reports two things to Railgrid, anonymously, unless
+you turn it off:
 
-**It is off by default.** A hub started without `--telemetry-url`:
+- **Console usage**: which pages of the console are opened and which marked
+  controls are clicked. It shows where people go and where they stop.
+- **An instance report**: once a day, that this installation exists, which
+  version it runs and roughly how big it is. It is how Railgrid knows how many
+  self-hosted hubs there are and which versions are still in use.
 
-- registers no telemetry route (`POST /api/telemetry/events` and
-  `POST /api/telemetry/public` answer 404),
-- answers `"telemetry": false` on `/healthz`, which is the portal's only
-  signal, so the portal records nothing, stores nothing and sends nothing,
-- makes no outbound telemetry call.
+Both go to `https://telemetry.railgrid.ai`, a self-hosted
+[Umami](https://umami.is) (open source) run by Railgrid. Neither carries a
+hostname, a user, an organization, a workspace or a resource name, and no
+browser address is sent. [What is never sent](#what-is-never-sent) is the full
+list; [the instance report](#the-instance-report) shows the whole payload.
 
-Railgrid itself never phones home: there is no built-in destination. Events go
-only to the URL the operator configures.
+Only a tagged release (`v1.2.3`, `v1.2.3-rc.1`) reports to Railgrid. A hub
+built from a checkout, run by `make tilt` or started by a test suite has no
+built-in destination and sends nothing.
 
-## Turning it on
-
-The backend is [Umami](https://umami.is) (open source, self-hosted). Create a
-website in it and give the hub its URL and website ID:
+## Turning it off
 
 ```yaml
 # railgrid-hub chart values
+hub:
+  telemetry:
+    enabled: false
+```
+
+or `--telemetry=false` on the binary. A hub started this way:
+
+- registers no telemetry route (`POST /api/telemetry/events` and
+  `POST /api/telemetry/public` are refused like any unknown API path),
+- answers `"telemetry": false` on `/healthz`, which is the portal's only
+  signal, so the portal records nothing, stores nothing and sends nothing,
+- sends no instance report and makes no outbound telemetry call at all.
+
+To keep console usage and turn off only the instance report:
+
+```yaml
+hub:
+  telemetry:
+    instanceReport: false
+```
+
+or `--telemetry-instance-report=false`.
+
+A hub whose network cannot reach `telemetry.railgrid.ai` needs no setting:
+delivery is best effort, nothing is retried or queued without bound, and a
+request is never slowed by it.
+
+To check what a running hub does, look at `/healthz` (`"telemetry": true` or
+`false` is whether the console reports) and at the hub's startup log, which
+says `Console telemetry enabled` and `Anonymous instance report enabled` with
+the destination when they are on, and nothing when they are off.
+
+## Sending console usage to your own backend
+
+To see how your own users use the console, point the hub at an Umami instance
+you run. Create a website in it and give the hub its URL and website ID:
+
+```yaml
 hub:
   telemetry:
     url: https://telemetry.example.com
@@ -37,15 +76,51 @@ hub:
 or `--telemetry-url` and `--telemetry-website-id` on the binary. Both are
 required together; the hub refuses to start with one of them.
 
-The portal then picks it up on its next load. No rebuild is needed: the
+Console events then go **only** to your backend and none go to Railgrid. The
+instance report is separate and still goes to Railgrid until you turn it off
+as above. This works on any build, a development one included.
+
+The portal picks a change up on its next load. No rebuild is needed: the
 tracker ships in every portal bundle and stays inert until `/healthz` says
 telemetry is on.
 
-Set `hub.trustedProxyCIDRs` (`--trusted-proxy-cidrs`) if the hub sits behind
-a proxy. Without it the hub sees every browser as the proxy's address, and the
+Your own backend gets more than Railgrid's does, because it is yours: the
+hub's external hostname, the browser's address (see
+[The browser address](#the-browser-address)), the origin a user arrived from,
+and the names of providers you registered yourself. Set
+`hub.trustedProxyCIDRs` (`--trusted-proxy-cidrs`) if the hub sits behind a
+proxy. Without it the hub sees every browser as the proxy's address, and the
 backend then merges users who share a browser version into one session.
 
-## How it flows
+## The instance report
+
+One event a day, the first one five to ten minutes after the hub starts, sent
+by the hub itself (the leader, when it is scaled). This is all of it:
+
+| Field | Example | Notes |
+| ----- | ------- | ----- |
+| Instance ID | `3f1c9a52-7d0e-4b6a-9c11-0e5d2a7b8f34` | a one-way hash of an internal kcp UID; see below |
+| `version` | `v0.3.0` | the hub's release |
+| `kcp` | `embedded` \| `external` | |
+| `auth` | `oidc` \| `static` \| `oidc+static` | which sign-in is configured, not its issuer |
+| `organizations` | `6-20` | a size class, never the count; personal organizations excluded |
+| `users` | `101-500` | a size class, never the count |
+| `providers` | `agents,edges` | platform providers installed, **only** those Railgrid publishes |
+| `other_providers` | `1` | a size class of how many others there are; their names are not sent |
+
+The size classes are `0`, `1`, `2-5`, `6-20`, `21-100`, `101-500` and `500+`.
+
+The **instance ID** is derived inside the hub by hashing the UID kcp assigned
+to one of the hub's own workspaces when it was installed. It is random, it
+cannot be turned back into anything about the installation, and it is the same
+tomorrow, which is all it is for: counting an installation once. Nothing is
+stored to produce it, and it is in the hub's startup log if you want to see
+yours.
+
+Like any request, the report arrives from an address: the hub's outbound one.
+Umami derives a country and region from it and does not store the address.
+
+## How console usage flows
 
 ```
 browser ── POST /api/telemetry/events ──▶ hub ── POST {url}/api/send ──▶ Umami
@@ -55,10 +130,10 @@ browser ── POST /api/telemetry/events ──▶ hub ── POST {url}/api/se
 ```
 
 The portal's Content-Security-Policy stays `connect-src 'self'`: the browser
-talks only to the hub. The hub validates each event, answers `204` at once and
-delivers from a bounded queue in the background. Delivery is best effort: when
-the backend is slow or down, events are dropped; a request is never slowed and
-nothing is retried.
+talks only to the hub, never to Railgrid or to any analytics backend. The hub
+validates each event, answers `204` at once and delivers from a bounded queue
+in the background. Delivery is best effort: when the backend is slow or down,
+events are dropped; a request is never slowed and nothing is retried.
 
 Only signed-in callers can post to `/api/telemetry/events`, so it cannot be
 used as an open proxy to the backend.
@@ -99,9 +174,12 @@ They are recorded with the route `/hub`, never the request path.
 | Route pattern | `/:orgID/:workspaceID/mcp/:name` | parameters stay placeholders |
 | Event name | `enable_provider` | from a `data-track` attribute in the markup |
 | Event labels | `provider: agents` | from `data-track-*` attributes |
-| Arrival origin | `https://railgrid.ai` | first page only; scheme and host, no path |
 | Screen size, language | `1440x900`, `en-GB` | |
-| Browser address and user agent | | passed to the backend, see below |
+| User agent | | the browser's |
+| Instance ID | | to Railgrid only: the same ID as in the instance report, recorded as the host |
+| Arrival origin | `https://railgrid.ai` | **your own backend only**; first page only; scheme and host, no path |
+| Browser address | | **your own backend only**, see below |
+| Hub hostname | `console.example.com` | **your own backend only** |
 
 Platform provider pages are reported by provider name
 (`/:orgID/:workspaceID/providers/agents`), once per visit: moving around
@@ -139,6 +217,15 @@ up; `state: blocked` is an administrator whose setup cannot proceed.
   an engineer wrote into `data-track` attributes.
 - **Who the user is.** No user ID, email, organization or workspace is
   attached, and no identifier is stored in the browser.
+- **To Railgrid: the browser's address.** The hub does not forward it. A
+  session there is a hash of the instance ID and the user agent, so everyone
+  on one browser version in one installation is a single session.
+- **To Railgrid: where the installation is.** No hostname and no arrival
+  origin, which on a self-hosted hub is as likely an intranet address as a
+  public site. The host recorded is the instance ID.
+- **To Railgrid: a provider name you chose.** Only the providers Railgrid
+  publishes are reported by name. Any other platform provider is `other`, in
+  the route and in the `provider` label alike.
 - **The path inside a provider page**, which holds resource names.
 - **The name of an organization's own provider.** It is chosen by that
   organization, so it is reported as `org-provider`.
@@ -148,6 +235,9 @@ an unknown type or an oversized field is discarded there, whatever the portal
 sent.
 
 ### The browser address
+
+This applies only when you send console usage to **your own** backend; the
+hub never forwards a browser address to Railgrid.
 
 The hub passes the browser's IP address and user agent to Umami, which hashes
 them with a rotating salt into an anonymous session ID and does not store the
@@ -219,4 +309,6 @@ prompts, resource names, model IDs and template names are not reported.
 
 The portal and the providers speak only the neutral event shape above. The one
 place that knows about Umami is `pkg/hub/telemetry/umami.go`, behind the
-`Sink` interface in the same package.
+`Sink` interface in the same package. The built-in destination and everything
+withheld from it are in `builtin.go`; the instance report is `instance.go`,
+and `Reporter.build` is the only place its payload is assembled.

@@ -15,12 +15,14 @@ limitations under the License.
 */
 
 // Package telemetry relays the portal's product telemetry (which page a user
-// opened, which named control they clicked) to an analytics backend the
-// operator runs.
+// opened, which named control they clicked) to an analytics backend, and
+// reports that this hub exists (instance.go).
 //
-// It is off unless the operator configures it. A hub without --telemetry-url
-// registers no route, tells the portal nothing is enabled, and makes no
-// outbound call; see docs/telemetry.md for what is sent when it is on.
+// A released hub does both by default, anonymously, to Railgrid's backend
+// (builtin.go). --telemetry=false turns all of it off: no route, nothing
+// advertised to the portal, no outbound call. --telemetry-url sends the
+// portal's events to the operator's own backend instead. docs/telemetry.md
+// is the contract for what is sent in each case.
 //
 // The portal cannot post to the backend itself: its Content-Security-Policy
 // is connect-src 'self'. It posts neutral events to the hub, and the hub is
@@ -56,21 +58,42 @@ const (
 	maxRouteBytes = 200
 )
 
-// Config is the operator's telemetry configuration. The zero value is "off".
+// Config is the operator's telemetry configuration. The zero value is the
+// product default: on, to the built-in destination, for a released build.
 type Config struct {
-	// URL is the analytics backend's base URL, e.g. https://telemetry.example.com.
+	// Disabled turns everything off (--telemetry=false): no relay route, no
+	// instance report, no outbound call.
+	Disabled bool
+	// InstanceReportDisabled turns off only the hub's own daily report
+	// (--telemetry-instance-report=false).
+	InstanceReportDisabled bool
+	// URL is the operator's own analytics backend, e.g.
+	// https://telemetry.example.com. Empty means the built-in destination.
 	URL string
 	// WebsiteID is the backend's identifier for the property events are
 	// recorded under. Using the same one as the marketing site lets the
 	// backend follow a visitor from the site into the console.
 	WebsiteID string
 	// Hostname is recorded as the host the events happened on: the hub's
-	// external hostname.
+	// external hostname. Only ever sent to the operator's own backend.
 	Hostname string
+	// Version is the hub's build version. The built-in destination is used
+	// only by a released build (see IsRelease), so a development build, a
+	// test hub or CI never reports to it.
+	Version string
 }
 
-// Enabled reports whether the operator turned telemetry on.
-func (c Config) Enabled() bool { return c.URL != "" }
+// Destination is one resolved place events are delivered to.
+type Destination struct {
+	URL       string
+	WebsiteID string
+	// Hostname is what the backend records as the host. Empty for the
+	// built-in destination until the caller sets the instance ID.
+	Hostname string
+	// Anonymous marks the built-in destination: nothing that could name the
+	// installation or a user may be sent there. See Relay.Anonymous.
+	Anonymous bool
+}
 
 // Validate rejects a half-configured relay, so a typo cannot silently drop
 // every event or point the hub at something that is not an http endpoint.
@@ -89,6 +112,32 @@ func (c Config) Validate() error {
 		return errors.New("--telemetry-url is set without --telemetry-website-id")
 	}
 	return nil
+}
+
+// Console resolves where the portal's events go, or false when they go
+// nowhere. An operator's own backend wins over the built-in one, so a hub
+// that sets --telemetry-url sends no console event to Railgrid.
+func (c Config) Console() (Destination, bool) {
+	switch {
+	case c.Disabled:
+		return Destination{}, false
+	case c.URL != "":
+		return Destination{URL: c.URL, WebsiteID: c.WebsiteID, Hostname: c.Hostname}, true
+	case IsRelease(c.Version):
+		return Destination{URL: BuiltinURL, WebsiteID: BuiltinConsoleWebsiteID, Anonymous: true}, true
+	}
+	return Destination{}, false
+}
+
+// Instances resolves where the hub's own report goes, or false when it is
+// off. It only ever goes to the built-in destination: the report exists to
+// tell Railgrid how many installations there are, and an operator's own
+// backend has no use for it.
+func (c Config) Instances() (Destination, bool) {
+	if c.Disabled || c.InstanceReportDisabled || !IsRelease(c.Version) {
+		return Destination{}, false
+	}
+	return Destination{URL: BuiltinURL, WebsiteID: BuiltinInstancesWebsiteID, Anonymous: true}, true
 }
 
 // Event is one thing a user did in the portal, in the hub's own vocabulary.
@@ -111,12 +160,16 @@ type Event struct {
 	Language string `json:"language,omitempty"`
 }
 
-// Client is what the hub knows about the browser that sent a batch. The
-// backend derives its anonymous session from these, which is also what joins a
-// console session to the same visitor's session on the marketing site.
+// Client is what the hub tells the backend about who sent an event. The
+// backend derives its anonymous session from these: from IP and UserAgent
+// when ID is empty (which is also what joins a console session to the same
+// visitor's session on the marketing site), from ID alone otherwise.
 type Client struct {
 	IP        string
 	UserAgent string
+	// ID replaces the address as the session key. The built-in destination
+	// uses it so no browser address is sent there.
+	ID string
 }
 
 // Sink delivers events to one analytics backend.
@@ -184,6 +237,42 @@ type Relay struct {
 	sink     Sink
 	clientIP func(*http.Request) string
 	queue    chan queued
+	// instanceID, when set, makes the relay anonymous. See Anonymous.
+	instanceID string
+}
+
+// Anonymous makes the relay fit for the built-in destination, which belongs
+// to Railgrid and not to the operator. Returns the relay.
+//
+//   - The browser's address is never sent. The session is keyed on a hash of
+//     instanceID and the user agent instead, so two people on the same
+//     browser version in one installation are one session.
+//   - The arrival origin is dropped: on a self-hosted hub it is as likely an
+//     intranet hostname as a public site.
+//   - A provider name that is not one of Railgrid's own is reported as
+//     "other": a platform admin may have named theirs after the company.
+func (r *Relay) Anonymous(instanceID string) *Relay {
+	r.instanceID = instanceID
+	return r
+}
+
+// client is who an event from req is recorded under.
+func (r *Relay) client(req *http.Request) Client {
+	if r.instanceID != "" {
+		return Client{ID: sessionID(r.instanceID, req.UserAgent()), UserAgent: req.UserAgent()}
+	}
+	return Client{IP: r.clientIP(req), UserAgent: req.UserAgent()}
+}
+
+// enqueue queues one sanitized event, or drops it when the queue is full.
+func (r *Relay) enqueue(client Client, event Event) {
+	if r.instanceID != "" {
+		event = anonymize(event)
+	}
+	select {
+	case r.queue <- queued{client: client, event: event}:
+	default: // full: drop
+	}
 }
 
 // NewRelay returns a relay delivering to sink. clientIP resolves the browser's
@@ -221,7 +310,7 @@ type Recorder interface {
 // carries organization and workspace IDs, so it is never used.
 const serverRoute = "/hub"
 
-// Record queues a hub-side outcome under the caller's browser, so it lands in
+// Record queues a hub-side outcome under the caller's session, so it lands in
 // the same backend session as the clicks that led to it. It is authoritative
 // where a browser event is not: it also fires for the CLI and the API, and
 // only when the operation succeeded. Labels are fixed strings chosen in the
@@ -234,10 +323,7 @@ func (r *Relay) Record(req *http.Request, name string, props map[string]string) 
 	if !ok {
 		return
 	}
-	select {
-	case r.queue <- queued{client: Client{IP: r.clientIP(req), UserAgent: req.UserAgent()}, event: event}:
-	default: // full: drop
-	}
+	r.enqueue(r.client(req), event)
 }
 
 // What a browser may report before anyone has signed in. The sign-in page is
@@ -299,7 +385,7 @@ func (r *Relay) PublicHandler(allow func(clientIP string) bool) http.Handler {
 			http.Error(w, "telemetry batch too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		client := Client{IP: ip, UserAgent: req.UserAgent()}
+		client := r.client(req)
 		for _, e := range body.Events {
 			event, ok := sanitize(e)
 			if !ok {
@@ -308,10 +394,7 @@ func (r *Relay) PublicHandler(allow func(clientIP string) bool) http.Handler {
 			if event, ok = publicEvent(event); !ok {
 				continue
 			}
-			select {
-			case r.queue <- queued{client: client, event: event}:
-			default: // full: drop
-			}
+			r.enqueue(client, event)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -331,16 +414,13 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "telemetry batch too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	client := Client{IP: r.clientIP(req), UserAgent: req.UserAgent()}
+	client := r.client(req)
 	for _, e := range body.Events {
 		event, ok := sanitize(e)
 		if !ok {
 			continue
 		}
-		select {
-		case r.queue <- queued{client: client, event: event}:
-		default: // full: drop
-		}
+		r.enqueue(client, event)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

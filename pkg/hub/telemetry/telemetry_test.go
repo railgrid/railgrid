@@ -31,21 +31,16 @@ import (
 func TestConfigValidate(t *testing.T) {
 	for name, tc := range map[string]struct {
 		cfg     Config
-		enabled bool
 		wantErr bool
 	}{
-		"off by default":           {cfg: Config{}},
-		"on":                       {cfg: Config{URL: "https://telemetry.example.com", WebsiteID: "w"}, enabled: true},
-		"url without website":      {cfg: Config{URL: "https://telemetry.example.com"}, enabled: true, wantErr: true},
-		"website without url":      {cfg: Config{WebsiteID: "w"}, wantErr: true},
-		"not an http url":          {cfg: Config{URL: "telemetry.example.com", WebsiteID: "w"}, enabled: true, wantErr: true},
-		"scheme that is not http":  {cfg: Config{URL: "file:///etc/passwd", WebsiteID: "w"}, enabled: true, wantErr: true},
-		"hostname alone stays off": {cfg: Config{Hostname: "console.example.com"}},
+		"default":                 {cfg: Config{}},
+		"own backend":             {cfg: Config{URL: "https://telemetry.example.com", WebsiteID: "w"}},
+		"url without website":     {cfg: Config{URL: "https://telemetry.example.com"}, wantErr: true},
+		"website without url":     {cfg: Config{WebsiteID: "w"}, wantErr: true},
+		"not an http url":         {cfg: Config{URL: "telemetry.example.com", WebsiteID: "w"}, wantErr: true},
+		"scheme that is not http": {cfg: Config{URL: "file:///etc/passwd", WebsiteID: "w"}, wantErr: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := tc.cfg.Enabled(); got != tc.enabled {
-				t.Errorf("Enabled() = %v, want %v", got, tc.enabled)
-			}
 			if err := tc.cfg.Validate(); (err != nil) != tc.wantErr {
 				t.Errorf("Validate() = %v, wantErr %v", err, tc.wantErr)
 			}
@@ -185,7 +180,7 @@ func TestUmamiSinkPayload(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink := NewUmamiSink(Config{URL: srv.URL + "/", WebsiteID: "site-1", Hostname: "console.example.com"})
+	sink := NewUmamiSink(Destination{URL: srv.URL + "/", WebsiteID: "site-1", Hostname: "console.example.com"})
 	client := Client{IP: "203.0.113.7", UserAgent: "Mozilla/5.0 test"}
 
 	if err := sink.Send(context.Background(), client, Event{Type: "page", Name: "dashboard", Route: "/:orgID/:workspaceID", Referrer: "https://railgrid.ai", Screen: "1440x900", Language: "en"}); err != nil {
@@ -220,7 +215,7 @@ func TestUmamiSinkReportsARejectedEvent(t *testing.T) {
 		http.Error(w, "Website not found.", http.StatusBadRequest)
 	}))
 	defer srv.Close()
-	err := NewUmamiSink(Config{URL: srv.URL, WebsiteID: "w"}).Send(context.Background(), Client{}, Event{Type: "page", Name: "a", Route: "/"})
+	err := NewUmamiSink(Destination{URL: srv.URL, WebsiteID: "w"}).Send(context.Background(), Client{}, Event{Type: "page", Name: "a", Route: "/"})
 	if err == nil {
 		t.Fatal("a 400 from the backend must be an error")
 	}

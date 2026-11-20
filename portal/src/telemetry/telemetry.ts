@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Product telemetry: which page was opened and which marked control was
-// clicked. Opt-in by the operator and off by default; docs/telemetry.md is
+// clicked. On by default, and the operator can turn it off; docs/telemetry.md is
 // the contract for what leaves the browser.
 //
 // This file is the vendor-neutral core and has no imports, so it can be
