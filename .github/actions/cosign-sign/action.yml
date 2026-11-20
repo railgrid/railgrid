@@ -1,0 +1,39 @@
+name: Sign OCI artifacts
+description: >-
+  Keyless-sign pushed images and charts with cosign, using the job's GitHub
+  OIDC token. The calling job needs `id-token: write` and a registry login.
+
+inputs:
+  refs:
+    description: >-
+      Artifacts to sign, one per line, each as name@sha256:digest. A tag is
+      refused: it can move between the push and the signature.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install cosign
+      uses: sigstore/cosign-installer@v3
+
+    - name: Sign
+      shell: bash
+      env:
+        REFS: ${{ inputs.refs }}
+      run: |
+        set -euo pipefail
+        signed=0
+        while IFS= read -r ref; do
+          ref="${ref//[[:space:]]/}"
+          [ -n "${ref}" ] || continue
+          if [[ ! "${ref}" =~ @sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::refusing to sign '${ref}': not a name@sha256:digest reference"
+            exit 1
+          fi
+          cosign sign --yes "${ref}"
+          signed=$((signed + 1))
+        done <<< "${REFS}"
+        if [ "${signed}" -eq 0 ]; then
+          echo "::error::nothing to sign: the push step produced no digest"
+          exit 1
+        fi

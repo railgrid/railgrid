@@ -58,6 +58,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless signing of the pushed image.
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -80,6 +82,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.HUB_IMAGE_NAME }}
 
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -97,6 +100,12 @@ jobs:
             BUILD_DATE=${{ github.event.release.created_at }}
             GO_BUILD_GODEBUG=http2client=0
 
+
+      - name: Sign the image
+        if: (github.event_name == 'push' || github.event_name == 'release')
+        uses: ./.github/actions/cosign-sign
+        with:
+          refs: ${{ env.REGISTRY }}/${{ env.HUB_IMAGE_NAME }}@${{ steps.build.outputs.digest }}
   # PR and manual validation of provider Dockerfiles and build contexts.
   # hack/ci/selection.py picks the images whose
   # inputs (hack/ci/matrices.json) the PR touched; a manual run builds them all.
@@ -150,6 +159,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless signing of the pushed image.
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -172,6 +183,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.AGENT_IMAGE_NAME }}
 
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -189,6 +201,12 @@ jobs:
             BUILD_DATE=${{ github.event.release.created_at }}
             GO_BUILD_GODEBUG=http2client=0
 
+
+      - name: Sign the image
+        if: (github.event_name == 'push' || github.event_name == 'release')
+        uses: ./.github/actions/cosign-sign
+        with:
+          refs: ${{ env.REGISTRY }}/${{ env.AGENT_IMAGE_NAME }}@${{ steps.build.outputs.digest }}
   result:
     name: Images result
     if: always()

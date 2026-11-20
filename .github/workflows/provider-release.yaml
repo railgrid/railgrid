@@ -162,6 +162,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Create manifest list and push
+        id: manifest
         working-directory: /tmp/digests
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ needs.meta.outputs.image }}
@@ -174,6 +175,8 @@ jobs:
             -t "${IMAGE}:${SEMVER}" \
             $(printf "${IMAGE}@sha256:%s " *)
           docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "ref=${IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
 
       # The infrastructure provider ships a companion image: the dev-agent its
       # kro backend injects into development-mode pods (providers/infrastructure/
@@ -191,6 +194,7 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Build and push dev-agent image
+        id: dev_agent
         if: needs.meta.outputs.provider == 'infrastructure'
         uses: docker/build-push-action@v6
         with:
@@ -210,6 +214,7 @@ jobs:
       # Node/Go/Python toolchain and is selected only by the operator's
       # immutable RAILGRID_DEV_IMAGE_UNIVERSAL configuration.
       - name: Build and push universal dev image
+        id: universal_dev
         if: needs.meta.outputs.provider == 'infrastructure'
         uses: docker/build-push-action@v6
         with:
@@ -233,6 +238,7 @@ jobs:
       # this push MUST keep the version tag. :latest only backs the in-binary
       # default of unreleased/local builds.
       - name: Build and push access-proxy image
+        id: access_proxy
         if: needs.meta.outputs.provider == 'infrastructure'
         uses: docker/build-push-action@v6
         with:
@@ -253,6 +259,7 @@ jobs:
           version: 'v3.12.0'
 
       - name: Package and push chart
+        id: chart
         env:
           HELM_EXPERIMENTAL_OCI: 1
           PROVIDER: ${{ needs.meta.outputs.provider }}
@@ -277,5 +284,22 @@ jobs:
           # Stamp version + appVersion at package time via flags rather than
           # rewriting Chart.yaml, so the checked-out source is never mutated.
           helm package "$chart_dir" --version "${CHART_VERSION}" --app-version "${APP_VERSION}"
-          helm push "${chart_name}-${CHART_VERSION}.tgz" "oci://${REGISTRY}/${{ github.repository_owner }}/charts"
+          helm push "${chart_name}-${CHART_VERSION}.tgz" "oci://${REGISTRY}/${{ github.repository_owner }}/charts" 2>&1 | tee push.log
+          echo "ref=${REGISTRY}/${{ github.repository_owner }}/charts/${chart_name}@$(sed -n 's/^Digest: *//p' push.log)" >> "$GITHUB_OUTPUT"
           echo "Pushed oci://${REGISTRY}/${{ github.repository_owner }}/charts/${chart_name}:${CHART_VERSION} (appVersion ${APP_VERSION})"
+
+      - name: Sign the provider image and chart
+        uses: ./.github/actions/cosign-sign
+        with:
+          refs: |
+            ${{ steps.manifest.outputs.ref }}
+            ${{ steps.chart.outputs.ref }}
+
+      - name: Sign the companion images
+        if: needs.meta.outputs.provider == 'infrastructure'
+        uses: ./.github/actions/cosign-sign
+        with:
+          refs: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/railgrid-dev-agent@${{ steps.dev_agent.outputs.digest }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/railgrid-universal-dev@${{ steps.universal_dev.outputs.digest }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/railgrid-access-proxy@${{ steps.access_proxy.outputs.digest }}

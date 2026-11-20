@@ -36,6 +36,8 @@ on:
 permissions:
   contents: read
   packages: write
+  # Keyless signing of what the build job pushes.
+  id-token: write
 
 # One run at a time, in order: two runs racing would let the older one
 # overwrite 0.0.0-main last. A queued run superseded by a newer push is
@@ -99,6 +101,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push the image
+        id: build
         uses: docker/build-push-action@v6
         with:
           # Repo-root context for every component: the hub and agent copy the
@@ -125,6 +128,7 @@ jobs:
 
       # After the image, so the chart never names an image that is not there.
       - name: Package and push the chart
+        id: chart
         env:
           CHART_DIR: ${{ matrix.chart }}
           CHART_NAME: ${{ matrix.chart-name }}
@@ -134,5 +138,13 @@ jobs:
           echo "${{ github.token }}" | helm registry login "${REGISTRY}" --username "${{ github.actor }}" --password-stdin
           helm lint "${CHART_DIR}"
           helm package "${CHART_DIR}" --version "${CHART_VERSION}" --app-version "${APP_VERSION}"
-          helm push "${CHART_NAME}-${CHART_VERSION}.tgz" "oci://${REGISTRY}/${{ github.repository_owner }}/charts"
+          helm push "${CHART_NAME}-${CHART_VERSION}.tgz" "oci://${REGISTRY}/${{ github.repository_owner }}/charts" 2>&1 | tee push.log
           echo "Pushed ${CHART_NAME}:${CHART_VERSION} (appVersion ${APP_VERSION})"
+          echo "ref=${REGISTRY}/${{ github.repository_owner }}/charts/${CHART_NAME}@$(sed -n 's/^Digest: *//p' push.log)" >> "$GITHUB_OUTPUT"
+
+      - name: Sign the image and the chart
+        uses: ./.github/actions/cosign-sign
+        with:
+          refs: |
+            ${{ env.REGISTRY }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}
+            ${{ steps.chart.outputs.ref }}

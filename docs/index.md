@@ -65,6 +65,7 @@ Railgrid is pre-1.0, and `v1alpha1` APIs may change between releases. See [GitHu
 | [Single hub]({% link install-embedded-kcp.md %}) | One release behind Gateway API, control-plane store included |
 | [Multi-shard]({% link install-external-kcp.md %}) | The control-plane store split into shards for larger installs |
 | [Security]({% link security.md %}) | Static tokens, OIDC, and what the hub does with provider and agent credentials |
+| [Verifying images and charts]({% link verifying-releases.md %}) | Release images and charts are signed with cosign; how to check before you deploy |
 | [Product telemetry]({% link telemetry.md %}) | Anonymous console usage and instance reporting, on by default: what is sent, what never is, and how to turn it off |
 | [Ingress]({% link ingress/index.md %}) | Expose the hub through nginx, Gateway API or Cloudflare Tunnel |
 | [MCP architecture]({% link mcp-architecture.md %}) | How tools from providers and edges become one endpoint |
