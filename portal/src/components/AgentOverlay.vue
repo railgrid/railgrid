@@ -82,13 +82,13 @@ async function collapse(): Promise<void> {
   expanded.value = false
   // Suppress the scrollbar until the drawer is hidden and the host has reflowed.
   await nextTick()
-  cancelClosingAnimation()
   if (dashboard.value) {
     const origin = dashboardOrigin?.isConnected ? dashboardOrigin : document.getElementById('dashboard-agent-composer')
     if (origin) origin.focus()
     else launcher.value?.focus()
   }
   else launcher.value?.focus()
+  cancelClosingAnimation()
 }
 function engage(): void { cancelClosingAnimation(); expanded.value = true }
 function reloadAgentBundle(): void {

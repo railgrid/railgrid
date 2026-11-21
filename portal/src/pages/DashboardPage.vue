@@ -14,6 +14,7 @@ import DashboardTile from '@/components/DashboardTile.vue'
 import DashboardUsageTile from '@/components/DashboardUsageTile.vue'
 import WelcomeWizard from '@/components/WelcomeWizard.vue'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
+import { useDelayedLoading } from '@/portalkit/useDelayedLoading'
 import { useProvidersStore, type ProviderDTO } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { ADD_PROVIDER_TILE_ID, useDashboardLayoutStore } from '@/stores/dashboardLayout'
@@ -69,11 +70,12 @@ const assistantBusy = ref(false)
 const shortcutsRequested = ref(false)
 const shortcutRoot = ref<HTMLElement | null>(null)
 const shortcutNav = ref<HTMLElement | null>(null)
-const canSendQuestion = computed(() => !!assistantDraft.value.trim() && !!assistant.dashboardSubmit)
+const showPreparingChat = useDelayedLoading(computed(() => assistant.dashboardPreparing), 250)
+const canSendQuestion = computed(() => !!assistantDraft.value.trim() && !!assistant.dashboardSubmit && !assistant.dashboardPreparing)
 
 function sendQuestion() {
   const prompt = assistantDraft.value.trim()
-  if (!prompt || !assistant.dashboardSubmit) return
+  if (!prompt || !assistant.dashboardSubmit || assistant.dashboardPreparing) return
   if (assistant.dashboardSubmit(prompt, assistantInput.value)) {
     shortcutsRequested.value = false
     assistantDraft.value = ''
@@ -182,12 +184,16 @@ const workspaceShortcuts = computed(() => workspaceDataReady.value
 const shortcutsOpen = computed(() =>
   shortcutsRequested.value && !assistantDraft.value.trim() && !assistant.dashboardExpanded && workspaceShortcuts.value.length > 0,
 )
+watch(() => assistant.dashboardExpanded, expanded => {
+  if (expanded) shortcutsRequested.value = false
+}, { flush: 'sync' })
 
 watch(shortcutsRequested, (requested, _, onCleanup) => {
   if (!requested) return
   // A pointer press can blur the composer before the link receives its click.
   // Dismiss on an actual interaction outside the drawer and composer.
   function dismissFromOutside(event: Event) {
+    if (event.type === 'focusin' && (event.target === document.body || event.target === document.documentElement)) return
     if (!shortcutRoot.value || !event.composedPath().includes(shortcutRoot.value)) {
       shortcutsRequested.value = false
     }
@@ -465,10 +471,11 @@ function onGridSelectStart(event: Event) {
                       class="max-h-32 min-h-9 min-w-0 flex-1 resize-none bg-transparent py-2 pr-2 text-sm text-text-primary outline-none placeholder:text-text-muted [field-sizing:content]"
                       aria-label="Message Railgrid Agents" placeholder="Ask a question or choose a shortcut…" maxlength="4000"
                       :aria-controls="workspaceShortcuts.length ? 'dashboard-workspace-shortcuts' : undefined"
-                      rows="1" @focus="shortcutsRequested = true" @click="shortcutsRequested = true"
+                      rows="1" @focus="shortcutsRequested = !assistant.sidePanelClosing" @click="shortcutsRequested = true"
                       @keydown.down.exact="focusFirstShortcut" @keydown.enter.exact="submitWithEnter" />
-                    <AIPrimaryAction class="shrink-0" type="submit" :disabled="!canSendQuestion" />
+                    <AIPrimaryAction class="shrink-0" type="submit" :disabled="!canSendQuestion" :loading="showPreparingChat" />
                   </form>
+                  <p class="sr-only" role="status">{{ showPreparingChat ? 'Preparing chat…' : '' }}</p>
                   <nav v-if="workspaceShortcuts.length" id="dashboard-workspace-shortcuts" ref="shortcutNav"
                     aria-label="Workspace shortcuts" class="dashboard-shortcuts rounded-md border border-border-default bg-surface-raised p-1"
                     :class="{ 'dashboard-shortcuts--open': shortcutsOpen }" :inert="!shortcutsOpen">
@@ -489,8 +496,7 @@ function onGridSelectStart(event: Event) {
                   <button v-if="assistant.dashboardSubmit" type="button" class="k-btn k-btn--ghost"
                     @click="assistant.dashboardSubmit('', assistantInput)">Open chat</button>
                 </div>
-                <p v-else-if="assistant.dashboardPreparing" role="status" class="text-sm text-text-secondary">Preparing chat…</p>
-                <p v-else-if="!assistant.dashboardSubmit" role="status" class="text-sm text-text-secondary">
+                <p v-else-if="!assistant.dashboardPreparing && !assistant.dashboardSubmit" role="status" class="text-sm text-text-secondary">
                   Chat is unavailable. <router-link :to="scopePath('/providers/agents')" class="text-accent hover:text-accent-hover">Check the Agents provider</router-link>.
                 </p>
               </template>

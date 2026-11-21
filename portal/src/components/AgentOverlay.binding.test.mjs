@@ -19,7 +19,7 @@ function scenario({ available = true, shadowReady = false, bindingReady = true, 
   const state = Vue.reactive({ bound: available ? platform : undefined,
     shadow: { ...platform, scope: 'org', ownerOrg: 'org', ready: shadowReady } })
   const binding = Vue.reactive({ ready: bindingReady, terminating: false, exportCluster: 'platform-cluster', defaultAgent })
-  const calls = { bundles: [], loads: [], defaultReads: [], contexts: [], boundPins: 0, catalogPins: 0, composerFocus: 0, reloads: 0 }
+  const calls = { bundles: [], loads: [], defaultReads: [], contexts: [], boundPins: 0, catalogPins: 0, composerFocus: [], reloads: 0 }
   const providers = Vue.reactive({ loaded: true, error: null, catalogOrgUUID: 'org',
     bindingsLoadState: 'ready', bindingsStale: false, bindingsOrgUUID: 'org', bindingsWorkspace: 'ws',
     bindingsByProvider: { agents: binding }, isEnabled: () => true,
@@ -34,14 +34,15 @@ function scenario({ available = true, shadowReady = false, bindingReady = true, 
   globalThis.document = { createElement: () => Vue.markRaw(Object.assign(new EventTarget(), {
     overlayState: {}, railgridContext: null,
     remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1) },
-  })), getElementById: id => id === 'dashboard-agent-composer' ? { focus() { calls.composerFocus++ } } : null }
+  })), getElementById: id => id === 'dashboard-agent-composer' ? { focus() { calls.composerFocus.push(overlay.sidePanelClosing) } } : null }
   globalThis.customElements = { get: () => function AgentsElement() {} }
   const noOp = () => {}
   const route = Vue.reactive({ path: '/workspace', fullPath: '/workspace', hash: '', params: {}, meta: {}, ...initialRoute })
   const personalAgent = 'agent' in preference ? preference.agent : 'scout'
   const overlay = Vue.reactive({ preferenceKey: 'preference', personalAgent, selectedAgent: personalAgent ?? null, open: !!personalAgent, followContext: false,
     setDefaultAgent(name) { if (this.personalAgent === undefined) { this.selectedAgent = name; this.open = !!name } },
-    sidePanelWidth: 0, sidePanelFullscreen: false, setSidePanelClosing: noOp,
+    sidePanelWidth: 0, sidePanelFullscreen: false, sidePanelClosing: false,
+    setSidePanelClosing(value) { this.sidePanelClosing = value },
     setMinimized(value) { this.open = !value },
     setSidePanel(width, fullscreen) { this.sidePanelWidth = width; this.sidePanelFullscreen = fullscreen },
     setFollowContext(value) { this.followContext = value },
@@ -398,7 +399,8 @@ test('the dashboard can open bundle recovery and restore focus to its composer',
     s.exposed.reloadAgentBundle()
     assert.equal(s.calls.reloads, 1)
     await s.exposed.collapse()
-    assert.equal(s.calls.composerFocus, 1)
+    assert.deepEqual(s.calls.composerFocus, [true])
+    assert.equal(s.overlay.sidePanelClosing, false)
   } finally { s.cleanup() }
 })
 
