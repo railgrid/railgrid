@@ -34,6 +34,7 @@ const props = defineProps<{ ctx: RailgridContext | null }>()
 
 const route = computed(() => parseInfrastructureSubPath(props.ctx?.subPath))
 const tenantPath = computed(() => props.ctx?.tenant ?? null)
+const catalogUserID = computed(() => props.ctx?.user?.userId || props.ctx?.user?.sub)
 const contextInitialized = computed(() => props.ctx !== null)
 const contextVersion = ref(0)
 // Route-local pages remount during detail/list navigation, but acknowledged
@@ -131,7 +132,7 @@ function provisioned(name: string) {
       </section>
     </template>
     <template v-else-if="route.page === 'templates' && !route.id">
-      <CatalogPage :key="`catalog:${contextVersion}`" @select="selectTemplate" @navigate="legacyNavigate" />
+      <CatalogPage :key="`catalog:${contextVersion}`" :user-id="catalogUserID" @select="selectTemplate" @navigate="legacyNavigate" />
     </template>
     <template v-else-if="route.page === 'templates' && route.id">
       <ProvisionPage

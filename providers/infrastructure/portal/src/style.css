@@ -46,55 +46,91 @@ railgrid-provider-infrastructure .page-meta {
   color: var(--color-text-muted, #5d5f78);
 }
 
-railgrid-provider-infrastructure .grid {
+railgrid-provider-infrastructure .catalog-search {
+  flex: none;
+  min-width: 0;
+}
+
+railgrid-provider-infrastructure .catalog-narrow-link {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+railgrid-provider-infrastructure .catalog-row-details {
   display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 480px));
-  justify-content: start;
+  gap: 4px;
+  margin-block-start: 6px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
-/* Keep catalog cards readable across the fluid provider canvas. Without
- * deliberate wide-screen breakpoints, the three-column fallback makes each
- * card grow into an unwieldy desktop panel. */
-@media (min-width: 1440px) {
-  railgrid-provider-infrastructure .grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
+railgrid-provider-infrastructure .catalog-row-details > span {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
 }
 
-@media (min-width: 1920px) {
-  railgrid-provider-infrastructure .grid {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
+railgrid-provider-infrastructure .catalog-row-label {
+  color: var(--color-text-muted);
+  font-size: 12px;
 }
 
-railgrid-provider-infrastructure .filters {
+railgrid-provider-infrastructure .deployment-target-mark {
+  display: inline-block;
+  height: 18px;
+  object-fit: contain;
+  vertical-align: middle;
+  width: 24px;
+}
+
+html.dark railgrid-provider-infrastructure .deployment-target-mark--aws {
+  filter: brightness(0) invert(1);
+}
+
+railgrid-provider-infrastructure .catalog-cloud-guide {
   align-items: center;
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface-raised));
+  border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-border-subtle));
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 12px;
+  padding: 12px 16px;
+  padding-inline-end: 60px;
+  position: relative;
 }
 
-@media (max-width: 640px) {
-  railgrid-provider-infrastructure .catalog-filter {
-    flex-basis: 100%;
-  }
+railgrid-provider-infrastructure .catalog-cloud-guide > div {
+  flex: 1 1 18rem;
+  min-width: 0;
 }
 
-railgrid-provider-infrastructure .template-card {
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px 16px;
-  color: var(--color-text-primary, #e9e9f2);
-  cursor: pointer;
-  font: inherit;
-  transition: border-color 0.12s ease;
+railgrid-provider-infrastructure .catalog-guide-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 2px;
 }
 
-railgrid-provider-infrastructure .template-card:hover {
-  border-color: var(--color-accent, #8b6bff);
+railgrid-provider-infrastructure .catalog-guide-icon {
+  align-items: center;
+  background: var(--color-accent-subtle);
+  border-radius: 6px;
+  color: var(--color-accent);
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+railgrid-provider-infrastructure .catalog-guide-link {
+  color: var(--color-accent);
+  text-align: start;
+  white-space: normal;
+}
+
+railgrid-provider-infrastructure .catalog-guide-dismiss {
+  inset-block-start: 8px;
+  inset-inline-end: 8px;
+  position: absolute;
 }
 
 railgrid-provider-infrastructure .view-value-text { min-width: 0; overflow-wrap: anywhere; }
@@ -106,48 +142,6 @@ railgrid-provider-infrastructure .instance-name-link {
   min-height: 0;
   padding: 0;
 }
-
-railgrid-provider-infrastructure .template-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-railgrid-provider-infrastructure .exposure-note {
-  align-items: center;
-  color: var(--color-text-muted, #5d5f78);
-  display: inline-flex;
-  font-size: 11px;
-  gap: 6px;
-}
-
-railgrid-provider-infrastructure .template-card-title {
-  font-weight: 600;
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
-
-railgrid-provider-infrastructure .template-card-desc {
-  margin: 0;
-  font-size: 12px;
-  color: var(--color-text-secondary, #8a8ca6);
-  line-height: 1.5;
-}
-
-railgrid-provider-infrastructure .template-card-foot {
-  display: flex;
-  justify-content: space-between;
-  font-size: 10px;
-  color: var(--color-text-muted, #5d5f78);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-family: var(--font-mono);
-}
-
-
 
 railgrid-provider-infrastructure .form,
 railgrid-provider-infrastructure .dynform {
@@ -357,41 +351,23 @@ railgrid-provider-infrastructure .page-loading-shell {
   min-height: 220px;
 }
 
-railgrid-provider-infrastructure .page-loading-line,
 railgrid-provider-infrastructure .page-loading-panel {
   background: linear-gradient(90deg, var(--color-surface-overlay, #171927), var(--color-surface-hover, #1e2033), var(--color-surface-overlay, #171927));
   background-size: 200% 100%;
   border-radius: 4px;
 }
 
-railgrid-provider-infrastructure .page-loading-line { height: 12px; width: 100%; }
-railgrid-provider-infrastructure .page-loading-line-short { width: 34%; }
-railgrid-provider-infrastructure .page-loading-line-mid { width: 68%; }
 railgrid-provider-infrastructure .page-loading-panel {
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   height: 96px;
 }
 
-railgrid-provider-infrastructure .catalog-loading-grid {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-}
-
-railgrid-provider-infrastructure .catalog-loading-card {
-  min-height: 126px;
-  padding: 16px;
-}
-
-
-railgrid-provider-infrastructure .empty-state,
 railgrid-provider-infrastructure .empty-followup,
 railgrid-provider-infrastructure .detail-empty {
   color: var(--color-text-muted, #5d5f78);
   font-size: 12px;
 }
 
-railgrid-provider-infrastructure .empty-state,
 railgrid-provider-infrastructure .empty-followup {
   align-items: center;
   display: flex;
@@ -526,11 +502,4 @@ railgrid-provider-infrastructure .detail-empty { padding: 24px 16px; text-align:
     gap: 4px;
     grid-template-columns: minmax(0, 1fr);
   }
-  railgrid-provider-infrastructure .catalog-loading-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  railgrid-provider-infrastructure .template-card { transition: none; }
 }

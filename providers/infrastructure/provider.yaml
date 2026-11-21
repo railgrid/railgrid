@@ -9,4 +9,4 @@ kind: Provider
 metadata:
   name: infrastructure
 spec:
-  displayName: "Application Templates"
+  displayName: "Infrastructure"

@@ -85,7 +85,7 @@ kind: CatalogEntry
 metadata:
   name: infrastructure
 spec:
-  displayName: "Application Templates"
+  displayName: "Infrastructure"
   description: "Provision applications and infrastructure from curated templates."
   vendor: "railgrid"
   version: "0.1.0"
@@ -200,7 +200,7 @@ spec:
     ui:
       url: "http://localhost:8082"
       indexPath: "/"
-      # Sub-nav entries shown indented under "Application Templates" in
+      # Sub-nav entries shown indented under "Infrastructure" in
       # the portal side menu. The portal composes each child URL as
       # /providers/infrastructure/{builtinRoute}; the micro-frontend
       # reads the trailing segment off railgridContext.subPath and routes
@@ -213,7 +213,7 @@ spec:
     backend:
       url: "http://localhost:8082"
       healthPath: "/readyz"
-    # Self-hosting: run Application Templates in your own cluster, so provisioned
+    # Self-hosting: run Infrastructure in your own cluster, so provisioned
     # workloads land there rather than on the platform. See docs/byo-providers.md.
     #
     # This provider self-bootstraps rather than waiting for a hub-delivered

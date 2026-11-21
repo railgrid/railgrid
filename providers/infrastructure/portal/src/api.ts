@@ -208,6 +208,25 @@ const INSTANCE_LIST_PAGE_SIZE = 100
 const MAX_INSTANCE_LIST_PAGES = 100
 
 // ── Mappers ─────────────────────────────────────────────────────────────────
+function templateCloud(spec: Record<string, unknown>, label?: string): string | undefined {
+  const declared = label?.trim() || (typeof spec.cloud === 'string' ? spec.cloud.trim() : '')
+  if (declared) return declared
+
+  // Older templates, including the Pub/Sub example, may have no target label.
+  // A graph can manage external resources, so KRO alone doesn't imply Kubernetes.
+  const resources = isRecord(spec.backendConfig) ? spec.backendConfig.resources : undefined
+  if (!Array.isArray(resources) || resources.length === 0) return
+  const apiVersions = resources.map(resource => {
+    const child = isRecord(resource) ? resource.template : undefined
+    return isRecord(child) && typeof child.apiVersion === 'string' ? child.apiVersion : ''
+  })
+  const isKubernetes = (version: string) =>
+    /^(v1$|(apps|batch|autoscaling|networking\.k8s\.io|policy|rbac\.authorization\.k8s\.io|gateway\.networking\.k8s\.io)\/)/.test(version)
+  const isConfigConnector = (version: string) => /\.cnrm\.cloud\.google\.com\//.test(version)
+  if (apiVersions.every(isKubernetes)) return 'k8s'
+  if (apiVersions.some(isConfigConnector) && apiVersions.every(version => isKubernetes(version) || isConfigConnector(version))) return 'gcp'
+}
+
 // templateFromObject collapses a Template CR into the catalog shape. The
 // preserve-unknown fields (schema, sampleValues, view) arrive as objects from
 // the API server; the string form is still accepted so a serialised copy
@@ -253,7 +272,7 @@ function templateFromObject(obj: KubeObject): Template {
     displayName: (spec.displayName as string) || name,
     description: (spec.description as string) ?? '',
     category: spec.category as string | undefined,
-    cloud: spec.cloud as string | undefined,
+    cloud: templateCloud(spec, labels['railgrid.ai/cloud']),
     exposure: spec.exposure as TemplateExposure | undefined,
     version: spec.version as string | undefined,
     iconURL: spec.iconURL as string | undefined,

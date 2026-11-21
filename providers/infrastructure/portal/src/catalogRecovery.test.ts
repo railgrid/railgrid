@@ -25,7 +25,7 @@ it('keeps a failed catalog retry focused until recovery and ignores repeated act
     retry.click()
     expect(api.listTemplates).toHaveBeenCalledTimes(2)
     resolve({ items: [] } as never)
-    await vi.waitFor(() => expect(document.activeElement?.textContent).toBe('Templates'))
+    await vi.waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Infrastructure templates'))
     expect(host.textContent).toContain('No infrastructure templates are available')
   } finally {
     app.unmount()
@@ -34,8 +34,7 @@ it('keeps a failed catalog retry focused until recovery and ignores repeated act
   }
 })
 
-it.each(['grid', 'list'])('keeps an empty %s snapshot with one retry after refresh fails', async mode => {
-  localStorage.clear()
+it('keeps an empty snapshot and search with one retry after refresh fails', async () => {
   vi.mocked(api.listTemplates).mockResolvedValueOnce({ items: [] } as never).mockRejectedValueOnce(new Error('Refresh unavailable'))
   const host = document.createElement('div')
   document.body.append(host)
@@ -43,21 +42,18 @@ it.each(['grid', 'list'])('keeps an empty %s snapshot with one retry after refre
   try {
     app.mount(host)
     await vi.waitFor(() => expect(host.textContent).toContain('No infrastructure templates are available'))
-    if (mode === 'list') {
-      const list = [...host.querySelectorAll('[role="radio"]')].find(button => button.textContent?.includes('List')) as HTMLButtonElement
-      list.click()
-      await nextTick()
-    }
+    const search = host.querySelector('input[type=search]')
+    expect(search).not.toBeNull()
     const refresh = [...host.querySelectorAll('button')].find(button => button.textContent === 'Refresh catalog')!
     refresh.click()
     await vi.waitFor(() => expect(host.textContent).toContain('Refresh unavailable'))
     expect(host.textContent).toContain('No infrastructure templates are available')
+    expect(host.querySelector('input[type=search]')).toBe(search)
     expect([...host.querySelectorAll('button')].filter(button => button.textContent === 'Retry')).toHaveLength(1)
     expect([...host.querySelectorAll('button')].some(button => button.textContent === 'Refresh catalog')).toBe(false)
   } finally {
     app.unmount()
     host.remove()
-    localStorage.clear()
     vi.clearAllMocks()
   }
 })
