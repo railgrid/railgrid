@@ -139,7 +139,7 @@ func (b *Bootstrapper) GetProviderEdgeRoute(ctx context.Context, orgUUID, provid
 		return nil, fmt.Errorf("creating org providers workspace client: %w", err)
 	}
 	ws, err := parent.Resource(workspaceGVR).Get(ctx, providerName, metav1.GetOptions{})
-	if errors.IsNotFound(err) {
+	if IsOrgProvidersParentMissing(err) {
 		return nil, nil
 	}
 	if err != nil {

@@ -43,6 +43,7 @@ package kcp
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -83,6 +84,28 @@ const (
 	orgProviderExportCleanupTimeout = 45 * time.Second
 	orgProviderExportCleanupPoll    = 250 * time.Millisecond
 )
+
+// workspaceAccessNotPermitted is the reason kcp attaches to the 403 it returns
+// for a workspace path the caller may not enter — or that does not resolve.
+const workspaceAccessNotPermitted = "workspace access not permitted"
+
+// IsOrgProvidersParentMissing reports whether err, returned by a request the
+// hub's admin credentials made into an Org's `providers` workspace, means that
+// workspace does not exist.
+//
+// A shard answers a path it cannot resolve with 404. The kcp front proxy does
+// not: so that a caller cannot probe which workspaces exist, it answers 403
+// "workspace access not permitted", exactly as it would for a workspace the
+// caller may not enter. The hub's admin identity may enter every workspace, so
+// for it that 403 can only mean the path is not there — which is the normal
+// state of an Org that has never registered a provider, because the parent is
+// created lazily.
+func IsOrgProvidersParentMissing(err error) bool {
+	if errors.IsNotFound(err) {
+		return true
+	}
+	return errors.IsForbidden(err) && strings.Contains(err.Error(), workspaceAccessNotPermitted)
+}
 
 // EnsureOrgProvidersWorkspace materializes the well-known `providers` child of
 // an Org workspace (root:railgrid:tenants:{orgUUID}:providers) as a `universal`
@@ -231,7 +254,7 @@ func (b *Bootstrapper) ListOrgProviderWorkspaces(ctx context.Context, orgUUID st
 	}
 	list, err := parent.Resource(workspaceGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if IsOrgProvidersParentMissing(err) {
 			// No `providers` workspace yet — the Org has registered none.
 			return nil, nil
 		}
@@ -256,7 +279,7 @@ func (b *Bootstrapper) GetOrgProviderWorkspace(ctx context.Context, orgUUID, nam
 	}
 	got, err := parent.Resource(workspaceGVR).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if IsOrgProvidersParentMissing(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("getting org provider workspace %s in org %s: %w", name, orgUUID, err)
@@ -335,7 +358,7 @@ func (b *Bootstrapper) deleteOrgProviderWorkspace(ctx context.Context, orgUUID, 
 		return fmt.Errorf("creating org providers workspace client: %w", err)
 	}
 	workspace, err := parent.Resource(workspaceGVR).Get(operationCtx, name, metav1.GetOptions{})
-	if errors.IsNotFound(err) {
+	if IsOrgProvidersParentMissing(err) {
 		return nil
 	}
 	if err != nil {
