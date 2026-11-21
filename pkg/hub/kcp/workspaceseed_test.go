@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -271,13 +272,20 @@ func TestInitialWorkspaceSeedCreatesOnceAndPreservesChanges(t *testing.T) {
 		InitialWorkspacesOnly: true,
 		Bindings:              []adminv1alpha1.SeedBinding{{Name: "agents", Export: seedAgentsExport}},
 		Objects: []adminv1alpha1.SeedObject{{
-			Resource: "agents",
-			Manifest: runtime.RawExtension{Raw: []byte(`{"apiVersion":"agents.railgrid.ai/v1alpha1","kind":"Agent","metadata":{"name":"railgrid-agents"},"spec":{"displayName":"Railgrid Agents"}}`)},
+			Resource:  "agents",
+			WhenBound: []adminv1alpha1.SeedExportReference{seedAgentsExport},
+			Manifest:  runtime.RawExtension{Raw: []byte(`{"apiVersion":"agents.railgrid.ai/v1alpha1","kind":"Agent","metadata":{"name":"railgrid-agents","annotations":{"agents.railgrid.ai/workspace-default":"true"}},"spec":{"displayName":"Railgrid Agents"}}`)},
 		}},
 	}
-	first, err := ensureInitialWorkspaceSeed(ctx, dyn, "railgrid-agents", spec)
+	eligibilityChecks := 0
+	eligible := func() (bool, error) { eligibilityChecks++; return true, nil }
+	first, err := ensureInitialWorkspaceSeed(ctx, dyn, "starter-seed", spec, eligible)
 	if err != nil || first.ObjectsApplied != 1 || len(*applied) != 0 {
 		t.Fatalf("initial seed = %+v, %v; applies = %v", first, err, *applied)
+	}
+	binding, err := dyn.Resource(apiBindingGVR).Get(ctx, "agents", metav1.GetOptions{})
+	if err != nil || binding.GetAnnotations()[adminv1alpha1.DefaultAgentAnnotation] != "railgrid-agents" {
+		t.Fatalf("default Agent binding metadata = %v, %v", binding, err)
 	}
 	client := dyn.Resource(gvr)
 	agent, err := client.Get(ctx, "railgrid-agents", metav1.GetOptions{})
@@ -290,7 +298,7 @@ func TestInitialWorkspaceSeedCreatesOnceAndPreservesChanges(t *testing.T) {
 	if _, err := client.Update(ctx, agent, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ensureInitialWorkspaceSeed(ctx, dyn, "railgrid-agents", spec); err != nil {
+	if _, err := ensureInitialWorkspaceSeed(ctx, dyn, "starter-seed", spec, eligible); err != nil {
 		t.Fatal(err)
 	}
 	agent, err = client.Get(ctx, "railgrid-agents", metav1.GetOptions{})
@@ -303,8 +311,23 @@ func TestInitialWorkspaceSeedCreatesOnceAndPreservesChanges(t *testing.T) {
 	if err := client.Delete(ctx, "railgrid-agents", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	again, err := ensureInitialWorkspaceSeed(ctx, dyn, "railgrid-agents", spec)
+	again, err := ensureInitialWorkspaceSeed(ctx, dyn, "starter-seed", spec, eligible)
 	if err != nil || again.ObjectsApplied != 0 {
 		t.Fatalf("seed recreated deleted agent: %+v, %v", again, err)
+	}
+	if eligibilityChecks != 1 {
+		t.Fatalf("eligibility checked %d times, want once", eligibilityChecks)
+	}
+}
+
+func TestEligibleInitialWorkspaceIncludesSameSecond(t *testing.T) {
+	org := &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"defaultWorkspace": "starter"}}}
+	cutoff := time.Unix(100, 0).UTC()
+	org.SetCreationTimestamp(metav1.NewTime(cutoff))
+	if ok, err := eligibleInitialWorkspace(org, "starter", cutoff); err != nil || !ok {
+		t.Fatalf("same-second starter was ineligible: %v, %v", ok, err)
+	}
+	if ok, err := eligibleInitialWorkspace(org, "starter", cutoff.Add(time.Second)); err != nil || ok {
+		t.Fatalf("older starter was eligible: %v, %v", ok, err)
 	}
 }

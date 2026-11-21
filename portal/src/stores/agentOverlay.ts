@@ -49,6 +49,7 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
   })
   let revision = 0
   let confirmedPreference: AssistantPreference | null | undefined
+  let cachedContext = true
   const writes = shallowReactive(new Map<string, Promise<void>>())
   const preferencesSaving = computed(() => !!preferenceKey.value && writes.has(preferenceKey.value))
 
@@ -84,7 +85,7 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
     try {
       localStorage.setItem(preferenceKey.value, JSON.stringify({
         agent: personalAgent.value,
-        followContext: followContext.value,
+        followContext: auth.token ? cachedContext : followContext.value,
         minimized: minimized.value,
       }))
     } catch { /* Storage is optional for the account preference. */ }
@@ -93,6 +94,7 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
   function applyPreference(settings: AssistantPreference | null, restoreOpen = false): void {
     const previousAgent = selectedAgent.value
     confirmedPreference = settings
+    cachedContext = settings?.followContext ?? true
     personalAgent.value = settings?.agent === '' ? null : settings?.agent
     followContext.value = settings?.followContext ?? true
     if (restoreOpen || selectedAgent.value !== previousAgent) open.value = !!selectedAgent.value && !minimized.value
@@ -101,6 +103,7 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
   watch([preferenceKey, () => Boolean(auth.token)], ([key], _, onCleanup) => {
     const currentRevision = ++revision
     confirmedPreference = undefined
+    cachedContext = true
     personalAgent.value = undefined
     defaultAgent.value = null
     open.value = false
@@ -119,6 +122,7 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
       if (saved?.agent === null) personalAgent.value = null
       if (typeof saved?.agent === 'string' && saved.agent.length <= 253) personalAgent.value = saved.agent
       legacyContext = saved?.followContext !== false
+      cachedContext = legacyContext
       if (!endpoint) followContext.value = legacyContext
       minimized.value = saved?.minimized === true
       open.value = !!selectedAgent.value && !minimized.value
@@ -166,7 +170,13 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
       if (authSessionRevision() !== session) return
       try {
         const result = await requestPreference(endpoint, undefined, change)
-        if (key === preferenceKey.value && edit === revision && authSessionRevision() === session) {
+        if (key === preferenceKey.value && authSessionRevision() === session) {
+          confirmedPreference = result.preference
+          cachedContext = result.preference?.followContext ?? true
+          if (edit !== revision) {
+            cache()
+            return
+          }
           const configured = change.method === 'PUT' && !result.conflict
           if (configured) minimized.value = false
           applyPreference(result.preference, configured)
@@ -175,6 +185,7 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
         }
       } catch {
         if (key === preferenceKey.value && edit === revision && authSessionRevision() === session) {
+          if (confirmedPreference !== undefined) followContext.value = confirmedPreference?.followContext ?? true
           toast('error', 'Couldn’t save the assistant to your account. This change may only apply in this browser.')
         }
       }

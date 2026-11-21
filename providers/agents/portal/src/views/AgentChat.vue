@@ -1528,12 +1528,16 @@ function sessionKey(name: string, api: ApiClient): string | null {
   return `railgrid:agents:session:${tenant.orgUUID || ''}:${tenant.workspaceUUID || ''}:${name}`
 }
 
+const localSessions = new Set<string>()
 function newSessionID(): string {
+  let id: string
   try {
-    return crypto.randomUUID()
+    id = crypto.randomUUID()
   } catch {
-    return `sess-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    id = `sess-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   }
+  localSessions.add(id)
+  return id
 }
 
 function remember(id: string, name = props.name, api = props.api): void {
@@ -1623,6 +1627,7 @@ async function loadSessions(name = props.name, api = props.api): Promise<boolean
     ))
     sessionsReadScope.value = sessionRailScope.value
     sessions.value = result
+    for (const session of result) localSessions.delete(session.id)
     sessionsHasSnapshot.value = true
     sessionsError.value = null
     return true
@@ -1913,10 +1918,11 @@ async function openAgent(preserveSessionsError = false): Promise<void> {
     initializedFor = name
     return
   }
+  const fallback = () => (props.overlay ? undefined : sessions.value[0]?.id) || newSessionID()
   if (!wanted) {
-    wanted = (props.overlay ? undefined : sessions.value[0]?.id) || newSessionID()
-  } else if (!props.overlay && !signedIn && sessions.value.length > 0 && !sessions.value.some(session => session.id === wanted)) {
-    if (isModelBackend.value) {
+    wanted = fallback()
+  } else if (!localSessions.has(wanted) && !sessions.value.some(session => session.id === wanted)) {
+    if (signedIn || props.overlay || sessions.value.length > 0) {
       const authority = captureAuthority()
       const contextCurrent = () => serial === openSerial && ownership === chatOwnershipSerial && contextIsCurrent(name, api) && authorityIsCurrent(authority)
       let preferenceProbeComplete = false
@@ -1925,20 +1931,27 @@ async function openAgent(preserveSessionsError = false): Promise<void> {
         const inheritedCredential = agentModelCredential(props.store.agent(name))
         const current = () => contextCurrent() && agentModelCredential(props.store.agent(name)) === inheritedCredential
         try {
-          const preferences = await serializeChatModelRequest(
+          const preferences = isModelBackend.value ? await serializeChatModelRequest(
             modelRequestKey(name, wanted, api),
             current,
             async () => {
               await waitForAgentConfigSaves(authority.store, name)
               return current() ? api.getSessionModel(name, wanted) : undefined
             },
-          )
+          ) : undefined
           if (!contextCurrent()) return
           if (!current()) continue
           if (preferences && hasStoredSessionModel(preferences)) {
             bootstrappedSessionModel = { name, api, session: wanted, inheritedCredential, preferences }
+          } else if (signedIn || props.overlay) {
+            // A remembered conversation can be older than the session list's
+            // limit. Check that exact transcript before discarding it.
+            const page = await api.listMessagePage(name, wanted, '', 1)
+            if (!contextCurrent()) return
+            if (!current()) continue
+            if (!page.items.length) wanted = fallback()
           } else {
-            wanted = sessions.value[0]?.id || newSessionID()
+            wanted = fallback()
           }
           preferenceProbeComplete = true
         } catch {
@@ -1950,8 +1963,6 @@ async function openAgent(preserveSessionsError = false): Promise<void> {
           preferenceProbeComplete = true
         }
       }
-    } else {
-      wanted = sessions.value[0]?.id || newSessionID()
     }
   }
   sessionID.value = wanted
@@ -2322,6 +2333,7 @@ async function streamTurn(
   const acceptTurn = () => {
     if (turnAccepted || !submittedDraft) return
     turnAccepted = true
+    localSessions.delete(requestSession)
     track('run_started')
     clearTerminalTranscriptRefresh()
     const receiptIDs = submittedDraft.contentParts.flatMap((part) => part.type === 'attachment' ? [part.attachment.id] : [])

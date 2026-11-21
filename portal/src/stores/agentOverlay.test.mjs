@@ -11,7 +11,7 @@ globalThis.localStorage = {
 }
 globalThis.window = { dispatchEvent() {} }
 globalThis.HTMLElement = class {}
-globalThis.document = { activeElement: null, dispatchEvent() {} }
+globalThis.document = { activeElement: null, dispatchEvent() {}, addEventListener() {} }
 const vite = await createServer({
   appType: 'custom', configFile: false, optimizeDeps: { noDiscovery: true },
   root: new URL('../../', import.meta.url).pathname,
@@ -151,12 +151,14 @@ test('account choices migrate, fail closed on read errors, and survive stale tab
   const key = overlayPreferenceKey('account-user', org, ws)
   let remote = null
   let readFailure = false
+  let writeFailure = false
   const puts = []
   const patches = []
   globalThis.fetch = async (url, init) => {
     assert.equal(url, `/api/orgs/${org}/workspaces/${ws}/assistant-preference`)
     assert.equal(init.headers.get('X-Railgrid-Org'), org)
     assert.equal(init.headers.get('X-Railgrid-Workspace'), ws)
+    if (writeFailure && init.method === 'PATCH') return new Response(null, { status: 503 })
     if (init.method === 'PUT') {
       const { initialize, expected, ...preference } = JSON.parse(init.body)
       puts.push({ initialize, ...preference })
@@ -210,6 +212,18 @@ test('account choices migrate, fail closed on read errors, and survive stale tab
     second.setFollowContext(true)
     await waitFor(() => !second.preferencesSaving)
     assert.equal(second.followContext, true)
+    const failing = browser()
+    await waitFor(() => !failing.preferencesLoading)
+    writeFailure = true
+    failing.select('different-agent')
+    assert.equal(failing.followContext, false)
+    assert.equal(JSON.parse(localStorage.getItem(key)).followContext, true)
+    await waitFor(() => !failing.preferencesSaving)
+    assert.equal(failing.followContext, true)
+    assert.equal(JSON.parse(localStorage.getItem(key)).followContext, true)
+    writeFailure = false
+    const refreshed = browser()
+    await waitFor(() => !refreshed.preferencesLoading)
     remote = { agent: 'scout', followContext: false }
     readFailure = true
     const offline = browser()

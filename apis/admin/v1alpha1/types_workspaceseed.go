@@ -26,6 +26,8 @@ const (
 	// created by a WorkspaceSeed; its value is the seed's name. The hub only
 	// rewrites bindings that carry it.
 	WorkspaceSeedAnnotation = "admin.railgrid.ai/workspace-seed"
+	// DefaultAgentAnnotation names the workspace assistant on its seeded APIBinding.
+	DefaultAgentAnnotation = "admin.railgrid.ai/default-agent"
 
 	// TenantAccessAnnotation on an APIBinding in a tenant workspace bounds
 	// what the workspace's members may do with the API groups the binding

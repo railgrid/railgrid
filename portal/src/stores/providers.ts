@@ -284,7 +284,7 @@ export interface ClaimState {
 // EnabledProviderDetail mirrors pkg/hub/restapi.EnabledProviderDetail — which
 // APIExport a workspace's binding actually points at.
 export interface EnabledProviderDetail {
-  workspaceSeed?: string
+  defaultAgent?: string
   ready?: boolean
   unavailable?: string
   bindingName: string

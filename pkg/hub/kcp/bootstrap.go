@@ -26,8 +26,10 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	kcpdynamic "github.com/kcp-dev/client-go/dynamic"
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -71,7 +73,10 @@ var (
 
 // Bootstrapper sets up the kcp workspace hierarchy and API exports.
 type Bootstrapper struct {
-	config *rest.Config
+	config         *rest.Config
+	seedClientOnce sync.Once
+	seedClient     *kcpdynamic.ClusterClientset
+	seedClientErr  error
 	// workspaceIdentityHash is the identity hash of the tenancy.kcp.io APIExport
 	// from the root workspace. Needed for permission claims on workspaces.
 	workspaceIdentityHash string
@@ -2203,8 +2208,8 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 		exportName, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "name")
 		exportCluster, _, _ := unstructured.NestedString(item.Object, "status", "apiExportClusterName")
 		out[providerName] = ProviderBinding{
-			Name:          item.GetName(),
-			WorkspaceSeed: item.GetAnnotations()[adminv1alpha1.WorkspaceSeedAnnotation],
+			Name:         item.GetName(),
+			DefaultAgent: item.GetAnnotations()[adminv1alpha1.DefaultAgentAnnotation],
 
 			Ready:           ready,
 			Unavailable:     unavailable,
@@ -2266,8 +2271,8 @@ func deletionBlockedMessage(item *unstructured.Unstructured) string {
 // instance when they are not. Switching is a Disable + Enable, not an in-place
 // retarget, so the distinction has to survive all the way to the UI.
 type ProviderBinding struct {
-	// WorkspaceSeed names the platform seed that created this binding, if any.
-	WorkspaceSeed string
+	// DefaultAgent names the Agent provisioned for this binding, if any.
+	DefaultAgent string
 	// Ready reflects current binding conditions, not the catalog backend.
 	Ready bool
 	// Unavailable explains a binding that cannot currently serve its APIs.

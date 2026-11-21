@@ -398,6 +398,8 @@ test('the empty composer opens shortcuts only to available workspace providers',
       '/org/ws/providers/kuery',
     ])
     s.providers.bindingsByProvider = { 'app-studio': { ready: false }, edges: { terminating: true } }
+    s.providers.workspaceProvider = name => [agents, ...otherProviders]
+      .find(provider => provider.name === name && name !== 'app-studio' && name !== 'edges')
     await nextTick()
     assert.deepEqual(shortcuts(), [
       '/org/ws/providers/code/repositories',

@@ -84,7 +84,11 @@ async function collapse(): Promise<void> {
   // Suppress the scrollbar until the drawer is hidden and the host has reflowed.
   await nextTick()
   cancelClosingAnimation()
-  if (dashboard.value) { if (dashboardOrigin?.isConnected) dashboardOrigin.focus() }
+  if (dashboard.value) {
+    const origin = dashboardOrigin?.isConnected ? dashboardOrigin : document.getElementById('dashboard-agent-composer')
+    if (origin) origin.focus()
+    else launcher.value?.focus()
+  }
   else launcher.value?.focus()
 }
 function engage(): void { cancelClosingAnimation(); expanded.value = true }
@@ -146,7 +150,7 @@ const chatPage = computed(() => {
 const enabled = computed(() => allowed.value && !overlay.preferencesLoading && !!overlay.selectedAgent)
 const visible = computed(() => enabled.value && !gettingStartedFocused.value && (!chatPage.value || !mobileLayout.value))
 const panelVisible = computed(() => visible.value && overlay.open && expanded.value)
-const launcherVisible = computed(() => visible.value && !dashboard.value && !panelVisible.value)
+const launcherVisible = computed(() => visible.value && (!dashboard.value || !!error.value) && !panelVisible.value)
 const dedicatedChat = computed(() => !!agentChat.value && agentChat.value === overlay.selectedAgent)
 const dedicatedPanelOpen = computed(() => dedicatedChat.value && expanded.value && overlay.open)
 // Defer a second mount until the assistant is opened on its own chat page.
@@ -302,11 +306,12 @@ watch([authorityKey, () => overlay.selectedAgent], () => {
 })
 watch([() => auth.token, () => theme.resolved], pushContext, { flush: 'sync' })
 
-const defaultAgentSeed = computed(() => providers.bindingsByProvider.agents?.workspaceSeed === 'railgrid-agents')
-watch([allowed, authorityKey, () => overlay.personalAgent, defaultAgentSeed, () => overlay.preferencesLoading], ([canUse, key, preference, seeded, loadingPreference], _, onCleanup) => {
+const boundDefaultAgent = computed(() => providers.bindingsByProvider.agents?.defaultAgent)
+watch([allowed, authorityKey, () => overlay.personalAgent, boundDefaultAgent, () => overlay.preferencesLoading], ([canUse, key, preference, defaultAgent, loadingPreference], _, onCleanup) => {
   overlay.setDefaultAgent(null)
   overlay.defaultAgentLoading = false
-  if (!canUse || loadingPreference || preference !== undefined || entry.value?.scope === 'org') return
+  if (!canUse || loadingPreference || preference !== undefined || !defaultAgent) return
+  const agentName = defaultAgent
   overlay.defaultAgentLoading = true
   const controller = new AbortController()
   let retryTimer: ReturnType<typeof setTimeout> | undefined
@@ -315,7 +320,7 @@ watch([allowed, authorityKey, () => overlay.personalAgent, defaultAgentSeed, () 
     if (retryTimer !== undefined) clearTimeout(retryTimer)
   })
   const cluster = encodeURIComponent(auth.clusterName!)
-  const resource = `/clusters/${cluster}/apis/agents.railgrid.ai/v1alpha1/agents/railgrid-agents`
+  const resource = `/clusters/${cluster}/apis/agents.railgrid.ai/v1alpha1/agents/${encodeURIComponent(agentName)}`
   const current = () => !controller.signal.aborted && key === authorityKey.value && allowed.value
 
   async function discover(retries: number) {
@@ -330,14 +335,14 @@ watch([allowed, authorityKey, () => overlay.personalAgent, defaultAgentSeed, () 
         const agent = await response.json()
         if (current() && agent.metadata?.annotations?.['agents.railgrid.ai/workspace-default'] === 'true' &&
           !agent.metadata?.deletionTimestamp && agent.spec?.suspend !== true) {
-          overlay.setDefaultAgent('railgrid-agents')
+          overlay.setDefaultAgent(agentName)
         }
       }
     } catch { /* Manual setup remains available after a failed discovery. */ }
     if (current()) overlay.defaultAgentLoading = false
   }
   // A newly Bound Agents export can precede creation of the starter agent.
-  void discover(seeded ? 10 : 0)
+  void discover(10)
 }, { immediate: true, flush: 'sync' })
 
 function openFromDashboard(prompt: string, origin: HTMLElement | null): boolean {

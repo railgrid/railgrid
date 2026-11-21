@@ -406,8 +406,10 @@ versioned fallback ID. It never overwrites an existing style element.
 
 AI conversation, workbench, and model presentation is an optional layer in
 `provider-sdk/agentkit/` and `provider-sdk/agentkit-vue/`. The same sync script
-copies it only to explicit `AGENTKIT_PORTALS` consumers (Agents and App Studio)
-as `src/agentkit/`. AgentKit depends on PortalKit; core PortalKit does not import
+copies it to the Agents and App Studio provider portals as `src/agentkit/`.
+The host dashboard uses the shared send control and its dependencies via the
+explicit `HOST_AGENTKIT_FILES` and `HOST_AGENTKIT_VUE_FILES` sync lists.
+AgentKit depends on PortalKit; core PortalKit does not import
 AgentKit or its styles. `ensureAgentUIStyles()` loads the optional CSS with its
 own marker/version. Edit canonical sources and register new files/consumers in
 the manifest; see `provider-sdk/agentkit/README.md` for the import mapping.

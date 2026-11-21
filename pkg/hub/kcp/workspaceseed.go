@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"time"
 
+	kcpdynamic "github.com/kcp-dev/client-go/dynamic"
+	"github.com/kcp-dev/logicalcluster/v3"
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -86,30 +88,33 @@ func (b *Bootstrapper) EnsureInitialWorkspaceSeed(ctx context.Context, clusterNa
 	if !ok || after.IsZero() {
 		return WorkspaceSeedResult{}, nil
 	}
-	tenants, err := dynamic.NewForConfig(b.UsersConfig())
-	if err != nil {
-		return WorkspaceSeedResult{}, err
+	b.seedClientOnce.Do(func() {
+		b.seedClient, b.seedClientErr = kcpdynamic.NewForConfig(b.config)
+	})
+	if b.seedClientErr != nil {
+		return WorkspaceSeedResult{}, b.seedClientErr
 	}
-	orgs := tenancyv1alpha1.SchemeGroupVersion.WithResource("organizations")
-	org, err := tenants.Resource(orgs).Get(ctx, orgName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return WorkspaceSeedResult{}, nil
-	}
-	if err != nil {
-		return WorkspaceSeedResult{}, err
-	}
-	initial, _, err := unstructured.NestedString(org.Object, "status", "defaultWorkspace")
-	if err != nil || initial != workspace || !org.GetCreationTimestamp().After(after) || org.GetDeletionTimestamp() != nil {
-		return WorkspaceSeedResult{}, err
-	}
-	wsClient, err := dynamic.NewForConfig(configForPath(b.config, clusterName))
-	if err != nil {
-		return WorkspaceSeedResult{}, err
-	}
-	return ensureInitialWorkspaceSeed(ctx, wsClient, seedName, spec)
+	wsClient := b.seedClient.Cluster(logicalcluster.NewPath(clusterName))
+	return ensureInitialWorkspaceSeed(ctx, wsClient, seedName, spec, func() (bool, error) {
+		orgs := tenancyv1alpha1.SchemeGroupVersion.WithResource("organizations")
+		org, err := b.seedClient.Cluster(logicalcluster.NewPath(kcppaths.SystemTenants)).
+			Resource(orgs).Get(ctx, orgName, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return eligibleInitialWorkspace(org, workspace, after)
+	})
 }
 
-func ensureInitialWorkspaceSeed(ctx context.Context, wsClient dynamic.Interface, seedName string, spec adminv1alpha1.WorkspaceSeedSpec) (WorkspaceSeedResult, error) {
+func eligibleInitialWorkspace(org *unstructured.Unstructured, workspace string, after time.Time) (bool, error) {
+	initial, _, err := unstructured.NestedString(org.Object, "status", "defaultWorkspace")
+	return initial == workspace && !org.GetCreationTimestamp().Time.Before(after) && org.GetDeletionTimestamp() == nil, err
+}
+
+func ensureInitialWorkspaceSeed(ctx context.Context, wsClient dynamic.Interface, seedName string, spec adminv1alpha1.WorkspaceSeedSpec, eligible func() (bool, error)) (WorkspaceSeedResult, error) {
 	hash := sha256.Sum256([]byte(seedName))
 	marker := fmt.Sprintf("admin.railgrid.ai/seed-complete-%x", hash[:10])
 	bindings := wsClient.Resource(apiBindingGVR)
@@ -118,6 +123,9 @@ func ensureInitialWorkspaceSeed(ctx context.Context, wsClient dynamic.Interface,
 		return WorkspaceSeedResult{Unbound: 1}, nil
 	}
 	if err != nil || core.GetAnnotations()[marker] == "true" {
+		return WorkspaceSeedResult{}, err
+	}
+	if ok, err := eligible(); err != nil || !ok {
 		return WorkspaceSeedResult{}, err
 	}
 	result, err := reconcileWorkspaceSeed(ctx, wsClient, seedName, spec, true)
@@ -151,10 +159,28 @@ func reconcileWorkspaceSeed(ctx context.Context, wsClient dynamic.Interface, see
 	}
 
 	ownBound := true
+	defaultAgents := map[adminv1alpha1.SeedExportReference]string{}
+	if initialOnly {
+		for i := range spec.Objects {
+			so := &spec.Objects[i]
+			if so.Resource != "agents" {
+				continue
+			}
+			obj, gvr, err := seedObject(so)
+			if err != nil || gvr.Group != "agents.railgrid.ai" || obj.GetAnnotations()["agents.railgrid.ai/workspace-default"] != "true" {
+				continue
+			}
+			for _, export := range so.WhenBound {
+				if defaultAgents[export] == "" {
+					defaultAgents[export] = obj.GetName()
+				}
+			}
+		}
+	}
 	for i := range spec.Bindings {
 		sb := &spec.Bindings[i]
 		existing := byName[sb.Name]
-		bound, created, changed, err := seedBindingForWorkspace(ctx, wsClient, seedName, sb, existing, initialOnly)
+		bound, created, changed, err := seedBindingForWorkspace(ctx, wsClient, seedName, sb, existing, initialOnly, defaultAgents[sb.Export])
 		if err != nil {
 			errs = append(errs, fmt.Errorf("binding %q: %w", sb.Name, err))
 			ownBound = false
@@ -218,9 +244,20 @@ func reconcileWorkspaceSeed(ctx context.Context, wsClient dynamic.Interface, see
 	return result, errors.Join(errs...)
 }
 
-func seedBindingForWorkspace(ctx context.Context, wsClient dynamic.Interface, seedName string, binding *adminv1alpha1.SeedBinding, existing *unstructured.Unstructured, initialOnly bool) (bool, bool, bool, error) {
+func annotateSeedDefaultAgent(ctx context.Context, wsClient dynamic.Interface, bindingName, agentName string) error {
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{
+		adminv1alpha1.DefaultAgentAnnotation: agentName,
+	}}})
+	if err != nil {
+		return err
+	}
+	_, err = wsClient.Resource(apiBindingGVR).Patch(ctx, bindingName, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
+}
+
+func seedBindingForWorkspace(ctx context.Context, wsClient dynamic.Interface, seedName string, binding *adminv1alpha1.SeedBinding, existing *unstructured.Unstructured, initialOnly bool, defaultAgent string) (bool, bool, bool, error) {
 	if !initialOnly || existing == nil {
-		return ensureSeedBinding(ctx, wsClient, seedName, binding, existing)
+		return ensureSeedBinding(ctx, wsClient, seedName, binding, existing, defaultAgent)
 	}
 	path, _, _ := unstructured.NestedString(existing.Object, "spec", "reference", "export", "path")
 	name, _, _ := unstructured.NestedString(existing.Object, "spec", "reference", "export", "name")
@@ -228,13 +265,20 @@ func seedBindingForWorkspace(ctx context.Context, wsClient dynamic.Interface, se
 		return false, false, false, fmt.Errorf("existing APIBinding references %s:%s", path, name)
 	}
 	phase, _, _ := unstructured.NestedString(existing.Object, "status", "phase")
-	return phase == "Bound" && existing.GetDeletionTimestamp() == nil, false, false, nil
+	if existing.GetDeletionTimestamp() != nil {
+		return false, false, false, nil
+	}
+	if defaultAgent != "" && existing.GetAnnotations()[adminv1alpha1.DefaultAgentAnnotation] != defaultAgent {
+		err := annotateSeedDefaultAgent(ctx, wsClient, binding.Name, defaultAgent)
+		return phase == "Bound", false, err == nil, err
+	}
+	return phase == "Bound", false, false, nil
 }
 
 // ensureSeedBinding creates the binding or brings an existing one the seed
 // owns to the seed's claims and annotations. existing is the binding of that
 // name as listed, or nil.
-func ensureSeedBinding(ctx context.Context, wsClient dynamic.Interface, seedName string, sb *adminv1alpha1.SeedBinding, existing *unstructured.Unstructured) (bound, created, changed bool, err error) {
+func ensureSeedBinding(ctx context.Context, wsClient dynamic.Interface, seedName string, sb *adminv1alpha1.SeedBinding, existing *unstructured.Unstructured, defaultAgent string) (bound, created, changed bool, err error) {
 	if sb.Name == CoreBindingName {
 		return false, false, false, fmt.Errorf("the name %q is the hub's own binding", CoreBindingName)
 	}
@@ -244,6 +288,9 @@ func ensureSeedBinding(ctx context.Context, wsClient dynamic.Interface, seedName
 		adminv1alpha1.TenantAccessAnnotation:  string(seedTenantAccess(sb)),
 	}
 	if existing == nil {
+		if defaultAgent != "" {
+			annotations[adminv1alpha1.DefaultAgentAnnotation] = defaultAgent
+		}
 		u, err := newProviderAPIBinding(sb.Name, sb.Export.Path, sb.Export.Name, claims, annotations)
 		if err != nil {
 			return false, false, false, err

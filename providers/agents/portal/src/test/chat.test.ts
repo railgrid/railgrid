@@ -2805,7 +2805,10 @@ describe('approval handoff after the chat stream closes', () => {
 })
 
 describe('rich composer admission boundary', () => {
-  const authOverride = { contextAuthority: () => attachmentAuthority }
+  const authOverride = {
+    contextAuthority: () => attachmentAuthority,
+    listSessions: async () => [session('source-session')],
+  }
   const rememberedSessionKey = 'railgrid:agents:selected-session:["alice@example.test","org/ws","scout"]'
 
   it('keeps attachment receipts and text when a provisional start fails before admission', async () => {
@@ -4244,6 +4247,31 @@ it('keeps dashboard sends on the signed-in user’s selected chat and reveals th
   try {
     expect(otherUser.views.at(-1)?.title).toBe('New chat')
   } finally { otherUser.host.remove() }
+})
+
+it.each([true, false])('checks a remembered dashboard chat outside the session list (has history: %s)', async hasHistory => {
+  const remembered = 'older-or-deleted-chat'
+  localStorage.setItem('railgrid:agents:selected-session:["alice@example.test","org/ws","scout"]', remembered)
+  const listMessagePage = vi.fn(async (_agent: string, id: string) => ({
+    items: hasHistory && id === remembered ? [{ id: 'older-message', role: 'user', content: 'Earlier question' }] : [],
+  }))
+  const { view, host } = await mountOverlayDraftTest({
+    contextAuthority: () => attachmentAuthority,
+    listSessions: async () => [session('shared', 'Shared conversation')],
+    listMessagePage,
+  })
+  try {
+    expect(listMessagePage).toHaveBeenCalledWith('scout', remembered, '', 1)
+    const selected = localStorage.getItem('railgrid:agents:selected-session:["alice@example.test","org/ws","scout"]')
+    expect(selected).not.toBe('shared')
+    if (hasHistory) {
+      expect(selected).toBe(remembered)
+      expect(text(view.element)).toContain('Earlier question')
+    } else {
+      expect(selected).not.toBe(remembered)
+      expect(selected).toBeTruthy()
+    }
+  } finally { host.remove() }
 })
 
 it('reports dashboard chat preparation through the first session and model read', async () => {

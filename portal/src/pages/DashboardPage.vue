@@ -167,9 +167,9 @@ const workspaceShortcuts = computed(() => workspaceDataReady.value
     const { provider } = shortcut
     if (!providers.isEnabled(provider)) return []
     const entry = providers.workspaceProvider(provider)
-    if (!entry?.serving?.ui) return []
     const binding = providers.bindingsByProvider[provider]
-    return [{ ...shortcut, disabled: !entry.ready || binding?.ready === false || !!binding?.terminating }]
+    if (!entry?.serving?.ui && binding?.ready !== false && !binding?.terminating) return []
+    return [{ ...shortcut, disabled: !entry?.ready || binding?.ready === false || !!binding?.terminating }]
   }).sort((a, b) => Number(a.disabled) - Number(b.disabled))
   : [])
 const shortcutsOpen = computed(() =>
@@ -454,7 +454,7 @@ function onGridSelectStart(event: Event) {
                     <span class="grid size-9 shrink-0 place-items-center text-accent" aria-hidden="true">
                       <Hexagon class="size-4" :stroke-width="1.75" />
                     </span>
-                    <textarea ref="assistantInput" v-model="assistantDraft"
+                    <textarea id="dashboard-agent-composer" ref="assistantInput" v-model="assistantDraft"
                       class="max-h-32 min-h-9 min-w-0 flex-1 resize-none bg-transparent py-2 pr-2 text-sm text-text-primary outline-none placeholder:text-text-muted [field-sizing:content]"
                       aria-label="Message Railgrid Agents" placeholder="Ask a question or choose a shortcut…" maxlength="4000"
                       :aria-controls="workspaceShortcuts.length ? 'dashboard-workspace-shortcuts' : undefined"

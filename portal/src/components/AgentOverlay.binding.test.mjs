@@ -5,7 +5,7 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as Vue from 'vue'
 
-const source = readFileSync(new URL('./AgentOverlay.vue', import.meta.url), 'utf8').replace('</script>', '\ndefineExpose({ entry, allowed, authorityKey, mount, error, visible, panelVisible, launcherVisible, returnToAssistant, engage, collapse, assistantAction, contextPreviewOpen })\n</script>')
+const source = readFileSync(new URL('./AgentOverlay.vue', import.meta.url), 'utf8').replace('</script>', '\ndefineExpose({ entry, allowed, authorityKey, mount, error, visible, panelVisible, launcherVisible, returnToAssistant, engage, collapse, assistantAction, contextPreviewOpen, retry })\n</script>')
 const { descriptor } = parse(source)
 descriptor.template = null
 const compiled = compileScript(descriptor, { id: 'overlay-binding' })
@@ -13,13 +13,13 @@ const code = ts.transpileModule(compiled.content, { compilerOptions: {
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
 } }).outputText
 
-function scenario({ available = true, shadowReady = false, bindingReady = true, viewportWidth = 1440, initialRoute = {}, preference = {}, defaultRecord } = {}) {
+function scenario({ available = true, shadowReady = false, bindingReady = true, viewportWidth = 1440, initialRoute = {}, preference = {}, defaultRecord, defaultAgent, failBundle = false } = {}) {
   const platform = { name: 'agents', displayName: 'Platform Agents', scope: 'global', version: '1', ready: true,
     export: { path: 'root:railgrid:providers:agents' }, serving: { ui: { mainJSIntegrity: 'platform-pin' } } }
   const state = Vue.reactive({ bound: available ? platform : undefined,
     shadow: { ...platform, scope: 'org', ownerOrg: 'org', ready: shadowReady } })
-  const binding = Vue.reactive({ ready: bindingReady, terminating: false, exportCluster: 'platform-cluster' })
-  const calls = { bundles: [], loads: [], defaultReads: [], contexts: [], boundPins: 0, catalogPins: 0 }
+  const binding = Vue.reactive({ ready: bindingReady, terminating: false, exportCluster: 'platform-cluster', defaultAgent })
+  const calls = { bundles: [], loads: [], defaultReads: [], contexts: [], boundPins: 0, catalogPins: 0, composerFocus: 0 }
   const providers = Vue.reactive({ loaded: true, error: null, catalogOrgUUID: 'org',
     bindingsLoadState: 'ready', bindingsStale: false, bindingsOrgUUID: 'org', bindingsWorkspace: 'ws',
     bindingsByProvider: { agents: binding }, isEnabled: () => true,
@@ -34,7 +34,7 @@ function scenario({ available = true, shadowReady = false, bindingReady = true, 
   globalThis.document = { createElement: () => Vue.markRaw(Object.assign(new EventTarget(), {
     overlayState: {}, railgridContext: null,
     remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1) },
-  })) }
+  })), getElementById: id => id === 'dashboard-agent-composer' ? { focus() { calls.composerFocus++ } } : null }
   globalThis.customElements = { get: () => function AgentsElement() {} }
   const noOp = () => {}
   const route = Vue.reactive({ path: '/workspace', fullPath: '/workspace', hash: '', params: {}, meta: {}, ...initialRoute })
@@ -70,7 +70,11 @@ function scenario({ available = true, shadowReady = false, bindingReady = true, 
     '@/providers/providerContext': { createProviderContext: (value, options) => { calls.contexts.push(options); return value } },
     '@/providers/agentOverlayContext': { pageContextForOverlay: () => undefined, pageResourceForScope: () => undefined, providerAgentContextForScope: () => undefined },
     '@/providers/providerBundle': { resolveProviderBundle: async provider => { calls.bundles.push(provider); return { identity: provider.scope } } },
-    '@/providers/providerScriptLoader': { loadProviderScript: async (_name, _version, _document, _timeout, options) => { calls.loads.push(options); await options.refreshIntegrity() } },
+    '@/providers/providerScriptLoader': { loadProviderScript: async (_name, _version, _document, _timeout, options) => {
+      calls.loads.push(options)
+      if (failBundle && calls.loads.length === 1) throw new Error('Bundle unavailable')
+      await options.refreshIntegrity()
+    } },
   }
   const exports = {}
   new Function('require', 'exports', code)(id => modules[id] ?? {}, exports)
@@ -365,21 +369,39 @@ test('a changed bound export identity revokes and remounts the assistant even at
 
 test('a marked SaaS agent becomes the fallback without overriding explicit Off', async () => {
   const defaultRecord = { metadata: { annotations: { 'agents.railgrid.ai/workspace-default': 'true' } }, spec: {} }
-  const s = scenario({ preference: { agent: undefined }, defaultRecord, initialRoute: { name: 'dashboard' } })
+  const s = scenario({ preference: { agent: undefined }, defaultRecord, defaultAgent: 'starter-guide', initialRoute: { name: 'dashboard' } })
   try {
     await flush()
-    assert.deepEqual(s.calls.defaultReads, ['/clusters/consumer-cluster/apis/agents.railgrid.ai/v1alpha1/agents/railgrid-agents'])
-    assert.equal(s.overlay.selectedAgent, 'railgrid-agents')
+    assert.deepEqual(s.calls.defaultReads, ['/clusters/consumer-cluster/apis/agents.railgrid.ai/v1alpha1/agents/starter-guide'])
+    assert.equal(s.overlay.selectedAgent, 'starter-guide')
     assert.equal(s.host.children.length, 1)
     assert.equal(s.exposed.panelVisible.value, false)
     assert.equal(s.exposed.launcherVisible.value, false)
   } finally { s.cleanup() }
-  const off = scenario({ preference: { agent: null }, defaultRecord })
+  const off = scenario({ preference: { agent: null }, defaultRecord, defaultAgent: 'starter-guide' })
   try {
     await flush()
     assert.equal(off.calls.defaultReads.length, 0)
     assert.equal(off.host.children.length, 0)
   } finally { off.cleanup() }
+})
+
+test('the dashboard can open bundle recovery and restore focus to its composer', async () => {
+  const s = scenario({ failBundle: true, initialRoute: { name: 'dashboard' } })
+  try {
+    await flush()
+    assert.equal(s.exposed.error.value, 'Bundle unavailable')
+    assert.equal(s.exposed.launcherVisible.value, true)
+    s.exposed.returnToAssistant()
+    await flush()
+    assert.equal(s.exposed.panelVisible.value, true)
+    s.exposed.retry.value++
+    await flush()
+    assert.equal(s.exposed.error.value, '')
+    assert.equal(s.host.children.length, 1)
+    await s.exposed.collapse()
+    assert.equal(s.calls.composerFocus, 1)
+  } finally { s.cleanup() }
 })
 
 test('dashboard sends only after the current Agents chat has finished preparing', async () => {
