@@ -89,6 +89,8 @@ html.dark railgrid-provider-infrastructure .deployment-target-mark--aws {
 
 railgrid-provider-infrastructure .catalog-cloud-guide {
   align-items: center;
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface-raised));
+  border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-border-subtle));
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
@@ -110,8 +112,9 @@ railgrid-provider-infrastructure .catalog-guide-title {
 
 railgrid-provider-infrastructure .catalog-guide-icon {
   align-items: center;
-  background: var(--color-surface-overlay);
+  background: var(--color-accent-subtle);
   border-radius: 6px;
+  color: var(--color-accent);
   display: inline-flex;
   height: 32px;
   justify-content: center;
