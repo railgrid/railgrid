@@ -20,6 +20,10 @@ export function overlayPreferenceKey(user: string, org: string, workspace: strin
   return `railgrid:agent-overlay:${JSON.stringify([user, org, workspace])}`
 }
 
+export function dashboardAgentReloadDraftKey(preferenceKey: string): string {
+  return `${preferenceKey}:dashboard-reload-draft`
+}
+
 export const useAgentOverlayStore = defineStore('agent-overlay', () => {
   const auth = useAuthStore()
   const tenant = useTenantStore()

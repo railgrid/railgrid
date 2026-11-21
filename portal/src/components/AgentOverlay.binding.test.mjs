@@ -5,7 +5,7 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as Vue from 'vue'
 
-const source = readFileSync(new URL('./AgentOverlay.vue', import.meta.url), 'utf8').replace('</script>', '\ndefineExpose({ entry, allowed, authorityKey, mount, error, visible, panelVisible, launcherVisible, returnToAssistant, engage, collapse, assistantAction, contextPreviewOpen, retry })\n</script>')
+const source = readFileSync(new URL('./AgentOverlay.vue', import.meta.url), 'utf8').replace('</script>', '\ndefineExpose({ entry, allowed, authorityKey, mount, error, visible, panelVisible, launcherVisible, returnToAssistant, engage, collapse, assistantAction, contextPreviewOpen, reloadAgentBundle })\n</script>')
 const { descriptor } = parse(source)
 descriptor.template = null
 const compiled = compileScript(descriptor, { id: 'overlay-binding' })
@@ -19,7 +19,7 @@ function scenario({ available = true, shadowReady = false, bindingReady = true, 
   const state = Vue.reactive({ bound: available ? platform : undefined,
     shadow: { ...platform, scope: 'org', ownerOrg: 'org', ready: shadowReady } })
   const binding = Vue.reactive({ ready: bindingReady, terminating: false, exportCluster: 'platform-cluster', defaultAgent })
-  const calls = { bundles: [], loads: [], defaultReads: [], contexts: [], boundPins: 0, catalogPins: 0, composerFocus: 0 }
+  const calls = { bundles: [], loads: [], defaultReads: [], contexts: [], boundPins: 0, catalogPins: 0, composerFocus: 0, reloads: 0 }
   const providers = Vue.reactive({ loaded: true, error: null, catalogOrgUUID: 'org',
     bindingsLoadState: 'ready', bindingsStale: false, bindingsOrgUUID: 'org', bindingsWorkspace: 'ws',
     bindingsByProvider: { agents: binding }, isEnabled: () => true,
@@ -30,7 +30,7 @@ function scenario({ available = true, shadowReady = false, bindingReady = true, 
   const previous = { window: globalThis.window, document: globalThis.document, customElements: globalThis.customElements }
   const host = Vue.markRaw({ children: [], appendChild(el) { this.children.push(el); el.parent = this } })
   const viewport = new EventTarget()
-  globalThis.window = Object.assign(viewport, { innerWidth: viewportWidth, matchMedia: () => ({ matches: true }) })
+  globalThis.window = Object.assign(viewport, { innerWidth: viewportWidth, matchMedia: () => ({ matches: true }), location: { reload() { calls.reloads++ } } })
   globalThis.document = { createElement: () => Vue.markRaw(Object.assign(new EventTarget(), {
     overlayState: {}, railgridContext: null,
     remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1) },
@@ -395,10 +395,8 @@ test('the dashboard can open bundle recovery and restore focus to its composer',
     s.exposed.returnToAssistant()
     await flush()
     assert.equal(s.exposed.panelVisible.value, true)
-    s.exposed.retry.value++
-    await flush()
-    assert.equal(s.exposed.error.value, '')
-    assert.equal(s.host.children.length, 1)
+    s.exposed.reloadAgentBundle()
+    assert.equal(s.calls.reloads, 1)
     await s.exposed.collapse()
     assert.equal(s.calls.composerFocus, 1)
   } finally { s.cleanup() }

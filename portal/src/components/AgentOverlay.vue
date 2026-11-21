@@ -5,7 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, SquarePen, EyeOff, GripVertical, Hexagon, PanelRightClose, RefreshCw, ScanEye } from 'lucide-vue-next'
 import ActionMenu from '@/portalkit/ActionMenu.vue'
 import { usePageResourceStore } from '@/stores/pageResource'
-import { useAgentOverlayStore } from '@/stores/agentOverlay'
+import { dashboardAgentReloadDraftKey, useAgentOverlayStore } from '@/stores/agentOverlay'
 import { useAuthStore } from '@/stores/auth'
 import { useTenantStore } from '@/stores/tenant'
 import { useProvidersStore } from '@/stores/providers'
@@ -46,7 +46,6 @@ const panel = ref<HTMLElement | null>(null)
 const launcher = ref<HTMLButtonElement | null>(null)
 const error = ref('')
 const loading = ref(false)
-const retry = ref(0)
 const expanded = ref(false)
 const dashboard = computed(() => route.name === 'dashboard')
 let dashboardOrigin: HTMLElement | null = null
@@ -92,6 +91,17 @@ async function collapse(): Promise<void> {
   else launcher.value?.focus()
 }
 function engage(): void { cancelClosingAnimation(); expanded.value = true }
+function reloadAgentBundle(): void {
+  // Agents registers its custom element once per document. Recover a failed
+  // bootstrap in a fresh document, just as the dedicated provider page does.
+  const composer = document.getElementById('dashboard-agent-composer') as HTMLTextAreaElement | null
+  if (dashboard.value && overlay.preferenceKey && composer?.value) {
+    try {
+      sessionStorage.setItem(dashboardAgentReloadDraftKey(overlay.preferenceKey), composer.value)
+    } catch { /* Session storage can be unavailable. */ }
+  }
+  window.location.reload()
+}
 let element: OverlayElement | null = null
 let generation = 0
 
@@ -289,7 +299,7 @@ async function mountAgent(): Promise<void> {
 watch([mountable, authorityKey, () => overlay.selectedAgent], () => {
   clear()
 }, { flush: 'sync' })
-watch([mountable, authorityKey, () => overlay.selectedAgent, mount, retry], () => { void mountAgent() }, { flush: 'post' })
+watch([mountable, authorityKey, () => overlay.selectedAgent, mount], () => { void mountAgent() }, { flush: 'post' })
 // Only an assistant that is not running is remounted for a new bundle.
 watch(bundleRevision, () => { if (!element && !loading.value) void mountAgent() }, { flush: 'post' })
 // Navigation and context sharing must not replace the provider's fetch wrapper
@@ -513,7 +523,7 @@ onBeforeUnmount(() => {
         <button class="k-btn k-btn--text" type="button" title="Close chat panel" aria-label="Close chat panel" @click="collapse"><PanelRightClose :size="16" aria-hidden="true" /></button>
       </header>
       <div v-if="loading" class="agent-overlay__state" role="status">Loading agent chat…</div>
-      <div v-if="error" class="agent-overlay__state" role="alert"><p>{{ error }}</p><button class="k-btn k-btn--ghost" type="button" @click="retry++"><RefreshCw :size="14" aria-hidden="true" /> Retry</button></div>
+      <div v-if="error" class="agent-overlay__state" role="alert"><p>{{ error }}</p><button class="k-btn k-btn--ghost" type="button" @click="reloadAgentBundle"><RefreshCw :size="14" aria-hidden="true" /> Reload page</button></div>
       <div ref="mount" class="agent-overlay__mount" v-show="!error && !loading" />
     </section>
     <button v-show="launcherVisible" ref="launcher" type="button" class="k-btn k-btn--primary agent-overlay__launcher"

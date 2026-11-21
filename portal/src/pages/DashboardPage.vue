@@ -7,7 +7,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { GridLayout, GridItem } from 'grid-layout-plus'
-import { useAgentOverlayStore } from '@/stores/agentOverlay'
+import { dashboardAgentReloadDraftKey, useAgentOverlayStore } from '@/stores/agentOverlay'
 import AppLayout from '@/components/AppLayout.vue'
 import AIPrimaryAction from '@/agentkit/AIPrimaryAction.vue'
 import DashboardTile from '@/components/DashboardTile.vue'
@@ -89,11 +89,18 @@ function submitWithEnter(event: KeyboardEvent) {
   sendQuestion()
 }
 
-watch(() => assistant.preferenceKey, () => {
+watch(() => assistant.preferenceKey, key => {
   assistantDraft.value = ''
   assistantBusy.value = false
   shortcutsRequested.value = false
-}, { flush: 'sync' })
+  if (key) {
+    try {
+      const storageKey = dashboardAgentReloadDraftKey(key)
+      assistantDraft.value = sessionStorage.getItem(storageKey) ?? ''
+      sessionStorage.removeItem(storageKey)
+    } catch { /* Session storage can be unavailable. */ }
+  }
+}, { immediate: true, flush: 'sync' })
 
 
 // Responsive column count follows the dashboard's actual content width, not
