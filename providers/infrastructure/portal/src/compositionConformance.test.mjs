@@ -6,17 +6,11 @@ const app = readFileSync(new URL('./App.vue', import.meta.url), 'utf8')
 const provision = readFileSync(new URL('./views/ProvisionPage.vue', import.meta.url), 'utf8')
 const dynamicForm = readFileSync(new URL('./components/DynamicForm.vue', import.meta.url), 'utf8')
 const viewValue = readFileSync(new URL('./components/ViewValue.vue', import.meta.url), 'utf8')
-const templateCard = readFileSync(new URL('./components/TemplateCard.vue', import.meta.url), 'utf8')
 
 describe('Infrastructure composition contracts', () => {
   it('does not recreate manifest-owned navigation inside the provider', () => {
     expect(app).not.toContain('class="infra-tabs"')
     expect(styles).not.toContain('.infra-tabs')
-  })
-
-  it('adds deliberate columns for wide template catalogs', () => {
-    expect(styles).toMatch(/@media \(min-width: 1440px\)[\s\S]*repeat\(4, minmax\(0, 1fr\)\)/)
-    expect(styles).toMatch(/@media \(min-width: 1920px\)[\s\S]*repeat\(5, minmax\(0, 1fr\)\)/)
   })
 
   it('keeps provisioning fields in one vertical column and the identity cap', () => {
@@ -45,9 +39,5 @@ describe('Infrastructure composition contracts', () => {
     expect(viewValue).not.toContain('<button')
     expect(dynamicForm).toContain('class="k-icon-action dynform-map-remove"')
     expect(dynamicForm).toContain(':data-k-tip=')
-    expect(templateCard).toContain('class="exposure-note"')
-    expect(templateCard).toContain('{{ exposure.label }}')
-    expect(templateCard).not.toContain(':data-k-tip=')
-    expect(templateCard).not.toContain(':title=')
   })
 })

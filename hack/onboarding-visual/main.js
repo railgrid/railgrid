@@ -18,7 +18,7 @@ import '@fontsource/ibm-plex-mono/400.css'
 // Only this fixture supplies synthetic catalog data. Components, theme, shell,
 // consent dialog and stores are the production implementations.
 const catalog = [
-  { name: 'infrastructure', displayName: 'Application Templates', category: 'Infrastructure', description: 'Deploy applications from configurable templates on your infrastructure.', requires: [
+  { name: 'infrastructure', displayName: 'Infrastructure', category: 'Infrastructure', description: 'Deploy applications from configurable templates on your infrastructure.', requires: [
     { resources: [{ name: 'secrets', verbs: ['get'], selector: { matchLabels: { 'railgrid.ai/owner': 'infrastructure' } } }] },
   ] },
   { name: 'code', displayName: 'Code', category: 'Development', description: 'Connect Git hosting and manage repositories for your projects.' },

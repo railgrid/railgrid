@@ -151,6 +151,25 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 describe('stable Instance API lifecycle contract', () => {
+  it('uses declared template targets and recognizes older Kubernetes and Config Connector graphs', async () => {
+    setTenant('template-targets')
+    const graph = (apiVersion: string) => ({ backendConfig: { resources: [{ template: { apiVersion } }] } })
+    vi.stubGlobal('fetch', vi.fn(async () => kubeList('TemplateList', [
+      template('bucket', graph('s3.services.k8s.aws/v1alpha1'), { 'railgrid.ai/cloud': 'aws' }),
+      template('topic', graph('pubsub.cnrm.cloud.google.com/v1beta1')),
+      template('job', graph('batch/v1')),
+      template('custom', graph('example.com/v1')),
+    ])))
+
+    const { items } = await api.listTemplates()
+    expect(items.map(({ name, cloud }) => [name, cloud])).toEqual([
+      ['bucket', 'aws'],
+      ['topic', 'gcp'],
+      ['job', 'k8s'],
+      ['custom', undefined],
+    ])
+  })
+
   it('hides platform-owned templates from the catalog but keeps direct lookup available', async () => {
     const tenant = 'platform-owned-catalog'
     setTenant(tenant)

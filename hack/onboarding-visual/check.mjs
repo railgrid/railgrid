@@ -216,7 +216,7 @@ try {
     await page.getByRole('button', { name: 'Continue', exact: true }).click()
     await page.getByRole('radio', { name: 'Deploy a service', exact: true }).check()
     if (member) {
-      const launch = page.getByRole('link', { name: 'Open Application Templates', exact: true })
+      const launch = page.getByRole('link', { name: 'Open Infrastructure', exact: true })
       await launch.waitFor()
       assert.match(await launch.getAttribute('href'), /providers\/infrastructure$/)
       assert.equal(await page.getByRole('button', { name: 'Review setup', exact: true }).count(), 0)
@@ -275,7 +275,7 @@ try {
 
   // Service and infrastructure setup each review and enable their single provider.
   for (const { goal, label, name, claim, permission } of [
-    { goal: 'Deploy a service', label: 'Application Templates', name: 'infrastructure', claim: { group: '', resource: 'secrets' }, permission: /railgrid.ai\/owner=infrastructure/ },
+    { goal: 'Deploy a service', label: 'Infrastructure', name: 'infrastructure', claim: { group: '', resource: 'secrets' }, permission: /railgrid.ai\/owner=infrastructure/ },
     { goal: 'Connect infrastructure', label: 'Edges', name: 'edges', claim: { group: 'authentication.k8s.io', resource: 'tokenreviews' }, permission: /tokenreviews.*create/ },
   ]) {
     const { page, errors } = await openPage('light', 1280, 720)

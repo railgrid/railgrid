@@ -4,60 +4,27 @@ import { describe, expect, it } from 'vitest'
 const source = readFileSync(new URL('./views/CatalogPage.vue', import.meta.url), 'utf8')
 const styles = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
 
-describe('Infrastructure template catalog layouts', () => {
-  it('persists a grid-default layout through the shared preference contract', () => {
-    expect(source).toContain("import LayoutSelector from '../portalkit/LayoutSelector.vue'")
-    expect(source).toContain("import { readLayoutPreference, writeLayoutPreference, type LayoutMode } from '../portalkit/layoutPreference'")
-    expect(source).toContain("'railgrid:portal:infrastructure:templates-layout'")
-    expect(source).toContain('ref<LayoutMode>(readLayoutPreference(layoutPreferenceKey))')
-    expect(source).toContain('watch(layout, mode => writeLayoutPreference(layoutPreferenceKey, mode))')
-    const toolbar = source.match(/<div class="filters">([\s\S]*?)<template v-if="layout === 'grid'">/)?.[1] ?? ''
-    expect(toolbar.match(/<ResourceTableFilter\b[\s\S]*?\/>/g)).toEqual([
-      expect.stringContaining('v-model="category"'),
-      expect.stringContaining('v-model="cloud"'),
-    ])
-    expect(toolbar).toContain('<LayoutSelector v-model="layout" aria-label="Template layout"')
-    const header = source.match(/<header class="page-head">([\s\S]*?)<\/header>/)?.[1] ?? ''
-    expect(header).not.toContain('LayoutSelector')
-  })
-
-  it('keeps catalog controls aligned and allows safe wrapping at narrow widths', () => {
-    expect(styles).toContain(`railgrid-provider-infrastructure .filters {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}`)
-  })
-
-  it('keeps card geometry for grid mode and uses ResourceTable for list mode', () => {
-    expect(source).toContain('v-if="layout === \'grid\'"')
-    expect(source).toContain('class="catalog-loading-grid k-delayed-loading"')
-    expect(source).toContain('<TemplateCard')
-    expect(source).toMatch(/<ResourceTable[\s\S]*:loaded="loaded"[\s\S]*:loading="loading"/)
-    expect(source).toMatch(/<ResourceTable[\s\S]*searchable[\s\S]*paginated/)
-    expect(source).not.toContain('variant="simple"')
-    expect(source).toContain(':row-aria-label="(row) => `Provision template ${String(row.identity)}`"')
-    expect(source).toContain('@row-click="selectTemplateRow"')
-  })
-
-  it('shows the supported template fields without inventing a cloud column', () => {
-    const columns = source.match(/const tableColumns = \[([\s\S]*?)\]/)?.[1] ?? ''
-    expect(columns).toContain("{ key: 'identity', label: 'Template', primary: true }")
-    expect(columns).toContain("{ key: 'category', label: 'Category' }")
-    expect(columns).toContain("{ key: 'kind', label: 'Kind' }")
-    expect(columns).toContain("{ key: 'version', label: 'Version' }")
-    expect(columns).toContain("{ key: 'exposure', label: 'Exposure' }")
-    expect(columns).not.toContain("key: 'cloud'")
-    expect(source).toContain("const searchKeys = ['identity', 'name', 'description', 'category', 'kind']")
+describe('Infrastructure template catalog', () => {
+  it('places one persistent search control between the cloud guide and results', () => {
+    expect(source).not.toContain('LayoutSelector')
+    expect(source.match(/type="search"/g)).toHaveLength(1)
+    expect(source).not.toContain("<Tabs")
+    expect(source).toMatch(/<aside[^>]+catalog-cloud-guide[\s\S]*<div class="catalog-search k-table__search" role="search">[\s\S]*<ResourceTable/)
+    expect(source).toContain(':query="query"')
     expect(source).toContain(':search-keys="searchKeys"')
   })
 
-  it('retains true-empty refresh and filter-empty clearing in both layouts', () => {
-    expect(source.match(/Refresh catalog/g)).toHaveLength(2)
-    expect(source.match(/Clear filters/g)).toHaveLength(2)
-    expect(source).toContain("'No infrastructure templates are available in this workspace.'")
-    expect(source).toContain("'No templates match the current filters.'")
-})
-    expect(styles).toMatch(/\.grid \{[\s\S]*grid-template-columns: repeat\(auto-fill, minmax\(min\(100%, 280px\), 480px\)\)[\s\S]*justify-content: start/)
+  it('keeps the desktop table columns and stacks their values in narrow rows', () => {
+    const columns = source.match(/const tableColumns = \[([\s\S]*?)\]/)?.[1] ?? ''
+    expect(columns).toContain("{ key: 'identity', label: 'Template', primary: true, sortable: true }")
+    expect(columns).toContain("{ key: 'category', label: 'Category', sortable: true }")
+    expect(columns).not.toContain("key: 'kind'")
+    expect(columns).toContain("{ key: 'destination', label: 'Deploys\\u00a0to', ariaLabel: 'Deploys to', align: 'center' as const }")
+    expect(source).toContain('<span class="catalog-row-label">Category</span> {{ row.category }}')
+    expect(source).toContain('<span class="catalog-row-label">Deploys to</span> <DeploymentTarget')
+    expect(source).toContain('<template #destination="{ value }"><DeploymentTarget')
+    expect(source).toContain(':columns="visibleColumns"')
+    expect(styles).toMatch(/\.catalog-row-details \{\s*display: grid;/)
+    expect(source).toContain('@row-click="selectTemplateRow"')
   })
+})
