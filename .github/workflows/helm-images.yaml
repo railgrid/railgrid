@@ -52,6 +52,7 @@ jobs:
             type=sha
 
       - name: Package and push Helm charts as OCI
+        id: charts
         env:
           HELM_EXPERIMENTAL_OCI: 1
           # Manual runs validate only; pushes/tags publish.
@@ -134,10 +135,20 @@ jobs:
                 fi
 
                 # Push to GitHub Container Registry
-                helm push "${chart_name}-${CHART_VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
+                helm push "${chart_name}-${CHART_VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts" 2>&1 | tee push.log
+                echo "ghcr.io/${{ github.repository_owner }}/charts/${chart_name}@$(sed -n 's/^Digest: *//p' push.log)" >> "${RUNNER_TEMP}/chart-refs"
                 echo "Helm chart pushed to oci://ghcr.io/${{ github.repository_owner }}/charts/${chart_name}:${CHART_VERSION}"
               else
                 echo "Manual run: packaged ${chart_name}-${CHART_VERSION}.tgz (not pushed)"
               fi
             fi
           done
+          if [ -s "${RUNNER_TEMP}/chart-refs" ]; then
+            { echo "refs<<EOF"; cat "${RUNNER_TEMP}/chart-refs"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sign the charts
+        if: github.event_name == 'push'
+        uses: ./.github/actions/cosign-sign
+        with:
+          refs: ${{ steps.charts.outputs.refs }}
