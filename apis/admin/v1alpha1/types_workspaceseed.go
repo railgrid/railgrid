@@ -26,6 +26,10 @@ const (
 	// created by a WorkspaceSeed; its value is the seed's name. The hub only
 	// rewrites bindings that carry it.
 	WorkspaceSeedAnnotation = "admin.railgrid.ai/workspace-seed"
+	// DefaultAgentAnnotation names the workspace assistant on its seeded APIBinding.
+	DefaultAgentAnnotation = "admin.railgrid.ai/default-agent"
+	// DefaultAgentPendingAnnotation marks a starter Agent still being provisioned.
+	DefaultAgentPendingAnnotation = "admin.railgrid.ai/default-agent-pending"
 
 	// TenantAccessAnnotation on an APIBinding in a tenant workspace bounds
 	// what the workspace's members may do with the API groups the binding
@@ -48,6 +52,7 @@ const (
 // +kubebuilder:printcolumn:name="Objects",type=integer,JSONPath=".status.objects"
 // +kubebuilder:printcolumn:name="Accepted",type=string,JSONPath=".status.conditions[?(@.type==\"Accepted\")].status"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.spec) || !has(oldSelf.spec.initialWorkspacesOnly) || !oldSelf.spec.initialWorkspacesOnly || (has(self.spec) && has(self.spec.initialWorkspacesOnly) && self.spec.initialWorkspacesOnly)",message="initialWorkspacesOnly cannot be disabled once enabled"
 
 // WorkspaceSeed declares backend functionality every tenant workspace gets
 // without anyone enabling it: APIExports the hub binds into the workspace and
@@ -84,6 +89,11 @@ type WorkspaceSeed struct {
 
 // WorkspaceSeedSpec is what every tenant workspace gets.
 type WorkspaceSeedSpec struct {
+	// InitialWorkspacesOnly provisions once in the starter workspace of each
+	// organization created after this seed. Existing objects are preserved.
+	// +optional
+	InitialWorkspacesOnly bool `json:"initialWorkspacesOnly,omitempty"`
+
 	// Bindings are the APIExports bound into every tenant workspace.
 	// +optional
 	// +listType=map

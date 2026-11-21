@@ -284,6 +284,8 @@ export interface ClaimState {
 // EnabledProviderDetail mirrors pkg/hub/restapi.EnabledProviderDetail — which
 // APIExport a workspace's binding actually points at.
 export interface EnabledProviderDetail {
+  defaultAgent?: string
+  defaultAgentPending?: boolean
   ready?: boolean
   unavailable?: string
   bindingName: string
@@ -833,7 +835,12 @@ export const useProvidersStore = defineStore('providers', () => {
       const res = await authFetch(url, { tenant: true, headers: { 'X-Railgrid-Org': t.orgUUID, 'X-Railgrid-Workspace': t.workspaceUUID } })
       if (requestSequence !== bindingRequestSequence) return
       if (!sameTenantSelection(t, readTenantSelection())) return
-      if (!res.ok) throw new Error(`list enabled providers: ${res.status}`)
+      if (!res.ok) {
+        // A definitive denial invalidates the retained projection. Transient
+        // errors keep it available for already-mounted consumers.
+        if ([401, 403, 404, 410].includes(res.status)) clearBindingProjection()
+        throw new Error(`list enabled providers: ${res.status}`)
+      }
       const body = (await res.json()) as {
         bindingNamesByProvider?: Record<string, string>
         bindingsByProvider?: Record<string, EnabledProviderDetail>

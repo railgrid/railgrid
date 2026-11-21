@@ -33,6 +33,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
@@ -45,34 +46,40 @@ import (
 
 // Seed is one accepted WorkspaceSeed.
 type Seed struct {
-	Name string
-	Spec adminv1alpha1.WorkspaceSeedSpec
+	Name                   string
+	Spec                   adminv1alpha1.WorkspaceSeedSpec
+	InitialWorkspacesAfter time.Time
 }
 
 // Store holds the accepted seeds and tells its listeners when the set
 // changes.
 type Store struct {
 	mu        sync.RWMutex
-	seeds     map[string]adminv1alpha1.WorkspaceSeedSpec
+	seeds     map[string]Seed
 	listeners map[int]func()
 	next      int
 }
 
 // NewStore returns an empty Store.
 func NewStore() *Store {
-	return &Store{seeds: map[string]adminv1alpha1.WorkspaceSeedSpec{}, listeners: map[int]func(){}}
+	return &Store{seeds: map[string]Seed{}, listeners: map[int]func(){}}
 }
 
 // Set records the accepted spec of a seed. Listeners run when it differs from
 // what was held.
 func (s *Store) Set(name string, spec adminv1alpha1.WorkspaceSeedSpec) {
+	s.set(Seed{Name: name, Spec: spec})
+}
+
+func (s *Store) set(seed Seed) {
 	s.mu.Lock()
-	current, held := s.seeds[name]
-	if held && reflect.DeepEqual(current, spec) {
+	current, held := s.seeds[seed.Name]
+	if held && reflect.DeepEqual(current, seed) {
 		s.mu.Unlock()
 		return
 	}
-	s.seeds[name] = *spec.DeepCopy()
+	seed.Spec = *seed.Spec.DeepCopy()
+	s.seeds[seed.Name] = seed
 	s.mu.Unlock()
 	s.notify()
 }
@@ -94,8 +101,9 @@ func (s *Store) List() []Seed {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Seed, 0, len(s.seeds))
-	for name, spec := range s.seeds {
-		out = append(out, Seed{Name: name, Spec: *spec.DeepCopy()})
+	for _, seed := range s.seeds {
+		seed.Spec = *seed.Spec.DeepCopy()
+		out = append(out, seed)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

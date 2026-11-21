@@ -70,6 +70,22 @@ type UserPreferencesSpec struct {
 	// +listType=map
 	// +listMapKey=workspaceUUID
 	Dashboards []DashboardPreference `json:"dashboards,omitempty"`
+
+	// WorkspaceAssistants stores the user's assistant settings per workspace.
+	// +optional
+	// +listType=map
+	// +listMapKey=workspaceUUID
+	WorkspaceAssistants []WorkspaceAssistantPreference `json:"workspaceAssistants,omitempty"`
+}
+
+// WorkspaceAssistantPreference stores a personal assistant choice.
+type WorkspaceAssistantPreference struct {
+	WorkspaceUUID string `json:"workspaceUUID"`
+	// Agent is nil to use the workspace default and empty to explicitly turn the assistant off.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	Agent         *string `json:"agent,omitempty"`
+	FollowContext bool    `json:"followContext"`
 }
 
 // UserPreferencesStatus is the observed state of a UserPreferences object.

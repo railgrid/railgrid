@@ -19,16 +19,25 @@ package kcp
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
+	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	structuralschema "k8s.io/apiextensions-apiserver/pkg/apiserver/schema"
+	celvalidation "k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	celconfig "k8s.io/apiserver/pkg/apis/cel"
 	"k8s.io/client-go/dynamic/fake"
 	kubetesting "k8s.io/client-go/testing"
+	"sigs.k8s.io/yaml"
 
 	adminv1alpha1 "github.com/railgrid/railgrid/apis/admin/v1alpha1"
 )
@@ -258,5 +267,154 @@ func TestEnsureWorkspaceSeedRefusesTheCoreBindingName(t *testing.T) {
 	}
 	if list, _ := dyn.Resource(apiBindingGVR).List(context.Background(), metav1.ListOptions{}); len(list.Items) != 0 {
 		t.Fatalf("bindings = %v", list.Items)
+	}
+}
+
+func TestInitialWorkspaceSeedCreatesOnceAndPreservesChanges(t *testing.T) {
+	ctx := t.Context()
+	agents := seedTestBinding("agents", seedAgentsExport, "Bound", nil)
+	core := seedTestBinding(CoreBindingName, adminv1alpha1.SeedExportReference{Name: CoreExportName}, "Bound", nil)
+	dyn, applied := newSeedTestClient(t, agents, core)
+	gvr := schema.GroupVersionResource{Group: "agents.railgrid.ai", Version: "v1alpha1", Resource: "agents"}
+	spec := adminv1alpha1.WorkspaceSeedSpec{
+		InitialWorkspacesOnly: true,
+		Bindings:              []adminv1alpha1.SeedBinding{{Name: "agents", Export: seedAgentsExport}},
+		Objects: []adminv1alpha1.SeedObject{{
+			Resource:  "agents",
+			WhenBound: []adminv1alpha1.SeedExportReference{seedAgentsExport},
+			Manifest:  runtime.RawExtension{Raw: []byte(`{"apiVersion":"agents.railgrid.ai/v1alpha1","kind":"Agent","metadata":{"name":"railgrid-agents","annotations":{"agents.railgrid.ai/workspace-default":"true"}},"spec":{"displayName":"Railgrid Agents"}}`)},
+		}},
+	}
+	eligibilityChecks := 0
+	eligible := func() (bool, error) { eligibilityChecks++; return true, nil }
+	first, err := ensureInitialWorkspaceSeed(ctx, dyn, "starter-seed", spec, eligible)
+	if err != nil || first.ObjectsApplied != 1 || len(*applied) != 0 {
+		t.Fatalf("initial seed = %+v, %v; applies = %v", first, err, *applied)
+	}
+	binding, err := dyn.Resource(apiBindingGVR).Get(ctx, "agents", metav1.GetOptions{})
+	if err != nil || binding.GetAnnotations()[adminv1alpha1.DefaultAgentAnnotation] != "railgrid-agents" {
+		t.Fatalf("default Agent binding metadata = %v, %v", binding, err)
+	}
+	if binding.GetAnnotations()[adminv1alpha1.DefaultAgentPendingAnnotation] != "" {
+		t.Fatal("completed starter Agent still marked pending")
+	}
+	client := dyn.Resource(gvr)
+	agent, err := client.Get(ctx, "railgrid-agents", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedField(agent.Object, "My assistant", "spec", "displayName"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Update(ctx, agent, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ensureInitialWorkspaceSeed(ctx, dyn, "starter-seed", spec, eligible); err != nil {
+		t.Fatal(err)
+	}
+	agent, err = client.Get(ctx, "railgrid-agents", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name, _, _ := unstructured.NestedString(agent.Object, "spec", "displayName"); name != "My assistant" {
+		t.Fatalf("seed overwrote display name: %q", name)
+	}
+	if err := client.Delete(ctx, "railgrid-agents", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := ensureInitialWorkspaceSeed(ctx, dyn, "starter-seed", spec, eligible)
+	if err != nil || again.ObjectsApplied != 0 {
+		t.Fatalf("seed recreated deleted agent: %+v, %v", again, err)
+	}
+	if eligibilityChecks != 1 {
+		t.Fatalf("eligibility checked %d times, want once", eligibilityChecks)
+	}
+}
+
+func TestEligibleInitialWorkspaceIncludesSameSecond(t *testing.T) {
+	org := &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"defaultWorkspace": "starter"}}}
+	cutoff := time.Unix(100, 0).UTC()
+	org.SetCreationTimestamp(metav1.NewTime(cutoff))
+	if ok, settled, err := initialWorkspaceEligibility(org, "starter", cutoff); err != nil || !ok || !settled {
+		t.Fatalf("same-second starter was ineligible: %v, %v, %v", ok, settled, err)
+	}
+	if ok, settled, err := initialWorkspaceEligibility(org, "starter", cutoff.Add(time.Second)); err != nil || ok || !settled {
+		t.Fatalf("older starter was eligible: %v, %v, %v", ok, settled, err)
+	}
+	unstructured.RemoveNestedField(org.Object, "status", "defaultWorkspace")
+	if ok, settled, err := initialWorkspaceEligibility(org, "starter", cutoff); err != nil || ok || settled {
+		t.Fatalf("initializing organization was treated as settled: %v, %v, %v", ok, settled, err)
+	}
+}
+
+func TestInitialWorkspaceSeedSkipsConflictingBinding(t *testing.T) {
+	core := seedTestBinding(CoreBindingName, adminv1alpha1.SeedExportReference{Name: CoreExportName}, "Bound", nil)
+	other := seedTestBinding("agents", seedSwitchboardExport, "Bound", nil)
+	dyn, _ := newSeedTestClient(t, core, other)
+	spec := adminv1alpha1.WorkspaceSeedSpec{
+		InitialWorkspacesOnly: true,
+		Bindings:              []adminv1alpha1.SeedBinding{{Name: "agents", Export: seedAgentsExport}},
+	}
+	result, err := ensureInitialWorkspaceSeed(t.Context(), dyn, "starter", spec, func() (bool, error) { return true, nil })
+	if err != nil || result.Unbound != 0 || len(result.Waiting) != 1 {
+		t.Fatalf("conflict should wait for a binding event: %+v, %v", result, err)
+	}
+	for _, action := range dyn.Actions() {
+		if action.GetVerb() != "get" && action.GetVerb() != "list" {
+			t.Fatalf("conflicting seed attempted to mutate workspace: %v", action)
+		}
+	}
+}
+
+func TestWorkspaceSeedStarterModeCannotBeDisabled(t *testing.T) {
+	raw, err := os.ReadFile("../../../config/crds/admin.railgrid.ai_workspaceseeds.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd extv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatal(err)
+	}
+	var internal apiextensions.JSONSchemaProps
+	if err := extv1.Convert_v1_JSONSchemaProps_To_apiextensions_JSONSchemaProps(crd.Spec.Versions[0].Schema.OpenAPIV3Schema, &internal, nil); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := structuralschema.NewStructural(&internal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator := celvalidation.NewValidator(schema, true, celconfig.PerCallLimit)
+	if validator == nil {
+		t.Fatal("WorkspaceSeed schema is missing CEL validation")
+	}
+	enabled := map[string]any{"spec": map[string]any{"initialWorkspacesOnly": true}}
+	disabled := map[string]any{"spec": map[string]any{"initialWorkspacesOnly": false}}
+	omitted := map[string]any{"spec": map[string]any{}}
+	for _, tc := range []struct {
+		name           string
+		next, previous map[string]any
+		rejected       bool
+	}{
+		{"explicit disable", disabled, enabled, true},
+		{"field removal", omitted, enabled, true},
+		{"spec removal", map[string]any{}, enabled, true},
+		{"preserve starter mode", enabled, enabled, false},
+		{"enable starter mode", enabled, disabled, false},
+		{"create repeating seed", disabled, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var previous any
+			if tc.previous != nil {
+				previous = tc.previous
+			}
+			errs, _ := validator.Validate(t.Context(), field.NewPath("workspaceSeed"), schema, tc.next, previous, celconfig.RuntimeCELCostBudget)
+			if tc.rejected {
+				if len(errs) != 1 || !strings.Contains(errs[0].Detail, "initialWorkspacesOnly cannot be disabled once enabled") {
+					t.Fatalf("want expected transition error, got %v", errs)
+				}
+			} else if len(errs) > 0 {
+				t.Fatalf("want valid transition, got %v", errs)
+			}
+		})
 	}
 }

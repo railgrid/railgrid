@@ -284,7 +284,8 @@ type SeedObjectInfo struct {
 
 // WorkspaceSeedInfo is one WorkspaceSeed as the admin area shows and edits it.
 type WorkspaceSeedInfo struct {
-	Name string `json:"name"`
+	Name                  string `json:"name"`
+	InitialWorkspacesOnly bool   `json:"initialWorkspacesOnly,omitempty"`
 	// Spec is the seed's spec as YAML, the form it is edited in.
 	Spec string `json:"spec"`
 	// Accepted is "True", "False", or "" while the hub has not looked at this
@@ -347,10 +348,11 @@ func seedInfo(seed *adminv1alpha1.WorkspaceSeed) (WorkspaceSeedInfo, error) {
 		return WorkspaceSeedInfo{}, fmt.Errorf("rendering spec of WorkspaceSeed %q: %w", seed.Name, err)
 	}
 	info := WorkspaceSeedInfo{
-		Name:     seed.Name,
-		Spec:     string(specYAML),
-		Bindings: make([]SeedBindingInfo, 0, len(seed.Spec.Bindings)),
-		Objects:  make([]SeedObjectInfo, 0, len(seed.Spec.Objects)),
+		Name:                  seed.Name,
+		InitialWorkspacesOnly: seed.Spec.InitialWorkspacesOnly,
+		Spec:                  string(specYAML),
+		Bindings:              make([]SeedBindingInfo, 0, len(seed.Spec.Bindings)),
+		Objects:               make([]SeedObjectInfo, 0, len(seed.Spec.Objects)),
 	}
 	for _, c := range seed.Status.Conditions {
 		// A condition from an older generation says nothing about the spec

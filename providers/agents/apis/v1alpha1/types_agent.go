@@ -39,6 +39,9 @@ const (
 	AutonomyAuto    = "auto"
 )
 
+// WorkspaceDefaultAnnotation identifies the agent provisioned for the workspace dashboard.
+const WorkspaceDefaultAnnotation = "agents.railgrid.ai/workspace-default"
+
 // +genclient
 // +genclient:nonNamespaced
 // +kubebuilder:object:root=true

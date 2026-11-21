@@ -104,7 +104,12 @@ func (r *seedReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 		r.store.Delete(seed.Name)
 		klog.FromContext(ctx).Info("WorkspaceSeed refused", "seed", seed.Name, "reason", err.Error())
 	} else {
-		r.store.Set(seed.Name, seed.Spec)
+		accepted := Seed{Name: seed.Name, Spec: seed.Spec}
+		if seed.Spec.InitialWorkspacesOnly {
+			accepted.InitialWorkspacesAfter = seed.CreationTimestamp.Time
+			condition.Message = "The seed provisions starter workspaces for new organizations."
+		}
+		r.store.set(accepted)
 	}
 
 	next := seed.DeepCopy()
@@ -123,6 +128,10 @@ func (r *seedReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 		return ctrl.Result{}, fmt.Errorf("updating WorkspaceSeed status: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+type initialWorkspaceOps interface {
+	EnsureInitialWorkspaceSeed(context.Context, string, string, string, time.Time, adminv1alpha1.WorkspaceSeedSpec) (kcp.WorkspaceSeedResult, error)
 }
 
 // WorkspaceOps is the slice of the kcp Bootstrapper the workspace controller
@@ -195,7 +204,15 @@ func (r *workspaceReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		unbound bool
 	)
 	for _, seed := range seeds {
-		result, err := r.ops.EnsureWorkspaceSeed(ctx, clusterName, seed.Name, seed.Spec)
+		var result kcp.WorkspaceSeedResult
+		var err error
+		if !seed.Spec.InitialWorkspacesOnly {
+			result, err = r.ops.EnsureWorkspaceSeed(ctx, clusterName, seed.Name, seed.Spec)
+		} else if ops, ok := r.ops.(initialWorkspaceOps); ok {
+			result, err = ops.EnsureInitialWorkspaceSeed(ctx, clusterName, path, seed.Name, seed.InitialWorkspacesAfter, seed.Spec)
+		} else {
+			err = errors.New("initial workspace seeding is unavailable")
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("seed %q: %w", seed.Name, err))
 		}

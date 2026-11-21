@@ -312,7 +312,7 @@ watch(
 // query-only navigation even when subPath and hash are unchanged; token
 // refreshes retain the route epoch.
 watch(
-  () => [theme.resolved, JSON.stringify(auth.user), auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, ...(entry.value?.name === 'agents' ? [agentOverlay.selectedAgent, agentOverlay.settingsOpen, agentOverlay.followContext] : []), props.subPath, router.currentRoute.value.fullPath] as const,
+  () => [theme.resolved, JSON.stringify(auth.user), auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, ...(entry.value?.name === 'agents' ? [agentOverlay.selectedAgent, agentOverlay.settingsOpen, agentOverlay.followContext, agentOverlay.preferencesLoading, agentOverlay.preferencesSaving] : []), props.subPath, router.currentRoute.value.fullPath] as const,
   () => {
     if (elementRef.value) routeFocus.before(elementRef.value, props.subPath || '')
     pushContext()
@@ -528,12 +528,13 @@ function pushContext() {
         selectedAgent: agentOverlay.selectedAgent,
         settingsOpen: agentOverlay.settingsOpen,
         followContext: agentOverlay.followContext,
+        preferencesLoading: agentOverlay.preferencesLoading,
+        preferencesSaving: agentOverlay.preferencesSaving,
         setSettingsOpen: guardProviderContextCallback(isCurrentPageContext, (open: boolean) => {
           agentOverlay.setSettingsOpen(open)
         }),
         configure: guardProviderContextCallback(isCurrentPageContext, (name: string | null, followContext: boolean) => {
-          agentOverlay.setFollowContext(followContext)
-          agentOverlay.select(name)
+          agentOverlay.configure(name, followContext)
           agentOverlay.setSettingsOpen(false)
         }),
         select: guardProviderContextCallback(isCurrentPageContext, (name: string | null) => {

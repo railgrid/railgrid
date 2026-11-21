@@ -582,6 +582,8 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	// per-user UserPreferences CR, keyed by workspace. See preferences.go.
 	r.HandleFunc("/{org}/workspaces/{ws}/dashboard/layout", h.getDashboardLayout).Methods(http.MethodGet)
 	r.HandleFunc("/{org}/workspaces/{ws}/dashboard/layout", h.putDashboardLayout).Methods(http.MethodPut)
+	r.HandleFunc("/{org}/workspaces/{ws}/assistant-preference", h.getWorkspaceAssistant).Methods(http.MethodGet)
+	r.HandleFunc("/{org}/workspaces/{ws}/assistant-preference", h.putWorkspaceAssistant).Methods(http.MethodPut, http.MethodPatch)
 
 	// MCPServer CRUD + per-server connect info for the portal's MCP page.
 	// See mcp.go.

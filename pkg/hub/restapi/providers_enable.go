@@ -560,9 +560,11 @@ type ListEnabledProvidersResponse struct {
 // would render that as plain "Enabled" and tell the user they are running their
 // own instance when they are not.
 type EnabledProviderDetail struct {
-	Ready       bool   `json:"ready"`
-	Unavailable string `json:"unavailable,omitempty"`
-	BindingName string `json:"bindingName"`
+	DefaultAgent        string `json:"defaultAgent,omitempty"`
+	DefaultAgentPending bool   `json:"defaultAgentPending,omitempty"`
+	Ready               bool   `json:"ready"`
+	Unavailable         string `json:"unavailable,omitempty"`
+	BindingName         string `json:"bindingName"`
 	// ExportPath is the workspace path of the bound APIExport.
 	ExportPath    string `json:"exportPath"`
 	ExportName    string `json:"exportName,omitempty"`
@@ -707,19 +709,21 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 			compositions = h.compositionState(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, copy)
 		}
 		details[provider] = EnabledProviderDetail{
-			BindingName:     binding.Name,
-			Ready:           binding.Ready,
-			Unavailable:     binding.Unavailable,
-			ExportPath:      binding.ExportPath,
-			ExportName:      binding.ExportName,
-			ExportCluster:   binding.ExportCluster,
-			BoundProvider:   presentation,
-			SelfHosted:      binding.SelfHosted,
-			Terminating:     binding.Terminating,
-			DeletionBlocked: binding.DeletionBlocked,
-			Claims:          claimStateOf(binding.Claims),
-			HubAccess:       access,
-			Compositions:    compositions,
+			BindingName:         binding.Name,
+			DefaultAgent:        binding.DefaultAgent,
+			DefaultAgentPending: binding.DefaultAgentPending,
+			Ready:               binding.Ready,
+			Unavailable:         binding.Unavailable,
+			ExportPath:          binding.ExportPath,
+			ExportName:          binding.ExportName,
+			ExportCluster:       binding.ExportCluster,
+			BoundProvider:       presentation,
+			SelfHosted:          binding.SelfHosted,
+			Terminating:         binding.Terminating,
+			DeletionBlocked:     binding.DeletionBlocked,
+			Claims:              claimStateOf(binding.Claims),
+			HubAccess:           access,
+			Compositions:        compositions,
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
