@@ -102,7 +102,7 @@ it('submits a choice, write-in, and explicit skip as one group', async () => {
     skip().click()
     await nextTick()
     expect(answers).toEqual([])
-    expect(send().textContent).toContain('Send answers')
+    expect(send().textContent?.trim()).toBe('Send')
     send().click()
     expect(answers).toEqual([{ location: 'README (Recommended)', name: 'Operator guide', owner: null }])
   } finally {

@@ -1418,6 +1418,26 @@ describe('chat streaming', () => {
     ])
   })
 
+  it('shows a single structured choice reply in the same format as a text reply', async () => {
+    const prompt = 'What would you like to do next?'
+    const [choice, text] = rebuildTranscript([
+      { id: 'choice', role: 'user', content: 'Formatted reply', metadata: {
+        questionPrompt: prompt,
+        questions: [{ id: 'next', prompt, options: [{ label: 'Nothing right now' }] }],
+        answers: { next: 'Nothing right now' },
+      } },
+      { id: 'text', role: 'user', content: 'Nothing right now', metadata: { questionPrompt: prompt } },
+    ])
+    const choiceView = await mountVue(ChatMessageView, { message: choice })
+    const textView = await mountVue(ChatMessageView, { message: text })
+    mounted.push(choiceView, textView)
+    const reply = choiceView.element.querySelector('.agents-question-history')!
+    expect(reply.querySelector('summary')).toBeNull()
+    expect(reply.innerHTML).toBe(textView.element.querySelector('.agents-question-history')?.innerHTML)
+    expect(reply.querySelector('dt')?.textContent).toBe(prompt)
+    expect(reply.querySelector('dd')?.textContent).toBe('Nothing right now')
+  })
+
   it('expands the persisted question group into its original prompt and reply pairs', async () => {
     const [message] = rebuildTranscript([{
       id: 'group-reply', role: 'user', content: 'formatted reply', metadata: {
@@ -1438,7 +1458,7 @@ describe('chat streaming', () => {
     details.querySelector('summary')!.click()
     expect(details.open).toBe(true)
     expect(Array.from(details.querySelectorAll('dt, dd'), node => node.textContent)).toEqual([
-      'Where?', 'README', 'Who?', 'Skipped', 'When?', 'Tomorrow',
+      'Where?', 'README', 'Who?', 'Skipped this question', 'When?', 'Tomorrow',
     ])
   })
 
