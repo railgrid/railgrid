@@ -95,7 +95,7 @@ function send(): void {
         <div class="agents-question-card__questions">
           <fieldset :key="activeQuestion.id" class="agents-question-card__group"
             :disabled="disabled || busy">
-            <legend ref="questionHeading" tabindex="-1">{{ activeQuestion.prompt }}</legend>
+            <legend ref="questionHeading" class="agents-question-card__prompt" tabindex="-1">{{ activeQuestion.prompt }}</legend>
             <label v-for="option in activeQuestion.options" :key="option.label" class="agents-question-card__choice"
               :class="{ 'is-selected': !customDrafts[activeQuestion.id] && replies[activeQuestion.id] === option.label }">
               <input type="radio" :name="`${id}-${activeIndex}`" :checked="!customDrafts[activeQuestion.id] && replies[activeQuestion.id] === option.label"
@@ -117,7 +117,7 @@ function send(): void {
           <span v-if="replies[activeQuestion.id] === null" class="agents-question-card__skipped" role="status">Skipped</span>
           <button class="k-btn k-btn--ghost secondary" type="button" :disabled="disabled || busy" @click="skipQuestion">Skip</button>
           <button class="k-btn k-btn--primary" type="submit" :disabled="!validReply(activeQuestion.id) || disabled || busy">
-            {{ busy ? 'Sending…' : !lastQuestion ? 'Next' : firstInvalidReply !== -1 ? 'Review replies' : questions.length === 1 ? 'Send answer' : 'Send answers' }}
+            {{ busy ? 'Sending…' : !lastQuestion ? 'Next' : firstInvalidReply !== -1 ? 'Review replies' : 'Send' }}
           </button>
         </div>
       </form>
@@ -165,7 +165,6 @@ function send(): void {
   padding: 0.75rem 0 0;
   border: 0;
 }
-.agents-question-card__group legend { font-weight: 600; overflow-wrap: anywhere; }
 .agents-question-card__group .agents-question-card__input:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: -2px;
@@ -179,7 +178,7 @@ function send(): void {
   background: var(--color-surface-overlay);
 }
 .agents-question-card__heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--color-text-secondary); font-size: 13px; }
-.agents-question-card__prompt { max-width: 72ch; margin: 0; color: var(--color-text-primary); font-size: 16px; font-weight: 500; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agents-question-card__prompt { max-width: min(100%, 72ch); margin: 0; padding: 0; color: var(--color-text-primary); font-size: 14px; font-weight: 600; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agents-question-card__form, .agents-question-card__choices { display: grid; gap: 4px; min-width: 0; }
 .agents-question-card__choices { border: 0; padding: 0; margin: 0; }
 .agents-question-card label.agents-question-card__choice { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: 10px; box-sizing: border-box; min-height: 34px; padding: 4px 0; border: 1px solid transparent; border-radius: 8px; font-size: 14px; line-height: 1.4; cursor: pointer; overflow-wrap: anywhere; }

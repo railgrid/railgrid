@@ -14,7 +14,7 @@ import { pendingIsQuestion } from '../types'
 import AgentApprovalCard from '../components/AgentApprovalCard.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
-import { answeredQuestionCount, questionPresentation, skippedQuestionResponse } from '../question-presentation'
+import { questionPresentation, skippedQuestionResponse } from '../question-presentation'
 import AgentVisualization from '../components/AgentVisualization.vue'
 import { messageVisualizations } from '../visualization'
 import { toolCommand, toolCommandActivity, toolOutcome, toolOutcomeLabel } from '../toolExecution'
@@ -58,6 +58,18 @@ const emit = defineEmits<{
 }>()
 
 const messageAuthor = computed(() => props.authorLabel || formatAIMessageAuthor(props.message.actorID))
+const questionReplies = computed(() => {
+  const { questions, answers, questionPrompt, content } = props.message
+  if (questions?.length && answers) {
+    return questions.map(({ id, prompt }) => ({ id, prompt, answer: answers[id] ?? null }))
+  }
+  return [{
+    id: props.message.id,
+    prompt: questionPresentation(questionPrompt).prompt,
+    answer: content === skippedQuestionResponse ? null : content,
+  }]
+})
+const skippedReplies = computed(() => questionReplies.value.filter(reply => reply.answer === null).length)
 const userMessage = computed(() => splitPageContext(props.message.role === 'user' ? props.message.content : ''))
 const messageAttachments = computed(() => (props.message.contentParts || []).flatMap((part) => part.type === 'attachment' ? [part.attachment] : []))
 const messageResources = computed(() => props.message.contextResources || [])
@@ -456,19 +468,15 @@ onBeforeUnmount(() => { mounted = false })
       @click="openToolCitation"
     ></div>
     <div v-else-if="message.role === 'user' && message.questionPrompt !== undefined" class="agents-user-content">
-      <details v-if="message.questions?.length && message.answers" class="agents-question-history">
-        <summary>Asked {{ message.questions.length }} {{ message.questions.length === 1 ? 'question' : 'questions' }} · {{ answeredQuestionCount(message.answers) }} answered<span v-if="answeredQuestionCount(message.answers) < message.questions.length">, {{ message.questions.length - answeredQuestionCount(message.answers) }} skipped</span></summary>
-        <dl>
-          <template v-for="question in message.questions" :key="question.id">
-            <dt>{{ question.prompt }}</dt>
-            <dd>{{ message.answers[question.id] ?? 'Skipped' }}</dd>
-          </template>
+      <component :is="questionReplies.length > 1 ? 'details' : 'div'" class="agents-question-history">
+        <summary v-if="questionReplies.length > 1">Asked {{ questionReplies.length }} questions · {{ questionReplies.length - skippedReplies }} answered<span v-if="skippedReplies">, {{ skippedReplies }} skipped</span></summary>
+        <dl class="agents-question-replies">
+          <div v-for="reply in questionReplies" :key="reply.id">
+            <dt class="agents-answer-context">{{ reply.prompt }}</dt>
+            <dd class="agents-body">{{ reply.answer ?? 'Skipped this question' }}</dd>
+          </div>
         </dl>
-      </details>
-      <template v-else>
-        <div class="agents-answer-context">{{ questionPresentation(message.questionPrompt).prompt }}</div>
-        <div class="agents-body">{{ message.content === skippedQuestionResponse ? 'Skipped this question' : message.content }}</div>
-      </template>
+      </component>
     </div>
     <div v-else-if="message.role === 'user' && userHasBubbleContent" class="agents-user-content">
       <div v-if="userMessage.text" class="agents-body">{{ userMessage.text }}</div>
