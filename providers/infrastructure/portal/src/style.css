@@ -93,6 +93,8 @@ railgrid-provider-infrastructure .catalog-cloud-guide {
   flex-wrap: wrap;
   gap: 12px;
   padding: 12px 16px;
+  padding-inline-end: 60px;
+  position: relative;
 }
 
 railgrid-provider-infrastructure .catalog-cloud-guide > div {
@@ -118,6 +120,14 @@ railgrid-provider-infrastructure .catalog-guide-icon {
 
 railgrid-provider-infrastructure .catalog-guide-link {
   color: var(--color-accent);
+  text-align: start;
+  white-space: normal;
+}
+
+railgrid-provider-infrastructure .catalog-guide-dismiss {
+  inset-block-start: 8px;
+  inset-inline-end: 8px;
+  position: absolute;
 }
 
 railgrid-provider-infrastructure .view-value-text { min-width: 0; overflow-wrap: anywhere; }

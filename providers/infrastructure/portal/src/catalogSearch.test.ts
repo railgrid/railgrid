@@ -58,6 +58,37 @@ it('keeps the cloud guide discoverable without cloud templates', async () => {
   }
 })
 
+it('remembers banner dismissal for the same user and returns focus to search', async () => {
+  localStorage.clear()
+  vi.mocked(api.listTemplates).mockResolvedValue({ items: [] })
+  const host = document.createElement('div')
+  document.body.append(host)
+  let app = createApp(CatalogPage, { userId: 'user-one' })
+  try {
+    app.mount(host)
+    const dismiss = host.querySelector<HTMLButtonElement>('[aria-label="Dismiss cloud provisioning banner"]')!
+    dismiss.focus()
+    dismiss.click()
+    await vi.waitFor(() => expect(host.querySelector('.catalog-cloud-guide')).toBeNull())
+    expect(document.activeElement).toBe(host.querySelector('input[type=search]'))
+
+    app.unmount()
+    app = createApp(CatalogPage, { userId: 'user-one' })
+    app.mount(host)
+    expect(host.querySelector('.catalog-cloud-guide')).toBeNull()
+
+    app.unmount()
+    app = createApp(CatalogPage, { userId: 'user-two' })
+    app.mount(host)
+    expect(host.querySelector('.catalog-cloud-guide')).not.toBeNull()
+  } finally {
+    app.unmount()
+    host.remove()
+    localStorage.clear()
+    vi.clearAllMocks()
+  }
+})
+
 it('shows cloud and Kubernetes templates together and searches by destination', async () => {
   vi.mocked(api.listTemplates).mockResolvedValue({ items: [
     { name: 'sql', displayName: 'Cloud SQL', description: '', category: 'Databases', cloud: 'gcp', kind: 'SQLInstance', inputsSchema: {} },

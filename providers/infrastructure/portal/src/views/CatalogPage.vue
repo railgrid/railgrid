@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ArrowRight, Cloud, ExternalLink, Search, X } from 'lucide-vue-next'
 import { api, isContextChangedError } from '../api'
 import DeploymentTarget from '../components/DeploymentTarget.vue'
@@ -7,6 +7,8 @@ import ResourceTable from '../portalkit/ResourceTable.vue'
 import { portalHref } from '../portalkit/navigation'
 import { sortTableRows, type TableSort } from '../portalkit/table'
 import type { Template } from '../types'
+
+const props = defineProps<{ userId?: string }>()
 
 const emit = defineEmits<{
   (e: 'select', name: string): void
@@ -26,7 +28,19 @@ let catalogObserver: ResizeObserver | undefined
 const emptyText = 'No infrastructure templates are available in this workspace.'
 const searchKeys = ['identity', 'name', 'description', 'category', 'kind', 'destination']
 const cloudGuideURL = 'https://railgrid.ai/docs/use/infrastructure/cloud-provisioning/'
+const cloudGuideDismissed = ref(false)
+const cloudGuidePreference = computed(() => props.userId
+  ? `railgrid:portal:infrastructure:cloud-guide-dismissed:${props.userId}`
+  : null)
 let requestSerial = 0
+
+watch(cloudGuidePreference, key => {
+  try {
+    cloudGuideDismissed.value = key !== null && window.localStorage.getItem(key) === '1'
+  } catch {
+    cloudGuideDismissed.value = false
+  }
+}, { immediate: true })
 
 const tableColumns = [
   { key: 'identity', label: 'Template', primary: true, sortable: true },
@@ -115,6 +129,19 @@ function clearSearch() {
   search.value?.focus()
 }
 
+function dismissCloudGuide() {
+  cloudGuideDismissed.value = true
+  const key = cloudGuidePreference.value
+  if (key) {
+    try {
+      window.localStorage.setItem(key, '1')
+    } catch {
+      // Dismissal still applies for this visit when storage is unavailable.
+    }
+  }
+  search.value?.focus({ preventScroll: true })
+}
+
 function selectTemplateRow(row: Record<string, unknown>) {
   if (typeof row.name === 'string') emit('select', row.name)
 }
@@ -146,7 +173,7 @@ function followInstancesLink(event: MouseEvent): void {
       <a class="k-btn k-btn--ghost" :href="portalHref('/ui/providers/infrastructure/instances')" @click="followInstancesLink">My instances <ArrowRight :size="14" aria-hidden="true" /></a>
     </header>
 
-    <aside class="catalog-cloud-guide k-card k-card--flat" aria-labelledby="cloud-guide-title">
+    <aside v-if="!cloudGuideDismissed" class="catalog-cloud-guide k-card k-card--flat" aria-labelledby="cloud-guide-title">
       <span class="catalog-guide-icon"><Cloud :size="18" :stroke-width="1.75" aria-hidden="true" /></span>
       <div>
         <h3 id="cloud-guide-title" class="catalog-guide-title">Provision resources in your cloud</h3>
@@ -155,6 +182,9 @@ function followInstancesLink(event: MouseEvent): void {
       <a class="k-btn k-btn--text catalog-guide-link" :href="cloudGuideURL" target="_blank" rel="noopener noreferrer">
         Explore cloud provisioning <ExternalLink :size="14" :stroke-width="1.75" aria-hidden="true" />
       </a>
+      <button type="button" class="k-icon-action k-icon-action--quiet catalog-guide-dismiss" aria-label="Dismiss cloud provisioning banner" @click="dismissCloudGuide">
+        <X :stroke-width="1.75" aria-hidden="true" />
+      </button>
     </aside>
 
     <div class="catalog-search k-table__search" role="search">
