@@ -28,6 +28,8 @@ const (
 	WorkspaceSeedAnnotation = "admin.railgrid.ai/workspace-seed"
 	// DefaultAgentAnnotation names the workspace assistant on its seeded APIBinding.
 	DefaultAgentAnnotation = "admin.railgrid.ai/default-agent"
+	// DefaultAgentPendingAnnotation marks a starter Agent still being provisioned.
+	DefaultAgentPendingAnnotation = "admin.railgrid.ai/default-agent-pending"
 
 	// TenantAccessAnnotation on an APIBinding in a tenant workspace bounds
 	// what the workspace's members may do with the API groups the binding
@@ -50,6 +52,7 @@ const (
 // +kubebuilder:printcolumn:name="Objects",type=integer,JSONPath=".status.objects"
 // +kubebuilder:printcolumn:name="Accepted",type=string,JSONPath=".status.conditions[?(@.type==\"Accepted\")].status"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.spec) || !has(oldSelf.spec.initialWorkspacesOnly) || !oldSelf.spec.initialWorkspacesOnly || (has(self.spec) && has(self.spec.initialWorkspacesOnly) && self.spec.initialWorkspacesOnly)",message="initialWorkspacesOnly cannot be disabled once enabled"
 
 // WorkspaceSeed declares backend functionality every tenant workspace gets
 // without anyone enabling it: APIExports the hub binds into the workspace and

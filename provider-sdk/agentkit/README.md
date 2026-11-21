@@ -1,7 +1,7 @@
 # AgentKit — optional AI presentation
 
 AgentKit provides the shared conversation, workbench, and model UI used by
-App Studio and Agents. App Studio is the visual reference. AgentKit depends on
+App Studio, Agents, and the Railgrid dashboard composer. App Studio is the visual reference. AgentKit depends on
 PortalKit tokens and general controls; PortalKit has no AgentKit dependency.
 
 ## Ownership and imports
@@ -26,15 +26,16 @@ Providers remain self-contained Vite builds, including standalone Docker build
 contexts. This extraction does not introduce an npm workspace, registry package,
 or runtime dependency on another provider.
 
-`hack/sync-portalkit.sh` declares the optional consumers in `AGENTKIT_PORTALS`:
-App Studio and Agents. The same script maintains both libraries:
+`hack/sync-portalkit.sh` declares App Studio and Agents in `AGENTKIT_PORTALS`.
+The same script uses `HOST_AGENTKIT_FILES` and `HOST_AGENTKIT_VUE_FILES` for the
+dashboard send control and its dependencies in `portal/src/agentkit/`:
 
 ```sh
 make sync-portalkit
 make verify-portalkit
 ```
 
-To add a consumer, register its portal in that explicit list and verify its
+To add a provider consumer, register its portal in `AGENTKIT_PORTALS` and verify its
 build. New canonical files must be registered in the corresponding AgentKit
 manifest. The verifier rejects missing files, stale copies, unexpected files,
 and AgentKit directories in nonconsuming portals. Removed AI/model PortalKit

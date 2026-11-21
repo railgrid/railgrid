@@ -37,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
@@ -73,10 +74,11 @@ var (
 
 // Bootstrapper sets up the kcp workspace hierarchy and API exports.
 type Bootstrapper struct {
-	config         *rest.Config
-	seedClientOnce sync.Once
-	seedClient     *kcpdynamic.ClusterClientset
-	seedClientErr  error
+	config                   *rest.Config
+	seedClientOnce           sync.Once
+	seedClient               *kcpdynamic.ClusterClientset
+	seedClientErr            error
+	ineligibleSeedWorkspaces *cache.LRUExpireCache
 	// workspaceIdentityHash is the identity hash of the tenancy.kcp.io APIExport
 	// from the root workspace. Needed for permission claims on workspaces.
 	workspaceIdentityHash string
@@ -2208,8 +2210,9 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 		exportName, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "name")
 		exportCluster, _, _ := unstructured.NestedString(item.Object, "status", "apiExportClusterName")
 		out[providerName] = ProviderBinding{
-			Name:         item.GetName(),
-			DefaultAgent: item.GetAnnotations()[adminv1alpha1.DefaultAgentAnnotation],
+			Name:                item.GetName(),
+			DefaultAgent:        item.GetAnnotations()[adminv1alpha1.DefaultAgentAnnotation],
+			DefaultAgentPending: item.GetAnnotations()[adminv1alpha1.DefaultAgentPendingAnnotation] == "true",
 
 			Ready:           ready,
 			Unavailable:     unavailable,
@@ -2272,7 +2275,8 @@ func deletionBlockedMessage(item *unstructured.Unstructured) string {
 // retarget, so the distinction has to survive all the way to the UI.
 type ProviderBinding struct {
 	// DefaultAgent names the Agent provisioned for this binding, if any.
-	DefaultAgent string
+	DefaultAgent        string
+	DefaultAgentPending bool
 	// Ready reflects current binding conditions, not the catalog backend.
 	Ready bool
 	// Unavailable explains a binding that cannot currently serve its APIs.

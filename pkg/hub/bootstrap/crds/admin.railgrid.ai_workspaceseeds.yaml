@@ -371,6 +371,11 @@ spec:
                 type: integer
             type: object
         type: object
+        x-kubernetes-validations:
+        - message: initialWorkspacesOnly cannot be disabled once enabled
+          rule: '!has(oldSelf.spec) || !has(oldSelf.spec.initialWorkspacesOnly) ||
+            !oldSelf.spec.initialWorkspacesOnly || (has(self.spec) && has(self.spec.initialWorkspacesOnly)
+            && self.spec.initialWorkspacesOnly)'
     served: true
     storage: true
     subresources:

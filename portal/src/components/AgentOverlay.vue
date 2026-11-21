@@ -327,7 +327,7 @@ watch([allowed, authorityKey, () => overlay.personalAgent, boundDefaultAgent, ()
     try {
       const response = await authFetch(resource, { signal: controller.signal })
       if (!current()) return
-      if (response.status === 404 && retries > 0) {
+      if (response.status === 404 && retries > 0 && providers.bindingsByProvider.agents?.defaultAgentPending) {
         retryTimer = setTimeout(() => { void discover(retries - 1) }, 2000)
         return
       }

@@ -482,7 +482,10 @@ function onGridSelectStart(event: Event) {
                   <button v-if="assistant.dashboardSubmit" type="button" class="k-btn k-btn--ghost"
                     @click="assistant.dashboardSubmit('', assistantInput)">Open chat</button>
                 </div>
-                <p v-else-if="assistantDraft.trim() && assistant.dashboardPreparing" role="status" class="text-sm text-text-secondary">Preparing chat…</p>
+                <p v-else-if="assistant.dashboardPreparing" role="status" class="text-sm text-text-secondary">Preparing chat…</p>
+                <p v-else-if="!assistant.dashboardSubmit" role="status" class="text-sm text-text-secondary">
+                  Chat is unavailable. <router-link :to="scopePath('/providers/agents')" class="text-accent hover:text-accent-hover">Check the Agents provider</router-link>.
+                </p>
               </template>
               <div v-else class="dashboard-agent grid gap-3 rounded-lg border p-3 sm:p-4">
                 <div class="flex min-w-0 items-center gap-2.5">

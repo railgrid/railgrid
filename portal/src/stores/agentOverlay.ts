@@ -84,7 +84,7 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
     if (!preferenceKey.value) return
     try {
       localStorage.setItem(preferenceKey.value, JSON.stringify({
-        agent: personalAgent.value,
+        agent: personalAgent.value === null ? '' : personalAgent.value,
         followContext: auth.token ? cachedContext : followContext.value,
         minimized: minimized.value,
       }))
@@ -119,8 +119,8 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
     let legacyContext = true
     try {
       const saved = JSON.parse(localStorage.getItem(key) || 'null')
-      if (saved?.agent === null) personalAgent.value = null
-      if (typeof saved?.agent === 'string' && saved.agent.length <= 253) personalAgent.value = saved.agent
+      // The old cache also wrote null when there was no agent choice.
+      if (typeof saved?.agent === 'string' && saved.agent.length <= 253) personalAgent.value = saved.agent === '' ? null : saved.agent
       legacyContext = saved?.followContext !== false
       cachedContext = legacyContext
       if (!endpoint) followContext.value = legacyContext
@@ -200,17 +200,33 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
     open.value = !!name
   }
 
-  function configure(name: string | null, includeContext: boolean): void {
-    if (!preferenceKey.value || (name !== null && (!name || name.length > 253))) return
-    if (!preferenceEndpoint()) {
+  async function configure(name: string | null, includeContext: boolean): Promise<void> {
+    const key = preferenceKey.value
+    if (!key || (name !== null && (!name || name.length > 253))) return
+    const endpoint = preferenceEndpoint()
+    if (!endpoint) {
       chooseAgent(name)
       followContext.value = includeContext
       cache()
       return
     }
     if (confirmedPreference === undefined) {
-      toast('error', 'Couldn’t confirm your account settings. Reload the page before saving the assistant.')
-      return
+      if (preferencesLoading.value) return
+      const session = authSessionRevision()
+      const edit = revision
+      const current = () => key === preferenceKey.value && edit === revision && authSessionRevision() === session
+      preferencesLoading.value = true
+      try {
+        const { preference } = await requestPreference(endpoint)
+        if (!current()) return
+        confirmedPreference = preference
+        cachedContext = preference?.followContext ?? true
+      } catch {
+        if (current()) toast('error', 'Couldn’t confirm your account settings. Try saving again.')
+        return
+      } finally {
+        if (current()) preferencesLoading.value = false
+      }
     }
     // Keep the old selection until the account accepts the full save.
     save({ method: 'PUT', settings: {

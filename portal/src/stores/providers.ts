@@ -285,6 +285,7 @@ export interface ClaimState {
 // APIExport a workspace's binding actually points at.
 export interface EnabledProviderDetail {
   defaultAgent?: string
+  defaultAgentPending?: boolean
   ready?: boolean
   unavailable?: string
   bindingName: string

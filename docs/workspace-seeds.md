@@ -147,10 +147,8 @@ hub creates missing bindings and objects, preserves objects already present,
 and records completion on the workspace’s core APIBinding. A completed seed
 leaves subsequent edits and deletions in the tenant’s hands.
 
-Keep this mode on for starter seeds. Changing it to `false` makes the hub
-force-apply the seed's manifests to every tenant workspace, including completed
-starter workspaces. That can overwrite tenant edits or recreate deleted
-objects. Create a separate seed when you need ongoing reconciliation.
+Once enabled, this mode is locked on for the life of the seed. Create a
+separate seed when you need ongoing reconciliation.
 
 Railgrid SaaS uses this mode for the Railgrid Agents seed in the ops
 repository. It binds Agents in the starter workspace and creates an Agent

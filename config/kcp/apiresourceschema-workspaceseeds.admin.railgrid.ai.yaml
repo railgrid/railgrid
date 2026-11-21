@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261121-2230ed67d.workspaceseeds.admin.railgrid.ai
+  name: v261121-1d157db7e.workspaceseeds.admin.railgrid.ai
 spec:
   group: admin.railgrid.ai
   names:
@@ -365,6 +365,10 @@ spec:
               type: integer
           type: object
       type: object
+      x-kubernetes-validations:
+      - message: initialWorkspacesOnly cannot be disabled once enabled
+        rule: '!has(oldSelf.spec) || !has(oldSelf.spec.initialWorkspacesOnly) || !oldSelf.spec.initialWorkspacesOnly
+          || (has(self.spec) && has(self.spec.initialWorkspacesOnly) && self.spec.initialWorkspacesOnly)'
     served: true
     storage: true
     subresources:

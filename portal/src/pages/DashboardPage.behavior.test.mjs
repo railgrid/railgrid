@@ -313,6 +313,11 @@ test('a provisioned assistant makes the dashboard the first-visit surface', asyn
     assert.ok(!nodes(s.root).some(node => node.props?.id === 'wizard'))
     const composer = nodes(s.root).find(node => node.props?.['aria-label'] === 'Message Railgrid Agents')
     assert.equal(composer?.props.placeholder, 'Ask a question or choose a shortcut…')
+    assert.match(text(s.root), /Chat is unavailable/)
+    s.assistant.dashboardPreparing = true
+    await nextTick()
+    assert.match(text(s.root), /Preparing chat/)
+    assert.doesNotMatch(text(s.root), /Chat is unavailable/)
     s.assistant.personalAgent = null
     await nextTick()
     assert.ok(!nodes(s.root).some(node => node.props?.['aria-label'] === 'Message Railgrid Agents'))

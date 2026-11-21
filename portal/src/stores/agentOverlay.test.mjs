@@ -256,6 +256,26 @@ test('account choices migrate, fail closed on read errors, and survive stale tab
     third.setDefaultAgent('platform-default')
     assert.equal(third.selectedAgent, null)
     assert.equal(third.followContext, false)
+
+    remote = null
+    values.clear()
+    localStorage.setItem(key, JSON.stringify({ agent: null, followContext: false, minimized: true }))
+    const legacy = browser()
+    await waitFor(() => !legacy.preferencesLoading)
+    assert.deepEqual(puts.at(-1), { initialize: true, followContext: false })
+    legacy.setDefaultAgent('starter-guide')
+    assert.equal(legacy.selectedAgent, 'starter-guide')
+    assert.equal(legacy.followContext, false)
+
+    readFailure = true
+    const recovering = browser()
+    await waitFor(() => !recovering.preferencesLoading)
+    assert.equal(recovering.followContext, false)
+    readFailure = false
+    await recovering.configure('scout', true)
+    await waitFor(() => !recovering.preferencesSaving)
+    assert.deepEqual(remote, { agent: 'scout', followContext: true })
+    assert.equal(recovering.selectedAgent, 'scout')
   } finally {
     globalThis.fetch = nativeFetch
     values.clear()

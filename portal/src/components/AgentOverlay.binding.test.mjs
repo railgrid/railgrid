@@ -404,6 +404,18 @@ test('the dashboard can open bundle recovery and restore focus to its composer',
   } finally { s.cleanup() }
 })
 
+test('a missing default Agent in a completed workspace settles after one lookup', async () => {
+  const s = scenario({
+    preference: { agent: undefined }, defaultAgent: 'deleted-starter-guide', initialRoute: { name: 'dashboard' },
+  })
+  try {
+    await flush()
+    assert.equal(s.calls.defaultReads.length, 1)
+    assert.equal(s.overlay.defaultAgentLoading, false)
+    assert.equal(s.overlay.selectedAgent, null)
+  } finally { s.cleanup() }
+})
+
 test('dashboard sends only after the current Agents chat has finished preparing', async () => {
   const s = scenario({ initialRoute: { name: 'dashboard' } })
   try {
