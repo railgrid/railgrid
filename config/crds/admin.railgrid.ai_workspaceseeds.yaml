@@ -224,6 +224,11 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              initialWorkspacesOnly:
+                description: |-
+                  InitialWorkspacesOnly provisions once in the starter workspace of each
+                  organization created after this seed. Existing objects are preserved.
+                type: boolean
               objects:
                 description: |-
                   Objects are created in every tenant workspace once every binding of this

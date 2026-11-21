@@ -10,6 +10,8 @@ globalThis.localStorage = {
   removeItem: key => values.delete(key),
 }
 globalThis.window = { dispatchEvent() {} }
+globalThis.HTMLElement = class {}
+globalThis.document = { activeElement: null, dispatchEvent() {} }
 const vite = await createServer({
   appType: 'custom', configFile: false, optimizeDeps: { noDiscovery: true },
   root: new URL('../../', import.meta.url).pathname,
@@ -64,13 +66,11 @@ test('navigation closes the surface without persisting a minimized preference', 
   auth.user = { userId: 'navigation-user' }
   tenant.orgUUID = 'org-a'; tenant.workspaceUUID = 'workspace-a'
   overlay.select('scout')
-  overlay.setDockVisible(true)
   const saved = localStorage.getItem(overlay.preferenceKey)
   overlay.setSidePanelClosing(true)
   overlay.closeForNavigation({ settings: true })
   assert.equal(overlay.sidePanelClosing, false)
   assert.equal(overlay.open, false)
-  assert.equal(overlay.dockVisible, false)
   assert.equal(overlay.settingsOpen, true)
   assert.equal(overlay.minimized, false)
   assert.equal(localStorage.getItem(overlay.preferenceKey), saved)
@@ -94,12 +94,10 @@ test('authority changes clear transient layout and settings state', () => {
   auth.user = { userId: 'layout-user' }
   tenant.orgUUID = 'org-a'; tenant.workspaceUUID = 'workspace-a'
   overlay.select('scout')
-  overlay.setDockVisible(true)
   overlay.setSettingsOpen(true)
   overlay.setSidePanel(440, true)
   overlay.setSidePanelClosing(true)
   tenant.workspaceUUID = 'workspace-b'
-  assert.equal(overlay.dockVisible, false)
   assert.equal(overlay.sidePanelWidth, 0)
   assert.equal(overlay.sidePanelClosing, false)
   assert.equal(overlay.sidePanelFullscreen, false)
@@ -144,4 +142,108 @@ test('generic context and legacy resource snapshots have independent owners and 
   store.clear(contextOwner)
   assert.equal(store.snapshot, null)
   assert.equal(store.agentContextSnapshot, null)
+})
+
+test('account choices migrate, fail closed on read errors, and survive stale tab edits', async () => {
+  const nativeFetch = globalThis.fetch
+  const org = 'account-org'
+  const ws = 'account-workspace'
+  const key = overlayPreferenceKey('account-user', org, ws)
+  let remote = null
+  let readFailure = false
+  const puts = []
+  const patches = []
+  globalThis.fetch = async (url, init) => {
+    assert.equal(url, `/api/orgs/${org}/workspaces/${ws}/assistant-preference`)
+    assert.equal(init.headers.get('X-Railgrid-Org'), org)
+    assert.equal(init.headers.get('X-Railgrid-Workspace'), ws)
+    if (init.method === 'PUT') {
+      const { initialize, expected, ...preference } = JSON.parse(init.body)
+      puts.push({ initialize, ...preference })
+      if (!initialize && JSON.stringify(expected?.preference) !== JSON.stringify(remote)) {
+        return Response.json({ preference: remote }, { status: 409 })
+      }
+      if (!initialize || remote === null) remote = preference
+    } else if (init.method === 'PATCH') {
+      const changes = JSON.parse(init.body)
+      patches.push(changes)
+      remote = { ...remote, ...changes }
+    } else if (readFailure) {
+      return new Response(null, { status: 503 })
+    }
+    return Response.json({ preference: remote })
+  }
+  function browser() {
+    setActivePinia(createPinia())
+    const auth = useAuthStore(), tenant = useTenantStore()
+    const overlay = useAgentOverlayStore()
+    auth.user = { userId: 'account-user' }
+    auth.token = 'test-token'
+    tenant.orgUUID = org
+    tenant.workspaceUUID = ws
+    return overlay
+  }
+  async function waitFor(predicate) {
+    for (let attempt = 0; attempt < 25 && !predicate(); attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    assert.ok(predicate())
+  }
+  try {
+    values.clear()
+    localStorage.setItem(key, JSON.stringify({ agent: 'scout', followContext: false, minimized: true }))
+    const first = browser()
+    await waitFor(() => !first.preferencesLoading)
+    assert.deepEqual(puts, [{ initialize: true, agent: 'scout', followContext: false }])
+    assert.equal(first.selectedAgent, 'scout')
+    assert.equal(first.minimized, true)
+    first.setMinimized(false)
+    assert.equal(puts.length, 1)
+
+    values.clear()
+    const second = browser()
+    await waitFor(() => !second.preferencesLoading)
+    assert.equal(second.selectedAgent, 'scout')
+    assert.equal(second.followContext, false)
+    assert.equal(second.minimized, false)
+    assert.equal(puts.length, 1)
+    second.setFollowContext(true)
+    await waitFor(() => !second.preferencesSaving)
+    assert.equal(second.followContext, true)
+    remote = { agent: 'scout', followContext: false }
+    readFailure = true
+    const offline = browser()
+    await waitFor(() => !offline.preferencesLoading)
+    assert.equal(offline.selectedAgent, 'scout')
+    assert.equal(offline.followContext, false)
+    readFailure = false
+
+    const stale = browser()
+    await waitFor(() => !stale.preferencesLoading)
+    const current = browser()
+    await waitFor(() => !current.preferencesLoading)
+    current.select(null)
+    await waitFor(() => !current.preferencesSaving)
+    assert.equal(remote.agent, '')
+    stale.configure('scout', true)
+    await waitFor(() => !stale.preferencesSaving)
+    assert.deepEqual(remote, { agent: '', followContext: false })
+    assert.equal(stale.selectedAgent, null)
+
+    // The older browser cycles its context toggle while it still has Scout selected.
+    second.setFollowContext(false)
+    await waitFor(() => !second.preferencesSaving)
+    assert.deepEqual(patches, [{ followContext: true }, { agent: '' }, { followContext: false }])
+    assert.deepEqual(remote, { agent: '', followContext: false })
+    assert.equal(second.selectedAgent, null)
+    values.clear()
+    const third = browser()
+    await waitFor(() => !third.preferencesLoading)
+    third.setDefaultAgent('platform-default')
+    assert.equal(third.selectedAgent, null)
+    assert.equal(third.followContext, false)
+  } finally {
+    globalThis.fetch = nativeFetch
+    values.clear()
+  }
 })

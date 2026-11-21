@@ -44,6 +44,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 
+	adminv1alpha1 "github.com/railgrid/railgrid/apis/admin/v1alpha1"
 	"github.com/railgrid/railgrid/config/kcp"
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/bootstrap"
@@ -2202,7 +2203,9 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 		exportName, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "name")
 		exportCluster, _, _ := unstructured.NestedString(item.Object, "status", "apiExportClusterName")
 		out[providerName] = ProviderBinding{
-			Name:            item.GetName(),
+			Name:          item.GetName(),
+			WorkspaceSeed: item.GetAnnotations()[adminv1alpha1.WorkspaceSeedAnnotation],
+
 			Ready:           ready,
 			Unavailable:     unavailable,
 			ExportPath:      path,
@@ -2263,6 +2266,8 @@ func deletionBlockedMessage(item *unstructured.Unstructured) string {
 // instance when they are not. Switching is a Disable + Enable, not an in-place
 // retarget, so the distinction has to survive all the way to the UI.
 type ProviderBinding struct {
+	// WorkspaceSeed names the platform seed that created this binding, if any.
+	WorkspaceSeed string
 	// Ready reflects current binding conditions, not the catalog backend.
 	Ready bool
 	// Unavailable explains a binding that cannot currently serve its APIs.

@@ -84,6 +84,11 @@ type WorkspaceSeed struct {
 
 // WorkspaceSeedSpec is what every tenant workspace gets.
 type WorkspaceSeedSpec struct {
+	// InitialWorkspacesOnly provisions once in the starter workspace of each
+	// organization created after this seed. Existing objects are preserved.
+	// +optional
+	InitialWorkspacesOnly bool `json:"initialWorkspacesOnly,omitempty"`
+
 	// Bindings are the APIExports bound into every tenant workspace.
 	// +optional
 	// +listType=map

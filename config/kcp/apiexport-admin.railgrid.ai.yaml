@@ -16,7 +16,7 @@ spec:
       crd: {}
   - group: admin.railgrid.ai
     name: workspaceseeds
-    schema: v261113-17550bd0.workspaceseeds.admin.railgrid.ai
+    schema: v261121-2230ed67d.workspaceseeds.admin.railgrid.ai
     storage:
       crd: {}
 status: {}

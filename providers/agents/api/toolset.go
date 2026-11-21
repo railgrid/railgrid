@@ -246,6 +246,19 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 		}
 	}
 
+	// The provisioned workspace assistant receives a small, read-only inventory.
+	// Hub aggregate tools below still run with the attending caller's authority.
+	if deps.Agent.Annotations[agentsv1alpha1.WorkspaceDefaultAnnotation] == "true" {
+		out = slices.DeleteFunc(out, func(tool backend.Tool) bool {
+			switch tool.Name {
+			case "edges__edges__get_edge_status", "edges__edges__list_edges", "edges__infrastructure__list_instances":
+				return false
+			default:
+				return true
+			}
+		})
+	}
+
 	// Drop the tools a worker never gets: self-management and human-facing ones
 	// (see workerExcludedTools). Done here rather than in the tools package so
 	// the whole worker policy reads in one place.

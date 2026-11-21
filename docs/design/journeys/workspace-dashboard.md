@@ -15,6 +15,13 @@ separate messages; failure offers Retry. When no provider is ready, the message
 distinguishes an existing binding from no enabled providers and points to the
 catalog. The Getting started guide can be reopened from the dashboard.
 
+**Railgrid Agents** opens the workspace chat pane on send. On other pages, the floating Agents button opens that pane directly. A personal
+assistant selection or Off takes precedence over a provisioned workspace
+default. The choice and page-context setting are saved to the signed-in
+account for that workspace. The draft is scoped to the current workspace and stays editable
+until Agents accepts it. The Getting started guide remains available from
+the dashboard.
+
 Customize enables moving, resizing, and removing tiles. Add tile restores hidden
 candidates, Reset clears customization, and Done returns to browsing. An empty
 customized layout offers a route back to Add tile. The grid adapts to its

@@ -58,7 +58,7 @@ test('first-run guide waits for authoritative scoped reads and remains latched a
   assert.match(page, /bindingsMatchScope: providers\.bindingsOrgUUID === tenant\.orgUUID &&\s*providers\.bindingsWorkspace === tenant\.workspaceUUID/)
   assert.match(page, /bindingsState: providers\.bindingsLoadState/)
   assert.match(page, /bindingsStale: providers\.bindingsStale/)
-  assert.match(page, /status === 'ready' && claimFirstWelcome\(user\)/)
+  assert.match(page, /status === 'ready' && !agentLoading && !selectedAgent && claimFirstWelcome\(user\)/)
   assert.doesNotMatch(page, /welcomeOpen\.value = false[\s\S]{0,120}enabledCount/)
   assert.match(page, /\[currentScope, welcomeUser, \(\) => tenant\.workspaceMode\][\s\S]*guideForced\.value = false[\s\S]*welcomeOpen\.value = false/)
   assert.match(page, /async function dismissWelcome\(\)[\s\S]*gettingStartedTrigger\.value\?\.focus\(\)/)
@@ -66,7 +66,7 @@ test('first-run guide waits for authoritative scoped reads and remains latched a
   assert.match(page, /useGettingStartedFocus\(computed\(\(\) => showWelcome\.value && guideVisible\.value\)\)/)
 })
 
-test('dashboard heading follows the provider page title and responsive action pattern', () => {
+test('workspace overview gives the title and actions a responsive header', () => {
   const controlsStart = page.indexOf('<!-- Page heading and customize controls. -->')
   const emptyStateStart = page.indexOf('<!-- Nothing on the grid.')
   const heading = page.slice(controlsStart, emptyStateStart)
@@ -74,8 +74,7 @@ test('dashboard heading follows the provider page title and responsive action pa
   assert.ok(controlsStart >= 0)
   assert.ok(emptyStateStart > controlsStart)
   assert.match(heading, /<header class="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">/)
-  assert.match(heading, /<h1 class="flex items-center gap-2 text-xl font-semibold text-text-primary">[\s\S]*<LayoutDashboard class="h-5 w-5 flex-shrink-0 text-accent" :stroke-width="1\.75" \/>[\s\S]*Dashboard[\s\S]*<\/h1>/)
-  assert.match(heading, /<p class="mt-1 text-sm text-text-muted">Provider summaries for the active workspace\.<\/p>/)
+  assert.match(heading, /<h1\b[^>]*>\s*Workspace overview\s*<\/h1>/)
   assert.match(heading, /<div class="flex w-full flex-wrap items-center gap-2 md:w-auto md:justify-end">/)
 })
 

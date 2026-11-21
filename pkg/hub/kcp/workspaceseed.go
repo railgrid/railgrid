@@ -18,9 +18,11 @@ package kcp
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -31,6 +33,8 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	adminv1alpha1 "github.com/railgrid/railgrid/apis/admin/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 // WorkspaceSeedResult says how far one seed got in one workspace.
@@ -75,7 +79,64 @@ func (b *Bootstrapper) EnsureWorkspaceSeed(ctx context.Context, clusterName, see
 	return ensureWorkspaceSeed(ctx, wsClient, seedName, spec)
 }
 
+// EnsureInitialWorkspaceSeed provisions a starter workspace once. The completion
+// marker lives on its core binding so later edits and deletions are authoritative.
+func (b *Bootstrapper) EnsureInitialWorkspaceSeed(ctx context.Context, clusterName, path, seedName string, after time.Time, spec adminv1alpha1.WorkspaceSeedSpec) (WorkspaceSeedResult, error) {
+	orgName, workspace, ok := kcppaths.SplitWorkspacePath(path)
+	if !ok || after.IsZero() {
+		return WorkspaceSeedResult{}, nil
+	}
+	tenants, err := dynamic.NewForConfig(b.UsersConfig())
+	if err != nil {
+		return WorkspaceSeedResult{}, err
+	}
+	orgs := tenancyv1alpha1.SchemeGroupVersion.WithResource("organizations")
+	org, err := tenants.Resource(orgs).Get(ctx, orgName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return WorkspaceSeedResult{}, nil
+	}
+	if err != nil {
+		return WorkspaceSeedResult{}, err
+	}
+	initial, _, err := unstructured.NestedString(org.Object, "status", "defaultWorkspace")
+	if err != nil || initial != workspace || !org.GetCreationTimestamp().After(after) || org.GetDeletionTimestamp() != nil {
+		return WorkspaceSeedResult{}, err
+	}
+	wsClient, err := dynamic.NewForConfig(configForPath(b.config, clusterName))
+	if err != nil {
+		return WorkspaceSeedResult{}, err
+	}
+	return ensureInitialWorkspaceSeed(ctx, wsClient, seedName, spec)
+}
+
+func ensureInitialWorkspaceSeed(ctx context.Context, wsClient dynamic.Interface, seedName string, spec adminv1alpha1.WorkspaceSeedSpec) (WorkspaceSeedResult, error) {
+	hash := sha256.Sum256([]byte(seedName))
+	marker := fmt.Sprintf("admin.railgrid.ai/seed-complete-%x", hash[:10])
+	bindings := wsClient.Resource(apiBindingGVR)
+	core, err := bindings.Get(ctx, CoreBindingName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return WorkspaceSeedResult{Unbound: 1}, nil
+	}
+	if err != nil || core.GetAnnotations()[marker] == "true" {
+		return WorkspaceSeedResult{}, err
+	}
+	result, err := reconcileWorkspaceSeed(ctx, wsClient, seedName, spec, true)
+	if err != nil || result.Unbound > 0 || len(result.Waiting) > 0 {
+		return result, err
+	}
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{marker: "true"}}})
+	if err != nil {
+		return result, err
+	}
+	_, err = bindings.Patch(ctx, CoreBindingName, types.MergePatchType, patch, metav1.PatchOptions{})
+	return result, err
+}
+
 func ensureWorkspaceSeed(ctx context.Context, wsClient dynamic.Interface, seedName string, spec adminv1alpha1.WorkspaceSeedSpec) (WorkspaceSeedResult, error) {
+	return reconcileWorkspaceSeed(ctx, wsClient, seedName, spec, false)
+}
+
+func reconcileWorkspaceSeed(ctx context.Context, wsClient dynamic.Interface, seedName string, spec adminv1alpha1.WorkspaceSeedSpec, initialOnly bool) (WorkspaceSeedResult, error) {
 	var (
 		result WorkspaceSeedResult
 		errs   []error
@@ -92,7 +153,8 @@ func ensureWorkspaceSeed(ctx context.Context, wsClient dynamic.Interface, seedNa
 	ownBound := true
 	for i := range spec.Bindings {
 		sb := &spec.Bindings[i]
-		bound, created, changed, err := ensureSeedBinding(ctx, wsClient, seedName, sb, byName[sb.Name])
+		existing := byName[sb.Name]
+		bound, created, changed, err := seedBindingForWorkspace(ctx, wsClient, seedName, sb, existing, initialOnly)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("binding %q: %w", sb.Name, err))
 			ownBound = false
@@ -138,13 +200,35 @@ func ensureWorkspaceSeed(ctx context.Context, wsClient dynamic.Interface, seedNa
 			result.Waiting = append(result.Waiting, fmt.Sprintf("%s waits for a binding of %s:%s", label, missing.Path, missing.Name))
 			continue
 		}
-		if err := applySeedObject(ctx, wsClient, gvr, obj); err != nil {
-			errs = append(errs, fmt.Errorf("applying %s: %w", label, err))
+		var objectErr error
+		if initialOnly {
+			_, objectErr = seedObjectClient(wsClient, gvr, obj).Create(ctx, obj, metav1.CreateOptions{})
+			if apierrors.IsAlreadyExists(objectErr) {
+				objectErr = nil
+			}
+		} else {
+			objectErr = applySeedObject(ctx, wsClient, gvr, obj)
+		}
+		if objectErr != nil {
+			errs = append(errs, fmt.Errorf("applying %s: %w", label, objectErr))
 			continue
 		}
 		result.ObjectsApplied++
 	}
 	return result, errors.Join(errs...)
+}
+
+func seedBindingForWorkspace(ctx context.Context, wsClient dynamic.Interface, seedName string, binding *adminv1alpha1.SeedBinding, existing *unstructured.Unstructured, initialOnly bool) (bool, bool, bool, error) {
+	if !initialOnly || existing == nil {
+		return ensureSeedBinding(ctx, wsClient, seedName, binding, existing)
+	}
+	path, _, _ := unstructured.NestedString(existing.Object, "spec", "reference", "export", "path")
+	name, _, _ := unstructured.NestedString(existing.Object, "spec", "reference", "export", "name")
+	if path != binding.Export.Path || name != binding.Export.Name {
+		return false, false, false, fmt.Errorf("existing APIBinding references %s:%s", path, name)
+	}
+	phase, _, _ := unstructured.NestedString(existing.Object, "status", "phase")
+	return phase == "Bound" && existing.GetDeletionTimestamp() == nil, false, false, nil
 }
 
 // ensureSeedBinding creates the binding or brings an existing one the seed
@@ -280,13 +364,17 @@ func applySeedObject(ctx context.Context, wsClient dynamic.Interface, gvr schema
 		return err
 	}
 	force := true
-	var res dynamic.ResourceInterface = wsClient.Resource(gvr)
-	if ns := obj.GetNamespace(); ns != "" {
-		res = wsClient.Resource(gvr).Namespace(ns)
-	}
-	_, err = res.Patch(ctx, obj.GetName(), types.ApplyPatchType, data, metav1.PatchOptions{
+	_, err = seedObjectClient(wsClient, gvr, obj).Patch(ctx, obj.GetName(), types.ApplyPatchType, data, metav1.PatchOptions{
 		FieldManager: adminv1alpha1.WorkspaceSeedFieldManager,
 		Force:        &force,
 	})
 	return err
+}
+
+func seedObjectClient(wsClient dynamic.Interface, gvr schema.GroupVersionResource, obj *unstructured.Unstructured) dynamic.ResourceInterface {
+	resource := wsClient.Resource(gvr)
+	if namespace := obj.GetNamespace(); namespace != "" {
+		return resource.Namespace(namespace)
+	}
+	return resource
 }

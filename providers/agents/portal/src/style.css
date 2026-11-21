@@ -1206,8 +1206,9 @@ railgrid-provider-agents .agents-webhook-empty { display: flex; flex-direction: 
 railgrid-provider-agents .agents-runs-refresh { white-space: nowrap; }
 railgrid-provider-agents .agents-runs-refresh > svg { width: 16px; height: 16px; }
 /* The host owns overlay geometry; Agents keeps its existing conversation and
-   workbench mounted while changing only their presentation. */
-railgrid-provider-agents .agents-chat-shell--compact .agents-composer { padding: 8px; }
+   workbench mounted while changing only their presentation. Reserve space
+   for the composer’s outer focus ring at the drawer edges. */
+railgrid-provider-agents .agents-chat-shell--compact .agents-composer { padding: 12px; }
 railgrid-provider-agents .agents-chat-shell--compact .agents-chat-main { min-width: 0; }
 
 railgrid-provider-agents .agents-user-content { min-width: 0; }

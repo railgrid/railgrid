@@ -31,7 +31,7 @@ spec:
       crd: {}
   - group: tenants.railgrid.ai
     name: userpreferences
-    schema: v260720-6391e6e.userpreferences.tenants.railgrid.ai
+    schema: v261121-c2aaf587d.userpreferences.tenants.railgrid.ai
     storage:
       crd: {}
   - group: tenants.railgrid.ai

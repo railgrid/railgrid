@@ -28,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -131,6 +132,7 @@ func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, 
 
 	srv := mcp.NewServer(rootMCPImpl, &mcp.ServerOptions{Instructions: instructions})
 	p.registerListEdges(srv, cluster, token)
+	p.registerEdgeStatus(srv, cluster, token)
 
 	// 2. Register each service's tools by type. The LIST above acts as the
 	//    caller (token) — the provider SA has no direct RBAC on Service
@@ -201,6 +203,68 @@ func (p *Server) registerListEdges(srv *mcp.Server, cluster, token string) {
 			return nil, listEdgesOutput{}, fmt.Errorf("could not list any Edge kind: %s", strings.Join(out.Warnings, "\n"))
 		}
 		return nil, out, nil
+	})
+}
+
+type edgeStatusInput struct {
+	Name string `json:"name" jsonschema:"Exact edge name"`
+}
+
+type edgeStatusObservation struct {
+	Kind          string `json:"kind"`
+	Connected     bool   `json:"connected"`
+	LastHeartbeat string `json:"lastHeartbeat,omitempty"`
+}
+
+type edgeStatusOutput struct {
+	Observations []edgeStatusObservation `json:"observations"`
+	Incomplete   bool                    `json:"incomplete,omitempty"`
+}
+
+func (p *Server) registerEdgeStatus(srv *mcp.Server, cluster, token string) {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "get_edge_status", Title: "Get edge status",
+		Description: "Read the current hub connection state and last reported heartbeat for an edge by name.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input edgeStatusInput) (*mcp.CallToolResult, edgeStatusOutput, error) {
+		if p.callers == nil {
+			return nil, edgeStatusOutput{}, fmt.Errorf("edge status: caller client is unavailable")
+		}
+		if input.Name == "" {
+			return nil, edgeStatusOutput{}, fmt.Errorf("edge status: name is required")
+		}
+		client, err := p.callers.For(cluster, token)
+		if err != nil {
+			return nil, edgeStatusOutput{}, fmt.Errorf("edge status: %w", err)
+		}
+		output := edgeStatusOutput{}
+		for _, resource := range slices.Sorted(maps.Keys(p.kinds)) {
+			kind := p.kinds[resource]
+			edge, err := client.Resource(kind.GVR).Get(ctx, input.Name, metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			if err != nil {
+				output.Incomplete = true
+				continue
+			}
+			connected, _, err := unstructured.NestedBool(edge.Object, "status", "connected")
+			if err != nil {
+				return nil, edgeStatusOutput{}, fmt.Errorf("edge status: %w", err)
+			}
+			heartbeat, _, err := unstructured.NestedString(edge.Object, "status", "lastHeartbeatTime")
+			if err != nil {
+				return nil, edgeStatusOutput{}, fmt.Errorf("edge heartbeat: %w", err)
+			}
+			output.Observations = append(output.Observations, edgeStatusObservation{Kind: kind.Kind, Connected: connected, LastHeartbeat: heartbeat})
+		}
+		if len(output.Observations) == 0 {
+			if output.Incomplete {
+				return nil, edgeStatusOutput{}, fmt.Errorf("edge status could not be verified across the workspace's edge kinds")
+			}
+			return nil, edgeStatusOutput{}, fmt.Errorf("edge %q was not found", input.Name)
+		}
+		return nil, output, nil
 	})
 }
 

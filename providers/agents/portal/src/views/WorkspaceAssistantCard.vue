@@ -16,7 +16,7 @@ const assistantPanel = ref<HTMLElement | null>(null)
 const assistantAgent = ref('')
 const assistantContext = ref(true)
 const unavailableAgent = computed(() => !!assistantAgent.value && agents.value.hasSnapshot && !agents.value.data.some(agent => agent.metadata.name === assistantAgent.value))
-const canSave = computed(() => !assistantAgent.value || (agents.value.hasSnapshot && !unavailableAgent.value))
+const canSave = computed(() => !props.overlayControl.preferencesLoading && !props.overlayControl.preferencesSaving && (!assistantAgent.value || (agents.value.hasSnapshot && !unavailableAgent.value)))
 const assistantOptions = computed(() => [
   { value: '', label: 'Off — no workspace assistant' },
   ...(assistantAgent.value && !agents.value.data.some(agent => agent.metadata.name === assistantAgent.value) ? [{ value: assistantAgent.value, label: `${assistantAgent.value} — unavailable`, disabled: true }] : []),
@@ -65,7 +65,7 @@ async function retryAgents(): Promise<void> {
       <header class="k-resource-page__header">
         <div class="k-resource-page__heading">
           <h3 class="k-resource-page__title">Workspace assistant</h3>
-          <p class="k-resource-page__subtitle">Only for you, in this browser and workspace.</p>
+          <p class="k-resource-page__subtitle">Saved to your account for this workspace.</p>
         </div>
       </header>
       <div class="k-card agents-assistant-settings__card">
@@ -73,7 +73,7 @@ async function retryAgents(): Promise<void> {
         :title="agents.hasSnapshot ? 'Could not refresh agents' : 'Could not load agents'"
         :message="agents.hasSnapshot ? 'Showing the last successful agent choices.' : 'Check your connection and try again.'"
         action-label="Retry" action-busy-label="Retrying…" :action-busy="agents.loading" @action="retryAgents" />
-      <LoadingSkeleton v-else-if="!agents.hasSnapshot" label="Loading agents…" compact />
+      <LoadingSkeleton v-else-if="!agents.hasSnapshot || overlayControl.preferencesLoading" label="Loading workspace assistant…" compact />
       <p v-if="unavailableAgent" role="status">This agent is unavailable. Choose another agent or turn the assistant off.</p>
       <form @submit.prevent="saveAssistant">
         <div class="agents-assistant-settings__agent">
@@ -92,7 +92,7 @@ async function retryAgents(): Promise<void> {
           <p id="workspace-assistant-context-help" class="agents-assistant-settings__help">{{ assistantAgent ? 'Share the workspace and page location; providers may also share page data.' : 'Choose an agent to enable page context.' }}</p>
         </div>
         <div class="agents-assistant-settings__footer">
-          <div class="agents-assistant-settings__actions"><button class="k-btn k-btn--text agents-assistant-settings__action" type="button" @click="cancelAssistant">Cancel</button><button class="k-btn k-btn--primary agents-assistant-settings__action" type="submit" :disabled="!canSave">Save assistant</button></div>
+          <div class="agents-assistant-settings__actions"><button class="k-btn k-btn--text agents-assistant-settings__action" type="button" @click="cancelAssistant">Cancel</button><button class="k-btn k-btn--primary agents-assistant-settings__action" type="submit" :disabled="!canSave">{{ overlayControl.preferencesSaving ? 'Saving…' : 'Save assistant' }}</button></div>
         </div>
       </form>
       </div>

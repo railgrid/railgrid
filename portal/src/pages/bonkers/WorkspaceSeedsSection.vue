@@ -140,9 +140,7 @@ async function save() {
   editorError.value = null
   try {
     await admin.saveSeed(name, current.spec, current.create)
-    notice.value = current.create
-      ? `Seed “${name}” created. The hub applies it to every tenant workspace once it is accepted.`
-      : `Seed “${name}” saved. The hub brings every tenant workspace to the new spec once it is accepted.`
+    notice.value = `Seed “${name}” saved. The hub applies it to eligible workspaces once it is accepted.`
     editor.value = null
     await admin.refresh()
     await router.replace({ path: route.path, query: { ...listLocation.value.query, seed: name } })
@@ -193,8 +191,7 @@ function accessTone(access: unknown): 'success' | 'warning' | 'muted' {
     <div v-show="!selectedId">
       <h2 class="mb-1 text-base font-semibold text-text-primary">Workspace seeds</h2>
       <p class="mb-4 max-w-3xl text-sm text-text-muted">
-        What every tenant workspace gets without anyone enabling it: APIExports the hub binds there and objects it creates.
-        A seed applies to all workspaces, existing and new, with no tenant consent. Deleting a seed removes nothing it created.
+        The hub binds APIExports and creates objects in eligible workspaces. Seeds can target all workspaces or starter workspaces for new organizations.
       </p>
       <div class="mb-4">
         <button type="button" class="k-btn k-btn--primary px-3 py-1.5 text-sm" :disabled="busy" @click="newSeed()">
@@ -227,7 +224,7 @@ function accessTone(access: unknown): 'success' | 'warning' | 'muted' {
       <ResourcePage :title="selectedId" kind="Workspace seed" compact-actions
         :loaded="!!selected" :loading="admin.loading" :error="detailError" :stale="!!selected && !!detailError" retryable @retry="refresh">
         <template v-if="selected" #status><StatusBadge :status="seedStatus(selected).label" :tone="seedStatus(selected).tone" /></template>
-        <template v-if="selected" #meta><span>Applies to every tenant workspace</span></template>
+        <template v-if="selected" #meta><span>{{ selected.initialWorkspacesOnly ? 'Starter workspaces for new organizations' : 'All tenant workspaces' }}</span></template>
         <template v-if="selected" #actions>
           <button type="button" class="k-btn k-btn--ghost inline-flex items-center gap-1.5" :disabled="busy || admin.loading" @click="editSeed(selected)">
             <Pencil class="h-4 w-4" aria-hidden="true" />Edit spec
@@ -241,11 +238,11 @@ function accessTone(access: unknown): 'success' | 'warning' | 'muted' {
           <div class="space-y-4">
             <ResourceSectionCard id="seed-status" title="Status" description="Whether the hub applies this seed. It does not report how many workspaces have been reached; a workspace that fails is in the hub’s log.">
               <p v-if="selected.accepted === 'False'" class="text-sm text-danger" role="status">Refused, and applied nowhere: {{ selected.message }}</p>
-              <p v-else-if="selected.accepted === 'True'" class="text-sm text-text-secondary">{{ selected.message || 'Accepted. The hub applies it to every tenant workspace.' }}</p>
+              <p v-else-if="selected.accepted === 'True'" class="text-sm text-text-secondary">{{ selected.message || 'Accepted. The hub applies it to eligible workspaces.' }}</p>
               <p v-else class="text-sm text-text-secondary">The hub has not looked at this version of the seed yet. Refresh in a moment.</p>
             </ResourceSectionCard>
 
-            <ResourceSectionCard id="seed-bindings" title="Bindings" description="APIExports bound into every tenant workspace, with the permission claims listed in the spec accepted.">
+            <ResourceSectionCard id="seed-bindings" title="Bindings" description="APIExports bound into eligible workspaces, with the permission claims listed in the spec accepted.">
               <ResourceTable :columns="bindingColumns" :rows="selectedBindings" aria-label="Seed bindings" row-key="name" :interactive="false" :loaded="true" empty-text="This seed binds nothing.">
                 <template #name="{ value }"><span class="font-mono">{{ value }}</span></template>
                 <template #exportName="{ value }"><span class="font-mono text-xs">{{ value }}</span></template>
@@ -257,7 +254,7 @@ function accessTone(access: unknown): 'success' | 'warning' | 'muted' {
               </ResourceTable>
             </ResourceSectionCard>
 
-            <ResourceSectionCard id="seed-objects" title="Objects" description="Created in every tenant workspace once the seed’s bindings are bound there.">
+            <ResourceSectionCard id="seed-objects" title="Objects" description="Created in eligible workspaces once the seed’s bindings are bound there.">
               <ResourceTable :columns="objectColumns" :rows="selectedObjects" aria-label="Seed objects" row-key="key" :interactive="false" :loaded="true" empty-text="This seed creates no objects.">
                 <template #name="{ value }"><span class="font-mono">{{ value || '—' }}</span></template>
                 <template #kind="{ row }"><span>{{ row.kind || row.resource }}</span><span class="block font-mono text-xs text-text-muted">{{ row.apiVersion }}</span></template>
@@ -275,7 +272,7 @@ function accessTone(access: unknown): 'success' | 'warning' | 'muted' {
     </div>
 
     <MeteringDialog v-if="editor" :title="editorTitle" :busy="saving" :dirty="editorDirty" @close="closeEditor">
-      <template #context><p class="mt-1 text-sm text-text-muted">Saving applies this to every tenant workspace, existing and new.</p></template>
+      <template #context><p class="mt-1 text-sm text-text-muted">Seeds apply to all workspaces by default. Set initialWorkspacesOnly to target new organizations’ starter workspaces.</p></template>
       <form id="admin-seed-editor" class="space-y-4" @submit.prevent="save">
         <div v-if="editor.create">
           <label for="admin-seed-name" class="block text-[11px] text-text-muted">Name</label>
@@ -288,14 +285,14 @@ function accessTone(access: unknown): 'success' | 'warning' | 'muted' {
           <textarea id="admin-seed-spec" v-model="editor.spec" :data-initial-focus="editor.create ? undefined : ''" rows="22" spellcheck="false" autocapitalize="off" autocomplete="off"
             class="k-input mt-1 font-mono text-xs leading-5" required aria-describedby="admin-seed-spec-help" />
           <p id="admin-seed-spec-help" class="mt-1 text-xs text-text-muted">
-            Permission claims must match what the export declares. Manifests are literal: the same object goes into every workspace. Nothing is removed when a binding or object is taken out.
+            Permission claims must match what the export declares. Manifests are literal: the same object goes into each eligible workspace. Nothing is removed when a binding or object is taken out.
           </p>
         </div>
         <p v-if="editorError" class="whitespace-pre-wrap text-sm text-danger" role="alert" aria-live="assertive">{{ editorError }}</p>
       </form>
       <template #submit>
         <button type="submit" form="admin-seed-editor" class="k-btn k-btn--primary" :disabled="saving || !editor.name.trim() || !editor.spec.trim() || !!editorNameError || (!editor.create && !editorDirty)">
-          {{ saving ? 'Saving…' : editor.create ? 'Create and apply to all workspaces' : 'Save and apply to all workspaces' }}
+          {{ saving ? 'Saving…' : editor.create ? 'Create seed' : 'Save seed' }}
         </button>
       </template>
     </MeteringDialog>

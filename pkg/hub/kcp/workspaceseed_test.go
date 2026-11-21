@@ -260,3 +260,51 @@ func TestEnsureWorkspaceSeedRefusesTheCoreBindingName(t *testing.T) {
 		t.Fatalf("bindings = %v", list.Items)
 	}
 }
+
+func TestInitialWorkspaceSeedCreatesOnceAndPreservesChanges(t *testing.T) {
+	ctx := t.Context()
+	agents := seedTestBinding("agents", seedAgentsExport, "Bound", nil)
+	core := seedTestBinding(CoreBindingName, adminv1alpha1.SeedExportReference{Name: CoreExportName}, "Bound", nil)
+	dyn, applied := newSeedTestClient(t, agents, core)
+	gvr := schema.GroupVersionResource{Group: "agents.railgrid.ai", Version: "v1alpha1", Resource: "agents"}
+	spec := adminv1alpha1.WorkspaceSeedSpec{
+		InitialWorkspacesOnly: true,
+		Bindings:              []adminv1alpha1.SeedBinding{{Name: "agents", Export: seedAgentsExport}},
+		Objects: []adminv1alpha1.SeedObject{{
+			Resource: "agents",
+			Manifest: runtime.RawExtension{Raw: []byte(`{"apiVersion":"agents.railgrid.ai/v1alpha1","kind":"Agent","metadata":{"name":"railgrid-agents"},"spec":{"displayName":"Railgrid Agents"}}`)},
+		}},
+	}
+	first, err := ensureInitialWorkspaceSeed(ctx, dyn, "railgrid-agents", spec)
+	if err != nil || first.ObjectsApplied != 1 || len(*applied) != 0 {
+		t.Fatalf("initial seed = %+v, %v; applies = %v", first, err, *applied)
+	}
+	client := dyn.Resource(gvr)
+	agent, err := client.Get(ctx, "railgrid-agents", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedField(agent.Object, "My assistant", "spec", "displayName"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Update(ctx, agent, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ensureInitialWorkspaceSeed(ctx, dyn, "railgrid-agents", spec); err != nil {
+		t.Fatal(err)
+	}
+	agent, err = client.Get(ctx, "railgrid-agents", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name, _, _ := unstructured.NestedString(agent.Object, "spec", "displayName"); name != "My assistant" {
+		t.Fatalf("seed overwrote display name: %q", name)
+	}
+	if err := client.Delete(ctx, "railgrid-agents", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := ensureInitialWorkspaceSeed(ctx, dyn, "railgrid-agents", spec)
+	if err != nil || again.ObjectsApplied != 0 {
+		t.Fatalf("seed recreated deleted agent: %+v, %v", again, err)
+	}
+}

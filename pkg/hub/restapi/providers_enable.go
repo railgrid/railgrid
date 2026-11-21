@@ -560,9 +560,10 @@ type ListEnabledProvidersResponse struct {
 // would render that as plain "Enabled" and tell the user they are running their
 // own instance when they are not.
 type EnabledProviderDetail struct {
-	Ready       bool   `json:"ready"`
-	Unavailable string `json:"unavailable,omitempty"`
-	BindingName string `json:"bindingName"`
+	WorkspaceSeed string `json:"workspaceSeed,omitempty"`
+	Ready         bool   `json:"ready"`
+	Unavailable   string `json:"unavailable,omitempty"`
+	BindingName   string `json:"bindingName"`
 	// ExportPath is the workspace path of the bound APIExport.
 	ExportPath    string `json:"exportPath"`
 	ExportName    string `json:"exportName,omitempty"`
@@ -708,6 +709,7 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 		}
 		details[provider] = EnabledProviderDetail{
 			BindingName:     binding.Name,
+			WorkspaceSeed:   binding.WorkspaceSeed,
 			Ready:           binding.Ready,
 			Unavailable:     binding.Unavailable,
 			ExportPath:      binding.ExportPath,

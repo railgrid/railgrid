@@ -43,7 +43,7 @@ VUE_TOAST_PORTALS=(
   "providers/agents/portal"
 )
 
-# Optional AgentKit assets are distributed only to the two AI consumers. The
+# Optional AgentKit assets are distributed to the AI provider portals. The
 # explicit lists keep new conversation primitives reviewable and prevent an
 # AI surface from silently appearing in unrelated provider bundles.
 AGENTKIT_SRC="$ROOT/provider-sdk/agentkit"
@@ -53,6 +53,10 @@ AGENTKIT_PORTALS=(
   "providers/app-studio/portal"
 )
 AGENTKIT_FILES=(activity.css activity.ts agent-ui.css conversation.css styles.ts)
+# The host dashboard uses only the shared send control and its dependencies.
+HOST_AGENTKIT="$ROOT/portal/src/agentkit"
+HOST_AGENTKIT_FILES=(agent-ui.css activity.css conversation.css styles.ts)
+HOST_AGENTKIT_VUE_FILES=(AIPrimaryAction.vue ai.ts)
 AGENTKIT_VUE_FILES=(
   AIActionRow.vue AIActivityDisclosure.vue AIComposer.vue AIModelPicker.vue AIModelReasoningPicker.vue
   AIConversationHeader.vue AIConversationIdentity.vue AIConversationLayout.vue
@@ -269,7 +273,7 @@ verify_agentkit_plain_group() {
 
 verify_absent_agentkit_dir() {
   local stale=0
-  local -a allowed=("${AGENTKIT_PORTALS[@]}")
+  local -a allowed=("${AGENTKIT_PORTALS[@]}" portal)
   for p in "${ALL_PORTALS[@]}"; do
     local is_allowed=1
     for allowed_portal in "${allowed[@]}"; do
@@ -408,6 +412,14 @@ verify_all() {
     if ! verify_unexpected "$ROOT/$p/src/agentkit" agentkit_expected; then stale=1; fi
   done
   if ! verify_absent_agentkit_dir; then stale=1; fi
+  local host_agentkit_expected=("${HOST_AGENTKIT_FILES[@]}" "${HOST_AGENTKIT_VUE_FILES[@]}")
+  for f in "${HOST_AGENTKIT_FILES[@]}"; do
+    if ! verify_file "$AGENTKIT_SRC/$f" "$HOST_AGENTKIT/$f"; then stale=1; fi
+  done
+  for f in "${HOST_AGENTKIT_VUE_FILES[@]}"; do
+    if ! verify_agentkit_vue_file "$AGENTKIT_VUE_SRC" "$HOST_AGENTKIT" "$f"; then stale=1; fi
+  done
+  if ! verify_unexpected "$HOST_AGENTKIT" host_agentkit_expected; then stale=1; fi
 
   if (( stale )); then
     printf "ERROR: portalkit copies are stale or unexpected. Run 'make sync-portalkit' to update known assets; remove arbitrary copies manually.\n" >&2
@@ -442,5 +454,8 @@ sync_group "$VUE_SRC" TS_PORTALS VUE_TOAST_FILES
 sync_group "$TS_SRC" VUE_PORTALS VUE_SHARED_FILES
 sync_agentkit_plain_group
 sync_agentkit_vue_group
+mkdir -p "$HOST_AGENTKIT"
+for f in "${HOST_AGENTKIT_FILES[@]}"; do cp "$AGENTKIT_SRC/$f" "$HOST_AGENTKIT/$f"; done
+for f in "${HOST_AGENTKIT_VUE_FILES[@]}"; do sync_agentkit_vue_file "$AGENTKIT_VUE_SRC" "$HOST_AGENTKIT" "$f"; done
 cp "$TS_SRC/railgrid-ui.css" "$HOST_UI"
 echo "synced portalkit/railgrid-ui.css -> portal/src/assets/railgrid-ui.css"

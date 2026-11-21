@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261113-17550bd0.workspaceseeds.admin.railgrid.ai
+  name: v261121-2230ed67d.workspaceseeds.admin.railgrid.ai
 spec:
   group: admin.railgrid.ai
   names:
@@ -219,6 +219,11 @@ spec:
               x-kubernetes-list-map-keys:
               - name
               x-kubernetes-list-type: map
+            initialWorkspacesOnly:
+              description: |-
+                InitialWorkspacesOnly provisions once in the starter workspace of each
+                organization created after this seed. Existing objects are preserved.
+              type: boolean
             objects:
               description: |-
                 Objects are created in every tenant workspace once every binding of this

@@ -113,6 +113,19 @@ test('same-scope refresh retains navigation projection through loading and error
   assert.deepEqual(store.bindingNamesByProvider, { edges: 'binding-edges' })
 })
 
+test('an access denial clears the last-known same-workspace bindings', async () => {
+  setSelection('org-a', 'workspace-a')
+  const store = storeModule.useProvidersStore()
+  await establishProjection(store)
+  globalThis.__providerAuthFetch = async () => response({}, { ok: false, status: 403 })
+  await assert.rejects(store.refreshBindings(), /403/)
+  assert.equal(store.bindingsLoadState, 'error')
+  assert.equal(store.bindingsStale, false)
+  assert.equal(store.bindingsWorkspace, null)
+  assert.deepEqual(store.bindingNamesByProvider, {})
+  assert.deepEqual(store.bindingsByProvider, {})
+})
+
 test('cross-scope and organization-only transitions clear before any new request', async () => {
   setSelection('org-a', 'workspace-a')
   const store = storeModule.useProvidersStore()

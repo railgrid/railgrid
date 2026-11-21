@@ -51,7 +51,7 @@ func TestRootMCPListEdges(t *testing.T) {
 		callers.Objects = append(callers.Objects, edge, edgeObject(resource, kind.Kind, "pending"))
 	}
 	offline := edgeObject(macOSServerResource, "MacOSServer", "offline")
-	offline.Object["status"] = map[string]any{"connected": false}
+	offline.Object["status"] = map[string]any{"connected": false, "lastHeartbeatTime": "2026-01-01T00:00:00Z"}
 	callers.Objects = append(callers.Objects, offline)
 
 	ctx := t.Context()
@@ -63,6 +63,26 @@ func TestRootMCPListEdges(t *testing.T) {
 	index := slices.IndexFunc(tools, func(tool kubeTool) bool { return tool.Name == "list_edges" })
 	if index < 0 || tools[index].Annotations == nil || !tools[index].Annotations.ReadOnlyHint {
 		t.Fatalf("expected a read-only list_edges tool, got %+v", tools)
+	}
+
+	statusIndex := slices.IndexFunc(tools, func(tool kubeTool) bool { return tool.Name == "get_edge_status" })
+	if statusIndex < 0 || tools[statusIndex].Annotations == nil || !tools[statusIndex].Annotations.ReadOnlyHint {
+		t.Fatalf("expected a read-only edge status tool, got %+v", tools)
+	}
+	status, err := s.kubeCallTool(ctx, handler, token, testCluster, "get_edge_status", map[string]any{"name": "offline"})
+	if err != nil || status == nil || status.IsError {
+		t.Fatalf("get_edge_status = %+v, %v", status, err)
+	}
+	rawStatus, err := json.Marshal(status.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var observation edgeStatusOutput
+	if err := json.Unmarshal(rawStatus, &observation); err != nil {
+		t.Fatal(err)
+	}
+	if len(observation.Observations) != 1 || observation.Observations[0].Connected || observation.Observations[0].LastHeartbeat != "2026-01-01T00:00:00Z" {
+		t.Fatalf("unexpected offline observation: %+v", observation)
 	}
 
 	call := func(t *testing.T, bearer string) *mcp.CallToolResult {

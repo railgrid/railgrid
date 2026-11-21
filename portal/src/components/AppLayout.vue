@@ -172,7 +172,7 @@ const mainStyle = computed(() => {
       ? { ...space, paddingBottom: mainPaddingBottom.value }
       : space
   }
-  if (assistantOverlay.dockVisible && !assistantOverlay.sidePanelWidth && !assistantOverlay.sidePanelFullscreen) return { ...space, paddingBottom: `calc(${mainPaddingBottom.value || '0px'} + 96px)` }
+  if (assistantOverlay.chatLauncherVisible) return { ...space, paddingBottom: `calc(${mainPaddingBottom.value || '0px'} + 64px)` }
   return { ...space, paddingBottom: mainPaddingBottom.value }
 })
 

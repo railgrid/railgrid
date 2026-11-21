@@ -266,7 +266,7 @@ describe('overlay model recovery', () => {
   })
   it('offers the current Agent default for a deleted explicit chat model without sending or replacing context', async () => {
     const sessionID = 'existing-chat'
-    localStorage.setItem('railgrid:agents:session:org:workspace:scout', sessionID)
+    localStorage.setItem('railgrid:agents:selected-session:["alice","org/workspace","scout"]', sessionID)
     const defaultCredential = { value: 'openai' }
     const saveSessionModel = vi.fn(async (_name: string, _session: string, preferences: any) => ({
       ...preferences,
