@@ -96,6 +96,7 @@ export interface AdminSeedObject {
 // while the hub has not looked at the current spec yet.
 export interface AdminWorkspaceSeed {
   name: string
+  initialWorkspacesOnly?: boolean
   spec: string
   accepted: string
   reason: string

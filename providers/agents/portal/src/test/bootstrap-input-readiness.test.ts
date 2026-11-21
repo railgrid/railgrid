@@ -7,7 +7,7 @@ import { mountVue, settleVue, type MountedVue } from './vue-helper'
 
 const mounted: MountedVue[] = []
 const authority = { usable: true, tenantKey: 'org/ws', userKey: 'alice@example.test', token: 'fixture-token' }
-const rememberedSessionKey = 'railgrid:agents:session:org:ws:scout'
+const rememberedSessionKey = 'railgrid:agents:selected-session:["alice@example.test","org/ws","scout"]'
 
 afterEach(() => {
   while (mounted.length) mounted.pop()?.unmount()
@@ -162,7 +162,7 @@ describe('chat bootstrap input readiness', () => {
     await settle(10)
 
     expect(listSessions).toHaveBeenCalledTimes(3)
-    expect(localStorage.getItem(rememberedSessionKey)).toBe('recovered-session')
+    expect(localStorage.getItem(rememberedSessionKey)).toBeNull()
     expect(composerEditor(el)?.getAttribute('contenteditable')).toBe('true')
     expect(el.querySelector('.agents-chat-sessions-notice')).toBeNull()
   })

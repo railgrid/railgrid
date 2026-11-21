@@ -369,18 +369,17 @@ test('sidebar toggles own compact geometry over late provider button styles', ()
 })
 
 
-test('the assistant only adds bottom padding for the compact bar', () => {
+test('the floating assistant launcher leaves space for page controls and terminal padding', () => {
   const body = appLayout.match(/const mainStyle = computed\(\(\) => \{([\s\S]*?)\n}\)/)?.[1]
   assert.ok(body)
   const style = new Function('gettingStartedFocused', 'layoutProps', 'assistantOverlay', 'mainPaddingBottom', body)
-  const evaluate = (fullBleed, dockVisible, terminalPadding, width = 0, focused = false, chatLauncherVisible = false) =>
-    style({ value: focused }, { fullBleed }, { dockVisible, chatLauncherVisible, sidePanelWidth: width, sidePanelFullscreen: false }, { value: terminalPadding })
-  assert.deepEqual(evaluate(true, true, '256px', 440), { marginRight: '440px' })
+  const evaluate = (fullBleed, chatLauncherVisible, terminalPadding, width = 0, focused = false) =>
+    style({ value: focused }, { fullBleed }, { chatLauncherVisible, sidePanelWidth: width }, { value: terminalPadding })
+  assert.deepEqual(evaluate(true, false, '256px', 440), { marginRight: '440px' })
   assert.deepEqual(evaluate(true, true), { marginRight: '0px' })
-  assert.deepEqual(evaluate(false, true), { marginRight: '0px', paddingBottom: 'calc(0px + 96px)' })
-  assert.deepEqual(evaluate(false, true, '256px'), { marginRight: '0px', paddingBottom: 'calc(256px + 96px)' })
-  assert.deepEqual(evaluate(false, true, '256px', 440), { marginRight: '440px', paddingBottom: '256px' })
-  assert.deepEqual(evaluate(true, false, undefined, 0, false, true), { marginRight: '0px' })
-  assert.deepEqual(evaluate(true, false, '256px', 0, false, true), { marginRight: '0px', paddingBottom: '256px' })
+  assert.deepEqual(evaluate(false, true), { marginRight: '0px', paddingBottom: 'calc(0px + 64px)' })
+  assert.deepEqual(evaluate(false, true, '256px'), { marginRight: '0px', paddingBottom: 'calc(256px + 64px)' })
+  assert.deepEqual(evaluate(false, false, '256px', 440), { marginRight: '440px', paddingBottom: '256px' })
+  assert.deepEqual(evaluate(true, true, '256px'), { marginRight: '0px', paddingBottom: '256px' })
   assert.equal(evaluate(false, true, undefined, 440, true), undefined)
 })

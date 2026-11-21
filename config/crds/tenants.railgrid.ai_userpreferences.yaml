@@ -164,6 +164,30 @@ spec:
                 x-kubernetes-list-map-keys:
                 - workspaceUUID
                 x-kubernetes-list-type: map
+              workspaceAssistants:
+                description: WorkspaceAssistants stores the user's assistant settings
+                  per workspace.
+                items:
+                  description: WorkspaceAssistantPreference stores a personal assistant
+                    choice.
+                  properties:
+                    agent:
+                      description: Agent is nil to use the workspace default and empty
+                        to explicitly turn the assistant off.
+                      maxLength: 253
+                      type: string
+                    followContext:
+                      type: boolean
+                    workspaceUUID:
+                      type: string
+                  required:
+                  - followContext
+                  - workspaceUUID
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - workspaceUUID
+                x-kubernetes-list-type: map
             type: object
           status:
             description: UserPreferencesStatus is the observed state of a UserPreferences

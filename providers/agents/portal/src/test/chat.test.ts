@@ -11,7 +11,7 @@ import AIConversationRail from '../agentkit/AIConversationRail.vue'
 import { resolveConfirm } from '../portalkit/confirm'
 import { rebuildTranscript } from '../vue/chat'
 import { agentChatDraftStorageKey, readAgentChatDraft } from '../chatDraft'
-import { ApiError, type SSEEvent } from '../api'
+import { ApiError, type SessionModelPreferences, type SSEEvent } from '../api'
 import type { SessionMeta, TranscriptMessage } from '../types'
 import { agentFixture, composerEditor, composerText, makeStore, modelBackend, setComposerText, stubApi } from './helpers'
 import { mountVue, settleVue, text, type MountedVue } from './vue-helper'
@@ -2825,10 +2825,14 @@ describe('approval handoff after the chat stream closes', () => {
 })
 
 describe('rich composer admission boundary', () => {
-  const authOverride = { contextAuthority: () => attachmentAuthority }
+  const authOverride = {
+    contextAuthority: () => attachmentAuthority,
+    listSessions: async () => [session('source-session')],
+  }
+  const rememberedSessionKey = 'railgrid:agents:selected-session:["alice@example.test","org/ws","scout"]'
 
   it('keeps attachment receipts and text when a provisional start fails before admission', async () => {
-    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'source-session')
+    localStorage.setItem(rememberedSessionKey, 'source-session')
     const admission = deferred<void>()
     const upload = vi.fn(async () => draftAttachment)
     const remove = vi.fn(async () => undefined)
@@ -2867,7 +2871,7 @@ describe('rich composer admission boundary', () => {
   })
 
   it('preserves follow-up text authored while admission is pending and reports the failed send', async () => {
-    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'source-session')
+    localStorage.setItem(rememberedSessionKey, 'source-session')
     const admission = deferred<void>()
     const upload = vi.fn(async () => draftAttachment)
     const remove = vi.fn(async () => undefined)
@@ -2904,7 +2908,7 @@ describe('rich composer admission boundary', () => {
   })
 
   it('submits an attachment-only turn and commits its receipt after run admission', async () => {
-    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'source-session')
+    localStorage.setItem(rememberedSessionKey, 'source-session')
     const upload = vi.fn(async () => draftAttachment)
     const remove = vi.fn(async () => undefined)
     const chatStream = vi.fn(async function* (_agent: string, _message: string, _sessionID: string, _signal: AbortSignal, _turn: unknown) {
@@ -2932,7 +2936,7 @@ describe('rich composer admission boundary', () => {
   })
 
   it('cleans up the captured draft on detached admission without clearing the new session', async () => {
-    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'source-session')
+    localStorage.setItem(rememberedSessionKey, 'source-session')
     const admission = deferred<void>()
     const upload = vi.fn(async () => draftAttachment)
     const remove = vi.fn(async () => undefined)
@@ -2959,7 +2963,7 @@ describe('rich composer admission boundary', () => {
     expect(signal.aborted).toBe(false)
     setComposerText(el, 'New session draft')
     await settle()
-    const newSessionID = localStorage.getItem('railgrid:agents:session:org:ws:scout')!
+    const newSessionID = localStorage.getItem(rememberedSessionKey)!
     const newDraftKey = agentChatDraftStorageKey(attachmentAuthority, 'scout', newSessionID)
 
     admission.resolve()
@@ -4159,7 +4163,7 @@ it('navigates the overlay chat list, searches, and keeps drafts when starting an
   store.agents.loaded = true
   const host = document.createElement('div')
   document.body.appendChild(host)
-  const views: Array<{ chats: boolean; title: string }> = []
+  const views: Array<{ chats: boolean; title: string; preparingDashboardChat: boolean }> = []
   host.addEventListener('railgrid-overlay-view', event => views.push((event as CustomEvent).detail))
   const wrapper = defineComponent({ setup() {
     provideAgentsRuntime({ store: shallowRef(store), api: shallowRef(api), route: ref({ kind: 'agent', name: 'scout', tab: 'chat' }), authorityEpoch: ref(0), host: ref(host) })
@@ -4169,6 +4173,12 @@ it('navigates the overlay chat list, searches, and keeps drafts when starting an
   mounted.push(view)
   await settle(8)
   const input = composerEditor(view.element)!
+  host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+  await settle()
+  const saved = () => [...view.element.querySelectorAll<HTMLButtonElement>('.agents-overlay-chats__row')]
+    .find(row => text(row).includes('Saved conversation'))!
+  saved().click()
+  await settle(8)
   setComposerText(input, 'Keep this draft')
   host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
   await settle()
@@ -4187,8 +4197,7 @@ it('navigates the overlay chat list, searches, and keeps drafts when starting an
   expect(input.textContent).toBe('')
   host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
   await settle()
-  const saved = [...view.element.querySelectorAll<HTMLButtonElement>('.agents-overlay-chats__row')].find(row => text(row).includes('Saved conversation'))!
-  saved.click()
+  saved().click()
   await settle(8)
   expect(input.textContent).toBe('Keep this draft')
   expect(views.at(-1)?.chats).toBe(false)
@@ -4204,7 +4213,7 @@ async function mountOverlayDraftTest(extra: Record<string, unknown>) {
   store.agents.loaded = true
   const host = document.createElement('div')
   document.body.appendChild(host)
-  const views: Array<{ chats: boolean; title: string }> = []
+  const views: Array<{ chats: boolean; title: string; preparingDashboardChat: boolean }> = []
   host.addEventListener('railgrid-overlay-view', event => views.push((event as CustomEvent).detail))
   const wrapper = defineComponent({ setup() {
     provideAgentsRuntime({ store: shallowRef(store), api: shallowRef(api), route: ref({ kind: 'agent', name: 'scout', tab: 'chat' }), authorityEpoch: ref(0), host: ref(host) })
@@ -4214,8 +4223,94 @@ async function mountOverlayDraftTest(extra: Record<string, unknown>) {
   mounted.push(view)
   await settle(8)
   const input = composerEditor(view.element)!
-  return { view, host, input, api }
+  return { view, host, input, api, views }
 }
+
+it('keeps dashboard sends on the signed-in user’s selected chat and reveals the transcript', async () => {
+  localStorage.setItem('railgrid:agents:session:org:ws:scout', 'workspace-latest')
+  const listSessions = async () => [session('workspace-latest', 'Shared conversation')]
+  const contextAuthority = () => attachmentAuthority
+  const initial = await mountOverlayDraftTest({ listSessions, contextAuthority })
+  try {
+    expect(initial.views.at(-1)?.title).toBe('New chat')
+    initial.host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+    await settle()
+    const shared = [...initial.view.element.querySelectorAll<HTMLButtonElement>('.agents-overlay-chats__row')]
+      .find(row => text(row).includes('Shared conversation'))
+    expect(shared).toBeDefined()
+    shared!.click()
+    await settle(8)
+  } finally {
+    initial.view.unmount()
+    initial.host.remove()
+  }
+
+  const chatStream = vi.fn(async function* (_agent: string, _message: string, sessionID: string) {
+    yield { event: 'start', data: { runID: 'dashboard-turn', sessionID } } as SSEEvent
+  })
+  const resumed = await mountOverlayDraftTest({ listSessions, contextAuthority, chatStream })
+  try {
+    expect(resumed.views.at(-1)?.title).toBe('Shared conversation')
+    resumed.host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+    await settle()
+    expect(resumed.views.at(-1)?.chats).toBe(true)
+    const intent = new CustomEvent('railgrid-overlay-dashboard-send', { cancelable: true, detail: { prompt: 'Follow up' } })
+    expect(resumed.host.dispatchEvent(intent)).toBe(false)
+    await settle(8)
+    expect(resumed.views.at(-1)?.chats).toBe(false)
+    expect(chatStream.mock.calls[0]?.[2]).toBe('workspace-latest')
+  } finally { resumed.host.remove() }
+
+  const otherUser = await mountOverlayDraftTest({
+    listSessions, contextAuthority: () => ({ ...attachmentAuthority, userKey: 'another-user' }),
+  })
+  try {
+    expect(otherUser.views.at(-1)?.title).toBe('New chat')
+  } finally { otherUser.host.remove() }
+})
+
+it.each([true, false])('checks a remembered dashboard chat outside the session list (has history: %s)', async hasHistory => {
+  const remembered = 'older-or-deleted-chat'
+  localStorage.setItem('railgrid:agents:selected-session:["alice@example.test","org/ws","scout"]', remembered)
+  const listMessagePage = vi.fn(async (_agent: string, id: string) => ({
+    items: hasHistory && id === remembered ? [{ id: 'older-message', role: 'user', content: 'Earlier question' }] : [],
+  }))
+  const { view, host } = await mountOverlayDraftTest({
+    contextAuthority: () => attachmentAuthority,
+    listSessions: async () => [session('shared', 'Shared conversation')],
+    listMessagePage,
+  })
+  try {
+    expect(listMessagePage).toHaveBeenCalledWith('scout', remembered, '', 1)
+    const selected = localStorage.getItem('railgrid:agents:selected-session:["alice@example.test","org/ws","scout"]')
+    expect(selected).not.toBe('shared')
+    if (hasHistory) {
+      expect(selected).toBe(remembered)
+      expect(text(view.element)).toContain('Earlier question')
+    } else {
+      expect(selected).not.toBe(remembered)
+      expect(selected).toBeTruthy()
+    }
+  } finally { host.remove() }
+})
+
+it('reports dashboard chat preparation through the first session and model read', async () => {
+  const sessions = deferred<SessionMeta[]>()
+  const preferences = deferred<SessionModelPreferences>()
+  const { host, views } = await mountOverlayDraftTest({
+    listSessions: () => sessions.promise,
+    getSessionModel: () => preferences.promise,
+  })
+  try {
+    expect(views.at(-1)?.preparingDashboardChat).toBe(true)
+    sessions.resolve([])
+    await settle(8)
+    expect(views.at(-1)?.preparingDashboardChat).toBe(true)
+    preferences.resolve({ selectedCredential: 'openai', effortOptions: [], defaultEffort: '', reasoningEffortByModel: {} })
+    await settle(8)
+    expect(views.at(-1)?.preparingDashboardChat).toBe(false)
+  } finally { host.remove() }
+})
 
 it('distinguishes the compact Chats initial-read failure from an empty list', async () => {
   const listSessions = vi.fn().mockRejectedValue(new Error('synthetic list read failure'))
@@ -4431,6 +4526,12 @@ it('keeps text typed while the destination overlay chat history is loading', asy
     listMessagePage: async () => delayHistory ? history.promise : { items: [] },
   })
   try {
+    host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+    await settle()
+    const source = () => [...view.element.querySelectorAll<HTMLButtonElement>('.agents-overlay-chats__row')]
+      .find(row => text(row).includes('draft-source'))!
+    source().click()
+    await settle(8)
     setComposerText(input, 'Source draft')
     host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
     await settle()
@@ -4446,8 +4547,7 @@ it('keeps text typed while the destination overlay chat history is loading', asy
     expect(input.textContent).toBe('Typed while loading')
     host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
     await settle()
-    const source = [...view.element.querySelectorAll<HTMLButtonElement>('.agents-overlay-chats__row')].find(row => text(row).includes('draft-source'))!
-    source.click()
+    source().click()
     await settle(8)
     expect(input.textContent).toBe('Source draft')
   } finally { history.resolve({ items: [] }); host.remove() }

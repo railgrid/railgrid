@@ -5,6 +5,7 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as Vue from 'vue'
 import { gettingStartedReadState } from '../lib/gettingStarted.ts'
+import { useDelayedLoading } from '../portalkit/useDelayedLoading.ts'
 
 const { descriptor } = parse(readFileSync(new URL('./DashboardPage.vue', import.meta.url), 'utf8'))
 const compiled = compileScript(descriptor, { id: 'dashboard-behavior', inlineTemplate: true,
@@ -26,7 +27,7 @@ new Function('require', 'exports', 'setTimeout', 'clearTimeout', layoutCode)(
   id => layoutDependencies[id], layoutModule, () => 0, () => {},
 )
 
-function scenario({ unscoped = false, error = false, dismissed = false, catalog = [], bound = null, deferContent = false, contentWidth = 1280, tileRow = 0 } = {}) {
+function scenario({ unscoped = false, error = false, dismissed = false, catalog = [], bound = null, deferContent = false, contentWidth = 1280, tileRow = 0, assistantState = {} } = {}) {
   let focused
   const previous = { window: globalThis.window, document: globalThis.document, localStorage: globalThis.localStorage, ResizeObserver: globalThis.ResizeObserver }
   const observations = []
@@ -39,12 +40,20 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
   const shellKey = ref(0)
   let measuredWidth = contentWidth
   globalThis.window = { addEventListener() {}, removeEventListener() {} }
-  globalThis.document = { body: {}, get activeElement() { return focused ?? this.body } }
+  const documentListeners = new Map()
+  globalThis.document = {
+    body: {}, get activeElement() { return focused ?? this.body },
+    addEventListener(type, listener) { documentListeners.set(type, listener) },
+    removeEventListener(type, listener) {
+      if (documentListeners.get(type) === listener) documentListeners.delete(type)
+    },
+  }
   const savedLayout = bound ? { tiles: [{ i: bound.name, x: 0, y: tileRow, w: 1, h: 2 }] } : null
   globalThis.localStorage = { getItem: () => savedLayout && JSON.stringify(savedLayout), setItem() {} }
   const tenant = reactive({ orgUUID: 'org', workspaceUUID: unscoped ? null : 'ws' })
   const providers = reactive({ loaded: true, loading: false, catalogOrgUUID: 'org', error: null,
     bindingsOrgUUID: 'org', bindingsWorkspace: 'ws', bindingsLoadState: error ? 'error' : 'ready',
+    bindingsByProvider: {},
     bindingsStale: error, bindingNamesByProvider: bound ? { [bound.name]: bound.name } : {}, items: catalog, enabledNavItems: bound ? [{ name: bound.name }] : [], workspaceProvider: name => name === bound?.name ? bound : undefined, isEnabled: name => name === bound?.name, byName: name => catalog.find(p => p.name === name) })
   let completeLoad
   const loads = []
@@ -77,12 +86,14 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
       providers.bindingsLoadState = 'loading'
     } }, 'Enable'),
   ]) } }
+  const assistant = reactive({ ...assistantState })
   let welcomeSeen = dismissed
   const modules = {
     'grid-layout-plus': {
       GridLayout: { setup: (_, { slots }) => () => h('div', { id: 'provider-grid' }, slots.default?.()) },
       GridItem: shell,
     },
+    '@/stores/agentOverlay': { useAgentOverlayStore: () => assistant },
     '@/stores/auth': { useAuthStore: () => ({ user: { userId: 'test-user' } }) },
     '@/lib/firstWelcome': { welcomeIdentity: auth => auth.user?.userId || '', claimFirstWelcome: () => { if (welcomeSeen) return false; welcomeSeen = true; return true } },
     '@/composables/gettingStartedFocus': { useGettingStartedFocus() {} },
@@ -97,6 +108,8 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
         h('button', { disabled: props.disabled, onClick: () => emit('select', item.id) }, item.label))),
     } },
     '@/components/AppLayout.vue': { default: appShell },
+    '@/agentkit/AIPrimaryAction.vue': { default: { setup: () => () => h('button', { id: 'dashboard-send' }) } },
+    '@/portalkit/useDelayedLoading': { useDelayedLoading },
     '@/lib/gettingStarted': { gettingStartedReadState },
     '@/components/WelcomeWizard.vue': { default: wizard },
     '@/components/DashboardTile.vue': { default: { props: ['provider'], setup: props => () => h('article', { id: 'provider-tile', copy: props.provider.scope }, props.provider.displayName) } },
@@ -125,7 +138,7 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
   const app = renderer.createApp(exports.default)
   app.component('router-link', { props: ['to'], setup: (props, { slots }) => () => h('a', { href: props.to }, slots.default?.()) })
   app.mount(root)
-  return { root, providers, tenant, loads, candidates, observations, syncColumns, shellVisible,
+  return { root, providers, tenant, assistant, loads, candidates, observations, syncColumns, shellVisible, documentListeners,
     remountContent(width) { measuredWidth = width; shellKey.value++ },
     finishLoad: () => completeLoad(), focused: () => focused,
     cleanup() { app.unmount(); for (const [k,v] of Object.entries(previous)) { if (v === undefined) delete globalThis[k]; else globalThis[k] = v } } }
@@ -294,4 +307,239 @@ test('dashboard does not load a catalog replacement when the actual bound provid
   assert.equal(nodes(s.root).some(n=>n.props?.id==='provider-tile'),false);
   assert.deepEqual(s.candidates.at(-1),[]);
  } finally {s.cleanup();}
+})
+
+test('a provisioned assistant makes the dashboard the first-visit surface', async () => {
+  const bound = { name: 'agents', displayName: 'Agents', ready: true, serving: { ui: {} } }
+  const s = scenario({ bound, assistantState: { selectedAgent: 'railgrid-agents', preferenceKey: 'user/org/ws' } })
+  try {
+    await nextTick()
+    assert.ok(nodes(s.root).some(node => node.type === 'section' && node.props?.['aria-label'] === 'Railgrid Agents'))
+    assert.ok(!nodes(s.root).some(node => node.type === 'h2' && text(node) === 'Railgrid Agents'))
+    assert.ok(text(s.root).includes('Workspace resources'))
+    assert.ok(!nodes(s.root).some(node => node.props?.id === 'wizard'))
+    const composer = nodes(s.root).find(node => node.props?.['aria-label'] === 'Message Railgrid Agents')
+    assert.equal(composer?.props.placeholder, 'Ask a question or choose a shortcut…')
+    assert.match(text(s.root), /Chat is unavailable/)
+    s.assistant.dashboardPreparing = true
+    await nextTick()
+    assert.doesNotMatch(text(s.root), /Chat is unavailable/)
+    s.assistant.personalAgent = null
+    await nextTick()
+    assert.ok(!nodes(s.root).some(node => node.props?.['aria-label'] === 'Message Railgrid Agents'))
+  } finally { s.cleanup() }
+})
+
+test('the send button shows preparation only after the delay and keeps the draft editable', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const bound = { name: 'agents', displayName: 'Agents', ready: true, serving: { ui: {} } }
+  const sent = []
+  const s = scenario({
+    bound, dismissed: true,
+    assistantState: {
+      selectedAgent: 'railgrid-agents', dashboardPreparing: true,
+      dashboardSubmit(prompt) { sent.push(prompt); return true },
+    },
+  })
+  try {
+    const input = nodes(s.root).find(node => node.props?.['aria-label'] === 'Message Railgrid Agents')
+    const send = () => nodes(s.root).find(node => node.props?.id === 'dashboard-send')
+    const form = nodes(s.root).find(node => node.type === 'form')
+    assert.equal(send().props.loading, false)
+    assert.equal(send().props.disabled, true)
+    input.props.onFocus()
+    await nextTick()
+    assert.ok(nodes(s.root).some(node => node.props?.id === 'dashboard-workspace-shortcuts' && node.props.inert === false))
+
+    t.mock.timers.tick(249)
+    s.assistant.dashboardPreparing = false
+    t.mock.timers.tick(1)
+    await nextTick()
+    assert.equal(send().props.loading, false)
+
+    s.assistant.dashboardPreparing = true
+    input.props['onUpdate:modelValue']('Draft while initializing')
+    form.props.onSubmit({ preventDefault() {} })
+    assert.deepEqual(sent, [])
+    t.mock.timers.tick(250)
+    await nextTick()
+    assert.equal(send().props.loading, true)
+    assert.equal(send().props.disabled, true)
+    assert.ok(nodes(s.root).some(node => node.props?.class === 'sr-only' && text(node) === 'Preparing chat…'))
+
+    s.assistant.dashboardPreparing = false
+    await nextTick()
+    assert.equal(send().props.loading, false)
+    assert.equal(send().props.disabled, false)
+    form.props.onSubmit({ preventDefault() {} })
+    assert.deepEqual(sent, ['Draft while initializing'])
+  } finally { s.cleanup() }
+})
+
+test('the dashboard submits the editable Agents draft once and keeps it when chat declines it', async () => {
+  const bound = { name: 'agents', displayName: 'Agents', ready: true, serving: { ui: {} } }
+  const submissions = []
+  let accepted = false
+  const s = scenario({
+    bound,
+    assistantState: {
+      selectedAgent: 'railgrid-agents',
+      preferenceKey: 'user/org/ws',
+      dashboardSubmit(prompt, origin) {
+        submissions.push({ prompt, origin })
+        return accepted
+      },
+    },
+  })
+  try {
+    await nextTick()
+    const input = () => nodes(s.root).find(node => node.props?.['aria-label'] === 'Message Railgrid Agents')
+    const form = () => nodes(s.root).find(node => node.type === 'form')
+    await form().props.onSubmit({ preventDefault() {} })
+    assert.deepEqual(submissions, [])
+    assert.ok(!text(s.root).includes('What needs attention?'))
+    input().props['onUpdate:modelValue']('  Check the workspace  ')
+    await form().props.onSubmit({ preventDefault() {} })
+    await nextTick()
+    assert.equal(submissions[0].origin, input())
+    assert.match(text(s.root), /Your question is still in the dashboard draft/)
+    assert.ok(button(s, 'Open chat'))
+
+    accepted = true
+    await form().props.onSubmit({ preventDefault() {} })
+    await nextTick()
+    assert.deepEqual(submissions.map(item => item.prompt), ['Check the workspace', 'Check the workspace'])
+    assert.doesNotMatch(text(s.root), /Your question is still in the dashboard draft/)
+    await form().props.onSubmit({ preventDefault() {} })
+    assert.equal(submissions.length, 2)
+  } finally { s.cleanup() }
+})
+
+test('the empty composer opens shortcuts only to available workspace providers', async () => {
+  const agents = { name: 'agents', displayName: 'Agents', ready: true, serving: { ui: {} } }
+  const otherProviders = ['app-studio', 'code', 'edges', 'infrastructure', 'kuery', 'quickstart']
+    .map(name => ({ ...agents, name, displayName: name }))
+  const s = scenario({
+    dismissed: true,
+    bound: agents,
+    catalog: [agents, ...otherProviders],
+    assistantState: { selectedAgent: 'railgrid-agents' },
+  })
+  try {
+    const input = () => nodes(s.root).find(node => node.props?.['aria-label'] === 'Message Railgrid Agents')
+    const drawer = () => nodes(s.root).find(node => node.props?.class?.includes('dashboard-shortcuts') && node.props.inert !== undefined)
+    const shortcuts = () => {
+      const nav = nodes(s.root).find(node => node.props?.id === 'dashboard-workspace-shortcuts')
+      return nav ? nodes(nav).filter(node => node.type === 'a').map(node => node.props.href) : []
+    }
+    assert.equal(drawer().props.inert, true)
+    input().props.onFocus()
+    await nextTick()
+    assert.equal(drawer().props.inert, false)
+    assert.deepEqual(shortcuts(), ['/org/ws/providers/agents'])
+
+    s.assistant.dashboardExpanded = true
+    await nextTick()
+    s.assistant.sidePanelClosing = true
+    s.assistant.dashboardExpanded = false
+    input().props.onFocus()
+    s.assistant.sidePanelClosing = false
+    await nextTick()
+    assert.equal(drawer().props.inert, true)
+    input().props.onClick()
+    await nextTick()
+    assert.equal(drawer().props.inert, false)
+
+    const body = globalThis.document.body
+    s.documentListeners.get('focusin')({ type: 'focusin', target: body, composedPath: () => [body] })
+    await nextTick()
+    assert.equal(drawer().props.inert, false)
+    s.documentListeners.get('pointerdown')({ type: 'pointerdown', target: body, composedPath: () => [body] })
+    await nextTick()
+    assert.equal(drawer().props.inert, true)
+
+    s.providers.enabledNavItems = [agents, ...otherProviders]
+    s.providers.workspaceProvider = name => [agents, ...otherProviders].find(provider => provider.name === name)
+    s.providers.isEnabled = name => !!s.providers.bindingNamesByProvider[name]
+    await nextTick()
+    assert.deepEqual(shortcuts(), ['/org/ws/providers/agents'])
+
+    s.providers.bindingNamesByProvider = Object.fromEntries([agents, ...otherProviders].map(({ name }) => [name, name]))
+    await nextTick()
+    assert.deepEqual(shortcuts(), [
+      '/org/ws/providers/app-studio/~new',
+      '/org/ws/providers/code/repositories',
+      '/org/ws/providers/agents',
+      '/org/ws/providers/edges/connect/edge',
+      '/org/ws/providers/infrastructure/templates',
+      '/org/ws/providers/kuery',
+    ])
+    s.providers.bindingsByProvider = { 'app-studio': { ready: false }, edges: { terminating: true } }
+    s.providers.workspaceProvider = name => [agents, ...otherProviders]
+      .find(provider => provider.name === name && name !== 'app-studio' && name !== 'edges')
+    await nextTick()
+    assert.deepEqual(shortcuts(), [
+      '/org/ws/providers/code/repositories',
+      '/org/ws/providers/agents',
+      '/org/ws/providers/infrastructure/templates',
+      '/org/ws/providers/kuery',
+    ])
+    assert.deepEqual(nodes(drawer()).filter(node => node.props?.['aria-disabled'] === 'true')
+      .map(node => text(node).trim()), ['Build an app', 'Connect an edge'])
+    delete s.providers.bindingNamesByProvider.code
+    await nextTick()
+    assert.ok(!shortcuts().includes('/org/ws/providers/code/repositories'))
+
+    input().props['onUpdate:modelValue']('Question about this workspace')
+    await nextTick()
+    assert.equal(drawer().props.inert, true)
+
+    s.providers.bindingsStale = true
+    await nextTick()
+    assert.deepEqual(shortcuts(), [])
+  } finally { s.cleanup() }
+})
+
+test('the assistant setup state explains what a workspace agent can help with', async () => {
+  const bound = { name: 'agents', displayName: 'Agents', ready: true, serving: { ui: {} } }
+  const s = scenario({ dismissed: true, bound, assistantState: { selectedAgent: null } })
+  try {
+    await nextTick()
+    assert.ok(nodes(s.root).some(node => node.type === 'h2' && text(node) === 'Railgrid Agents'))
+    assert.ok(!nodes(s.root).some(node => node.props?.['aria-label'] === 'Message Railgrid Agents'))
+    assert.match(text(s.root), /Ask what a resource does, get help troubleshooting a service/)
+    const setup = nodes(s.root).find(node => node.type === 'a' && text(node).trim() === 'Set up workspace assistant')
+    assert.equal(setup?.props.href, '/org/ws/providers/agents#/assistant-settings')
+    s.assistant.preferencesLoading = true
+    await nextTick()
+    assert.doesNotMatch(text(s.root), /Set up workspace assistant/)
+  } finally { s.cleanup() }
+})
+
+test('Customize keeps the Agents composer mounted in front of the provider grid', async () => {
+  const bound = { name: 'agents', displayName: 'Agents', ready: true, serving: { ui: {} } }
+  const prompts = []
+  const s = scenario({ bound, assistantState: {
+    selectedAgent: 'railgrid-agents',
+    dashboardSubmit(prompt) { prompts.push(prompt); return true },
+  } })
+  try {
+    await nextTick()
+    const composer = () => nodes(s.root).find(node => node.props?.['aria-label'] === 'Message Railgrid Agents')
+    const original = composer()
+    assert.ok(original)
+    original.props['onUpdate:modelValue']('Keep my draft')
+    button(s, 'Customize').props.onClick()
+    await nextTick()
+    assert.ok(button(s, 'Done'))
+    assert.equal(composer(), original)
+    const rendered = nodes(s.root)
+    assert.ok(rendered.indexOf(original) < rendered.findIndex(node => node.props?.id === 'provider-grid'))
+    button(s, 'Done').props.onClick()
+    await nextTick()
+    assert.equal(composer(), original)
+    const form = nodes(s.root).find(node => node.type === 'form')
+    form.props.onSubmit({ preventDefault() {} })
+    assert.deepEqual(prompts, ['Keep my draft'])
+  } finally { s.cleanup() }
 })

@@ -138,6 +138,26 @@ the admin API: `system-workspaces` (GET, POST), `system-workspaces/{name}`
 `system-workspaces/{name}/credentials/rotate` (POST), `workspace-seeds` (GET,
 POST), `workspace-seeds/{name}` (PUT, DELETE).
 
+## Starter workspaces for new organizations
+
+Set `spec.initialWorkspacesOnly: true` on a new seed to provision only the
+starter workspace recorded on organizations created at or after the seed's
+creation timestamp. The
+hub creates missing bindings and objects, preserves objects already present,
+and records completion on the workspace’s core APIBinding. A completed seed
+leaves subsequent edits and deletions in the tenant’s hands.
+
+Once enabled, this mode is locked on for the life of the seed. Create a
+separate seed when you need ongoing reconciliation.
+
+Railgrid SaaS uses this mode for the Railgrid Agents seed in the ops
+repository. It binds Agents in the starter workspace and creates an Agent
+referencing the existing Switchboard-backed `railgrid` model credential.
+The seed marks the default Agent with `agents.railgrid.ai/workspace-default`
+and lists its Agents export in the object's `whenBound`. The Hub publishes
+the Agent's name on the workspace binding so the console can discover it.
+Deploy the schema and hub before applying the seed with strict field validation.
+
 ## What the hub does
 
 For every tenant workspace (`root:railgrid:tenants:<org>:<workspace>`; not an

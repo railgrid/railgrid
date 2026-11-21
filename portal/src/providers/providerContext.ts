@@ -11,6 +11,8 @@ export interface AgentOverlayControl {
   selectedAgent: string | null
   settingsOpen: boolean
   followContext: boolean
+  preferencesLoading?: boolean
+  preferencesSaving?: boolean
   setSettingsOpen: (open: boolean) => void
   configure: (name: string | null, followContext: boolean) => void
   select: (name: string | null) => void

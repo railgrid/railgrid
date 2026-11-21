@@ -457,7 +457,7 @@ const overlayChatGroups = computed(() => {
 })
 function publishOverlayView(): void {
   if (props.overlay) chatHost?.value?.dispatchEvent(new CustomEvent('railgrid-overlay-view', {
-    detail: { chats: overlayChatsVisible.value, title: activeSessionLabel.value },
+    detail: { chats: overlayChatsVisible.value, title: activeSessionLabel.value, preparingDashboardChat: preparingDashboardChat.value },
   }))
 }
 function showOverlayChats(): void {
@@ -1034,7 +1034,10 @@ const activeSessionLabel = computed(() => {
   const active = sessionOptions.value.find(session => session.id === sessionID.value)
   return active ? sessionLabel(active) : 'New chat'
 })
-watch([overlayChatsVisible, () => activeSessionLabel.value], publishOverlayView, { flush: 'post' })
+const preparingDashboardChat = computed(() =>
+  (!sessionInputReady.value && !sessionsError.value) || modelRecovery.value === 'loading' || modelSaving.value,
+)
+watch([overlayChatsVisible, activeSessionLabel, preparingDashboardChat], publishOverlayView, { flush: 'post' })
 const primaryActionState = computed<AIPrimaryActionState>(() => {
   if (!composerHasActiveRun.value) return 'send'
   return composerStopping.value ? 'stopping' : 'stop'
@@ -1517,22 +1520,30 @@ function loadChatAttachment(receipt: import('../agentkit/composer').AgentKitAtta
   return props.api.getAgentAttachment(props.name, sessionID.value, receipt.id, signal)
 }
 
-function sessionKey(name: string, api: ApiClient): string {
+function sessionKey(name: string, api: ApiClient): string | null {
+  const { userKey, tenantKey } = api.contextAuthority()
+  if (userKey) return `railgrid:agents:selected-session:${JSON.stringify([userKey, tenantKey, name])}`
+  if (props.overlay) return null
   const tenant = api.tenant()
   return `railgrid:agents:session:${tenant.orgUUID || ''}:${tenant.workspaceUUID || ''}:${name}`
 }
 
+const localSessions = new Set<string>()
 function newSessionID(): string {
+  let id: string
   try {
-    return crypto.randomUUID()
+    id = crypto.randomUUID()
   } catch {
-    return `sess-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    id = `sess-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   }
+  localSessions.add(id)
+  return id
 }
 
 function remember(id: string, name = props.name, api = props.api): void {
   try {
-    localStorage.setItem(sessionKey(name, api), id)
+    const key = sessionKey(name, api)
+    if (key) localStorage.setItem(key, id)
   } catch {
     // Storage can be disabled; the server session remains valid for this mount.
   }
@@ -1616,6 +1627,7 @@ async function loadSessions(name = props.name, api = props.api): Promise<boolean
     ))
     sessionsReadScope.value = sessionRailScope.value
     sessions.value = result
+    for (const session of result) localSessions.delete(session.id)
     sessionsHasSnapshot.value = true
     sessionsError.value = null
     return true
@@ -1869,6 +1881,7 @@ const starterPrompts = [
 async function openAgent(preserveSessionsError = false): Promise<void> {
   const name = props.name
   const api = props.api
+  const signedIn = !!api.contextAuthority().userKey
   const serial = ++openSerial
   const ownership = chatOwnershipSerial
   bootstrappedSessionModel = null
@@ -1896,20 +1909,20 @@ async function openAgent(preserveSessionsError = false): Promise<void> {
   const setupDraft = props.store.takeChatSetupDraft(name)
   let wanted = setupDraft?.session || ''
   try {
-    wanted ||= localStorage.getItem(sessionKey(name, api)) || ''
-  } catch {
-    wanted = ''
-  }
+    const key = sessionKey(name, api)
+    if (key) wanted ||= localStorage.getItem(key) || ''
+  } catch { /* Storage is optional. */ }
   const sessionsLoaded = await loadSessions(name, api)
   if (serial !== openSerial || ownership !== chatOwnershipSerial || !contextIsCurrent(name, api)) return
   if (!sessionsLoaded) {
     initializedFor = name
     return
   }
+  const fallback = () => (props.overlay ? undefined : sessions.value[0]?.id) || newSessionID()
   if (!wanted) {
-    wanted = sessions.value[0]?.id || newSessionID()
-  } else if (sessions.value.length > 0 && !sessions.value.some(session => session.id === wanted)) {
-    if (isModelBackend.value) {
+    wanted = fallback()
+  } else if (!localSessions.has(wanted) && !sessions.value.some(session => session.id === wanted)) {
+    if (signedIn || props.overlay || sessions.value.length > 0) {
       const authority = captureAuthority()
       const contextCurrent = () => serial === openSerial && ownership === chatOwnershipSerial && contextIsCurrent(name, api) && authorityIsCurrent(authority)
       let preferenceProbeComplete = false
@@ -1918,20 +1931,27 @@ async function openAgent(preserveSessionsError = false): Promise<void> {
         const inheritedCredential = agentModelCredential(props.store.agent(name))
         const current = () => contextCurrent() && agentModelCredential(props.store.agent(name)) === inheritedCredential
         try {
-          const preferences = await serializeChatModelRequest(
+          const preferences = isModelBackend.value ? await serializeChatModelRequest(
             modelRequestKey(name, wanted, api),
             current,
             async () => {
               await waitForAgentConfigSaves(authority.store, name)
               return current() ? api.getSessionModel(name, wanted) : undefined
             },
-          )
+          ) : undefined
           if (!contextCurrent()) return
           if (!current()) continue
           if (preferences && hasStoredSessionModel(preferences)) {
             bootstrappedSessionModel = { name, api, session: wanted, inheritedCredential, preferences }
+          } else if (signedIn || props.overlay) {
+            // A remembered conversation can be older than the session list's
+            // limit. Check that exact transcript before discarding it.
+            const page = await api.listMessagePage(name, wanted, '', 1)
+            if (!contextCurrent()) return
+            if (!current()) continue
+            if (!page.items.length) wanted = fallback()
           } else {
-            wanted = sessions.value[0]?.id || newSessionID()
+            wanted = fallback()
           }
           preferenceProbeComplete = true
         } catch {
@@ -1943,12 +1963,14 @@ async function openAgent(preserveSessionsError = false): Promise<void> {
           preferenceProbeComplete = true
         }
       }
-    } else {
-      wanted = sessions.value[0]?.id || newSessionID()
     }
   }
   sessionID.value = wanted
-  remember(wanted, name, api)
+  // An initial full-page preview of a workspace thread is not a selection
+  // the dashboard should send into. Explicit picks and sends remember it.
+  if (props.overlay || !sessions.value.length || setupDraft?.session || !signedIn) {
+    remember(wanted, name, api)
+  }
   if (transferredDraft !== undefined) draft.value = transferredDraft
   if (setupDraft) { draft.value = setupDraft.draft; recoveryInterruptedPrompt = true }
   await loadMessages(wanted, name, api)
@@ -2181,6 +2203,21 @@ async function cancelLiveRun(
   }
 }
 
+function sendFromDashboard(event: Event): void {
+  const prompt = (event as CustomEvent<{ prompt?: unknown }>).detail?.prompt
+  if (!props.overlay || typeof prompt !== 'string' || !prompt.trim() || prompt.length > 4000 ||
+    draft.value.trim() || contentParts.value.some(part => part.type !== 'text') ||
+    selectedSkills.value.length || selectedResources.value.length || !sessionInputReady.value ||
+    attachmentsPending.value || composerHasActiveRun.value || composerSubmitting.value ||
+    modelSaving.value || modelSaveError.value || invalidEffort.value || !hasModel.value ||
+    modelRecovery.value !== 'ready') return
+  event.preventDefault()
+  overlayChatsVisible.value = false
+  draft.value = prompt
+  contentParts.value = [{ type: 'text', text: prompt }]
+  void send()
+}
+
 async function send(): Promise<void> {
   if (!sessionInputReady.value) return
   const draftText = draft.value.trim()
@@ -2296,6 +2333,7 @@ async function streamTurn(
   const acceptTurn = () => {
     if (turnAccepted || !submittedDraft) return
     turnAccepted = true
+    localSessions.delete(requestSession)
     track('run_started')
     clearTerminalTranscriptRefresh()
     const receiptIDs = submittedDraft.contentParts.flatMap((part) => part.type === 'attachment' ? [part.attachment.id] : [])
@@ -3005,6 +3043,7 @@ function newChat(): void {
 function selectConversation(id: string): void {
   closeMobileRail()
   focusComposer()
+  if (id === sessionID.value) remember(id)
   void switchSession(id)
 }
 
@@ -3282,6 +3321,7 @@ watch(() => [props.focusNewComposer, sessionInputReady.value, hasModel.value, co
 
 onMounted(() => {
   mounted = true
+  chatHost?.value?.addEventListener('railgrid-overlay-dashboard-send', sendFromDashboard)
   chatHost?.value?.addEventListener('railgrid-chat-handoff', offerDraft)
   chatHost?.value?.addEventListener('railgrid-chat-setup', stashSetupDraft)
   chatHost?.value?.addEventListener('railgrid-overlay-focus-composer', focusComposer)
@@ -3297,6 +3337,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearArtifactState()
+  chatHost?.value?.removeEventListener('railgrid-overlay-dashboard-send', sendFromDashboard)
   chatHost?.value?.removeEventListener('railgrid-chat-handoff', offerDraft)
   chatHost?.value?.removeEventListener('railgrid-chat-setup', stashSetupDraft)
   chatHost?.value?.removeEventListener('railgrid-overlay-focus-composer', focusComposer)
