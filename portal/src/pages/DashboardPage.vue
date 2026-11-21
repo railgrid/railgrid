@@ -459,10 +459,10 @@ function onGridSelectStart(event: Event) {
           class="dashboard-agent-handoff" :class="{ 'dashboard-agent-handoff--collapsed': assistant.dashboardExpanded }"
           :style="{ marginInline: `${TILE_GAP}px` }"
           :inert="assistant.dashboardExpanded" aria-label="Railgrid Agents">
-          <div class="dashboard-agent-clip">
+          <div class="dashboard-agent-clip" :class="{ 'dashboard-agent-clip--shortcuts-open': shortcutsOpen }">
             <div class="mb-6 grid gap-3">
               <template v-if="!assistant.preferencesLoading && assistant.selectedAgent">
-                <div ref="shortcutRoot" @keydown.esc="dismissShortcuts">
+                <div ref="shortcutRoot" class="relative" @keydown.esc="dismissShortcuts">
                   <form class="flex items-end gap-1.5 rounded-md border border-border-default bg-surface-raised p-1 focus-within:border-accent" @submit.prevent="sendQuestion">
                     <span class="grid size-9 shrink-0 place-items-center text-accent" aria-hidden="true">
                       <Hexagon class="size-4" :stroke-width="1.75" />
@@ -651,7 +651,8 @@ function onGridSelectStart(event: Event) {
 
 .dashboard-agent-clip {
   min-height: 0;
-  overflow: hidden;
+  /* Restoring focus during the handoff must not scroll this wrapper. */
+  overflow: clip;
   transition: opacity 140ms ease;
 }
 
@@ -663,10 +664,14 @@ function onGridSelectStart(event: Event) {
   opacity: 0;
 }
 
+.dashboard-agent-clip--shortcuts-open {
+  /* The drawer needs to receive clicks outside the composer's bounds. */
+  overflow: visible;
+}
+
 .dashboard-shortcuts {
-  /* Anchor to the handoff outside its overflow clip. The static block
-     position keeps the overlay directly below the composer. */
   position: absolute;
+  inset-block-start: 100%;
   inset-inline: 0;
   z-index: calc(var(--k-layer-menu, 1000) - 10);
   margin-block-start: 4px;
@@ -674,15 +679,18 @@ function onGridSelectStart(event: Event) {
   overflow-y: auto;
   overscroll-behavior: contain;
   box-shadow: 0 8px 24px color-mix(in srgb, var(--color-text-primary) 10%, transparent);
-  clip-path: inset(0 -24px 100%);
+  visibility: hidden;
+  pointer-events: none;
   opacity: 0;
-  transition: clip-path 140ms ease, opacity 100ms ease;
+  transform: translateY(-4px);
 }
 
 .dashboard-shortcuts--open {
-  clip-path: inset(0 -24px -24px);
+  visibility: visible;
+  pointer-events: auto;
   opacity: 1;
-  transition: clip-path 180ms cubic-bezier(.16, 1, .3, 1), opacity 140ms ease;
+  transform: translateY(0);
+  transition: transform 180ms cubic-bezier(.16, 1, .3, 1), opacity 140ms ease;
 }
 
 @media (prefers-reduced-motion: reduce) {
