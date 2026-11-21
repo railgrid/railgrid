@@ -42,6 +42,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -51,6 +52,7 @@ import (
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
@@ -261,6 +263,20 @@ func (s *cleanupWatchSource) ensureOrganization(org string) error {
 	// which this hub identity is not allowed to enumerate.
 	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(dynamicClient, 0, "", nil)
 	informer := factory.ForResource(cleanupWorkspaceGVR).Informer()
+	// Most Orgs never register a provider, so their provider parent does not
+	// exist and every list fails until one is registered. The reflector keeps
+	// retrying with backoff, which is what picks the workspace up once it is
+	// created; only the per-retry error log is unwanted.
+	if err := informer.SetWatchErrorHandlerWithContext(func(ctx context.Context, r *cache.Reflector, err error) {
+		if kcp.IsOrgProvidersParentMissing(err) {
+			klog.FromContext(ctx).V(4).Info("Organization has no provider workspace yet; waiting to watch it", "organization", org)
+			return
+		}
+		cache.DefaultWatchErrorHandler(ctx, r, err)
+	}); err != nil {
+		s.forgetOrganization(org, watch)
+		return fmt.Errorf("providerinstall: registering Workspace watch error handler for organization %s: %w", org, err)
+	}
 	if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(obj any) { s.onWorkspace(org, obj) },
 		UpdateFunc: func(_, obj any) { s.onWorkspace(org, obj) },

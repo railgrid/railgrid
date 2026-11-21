@@ -610,3 +610,58 @@ func TestEnsureProviderWorkspaceDoesNotReserveQuotaAgain(t *testing.T) {
 		t.Fatalf("read error caused create: %v, creates %d", err, creates)
 	}
 }
+
+// The kcp front proxy answers a workspace path that does not resolve with the
+// same 403 it gives a caller who may not enter it. An Org that never registered
+// a provider has no `providers` workspace, so every read under it gets that 403.
+func writeOrgProviderFrontProxyMissing(w http.ResponseWriter, r *http.Request) {
+	writeOrgProviderJSON(w, http.StatusForbidden, map[string]any{
+		"apiVersion": "v1", "kind": "Status", "status": "Failure", "reason": "Forbidden", "code": http.StatusForbidden,
+		"message": fmt.Sprintf("forbidden: User %q cannot get path %q: workspace access not permitted", "", r.URL.Path),
+	})
+}
+
+func TestOrgWithoutProvidersWorkspaceBehindFrontProxyReadsAsEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(writeOrgProviderFrontProxyMissing))
+	defer server.Close()
+
+	b := NewBootstrapper(&rest.Config{Host: server.URL})
+	ctx := context.Background()
+	listed, err := b.ListOrgProviderWorkspaces(ctx, "org-a")
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("ListOrgProviderWorkspaces = %+v, %v; want no providers and no error", listed, err)
+	}
+	got, err := b.GetOrgProviderWorkspace(ctx, "org-a", "kuery")
+	if err != nil || got != nil {
+		t.Fatalf("GetOrgProviderWorkspace = %+v, %v; want no provider and no error", got, err)
+	}
+	route, err := b.GetProviderEdgeRoute(ctx, "org-a", "kuery")
+	if err != nil || route != nil {
+		t.Fatalf("GetProviderEdgeRoute = %+v, %v; want no route and no error", route, err)
+	}
+	if err := b.DeleteOrgProviderWorkspace(ctx, "org-a", "kuery"); err != nil {
+		t.Fatalf("DeleteOrgProviderWorkspace = %v; want an absent provider to be a no-op", err)
+	}
+}
+
+func TestIsOrgProvidersParentMissingKeepsOtherDenialsAsErrors(t *testing.T) {
+	workspaces := schema.GroupResource{Group: "tenancy.kcp.io", Resource: "workspaces"}
+	if !IsOrgProvidersParentMissing(apierrors.NewNotFound(workspaces, "kuery")) {
+		t.Fatal("NotFound must read as a missing provider parent")
+	}
+	// Wrapped the way a reflector reports a failed list.
+	wrapped := fmt.Errorf("failed to list workspaces: %w", apierrors.NewForbidden(workspaces, "", fmt.Errorf("workspace access not permitted")))
+	if !IsOrgProvidersParentMissing(wrapped) {
+		t.Fatal("the front proxy's unresolved-path denial must read as a missing provider parent")
+	}
+	for _, err := range []error{
+		nil,
+		apierrors.NewForbidden(workspaces, "kuery", fmt.Errorf("RBAC: access denied")),
+		apierrors.NewUnauthorized("workspace access not permitted"),
+		fmt.Errorf("workspace access not permitted"),
+	} {
+		if IsOrgProvidersParentMissing(err) {
+			t.Fatalf("%v must stay an error", err)
+		}
+	}
+}
