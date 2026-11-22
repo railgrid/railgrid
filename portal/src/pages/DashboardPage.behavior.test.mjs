@@ -500,6 +500,47 @@ test('the empty composer opens shortcuts only to available workspace providers',
   } finally { s.cleanup() }
 })
 
+test('a shortcut press preserves composer focus until the link can receive its click', async () => {
+  const bound = { name: 'agents', displayName: 'Agents', ready: true, serving: { ui: {} } }
+  const s = scenario({ dismissed: true, bound, assistantState: { selectedAgent: 'railgrid-agents' } })
+  try {
+    const input = nodes(s.root).find(node => node.props?.['aria-label'] === 'Message Railgrid Agents')
+    const drawer = () => nodes(s.root).find(node => node.props?.id === 'dashboard-workspace-shortcuts')
+    input.focus()
+    input.props.onFocus()
+    await nextTick()
+
+    const link = nodes(drawer()).find(node => node.type === 'a')
+    assert.equal(link.props.href, '/org/ws/providers/agents')
+    const outside = { type: 'div' }
+    const focusOutside = () => s.documentListeners.get('focusin')({
+      type: 'focusin', target: outside, composedPath: () => [outside],
+    })
+    let defaultPrevented = false
+    const preventDefault = () => { defaultPrevented = true }
+    link.props.onMousedown?.({ button: 2, preventDefault })
+    assert.equal(defaultPrevented, false)
+    link.props.onMousedown?.({ button: 0, preventDefault })
+    // Safari's default mouse action can move focus to a container outside the menu.
+    if (!defaultPrevented) focusOutside()
+    await nextTick()
+    assert.equal(drawer().props.inert, false)
+    assert.equal(s.focused(), input)
+
+    focusOutside()
+    await nextTick()
+    assert.equal(drawer().props.inert, true)
+
+    input.props.onClick()
+    await nextTick()
+    link.focus()
+    drawer().parent.props.onKeydown({ key: 'Escape', preventDefault() {}, stopPropagation() {} })
+    await nextTick()
+    assert.equal(drawer().props.inert, true)
+    assert.equal(s.focused(), input)
+  } finally { s.cleanup() }
+})
+
 test('the assistant setup state explains what a workspace agent can help with', async () => {
   const bound = { name: 'agents', displayName: 'Agents', ready: true, serving: { ui: {} } }
   const s = scenario({ dismissed: true, bound, assistantState: { selectedAgent: null } })

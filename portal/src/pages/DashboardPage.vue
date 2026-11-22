@@ -190,8 +190,8 @@ watch(() => assistant.dashboardExpanded, expanded => {
 
 watch(shortcutsRequested, (requested, _, onCleanup) => {
   if (!requested) return
-  // A pointer press can blur the composer before the link receives its click.
-  // Dismiss on an actual interaction outside the drawer and composer.
+  // Shortcut links suppress mousedown's focus change so Safari cannot move
+  // focus outside the drawer and dismiss it before the link receives its click.
   function dismissFromOutside(event: Event) {
     if (event.type === 'focusin' && (event.target === document.body || event.target === document.documentElement)) return
     if (!shortcutRoot.value || !event.composedPath().includes(shortcutRoot.value)) {
@@ -484,7 +484,7 @@ function onGridSelectStart(event: Event) {
                       :is="shortcut.disabled ? 'span' : 'router-link'"
                       :to="shortcut.disabled ? undefined : scopePath(shortcut.path)"
                       :role="shortcut.disabled ? 'link' : undefined" :aria-disabled="shortcut.disabled ? 'true' : undefined"
-                      class="k-menu-item min-h-11 md:min-h-9">
+                      class="k-menu-item min-h-11 md:min-h-9" @mousedown.left.prevent>
                       <component :is="shortcut.icon" class="size-4 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
                       <span class="grow">{{ shortcut.label }}</span>
                       <ChevronRight class="size-4 shrink-0" :stroke-width="1.75" aria-hidden="true" />
