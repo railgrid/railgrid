@@ -5,7 +5,7 @@ import test from 'node:test'
 const page = fs.readFileSync(new URL('./DashboardPage.vue', import.meta.url), 'utf8')
 
 test('dashboard inherits the shared provider page width and padding from AppLayout', () => {
-  assert.match(page, /<AppLayout>\s*<div ref="pageRef" tabindex="-1">/)
+  assert.match(page, /<AppLayout>\s*<div ref="pageRef" tabindex="-1"(?:\s|>)/)
   assert.doesNotMatch(page, /<AppLayout\s+full-bleed>/)
   assert.doesNotMatch(page, /class="[^"]*\b(?:px-6|py-5|overflow-y-auto)\b[^"]*"/)
 })
@@ -42,7 +42,7 @@ test('dashboard keeps one Getting Started entry point and preserves its existing
 
   assert.ok(controlsStart >= 0)
   assert.ok(emptyStateStart > controlsStart)
-  assert.match(gettingStarted, /class="k-btn k-btn--primary min-h-11 px-3 text-\[12px\] md:min-h-0 md:py-1\.5"/)
+  assert.match(gettingStarted, /class="k-btn k-btn--primary\b/)
   assert.match(gettingStarted, /@click="openGettingStarted"/)
   assert.match(gettingStarted, /<Rocket\b/)
   assert.match(customize, /class="k-btn k-btn--ghost min-h-11 px-3 text-\[12px\] md:min-h-0 md:py-1\.5"/)
@@ -64,18 +64,6 @@ test('first-run guide waits for authoritative scoped reads and remains latched a
   assert.match(page, /async function dismissWelcome\(\)[\s\S]*gettingStartedTrigger\.value\?\.focus\(\)/)
   assert.match(page, /:start-at-goal="guideForced \|\| !!firstTask"/)
   assert.match(page, /useGettingStartedFocus\(computed\(\(\) => showWelcome\.value && guideVisible\.value\)\)/)
-})
-
-test('workspace overview gives the title and actions a responsive header', () => {
-  const controlsStart = page.indexOf('<!-- Page heading and customize controls. -->')
-  const emptyStateStart = page.indexOf('<!-- Nothing on the grid.')
-  const heading = page.slice(controlsStart, emptyStateStart)
-
-  assert.ok(controlsStart >= 0)
-  assert.ok(emptyStateStart > controlsStart)
-  assert.match(heading, /<header class="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">/)
-  assert.match(heading, /<h1\b[^>]*>\s*Workspace overview\s*<\/h1>/)
-  assert.match(heading, /<div class="flex w-full flex-wrap items-center gap-2 md:w-auto md:justify-end">/)
 })
 
 test('dashboard exposes scoped read failures and retry without replacing the existing wizard', () => {

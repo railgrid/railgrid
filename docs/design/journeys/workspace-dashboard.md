@@ -15,7 +15,21 @@ separate messages; failure offers Retry. When no provider is ready, the message
 distinguishes an existing binding from no enabled providers and points to the
 catalog. The Getting started guide can be reopened from the dashboard.
 
-**Railgrid Agents** opens the workspace chat pane on send. On other pages, the floating Agents button opens that pane directly. A personal
+When the workspace assistant is available, the dashboard centers the
+**Railgrid Agents** composer in the shell's scroll viewport. The resource
+heading and the top of the first tile row appear near the bottom, and the
+arrow scrolls to the resource section and moves keyboard focus to its heading.
+The section can reach just below the pinned composer even on tall screens
+with few tiles.
+As the composer reaches the top of the scroll viewport, it becomes a
+compact pinned bar. Scrolling back up restores the large composer. A brief
+animation connects the two positions and is skipped with reduced motion.
+The same draft and workspace shortcuts stay available while browsing the tiles.
+The overview stays compact during tile customization
+or when chat is unavailable.
+
+Sending opens the workspace chat pane. On other pages, the floating Agents
+button opens that pane directly. A personal
 assistant selection or Off takes precedence over a provisioned workspace
 default. The choice and page-context setting are saved to the signed-in
 account for that workspace. The draft is scoped to the current workspace and stays editable

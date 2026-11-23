@@ -119,7 +119,8 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
   new Function('require', 'exports', code)(id => modules[id] ?? new Proxy({ default: shell }, { get: (o, k) => o[k] ?? shell }), exports)
   const renderer = createRenderer({
     createElement: type => Vue.markRaw({ type, props: {}, style: {}, children: [], clientWidth: measuredWidth,
-      focus() { focused = this }, addEventListener() {}, removeEventListener() {} }),
+      closest() { return null }, focus() { focused = this }, scrollIntoView() { this.scrolledIntoView = true },
+      addEventListener() {}, removeEventListener() {} }),
     createText: text => ({ type: '#text', text }), createComment: () => ({ type: '#comment' }),
     setText: (n, text) => { n.text = text }, setElementText: (n, text) => { n.text = text },
     patchProp: (n, k, _, v) => { n.props[k] = v },
@@ -319,13 +320,22 @@ test('a provisioned assistant makes the dashboard the first-visit surface', asyn
     assert.ok(text(s.root).includes('Workspace resources'))
     assert.ok(!nodes(s.root).some(node => node.props?.id === 'wizard'))
     const composer = nodes(s.root).find(node => node.props?.['aria-label'] === 'Message Railgrid Agents')
-    assert.equal(composer?.props.placeholder, 'Ask a question or choose a shortcut…')
+    assert.equal(composer?.props.placeholder, 'Ask about apps, edges, or infrastructure…')
+    assert.deepEqual(nodes(s.root).filter(node => node.type === 'h1').map(text), ['Workspace overview'])
     assert.match(text(s.root), /Chat is unavailable/)
     s.assistant.dashboardPreparing = true
     await nextTick()
+    assert.deepEqual(nodes(s.root).filter(node => node.type === 'h1').map(text), ['What should we work on together?'])
     assert.doesNotMatch(text(s.root), /Chat is unavailable/)
+    const jump = nodes(s.root).find(node => node.props?.['aria-label'] === 'Scroll to workspace resources')
+    jump.props.onClick()
+    assert.equal(text(s.focused()), 'Workspace resources')
+    const resources = nodes(s.root).find(node => node.props?.['aria-labelledby'] === 'workspace-resources-heading')
+    assert.equal(resources.scrolledIntoView, true)
+
     s.assistant.personalAgent = null
     await nextTick()
+    assert.deepEqual(nodes(s.root).filter(node => node.type === 'h1').map(text), ['Workspace overview'])
     assert.ok(!nodes(s.root).some(node => node.props?.['aria-label'] === 'Message Railgrid Agents'))
   } finally { s.cleanup() }
 })
