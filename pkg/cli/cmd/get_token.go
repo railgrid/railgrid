@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -69,35 +70,57 @@ type execCredentialStatus struct {
 	ExpirationTimestamp string `json:"expirationTimestamp,omitempty"`
 }
 
+// errLoginRequired marks a failure only an interactive login can fix: there is
+// no usable cached login, or the identity provider rejected the refresh token.
+// A transport error or an unreachable issuer is not one.
+var errLoginRequired = errors.New("login required")
+
 func runGetToken(ctx context.Context, out io.Writer, issuerURL, clientID string, insecure bool, account ...string) error {
 	if issuerURL == "" || clientID == "" {
 		return fmt.Errorf("--oidc-issuer-url and --oidc-client-id are required")
 	}
 
+	token, expiresAt, err := cachedOrRefreshedToken(ctx, issuerURL, clientID, insecure, account...)
+	if errors.Is(err, errLoginRequired) {
+		token, expiresAt, err = reloginAndGetToken(ctx, err, issuerURL, clientID, insecure, firstString(account))
+	}
+	if err != nil {
+		return err
+	}
+	return outputExecCredential(out, token, expiresAt)
+}
+
+// cachedOrRefreshedToken returns the cached ID token, refreshing it first when
+// it has expired.
+func cachedOrRefreshedToken(ctx context.Context, issuerURL, clientID string, insecure bool, account ...string) (string, int64, error) {
 	// Take an exclusive flock around the cache. OIDC refresh-token rotation is
 	// single-use, so two concurrent kubectl invocations racing here would burn
 	// one of the rotated tokens and brick the cache. With the lock the loser
 	// waits, re-reads the cache, and uses the IDToken the winner just stored.
 	unlock, err := cliauth.LockTokenCache(issuerURL, clientID, account...)
 	if err != nil {
-		return fmt.Errorf("locking token cache: %w", err)
+		return "", 0, fmt.Errorf("locking token cache: %w", err)
 	}
 	defer unlock()
 
 	cache, loadErr := cliauth.LoadTokenCache(issuerURL, clientID, account...)
 	if loadErr == nil && !cache.IsExpired() {
-		return outputExecCredential(out, cache.IDToken, cache.ExpiresAt)
+		return cache.IDToken, cache.ExpiresAt, nil
 	}
 
 	// Token is missing or expired -- try to refresh.
 	if cache == nil || cache.RefreshToken == "" {
-		return fmt.Errorf("no valid token found; please run 'railgrid login' first")
+		return "", 0, fmt.Errorf("no valid token found; please run 'railgrid login' first%w", hidden(errLoginRequired))
 	}
 
 	// Public client refresh: no client secret needed (PKCE flow).
 	newIDToken, newRefreshToken, expiry, err := refreshToken(ctx, issuerURL, clientID, "", cache.RefreshToken, insecure)
 	if err != nil {
-		return fmt.Errorf("token refresh failed (run 'railgrid login' to re-authenticate): %w", err)
+		err = fmt.Errorf("token refresh failed (run 'railgrid login' to re-authenticate): %w", err)
+		if refreshTokenRejected(err) {
+			err = fmt.Errorf("%w%w", err, hidden(errLoginRequired))
+		}
+		return "", 0, err
 	}
 
 	// Persist BEFORE returning the token: a successful refresh has already
@@ -108,10 +131,36 @@ func runGetToken(ctx context.Context, out io.Writer, issuerURL, clientID string,
 	cache.RefreshToken = newRefreshToken
 	cache.ExpiresAt = expiry.Unix()
 	if err := cliauth.SaveTokenCache(cache); err != nil {
-		return fmt.Errorf("saving rotated token cache (run 'railgrid login' to re-authenticate): %w", err)
+		return "", 0, fmt.Errorf("saving rotated token cache (run 'railgrid login' to re-authenticate): %w", err)
 	}
 
-	return outputExecCredential(out, newIDToken, expiry.Unix())
+	return newIDToken, expiry.Unix(), nil
+}
+
+// refreshTokenRejected reports whether the identity provider answered the
+// refresh grant with a client error: the refresh token is revoked, expired or
+// already claimed (dex says invalid_request, most others invalid_grant), and
+// retrying cannot help.
+func refreshTokenRejected(err error) bool {
+	var re *oauth2.RetrieveError
+	if !errors.As(err, &re) || re.Response == nil {
+		return false
+	}
+	return re.Response.StatusCode >= 400 && re.Response.StatusCode < 500
+}
+
+// hiddenError carries a sentinel for errors.Is without adding to the message.
+type hiddenError struct{ err error }
+
+func hidden(err error) error        { return hiddenError{err} }
+func (hiddenError) Error() string   { return "" }
+func (h hiddenError) Unwrap() error { return h.err }
+
+func firstString(s []string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	return s[0]
 }
 
 func refreshToken(ctx context.Context, issuerURL, clientID, clientSecret, refreshToken string, insecure bool) (idToken, newRefreshToken string, expiry time.Time, err error) {
