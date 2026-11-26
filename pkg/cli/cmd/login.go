@@ -65,6 +65,12 @@ whose credentials refresh automatically (OIDC) or carry the static token.
   railgrid login --hub-url https://hub.example.com --device  # sign in from another device
   railgrid login --hub-url https://hub.example.com --token <token>
   export RAILGRID_HUB_URL=https://hub.example.com          # instead of --hub-url
+  railgrid login                                           # again, to the same hub
+
+Once logged in, the hub is remembered: a later 'railgrid login' needs no
+--hub-url, and when the saved session can no longer be refreshed, a command run
+from a terminal opens the browser to sign in again and then carries on (set
+RAILGRID_NO_AUTO_LOGIN=1 to get an error instead).
 
 On a self-signed hub add --insecure-skip-tls-verify. After login, 'railgrid use'
 switches organization and workspace and 'railgrid whoami' shows the session.
@@ -78,7 +84,14 @@ kubeconfigs from the hub so they can use the new account-specific credentials.`,
 				hubURL = strings.TrimSpace(os.Getenv(hubURLEnv))
 			}
 			if hubURL == "" {
-				return fmt.Errorf("no hub configured: pass --hub-url https://<your-hub> or set %s", hubURLEnv)
+				// Logging in again: reuse the hub of the existing session.
+				previous, cluster := loggedInHub()
+				if previous == "" {
+					return fmt.Errorf("no hub configured: pass --hub-url https://<your-hub> or set %s", hubURLEnv)
+				}
+				hubURL = previous
+				insecureSkipTLSVerify = insecureSkipTLSVerify || cluster.InsecureSkipTLSVerify
+				_, _ = fmt.Fprintf(out, "Logging in to %s (the hub in your kubeconfig).\n", hubURL)
 			}
 			hubURL = normalizeHubURL(hubURL)
 			if token != "" {
@@ -207,16 +220,27 @@ func printLoginSuccess(out io.Writer, email, userID, contextName string, expires
 }
 
 func runLogin(ctx context.Context, out io.Writer, hubURL string) error {
+	resp, err := browserLogin(ctx, out, hubURL)
+	if err != nil {
+		return err
+	}
+	return saveOIDCLogin(out, resp)
+}
+
+// browserLogin runs the browser OIDC flow against the hub and returns what the
+// hub sent back, without storing anything. Progress goes to out.
+func browserLogin(ctx context.Context, out io.Writer, hubURL string) (tenancyv1alpha1.LoginResponse, error) {
+	var none tenancyv1alpha1.LoginResponse
 	// 1. Start local callback server on a random port.
 	authenticator := cliauth.NewLocalhostCallbackAuthenticator()
 	if err := authenticator.Start(); err != nil {
-		return fmt.Errorf("starting callback server: %w", err)
+		return none, fmt.Errorf("starting callback server: %w", err)
 	}
 
 	// 2. Generate a random session ID and PKCE code_verifier.
 	sessionBytes := make([]byte, 3)
 	if _, err := rand.Read(sessionBytes); err != nil {
-		return fmt.Errorf("generating session ID: %w", err)
+		return none, fmt.Errorf("generating session ID: %w", err)
 	}
 	sessionID := hex.EncodeToString(sessionBytes)
 
@@ -238,21 +262,30 @@ func runLogin(ctx context.Context, out io.Writer, hubURL string) error {
 	// 6. Wait for the callback response.
 	resp, err := authenticator.WaitForResponse(ctx)
 	if err != nil {
-		return fmt.Errorf("waiting for login response: %w", err)
+		return none, fmt.Errorf("waiting for login response: %w", err)
 	}
 
-	return saveOIDCLogin(out, resp)
+	return resp, nil
 }
 
 func saveOIDCLogin(out io.Writer, resp tenancyv1alpha1.LoginResponse) error {
+	contextName, expiresAt, err := storeOIDCLogin(resp, false)
+	if err != nil {
+		return err
+	}
+	printLoginSuccess(out, resp.Email, resp.UserID, contextName, expiresAt)
+	return nil
+}
+
+// storeOIDCLogin writes the token cache and merges the hub's kubeconfig. With
+// keepCurrentContext the kubeconfig's current-context is left as it was.
+func storeOIDCLogin(resp tenancyv1alpha1.LoginResponse, keepCurrentContext bool) (contextName string, expiresAt *time.Time, err error) {
 	// Save the OIDC token cache so the exec credential plugin can use it.
 	// ClientSecret is intentionally not cached — PKCE public client refresh
 	// needs only the refresh token, issuer URL, and client ID.
-	var expiresAt *time.Time
-	var contextName string
 	writeKubeconfig := func() error {
 		var err error
-		contextName, err = mergeKubeconfig(resp.Kubeconfig, resp.UserID)
+		contextName, err = mergeLoginKubeconfig(resp.Kubeconfig, resp.UserID, keepCurrentContext)
 		if err != nil {
 			return fmt.Errorf("merging kubeconfig: %w", err)
 		}
@@ -276,20 +309,25 @@ func saveOIDCLogin(out io.Writer, resp tenancyv1alpha1.LoginResponse) error {
 			Account:      resp.UserID,
 		}
 		if err := cliauth.SaveLoginTokenCache(cache, writeKubeconfig); err != nil {
-			return fmt.Errorf("saving OIDC login: %w", err)
+			return "", nil, fmt.Errorf("saving OIDC login: %w", err)
 		}
 	} else if err := writeKubeconfig(); err != nil {
-		return err
+		return "", nil, err
 	}
-
-	printLoginSuccess(out, resp.Email, resp.UserID, contextName, expiresAt)
-	return nil
+	return contextName, expiresAt, nil
 }
 
 // mergeKubeconfig merges the received kubeconfig bytes into the default
 // kubeconfig file and returns the name of the context it made current. The hub
 // picks that name, so callers must not assume it.
 func mergeKubeconfig(kubeconfigBytes []byte, account ...string) (string, error) {
+	return mergeLoginKubeconfig(kubeconfigBytes, firstString(account), false)
+}
+
+// mergeLoginKubeconfig is mergeKubeconfig with the choice of leaving the
+// current-context alone, for a re-login that happens underneath another
+// command. It writes nothing to stdout, which is the exec credential there.
+func mergeLoginKubeconfig(kubeconfigBytes []byte, account string, keepCurrentContext bool) (string, error) {
 	// Parse the new kubeconfig.
 	newConfig, err := clientcmd.Load(kubeconfigBytes)
 	if err != nil {
@@ -302,14 +340,14 @@ func mergeKubeconfig(kubeconfigBytes []byte, account ...string) (string, error) 
 	// would fail to exec the plugin. Rewrite to the absolute path of the
 	// running binary so both install modes work.
 	rewriteRailgridExecCommand(newConfig)
-	if len(account) != 0 && account[0] != "" {
+	if account != "" {
 		for _, auth := range newConfig.AuthInfos {
 			if auth == nil || auth.Exec == nil {
 				continue
 			}
 			issuer, clientID, _ := execOIDCArgs(auth.Exec)
 			if issuer != "" && clientID != "" {
-				auth.Exec.Args = append(auth.Exec.Args, "--oidc-account="+account[0])
+				auth.Exec.Args = append(auth.Exec.Args, "--oidc-account="+account)
 			}
 		}
 	}
@@ -340,7 +378,7 @@ func mergeKubeconfig(kubeconfigBytes []byte, account ...string) (string, error) 
 			nextContext := newConfig.Contexts[newConfig.CurrentContext]
 			if prevBase == newBase && prevCluster != newCluster && previousContext != nil && nextContext != nil && previousContext.AuthInfo == nextContext.AuthInfo {
 				v.Server = prev.Server
-				fmt.Printf("Keeping previously selected workspace: %s\n", prev.Server)
+				fmt.Fprintf(os.Stderr, "Keeping previously selected workspace: %s\n", prev.Server)
 			}
 		}
 		existingConfig.Clusters[k] = v
@@ -351,7 +389,9 @@ func mergeKubeconfig(kubeconfigBytes []byte, account ...string) (string, error) 
 	for k, v := range newConfig.Contexts {
 		existingConfig.Contexts[k] = v
 	}
-	existingConfig.CurrentContext = newConfig.CurrentContext
+	if !keepCurrentContext || existingConfig.CurrentContext == "" {
+		existingConfig.CurrentContext = newConfig.CurrentContext
+	}
 
 	// Write back.
 	configPath := loadingRules.GetDefaultFilename()
@@ -359,7 +399,7 @@ func mergeKubeconfig(kubeconfigBytes []byte, account ...string) (string, error) 
 		return "", fmt.Errorf("writing kubeconfig to %s: %w", configPath, err)
 	}
 
-	return existingConfig.CurrentContext, nil
+	return newConfig.CurrentContext, nil
 }
 
 func writeLoginKubeconfig(config clientcmdapi.Config, path string) error {

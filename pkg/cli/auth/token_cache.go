@@ -210,6 +210,19 @@ func LockTokenCache(issuerURL, clientID string, account ...string) (unlock func(
 	return acquireFileLock(lockPath)
 }
 
+// LockLogin serializes interactive re-logins for one OIDC config, so several
+// commands that find the refresh token dead at the same moment open one browser
+// window rather than one each. It is a different file from LockTokenCache,
+// which the login itself takes when it stores the new tokens.
+func LockLogin(issuerURL, clientID string, account ...string) (unlock func(), err error) {
+	dir, err := cacheDir()
+	if err != nil {
+		return nil, err
+	}
+	lockPath := filepath.Join(dir, cacheKey(issuerURL, clientID, firstAccount(account))+".login.lock")
+	return acquireFileLock(lockPath)
+}
+
 // RemoveTokenCache deletes the cached tokens for the given OIDC config. It
 // reports whether a cache file existed.
 func RemoveTokenCache(issuerURL, clientID string, account ...string) (bool, error) {
