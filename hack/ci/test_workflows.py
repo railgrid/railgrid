@@ -280,6 +280,35 @@ class WorkflowTests(unittest.TestCase):
                 if "PUSH" in step.get("env", {}):
                     self.assertEqual(bool(expression(step["env"]["PUSH"], "full", event)), event == "push")
 
+    def test_every_job_that_publishes_signs_what_it_pushed(self):
+        # job -> signing steps expected. A job-level permissions block replaces
+        # the workflow's, so the OIDC token must be granted where the job runs.
+        publishing = {
+            "images": {"build-and-push-hub-image": 1, "build-and-push-agent-image": 1},
+            "helm-images": {"publish-charts": 1},
+            "main-builds": {"build": 1},
+            "provider-release": {"merge": 2},
+        }
+        for name, jobs in publishing.items():
+            workflow = load(name)
+            for job_name, expected in jobs.items():
+                job = workflow["jobs"][job_name]
+                permissions = job.get("permissions", workflow["permissions"])
+                self.assertEqual(permissions.get("id-token"), "write", f"{name}/{job_name}")
+                signing = [step for step in job["steps"] if step.get("uses") == "./.github/actions/cosign-sign"]
+                self.assertEqual(len(signing), expected, f"{name}/{job_name}")
+                for step in signing:
+                    for ref in step["with"]["refs"].splitlines():
+                        self.assertTrue("@${{" in ref or ref.startswith("${{ steps."), f"{name}/{job_name}: {ref} is not a digest")
+        # The validation-only provider build pushes nothing and must not sign.
+        validation = self.workflows["images"]["jobs"]["build-and-push-provider-images"]
+        self.assertFalse([step for step in validation["steps"] if "cosign" in step.get("uses", "")])
+        for event in ("pull_request", "workflow_dispatch", "push", "release"):
+            for job_name in publishing["images"]:
+                for step in self.workflows["images"]["jobs"][job_name]["steps"]:
+                    if step.get("uses") == "./.github/actions/cosign-sign":
+                        self.assertEqual(bool(expression(step["if"], "full", event)), event in ("push", "release"))
+
     def test_only_macos_and_the_release_dry_run_still_start_on_pull_requests(self):
         allowed = {"macos.yaml", "goreleaser.yaml"}
         for path in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
